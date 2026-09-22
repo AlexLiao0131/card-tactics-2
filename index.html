@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Card Tactics 2.0 Prototype</title>
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <main id="app">
+    <section class="hud">
+      <div>
+        <h1>Card Tactics 2.0</h1>
+        <p>Babylon.js State-driven Prototype</p>
+      </div>
+      <div class="controls">
+        <button id="rotateLeft" type="button">⟲ 90°</button>
+        <button id="rotateRight" type="button">90° ⟳</button>
+        <button id="meteorButton" type="button">Meteor H3→H1</button>
+        <button id="waterButton" type="button">+ WaterDepth</button>
+      </div>
+      <div id="status" class="status"></div>
+    </section>
+    <section class="stage-shell">
+      <canvas id="battleCanvas" touch-action="none"></canvas>
+    </section>
+  </main>
+
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script type="module" src="./js/app/main.js"></script>
+</body>
+</html>
