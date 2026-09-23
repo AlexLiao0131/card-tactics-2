@@ -1,4 +1,5 @@
 import { GridState } from "./grid-state.js";
+import { initializeMap } from "./hydrology-engine.js";
 
 export function createPrototypeBattleState() {
   const elevations = [
@@ -10,16 +11,16 @@ export function createPrototypeBattleState() {
     [0,0,0,0,0,0,0,0]
   ];
 
+  const basinKeys = new Set(["1,4","2,4","1,5"]);
   const tiles = [];
   for (let y = 0; y < 6; y++) {
     for (let x = 0; x < 8; x++) {
       const elevation = elevations[y][x];
-      const basin = (x === 1 && y === 4) || (x === 2 && y === 4) || (x === 1 && y === 5);
+      const naturalWater = basinKeys.has(`${x},${y}`);
       tiles.push({
-        x,
-        y,
-        elevation,
-        waterDepth: basin ? 0.65 : 0,
+        x, y, elevation,
+        terrain: naturalWater ? "WATER" : (elevation >= 2 ? "HIGH_GROUND" : "PLAIN"),
+        waterDepth: naturalWater ? undefined : 0,
         snowDepth: 0,
         iceThickness: 0,
         material: elevation >= 2 ? "ROCK" : "SOIL"
@@ -28,6 +29,8 @@ export function createPrototypeBattleState() {
   }
 
   const grid = new GridState({ width: 8, height: 6, tiles });
+  initializeMap(grid);
+
   return {
     revision: 0,
     round: 1,

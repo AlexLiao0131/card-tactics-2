@@ -1,4 +1,5 @@
 import { TILE_SIZE, ELEVATION_HEIGHT, tileCenterWorld } from "./coordinate-system.js";
+import { waterSurfaceZ } from "./hydrology-engine.js";
 
 const keyOf = tile => `${tile.x},${tile.y}`;
 
@@ -15,8 +16,8 @@ export class WaterRenderer {
   sync(state) {
     const alive = new Set();
     for (const tile of state.grid.tiles) {
-      const depth = Number(tile.waterDepth || 0);
-      if (depth <= 0.001) continue;
+      const surface = waterSurfaceZ(tile);
+      if (surface == null) continue;
       const key = keyOf(tile);
       alive.add(key);
       let mesh = this.meshes.get(key);
@@ -31,13 +32,10 @@ export class WaterRenderer {
         this.meshes.set(key, mesh);
       }
       const center = tileCenterWorld(tile);
-      mesh.position.set(center.x, center.y + depth * ELEVATION_HEIGHT + 0.06, center.z);
+      mesh.position.set(center.x, surface * ELEVATION_HEIGHT + 0.04, center.z);
     }
     for (const [key, mesh] of this.meshes) {
-      if (!alive.has(key)) {
-        mesh.dispose();
-        this.meshes.delete(key);
-      }
+      if (!alive.has(key)) { mesh.dispose(); this.meshes.delete(key); }
     }
   }
 }
