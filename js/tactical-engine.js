@@ -1,0 +1,30 @@
+import { TERRAINS } from "./terrain-database.js";
+import * as Hydrology from "./hydrology-engine.js";
+import * as Climate from "./climate-engine.js";
+import * as Environment from "./environment-engine.js";
+const K=(x,y)=>x+","+y,D=(a,b)=>Math.abs((a.gridX??a.x)-(b.gridX??b.x))+Math.abs((a.gridY??a.y)-(b.gridY??b.y));
+export const MAX_NORMAL_CLIMB=1,MAX_NORMAL_DROP=1;
+const FACINGS=["N","E","S","W"],ux=u=>Number(u?.gridX??u?.x),uy=u=>Number(u?.gridY??u?.y);
+export function tile(m,x,y){return m.tiles.find(t=>t.x===x&&t.y===y)}
+export function objectAt(m,x,y){return(m?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null}
+function occupied(us,x,y,id){return us.some(u=>u.alive&&u.id!==id&&ux(u)===x&&uy(u)===y)}
+export const elevation=t=>Number(t?.elevation||0);
+const terrainTraits=u=>u?.character?.terrainTraits||[];
+export function isAquatic(u){const tr=terrainTraits(u);return tr.includes("AQUATIC")&&!tr.includes("AMPHIBIOUS")}
+export const isLiveWater=t=>Hydrology.isWater(t);
+export function canOccupyTerrain(u,t){if(!t||!TERRAINS[t.terrain]?.passable)return false;if(isAquatic(u))return isLiveWater(t);return true}
+export function traversalElevation(t,u=null){if(isLiveWater(t)||Climate.isSolidIce(t)){const surface=Hydrology.waterSurfaceZ(t);if(surface!=null)return Number(surface)}return elevation(t)}
+export function elevationDelta(fromTile,toTile){return elevation(toTile)-elevation(fromTile)}
+const isMountainTile=t=>t?.terrain==="HIGH_GROUND"||Number(t?.elevation||0)>0;
+export const isBlockedByObject=(m,x,y)=>objectAt(m,x,y)?.blocksMovement===true;
+function defaultFacing(u){return u?.team==="E"?"S":"N"}
+export function ensureFacing(u){if(u&&!FACINGS.includes(u.facing))u.facing=defaultFacing(u);return u?.facing||null}
+export function facingToward(from,to,fallback=null){if(!from||!to)return fallback;const fx=from.gridX??from.x,fy=from.gridY??from.y,tx=to.gridX??to.x,ty=to.gridY??to.y,dx=Number(tx)-Number(fx),dy=Number(ty)-Number(fy);if(!dx&&!dy)return fallback;if(Math.abs(dx)>Math.abs(dy))return dx>0?"E":"W";if(Math.abs(dy)>Math.abs(dx))return dy>0?"S":"N";if(fallback&&FACINGS.includes(fallback)){if((fallback==="E"&&dx>0)||(fallback==="W"&&dx<0)||(fallback==="S"&&dy>0)||(fallback==="N"&&dy<0))return fallback}return dy>0?"S":"N"}
+export function canTraverseElevation(fromTile,toTile,u=null){if(!fromTile||!toTile)return false;const tr=terrainTraits(u);if(tr.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile)))return true;const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u);return delta<=MAX_NORMAL_CLIMB&&delta>=-MAX_NORMAL_DROP}
+export function canActiveMove(m,us,u,x,y,{ignoreElevation=false}={}){const from=tile(m,ux(u),uy(u)),to=tile(m,x,y);if(!to||!canOccupyTerrain(u,to)||isBlockedByObject(m,x,y)||occupied(us,x,y,u.id))return false;return ignoreElevation||canTraverseElevation(from,to,u)}
+function cost(u,t){const tr=terrainTraits(u);if(Climate.isSolidIce(t))return 1;if((isAquatic(u)&&isLiveWater(t))||tr.includes("IGNORE_GROUND_TERRAIN")||(t.terrain==="FOREST"&&tr.includes("FOREST_WALK"))||(t.terrain==="WATER"&&tr.includes("WATER_WALK"))||(isMountainTile(t)&&tr.includes("MOUNTAIN_WALK")))return 1;const base=Number(TERRAINS[t.terrain].moveCost||1),snow=Number(t?.snowDepth||0);return base+(snow>=1.5?2:snow>=.5?1:0)}
+export function reachable(m,us,u){ensureFacing(u);const sx=ux(u),sy=uy(u),max=Number(u?.character?.combat?.move||0),best=new Map([[K(sx,sy),0]]),q=[{x:sx,y:sy,c:0}];while(q.length){q.sort((a,b)=>a.c-b.c);const n=q.shift(),from=tile(m,n.x,n.y);for(const[dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){const x=n.x+dx,y=n.y+dy,t=tile(m,x,y);if(!t||!canOccupyTerrain(u,t)||isBlockedByObject(m,x,y)||occupied(us,x,y,u.id)||!canTraverseElevation(from,t,u))continue;const c=n.c+cost(u,t),k=K(x,y);if(c<=max&&(!best.has(k)||c<best.get(k))){best.set(k,c);q.push({x,y,c})}}}best.delete(K(sx,sy));return best}
+export function pathTo(m,us,u,endX,endY){ensureFacing(u);const sx=ux(u),sy=uy(u),start=K(sx,sy),goal=K(endX,endY),max=Number(u?.character?.combat?.move||0),best=new Map([[start,0]]),prev=new Map(),q=[{x:sx,y:sy,c:0}];while(q.length){q.sort((a,b)=>a.c-b.c);const n=q.shift(),nk=K(n.x,n.y);if(n.c!==best.get(nk))continue;if(nk===goal)break;const from=tile(m,n.x,n.y);for(const[dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){const x=n.x+dx,y=n.y+dy,t=tile(m,x,y),k=K(x,y);if(!t||!canOccupyTerrain(u,t)||isBlockedByObject(m,x,y)||occupied(us,x,y,u.id)||!canTraverseElevation(from,t,u))continue;const c=n.c+cost(u,t);if(c<=max&&(!best.has(k)||c<best.get(k))){best.set(k,c);prev.set(k,nk);q.push({x,y,c})}}}if(!best.has(goal))return[];const path=[];let k=goal;while(k!==start){const[x,y]=k.split(",").map(Number);path.push(tile(m,x,y));k=prev.get(k);if(!k)return[]}path.reverse();if(path.length){const from=path.length>1?path[path.length-2]:{x:sx,y:sy};u.facing=facingToward(from,path[path.length-1],ensureFacing(u))}return path}
+function lineCells(from,to){const fx=from.gridX??from.x,fy=from.gridY??from.y,tx=to.gridX??to.x,ty=to.gridY??to.y,cells=[],dx=tx-fx,dy=ty-fy,steps=Math.max(Math.abs(dx),Math.abs(dy));if(steps<=1)return cells;const seen=new Set();for(let i=1;i<steps;i++){const x=Math.round(fx+dx*i/steps),y=Math.round(fy+dy*i/steps),k=K(x,y);if(k!==K(fx,fy)&&k!==K(tx,ty)&&!seen.has(k)){seen.add(k);cells.push({x,y,t:i/steps})}}return cells}
+export function visionBlocked(environmentState,x,y){return!!(environmentState&&Environment.visionModifier(environmentState,x,y)?.blocked)}
+export function canSee(m,observer,target,environmentState=null){if(!m||!observer||!target)return false;const ox=ux(observer),oy=uy(observer),tx=ux(target),ty=uy(target);if(ox===tx&&oy===ty)return true;if(!environmentState)return true;const limit=Number(Environment.visionRange(environmentState));if(Number.isFinite(limit)&&D(observer,target)>limit)return false;if(visionBlocked(environmentState,ox,oy)||visionBlocked(environmentState,tx,ty))return false;return lineCells(observer,target).every(p=>!visionBlocked(environmentState,p.x,p.y))}
