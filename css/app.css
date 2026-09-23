@@ -1,40 +1,24 @@
 :root {
   color-scheme: dark;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0d1117;
-  color: #f0f6fc;
+  background: #0d1117; color: #f0f6fc;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: #0d1117; }
 body { min-height: 100dvh; }
 #app { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
-.hud {
-  display: grid;
-  gap: .7rem;
-  grid-template-columns: minmax(180px,1fr) auto minmax(220px,1fr);
-  align-items: center;
-  padding: .75rem 1rem;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
-}
-.hud h1 { margin: 0; font-size: 1.05rem; }
-.hud p { margin: .15rem 0 0; color: #8b949e; font-size: .82rem; }
-.controls { display: flex; flex-wrap: wrap; gap: .45rem; justify-content: center; }
-button {
-  border: 1px solid #484f58;
-  background: #21262d;
-  color: #f0f6fc;
-  border-radius: 8px;
-  padding: .55rem .75rem;
-  font-weight: 650;
-}
-button:active { transform: translateY(1px); }
-.status { text-align: right; color: #c9d1d9; font-size: .8rem; line-height: 1.4; }
-.stage-shell { min-height: 0; position: relative; }
-#battleCanvas { display: block; width: 100%; height: 100%; outline: none; background: #111820; }
-@media (max-width: 900px) {
-  .hud { grid-template-columns: 1fr; }
-  .controls { justify-content: flex-start; }
-  .status { text-align: left; }
-  .stage-shell { min-height: 68dvh; }
+.hud { display:grid; gap:.7rem; grid-template-columns:minmax(180px,1fr) auto minmax(220px,1fr); align-items:center; padding:.75rem 1rem; background:#161b22; border-bottom:1px solid #30363d; }
+.hud h1 { margin:0; font-size:1.05rem; }
+.hud p { margin:.15rem 0 0; color:#8b949e; font-size:.82rem; }
+.controls { display:flex; flex-wrap:wrap; gap:.45rem; justify-content:center; }
+button { border:1px solid #484f58; background:#21262d; color:#f0f6fc; border-radius:8px; padding:.55rem .75rem; font-weight:650; }
+button:active { transform:translateY(1px); }
+.status { text-align:right; color:#c9d1d9; font-size:.8rem; line-height:1.4; }
+.stage-shell { min-height:0; position:relative; }
+#battleCanvas { display:block; width:100%; height:100%; outline:none; background:#111820; }
+@media (max-width:900px) {
+  .hud { grid-template-columns:1fr; }
+  .controls { justify-content:flex-start; }
+  .status { text-align:left; }
+  .stage-shell { min-height:68dvh; }
 }
