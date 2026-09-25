@@ -1,0 +1,17 @@
+export const BattleSetupEngine=(()=>{
+  function create({stageId,battleSetup,TEAM}){
+    const stage=StageDatabase.get(stageId);if(!stage)throw new Error(`Unknown stage: ${stageId}`);let map;
+    if(stage.mode==="VERSUS"&&stage.battlefield?.type==="PROCEDURAL"){
+      if(!window.MapGenerator?.generateVersus)throw new Error("MapGenerator.generateVersus is not loaded.");const generated=MapGenerator.generateVersus({size:battleSetup?.mapSize||stage.battlefield.defaultSize||"MEDIUM",seed:battleSetup?.seed,coreRules:stage.coreRules||{}});map=generated.map;stage.cores=generated.cores;stage.deploymentPoints=generated.deploymentPoints;stage.generatedBattlefield=generated.meta;if(battleSetup&&!battleSetup.seed)battleSetup.seed=generated.meta.seed;if(battleSetup&&!battleSetup.mapSize)battleSetup.mapSize=generated.meta.size;
+    }else map=MapDatabase.createMap(stage.mapId);
+    if(window.HydrologyEngine)HydrologyEngine.initializeMap(map);
+    const stageState=StageEngine.create(stage.scriptId,{victory:stage.victory,defeat:stage.defeat}),cores=(stage.cores||[]).map(core=>({...core,hp:Number(core.hp??core.maxHp??0),maxHp:Number(core.maxHp??core.hp??0),shield:Number(core.shield??core.maxShield??0),maxShield:Number(core.maxShield??core.shield??0)}));
+    const environmentState=window.EnvironmentEngine?EnvironmentEngine.create(stage.environment||{}):null,units=[];if(window.ClimateEngine&&environmentState)ClimateEngine.initializeMap(map,environmentState);
+    const createUnit=(id,team,characterId,x,y)=>UnitRuntimeEngine.create({id,team,characterId,x,y,map}),forcedHeroIds=new Set((stage.playerSpawns||[]).filter(s=>s.source==="STAGE").map(s=>s.characterId)),requestedDeck=Array.isArray(battleSetup?.deck)&&battleSetup.deck.length?battleSetup.deck:stage.battleDeck||[],battleDeck=requestedDeck.filter(cardId=>{const card=CardDatabase.get(cardId);return !(CardDatabase.isCharacter(card)&&card.unitType==="HERO"&&forcedHeroIds.has(card.characterId))});
+    const cardState=CardPhaseEngine.create({deck:battleDeck,startingCrystals:Number(stage.cardRules?.startingCrystals||4),maxCrystals:Number(stage.cardRules?.maxCrystals||10),crystalGrowth:Number(stage.cardRules?.crystalGrowth||1),handSize:Number(stage.cardRules?.handSize||5)}),enemyCardState=CardPhaseEngine.create({deck:stage.enemyDeck||[],startingCrystals:Number(stage.enemyCardRules?.startingCrystals||stage.cardRules?.startingCrystals||4),maxCrystals:Number(stage.enemyCardRules?.maxCrystals||stage.cardRules?.maxCrystals||10),crystalGrowth:Number(stage.enemyCardRules?.crystalGrowth||stage.cardRules?.crystalGrowth||1),handSize:Number(stage.enemyCardRules?.handSize||stage.cardRules?.handSize||5)});
+    DeckEngine.shuffle(cardState.zones);DeckEngine.shuffle(enemyCardState.zones);DeckEngine.draw(enemyCardState.zones,Number(stage.enemyCardRules?.handSize||stage.cardRules?.handSize||5));(stage.playerSpawns||[]).forEach((u,i)=>units.push(createUnit(`p${i}`,TEAM.PLAYER,u.characterId,u.x,u.y)));(stage.enemySpawns||[]).forEach((u,i)=>units.push(createUnit(`e${i}`,TEAM.ENEMY,u.characterId,u.x,u.y)));
+    const encounterState=window.EncounterEngine?.create?.(stage.encounters||[],{map,units,createUnit})||null;if(encounterState){stageState.encounterState=encounterState;EncounterEngine.spawnInitial(encounterState);}return{stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,encounterState,unitSerial:0};
+  }
+  return Object.freeze({create});
+})();
+globalThis.BattleSetupEngine=BattleSetupEngine;
