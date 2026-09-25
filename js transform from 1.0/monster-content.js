@@ -1,6 +1,0 @@
-(()=>{
-SKILLS.water_tentacle={id:"water_tentacle",name:"觸手拖曳",category:"ATTACK",weapon:"claw",power:.95,range:{min:1,max:2},attackType:"STRIKE",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[],postEffects:[{type:"PULL",distance:2}]};
-CHARACTERS.water_lurker=EquipmentDatabase.resolveCharacter({id:"water_lurker",name:"深潭巨章",race:"AQUATIC_MONSTER",faction:"MONSTER",archetype:"MELEE",attributes:{str:15,agi:10,int:8,wil:12,vit:17,luk:8},combat:{hp:360,atk:88,matk:42,def:66,mdef:64,move:3},armorId:"natural_hide",weaponIds:{claw:"forest_claw"},terrainTraits:["AQUATIC"],skills:["water_tentacle","claw"]});
-CARDS.flood_card={id:"flood_card",name:"洪水術",type:"SPELL",spellType:"TACTICAL",faction:"MONSTER",cost:4,acquisition:"ENCOUNTER",lifetime:"BATTLE",collectible:false,availability:"BATTLE_ONLY",source:"ENCOUNTER",effect:{type:"HYDROLOGY_FLOOD",radius:2,surfaceRise:1}};
-MonsterDatabase.register({id:"water_lurker",characterId:"water_lurker",family:"AQUATIC",aiProfile:"WILD_WATER",habitat:["WATER"],traits:["AQUATIC","PULL_PREDATOR"],spawnRule:{terrain:"WATER",minWaterDepth:1,preferDeepest:true,count:1},encounterRewards:[{type:"BATTLE_CARD",cardId:"flood_card",count:1,chance:1}]});
-})();
