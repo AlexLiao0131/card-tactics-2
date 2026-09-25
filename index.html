@@ -3,28 +3,109 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Card Tactics 2.0 Prototype</title>
+  <title>Card Tactics 2.0</title>
   <link rel="stylesheet" href="./css/app.css" />
 </head>
 <body>
-  <main id="app">
-    <section class="hud">
-      <div>
-        <h1>Card Tactics 2.0</h1>
-        <p>Babylon.js State-driven Prototype</p>
+  <section id="bootScreen" class="game-screen boot-screen active">
+    <div class="boot-card">
+      <h1>CARD TACTICS 2.0</h1>
+      <p id="bootStatus">載入戰鬥核心...</p>
+    </div>
+  </section>
+
+  <section id="titleScreen" class="game-screen title-screen">
+    <div class="title-shade"></div>
+    <div class="title-copy">
+      <h1>CARD TACTICS</h1>
+      <p>TACTICAL CARD RPG — BABYLON 3D</p>
+      <button id="pressStart" class="press-start" type="button">點擊開始</button>
+    </div>
+  </section>
+
+  <section id="menuScreen" class="game-screen menu-screen">
+    <div class="menu-panel">
+      <div class="game-logo">CARD TACTICS<small>TACTICAL CARD RPG · 2.0</small></div>
+      <button id="menuVersus" type="button">對戰<small>VERSUS / CORE CONQUEST</small></button>
+      <button id="menuCampaign" type="button" disabled>戰役<small>CAMPAIGN · MIGRATION PENDING</small></button>
+      <button id="menuCards" type="button" disabled>卡牌整理<small>COLLECTION / DECK · MIGRATION PENDING</small></button>
+      <button id="menuShop" type="button" disabled>商店<small>SHOP · MIGRATION PENDING</small></button>
+    </div>
+  </section>
+
+  <section id="versusScreen" class="game-screen shell-screen">
+    <div class="shell-panel versus-panel">
+      <header>
+        <div>
+          <h2>Core Conquest</h2>
+          <p>程序生成戰場｜雙方 Core 600 HP｜三個中立據點</p>
+        </div>
+        <button data-back="menuScreen" class="compact-button" type="button">返回</button>
+      </header>
+      <label class="field-row">
+        <span>地圖尺寸</span>
+        <select id="versusMapSize">
+          <option value="SMALL">小型 14 × 10</option>
+          <option value="MEDIUM" selected>中型 20 × 14</option>
+          <option value="LARGE">大型 26 × 18</option>
+          <option value="XLARGE">超大型 32 × 22</option>
+        </select>
+      </label>
+      <label class="field-row">
+        <span>Seed</span>
+        <input id="versusSeed" inputmode="numeric" placeholder="留空＝隨機" />
+      </label>
+      <button id="versusStart" class="primary-button" type="button">開始對戰</button>
+      <div id="versusMeta" class="minor-info"></div>
+    </div>
+  </section>
+
+  <section id="battleScreen" class="game-screen battle-screen">
+    <header class="battle-topbar">
+      <button id="battleBack" class="compact-button" type="button">← 主選單</button>
+      <div class="battle-title">
+        <strong>CORE CONQUEST</strong>
+        <span id="turnStatus">準備戰鬥...</span>
       </div>
-      <div class="controls">
-        <button id="rotateLeft" type="button">⟲ 90°</button>
-        <button id="rotateRight" type="button">90° ⟳</button>
-        <button id="meteorButton" type="button">Meteor H3→H1</button>
-        <button id="waterButton" type="button">+ WaterDepth</button>
+      <div class="core-strip">
+        <div><span>PLAYER CORE</span><strong id="playerCoreHp">—</strong></div>
+        <div><span>ENEMY CORE</span><strong id="enemyCoreHp">—</strong></div>
       </div>
-      <div id="status" class="status"></div>
-    </section>
-    <section class="stage-shell">
-      <canvas id="battleCanvas" touch-action="none"></canvas>
-    </section>
-  </main>
+    </header>
+
+    <main class="battle-layout">
+      <section class="battle-main">
+        <div class="canvas-shell">
+          <canvas id="battleCanvas" touch-action="none"></canvas>
+          <div class="battle-floating-controls">
+            <button id="rotateLeft" type="button">⟲ 90°</button>
+            <button id="rotateRight" type="button">90° ⟳</button>
+          </div>
+          <div id="mapMeta" class="map-meta"></div>
+        </div>
+
+        <section id="cardPhasePanel" class="card-phase-panel"></section>
+        <section id="skillBar" class="skillbar"></section>
+
+        <div class="turn-actions">
+          <button id="endTurn" type="button">結束我方回合</button>
+          <button id="resetMap" type="button">重置戰場</button>
+        </div>
+      </section>
+
+      <aside class="battle-sidebar">
+        <section class="side-card">
+          <h3>單位 / 地格</h3>
+          <div id="inspectionPanel" class="inspection-panel">點擊戰場查看資訊。</div>
+        </section>
+        <section class="side-card battle-log-card">
+          <h3>Battle Log</h3>
+          <div id="battleLog" class="battle-log"></div>
+        </section>
+      </aside>
+    </main>
+  </section>
+
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script type="module" src="./js/main.js"></script>
 </body>
