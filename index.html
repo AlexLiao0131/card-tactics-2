@@ -115,7 +115,7 @@
     <button id="resetMap" class="reset-battle" type="button">重置戰場</button>
     <div id="turnStatus" class="turn-status">準備戰鬥...</div>
 
-    <div id="versusCoreHud" class="versus-core-hud">
+    <div id="versusCoreHud" class="versus-core-hud" aria-hidden="true">
       <div class="versus-core-row">
         <div class="versus-core-side player"><div><strong>我方 CORE</strong><span id="playerCoreHp">—</span></div><div class="core-track"><i id="playerCoreBar"></i></div></div>
         <div class="versus-core-side enemy"><div><strong>敵方 CORE</strong><span id="enemyCoreHp">—</span></div><div class="core-track"><i id="enemyCoreBar"></i></div></div>
@@ -123,24 +123,49 @@
       <div id="captureSummary" class="capture-summary"></div>
     </div>
 
-    <div id="mapMeta" class="map-meta"></div>
-
     <section id="cardPhasePanel" class="card-phase-panel"></section>
     <section id="skillBar" class="skillbar"></section>
 
-    <div id="battleUnitHud" class="battle-unit-hud">
-      <button id="unitHudClose" class="battle-unit-hud-close" type="button">×</button>
-      <div id="inspectionPanel" class="inspection-panel"></div>
-    </div>
-
     <div class="battle-right-rail">
+      <button id="infoToggle" type="button" title="角色／地形詳細資料">ⓘ</button>
+      <button id="mapToggle" type="button" title="地圖資訊">MAP</button>
+      <button id="hudToggle" type="button" title="Core / 據點 HUD">HUD</button>
       <button id="logToggle" type="button">LOG</button>
       <button id="endTurn" type="button">結束回合</button>
     </div>
-    <div id="battleLogShell" class="battle-log-shell">
+
+    <aside id="battleContextInspector" class="battle-context-inspector" aria-hidden="true">
+      <header><strong>戰場詳情</strong><button id="contextClose" type="button">×</button></header>
+      <div class="battle-context-tabs">
+        <button id="contextUnitTab" type="button">角色</button>
+        <button id="contextTileTab" type="button">地形</button>
+      </div>
+      <section id="contextUnitPanel" class="battle-context-panel">
+        <strong id="contextUnitName">—</strong>
+        <div id="contextUnitVitals" class="context-vitals"></div>
+        <div id="contextUnitStats" class="context-grid"></div>
+        <div id="contextUnitPosition" class="context-line"></div>
+        <div class="context-section-title">技能</div>
+        <div id="contextUnitSkills" class="context-skills"></div>
+      </section>
+      <section id="contextTilePanel" class="battle-context-panel">
+        <strong id="contextTileTitle">—</strong>
+        <div id="contextTileMeta" class="context-line"></div>
+        <div id="contextTileStatus" class="context-line"></div>
+        <pre id="contextTileDetails" class="context-pre"></pre>
+      </section>
+    </aside>
+
+    <aside id="mapInfoShell" class="map-info-shell" aria-hidden="true">
+      <header><strong>地圖資訊</strong><button id="mapClose" type="button">×</button></header>
+      <div id="mapMeta" class="map-meta"></div>
+      <div id="mapStageInfo" class="map-stage-info"></div>
+    </aside>
+
+    <aside id="battleLogShell" class="battle-log-shell">
       <header><strong>Battle Log</strong><button id="logClose" type="button">×</button></header>
       <div id="battleLog" class="battle-log"></div>
-    </div>
+    </aside>
   </section>
 
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
