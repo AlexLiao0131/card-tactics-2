@@ -1,157 +1,94 @@
-:root{
-  color-scheme:dark;
-  font-family:system-ui,-apple-system,"Noto Sans TC","Segoe UI",sans-serif;
-  background:#080d14;color:#edf2f7;
-}
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%;background:#080d14}
-body{min-height:100dvh;overflow:hidden}
-button,select,input{
-  font:inherit;color:#f4f7fb;background:#111a26;border:1px solid #596476;border-radius:9px;
-  padding:.65rem .8rem;
-}
-button{cursor:pointer;font-weight:750}
-button:hover:not(:disabled){border-color:#d6bd86;background:#182436}
-button:disabled{opacity:.35;cursor:not-allowed}
-.game-screen{display:none;min-height:100dvh}
-.game-screen.active{display:block}
-.boot-screen{
-  background:radial-gradient(circle at 50% 30%,#25354d,#080d14 62%);
-  place-items:center;
-}
-.boot-screen.active{display:grid}
-.boot-card{
-  width:min(560px,86vw);padding:2.2rem;border:1px solid #72664e;border-radius:18px;
-  background:#0c131ee8;text-align:center;box-shadow:0 20px 80px #0009;
-}
-.boot-card h1{font-family:Georgia,serif;letter-spacing:.12em;color:#f2e8d3}
+:root{font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color-scheme:dark;background:#0b1118;color:#edf2f7}
+html,body{margin:0;min-height:100%;background:#0b1118}body{min-height:100dvh}
+button,select,input{font:inherit;color:#fff;background:#10161e;border:1px solid #3b4655;border-radius:8px;padding:10px}
+button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-allowed}
+.game-screen{display:none;min-height:100dvh}.game-screen.active{display:block}
+.boot-screen.active{display:grid;place-items:center;background:#0b1118}.boot-card{padding:28px 38px;border:1px solid #716247;border-radius:14px;background:#091018;text-align:center}
+.boot-card h1{font-family:Georgia,serif;letter-spacing:.12em;color:#f2ead8}
 
-.title-screen,.menu-screen{
-  position:relative;overflow:hidden;
-  background:
-    radial-gradient(circle at 22% 48%,rgba(63,86,121,.78),transparent 28%),
-    linear-gradient(120deg,#0b1320 0%,#17263a 44%,#080c13 100%);
-}
-.title-screen:before,.menu-screen:before{
-  content:"";position:absolute;inset:0;
-  background:
-    linear-gradient(90deg,transparent 0 42%,rgba(2,7,13,.15) 55%,rgba(2,7,13,.86) 78%),
-    repeating-linear-gradient(115deg,transparent 0 54px,rgba(255,255,255,.012) 55px 56px);
-}
-.title-copy{
-  position:absolute;right:6vw;top:19vh;width:min(560px,45vw);text-align:center;
-  text-shadow:0 3px 18px #000;
-}
-.title-copy h1,.game-logo{
-  font-family:Georgia,serif;letter-spacing:.09em;color:#f2e8d3;margin:0;
-}
-.title-copy h1{font-size:clamp(38px,6vw,78px)}
-.title-copy p{letter-spacing:.24em;color:#c9c0ad}
-.press-start{
-  margin-top:10vh;width:100%;font-size:1.18rem;background:#09111ccf;border-color:#cdb98d;
-}
-.menu-panel{
-  position:absolute;right:5vw;top:8vh;width:min(500px,42vw);z-index:2;
-}
-.game-logo{font-size:clamp(34px,4vw,60px);text-align:center;margin-bottom:4vh}
-.game-logo small{display:block;font:12px system-ui;letter-spacing:.35em;color:#c9c0ad;margin-top:.45rem}
-.menu-panel>button{
-  width:100%;min-height:74px;margin:.3rem 0;text-align:left;padding:12px 26px;
-  font:650 25px Georgia,serif;background:#09111dd9;border-color:#9b8a67;
-}
-.menu-panel>button small{display:block;margin-top:.25rem;font:11px system-ui;letter-spacing:.16em;color:#b8b0a1}
+/* Restore the 1.0 shell. Local asset wins when copied to 2.0; old Pages is a fallback during migration. */
+.title-screen,.menu-screen{position:relative;overflow:hidden;background:
+ linear-gradient(90deg,rgba(3,8,16,.08),rgba(3,8,16,.12) 43%,rgba(3,8,16,.74)),
+ url("../assets/ui/title-cover.png") center/cover no-repeat,
+ url("https://alexliao0131.github.io/card-tactics/assets/ui/title-cover.png") center/cover no-repeat,
+ #101723}
+.title-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,8,16,.06),rgba(3,8,16,.08) 44%,rgba(3,8,16,.68))}
+.title-copy{position:absolute;right:5vw;top:16vh;width:min(520px,42vw);z-index:2;text-align:center;text-shadow:0 3px 14px #000}
+.title-copy h1,.game-logo{font-family:Georgia,serif;letter-spacing:.08em;color:#f3ead7;margin:0}.title-copy h1{font-size:clamp(38px,5vw,72px)}
+.title-copy p{font-size:clamp(14px,1.55vw,21px);letter-spacing:.18em;margin:.6rem 0 .15rem}.title-copy small{color:#a8a195;letter-spacing:.08em}
+.press-start{width:100%;margin-top:8vh;font-size:20px;background:rgba(8,15,25,.68);border-color:#cdb98d}
+.title-motto{position:absolute;left:3vw;bottom:5vh;z-index:2;font:24px/1.6 Georgia,serif;letter-spacing:.14em;text-shadow:0 3px 12px #000}.title-motto small{display:block;font-size:14px;letter-spacing:.1em}
+.menu-panel{position:absolute;right:5vw;top:7vh;width:min(480px,40vw);z-index:2}.game-logo{font-size:clamp(32px,4vw,58px);text-align:center;margin-bottom:4vh}.game-logo small{display:block;font:12px system-ui;letter-spacing:.35em;color:#c9c0ad}
+.menu-panel>button{width:100%;min-height:62px;text-align:left;padding:10px 22px;margin:3px 0;font:600 24px Georgia,serif;background:rgba(8,15,25,.80);border-color:#9d8a65}
+.menu-panel>button:hover{transform:translateX(-6px);border-color:#ffe1a1}.menu-panel button small{display:block;font:10px system-ui;letter-spacing:.2em;color:#c6bda9;margin-top:3px}
 
-.shell-screen{
-  padding:5vh 4vw;background:radial-gradient(circle at 20% 0,#263247,#090e16 58%);
-}
-.shell-panel{
-  max-width:760px;margin:8vh auto 0;padding:24px;border:1px solid #6d6048;border-radius:16px;
-  background:#09101aee;box-shadow:0 20px 70px #0008;
-}
-.shell-panel header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
-.shell-panel h2{margin:.1rem 0;font-size:2rem;font-family:Georgia,serif}
-.shell-panel p{color:#aeb7c3}
-.field-row{display:grid;grid-template-columns:120px 1fr;align-items:center;gap:1rem;margin:1rem 0}
-.primary-button{width:100%;min-height:58px;margin-top:1rem;border-color:#d3b66f;font-size:1.08rem}
-.compact-button{width:auto;white-space:nowrap}
-.minor-info{margin-top:1rem;color:#9da8b6;font-size:.85rem}
+/* Shell / deck screens */
+.shell-screen{background:radial-gradient(circle at 20% 0,#263247,#0a0f17 58%);padding:5vh 4vw}
+.shell-panel,.deck-builder{max-width:1200px;margin:auto;background:rgba(9,14,22,.94);border:1px solid #6d6048;border-radius:16px;padding:24px;box-shadow:0 20px 70px #0008}
+.shell-panel{max-width:760px;margin-top:7vh}.shell-panel header,.deck-builder header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}.shell-panel header button,.deck-builder header button{width:auto}
+.stage-card{width:100%;min-height:100px;text-align:left;border-color:#9d8557}.stage-card strong,.stage-card span{display:block}.stage-card strong{font-size:22px}.stage-card span{color:#aaa;margin-top:8px}
+.field-row{display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center;margin:18px 0}.minor-info{color:#aab4c0;font-size:12px}.primary-button{width:100%;min-height:56px;border-color:#d8b96e}
+.pack-tabs{display:flex;gap:8px;overflow-x:auto;padding:10px 0}.pack-tab{width:auto;white-space:nowrap}.pack-tab.active{border-color:#f0cf87;box-shadow:inset 0 0 0 1px #f0cf87}
+.deck-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px}.pack-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.collection-card{width:100%;min-height:120px;text-align:left;padding:14px;background:linear-gradient(145deg,#172333,#0b1119);border-color:#675a43}.collection-card strong,.collection-card span,.collection-card em{display:block}.collection-card span{font-size:11px;color:#aaa;margin-top:8px}.collection-card em{font-style:normal;color:#d9bd7d;margin-top:20px}.collection-card.chosen{border-color:#e3c06f;box-shadow:inset 0 0 24px #e3c06f18}
+.deck-quick-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}.deck-list{max-height:58vh;overflow:auto}.deck-row{width:100%;display:flex;justify-content:space-between;text-align:left;margin:3px 0}.deck-row span{color:#d7b96f}.deck-empty{padding:24px;color:#777;text-align:center}.deploy-button{width:100%;margin-top:14px;min-height:58px;font-size:20px;border-color:#e1bd6c}
+.shop-layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}.settings-panel label{display:grid;grid-template-columns:140px 1fr;gap:15px;align-items:center;margin:16px 0}
 
-.battle-screen{background:#080d14}
-.battle-topbar{
-  min-height:68px;display:grid;grid-template-columns:auto minmax(240px,1fr) auto;align-items:center;gap:1rem;
-  padding:.65rem 1rem;background:#0c131e;border-bottom:1px solid #303a49;
-}
-.battle-title{display:flex;flex-direction:column;gap:.25rem}
-.battle-title strong{font-family:Georgia,serif;letter-spacing:.08em}
-.battle-title span{font-size:.82rem;color:#aeb8c6}
-.core-strip{display:flex;gap:.65rem}
-.core-strip>div{
-  min-width:118px;padding:.38rem .62rem;border:1px solid #344154;border-radius:8px;background:#0a1019;
-}
-.core-strip span{display:block;font-size:.65rem;color:#8e9cad}
-.core-strip strong{display:block;margin-top:.12rem;font-size:.92rem}
+/* Full-screen battle surface, matching the 1.0 composition rather than the Phase 1 dashboard. */
+.battle-screen.active{position:relative;height:100dvh;min-height:0;overflow:hidden;background:#101820}
+#battleCanvas{position:absolute;inset:0;width:100%;height:100%;display:block;outline:none;touch-action:none;background:#111820}
+.battle-view-controls{position:absolute;z-index:80;right:10px;top:92px;display:flex;gap:4px;padding:4px;border:1px solid #5b6878;border-radius:8px;background:#081018d9;box-shadow:0 5px 20px #0008}
+.battle-view-controls button{width:auto;min-width:42px;padding:7px 9px;background:#0f1b28}.battle-view-controls #battleBack{min-width:92px}
+.reset-battle{position:absolute;right:10px;top:46px;z-index:80;width:auto;background:#081018d9}
+.turn-status{position:absolute;z-index:70;top:116px;left:50%;transform:translateX(-50%);width:auto;min-width:260px;padding:5px 10px;border-radius:7px;background:#081018cc;border:1px solid #2e3b4a;text-align:center;font-size:11px;font-weight:800}
+.map-meta{position:absolute;left:10px;bottom:6px;z-index:20;padding:5px 8px;border-radius:7px;background:#081018b8;color:#aab5c4;font-size:10px;pointer-events:none}
 
-.battle-layout{
-  height:calc(100dvh - 68px);display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:0;
-}
-.battle-main{min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto auto auto}
-.canvas-shell{position:relative;min-height:0;overflow:hidden;background:#0b121c}
-#battleCanvas{display:block;width:100%;height:100%;outline:none}
-.battle-floating-controls{
-  position:absolute;top:.65rem;right:.65rem;display:flex;gap:.35rem;pointer-events:auto;
-}
-.battle-floating-controls button{background:#0a111dcc;padding:.48rem .62rem}
-.map-meta{
-  position:absolute;left:.65rem;bottom:.65rem;padding:.35rem .55rem;border-radius:7px;
-  background:#050a11cc;color:#aeb9c8;font-size:.72rem;pointer-events:none;
-}
+/* Core HUD */
+.versus-core-hud{position:absolute;z-index:65;left:50%;top:58px;transform:translateX(-50%);width:min(760px,70vw);pointer-events:none}
+.versus-core-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 8px;border:1px solid #8c7447;border-radius:8px;background:#081018dd}
+.versus-core-side>div:first-child{display:flex;justify-content:space-between;gap:8px;font-size:10px}.versus-core-side.player strong{color:#5fb2ff}.versus-core-side.enemy strong{color:#ff6a7a}
+.core-track{height:5px;margin-top:3px;border-radius:99px;background:#331719;overflow:hidden}.core-track i{display:block;height:100%;width:100%}.player .core-track{background:#112841}.player .core-track i{background:#4da6ff}.enemy .core-track i{background:#ff5e72}
+.capture-summary{text-align:center;margin-top:3px;padding:3px 7px;border-radius:6px;background:#081018bd;color:#dfc67e;font-size:9px}
 
-.card-phase-panel{
-  display:none;padding:.7rem;background:#0b121c;border-top:1px solid #2b3645;
-}
-.card-phase-panel.active{display:block}
-.card-phase-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.55rem}
-.card-phase-summary{font-size:.78rem;color:#aab5c3}
-.hand{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.45rem}
-.hand-card{
-  min-height:78px;text-align:left;padding:.55rem .62rem;background:linear-gradient(145deg,#172333,#0b1119);
-  border-color:#675a43;
-}
-.hand-card strong,.hand-card small{display:block}
-.hand-card small{margin-top:.25rem;color:#aab4c0}
-.hand-card.active{outline:2px solid #e0c47a}
-.card-phase-actions{display:flex;gap:.45rem;margin-top:.55rem}
-.card-phase-actions button{width:auto}
+/* Old-style card hand and effects */
+.card-phase-panel{position:absolute;z-index:60;left:0;right:0;bottom:0;height:145px;pointer-events:none}
+.battle-resource,.battle-deck-count{position:absolute;bottom:10px;z-index:66;padding:7px 10px;border:1px solid #5b6572;border-radius:8px;background:#081018dd;font-weight:800;pointer-events:auto}
+.battle-resource{left:8px}.battle-deck-count{right:8px}
+.fan-hand{position:absolute;left:50%;bottom:-43px;transform:translateX(-50%);height:176px;width:min(780px,82vw);display:flex;justify-content:center;align-items:flex-end;pointer-events:none}
+.fan-card{--rot:calc(var(--fan)*4deg);width:112px;min-width:112px;height:154px;margin-left:-24px;padding:10px 8px 8px;border-radius:10px;border:2px solid #a98c58;background:linear-gradient(160deg,#26354a,#0c121b 70%);box-shadow:0 5px 18px #0009;transform:rotate(var(--rot));transform-origin:50% 120%;pointer-events:auto;position:relative;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease;overflow:hidden}
+.fan-card:first-child{margin-left:0}.fan-card:not(:disabled):hover,.fan-card.previewing{transform:translateY(-36px) rotate(0);z-index:12;box-shadow:0 15px 35px #000d}.fan-card:disabled{filter:grayscale(.75);opacity:.58}.fan-card.pending{outline:3px solid #70e38b}.fan-card.mulligan-selected{outline:3px solid #e2b45d;transform:translateY(-28px) rotate(0);z-index:12}
+.fan-cost{position:absolute;left:7px;top:7px;width:27px;height:27px;border-radius:50%;display:grid;place-items:center;background:#3566a8;border:1px solid #bcd6ff;font-weight:900;z-index:3}
+.fan-name{display:block;margin-top:35px;font-weight:900;font-size:14px;line-height:1.15;position:relative;z-index:3}.fan-card small{display:block;margin-top:8px;color:#b9c1cb;font-size:10px;position:relative;z-index:3}
+.fan-sheen{position:absolute;inset:-35%;background:linear-gradient(110deg,transparent 35%,rgba(255,255,255,.16) 49%,transparent 62%);transform:translateX(-65%) rotate(6deg);transition:transform .35s ease;pointer-events:none}.fan-card:hover .fan-sheen{transform:translateX(65%) rotate(6deg)}
+.fan-art{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.55}.fan-art:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 0 30%,#0b111ae8 78%)}
+.card-preview{position:absolute;left:50%;bottom:132px;transform:translateX(-50%);z-index:90;width:min(300px,84vw);padding:12px;border:1px solid #c6aa73;border-radius:14px;background:#081018f3;box-shadow:0 18px 60px #000c;pointer-events:auto;text-align:center}
+.preview-card-face{height:226px;border:2px solid #b89b66;border-radius:11px;background:linear-gradient(155deg,#344964,#111a26 70%);display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;padding:18px;overflow:hidden}.preview-card-face strong{font-size:22px;z-index:2}.preview-card-face small,.preview-card-face p{z-index:2}.preview-cost{position:absolute;left:10px;top:10px;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:#3566a8;font-size:20px;font-weight:900;z-index:3}.preview-art{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.55}.preview-art:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 0 40%,#0b111af5 84%)}.preview-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.card-targeting-bar,.mulligan-guide,.mulligan-actions,.card-phase-actions{position:absolute;left:50%;transform:translateX(-50%);z-index:95;display:flex;gap:7px;align-items:center;padding:6px 8px;border:1px solid #647487;border-radius:9px;background:#081018ed;pointer-events:auto}.card-targeting-bar{bottom:82px;width:min(560px,calc(100vw - 32px))}.mulligan-guide{bottom:126px}.mulligan-actions{bottom:90px}.card-phase-actions{right:8px;left:auto;transform:none;bottom:48px}
+.opponent-hand{position:fixed;z-index:62;left:50%;top:-50px;transform:translateX(-50%);height:145px;width:min(620px,78vw);display:flex;justify-content:center;align-items:flex-start;pointer-events:none}
+.opponent-card-back{--rot:calc(var(--fan)*-4deg);display:block;width:82px;height:116px;margin-left:-28px;border:2px solid #b88472;border-radius:9px;background:linear-gradient(145deg,#572c31,#171018 72%);box-shadow:0 5px 16px #0009;transform:rotate(var(--rot));transform-origin:50% -20%;position:relative}.opponent-card-back:first-child{margin-left:0}.opponent-card-back:after{content:"";position:absolute;inset:7px;border:1px solid #8f5c58;border-radius:5px;background:repeating-linear-gradient(45deg,#2a171b 0 5px,#3c2026 5px 10px)}
+.opponent-hand.enemy-thinking .opponent-card-back{animation:enemyBreathe 1.35s ease-in-out infinite alternate;animation-delay:calc(var(--i)*55ms)}.opponent-hand.enemy-draw .opponent-card-back:last-child{animation:enemyDraw .55s cubic-bezier(.2,.75,.2,1) both}.opponent-hand.enemy-select .opponent-card-back:last-child{animation:enemySelect .45s ease both}
+@keyframes enemyBreathe{from{transform:translateY(0) rotate(var(--rot))}to{transform:translateY(3px) rotate(var(--rot))}}@keyframes enemyDraw{0%{opacity:0;transform:translate(110px,-78px) rotate(18deg) scale(.78)}70%{opacity:1;transform:translate(5px,7px) rotate(0) scale(1.05)}100%{transform:rotate(var(--rot)) scale(1)}}@keyframes enemySelect{0%{transform:rotate(var(--rot))}55%{transform:translateY(28px) rotate(0) scale(1.06)}100%{transform:rotate(var(--rot))}}
+.opponent-meta{position:fixed;z-index:63;left:50%;top:56px;transform:translateX(-50%);padding:4px 8px;border:1px solid #684d4d;border-radius:7px;background:#120b0ed9;color:#e6caca;font-size:10px;font-weight:800}.opponent-message{position:fixed;z-index:64;left:50%;top:79px;transform:translateX(-50%);padding:4px 8px;border-radius:7px;background:#120b0ed9;color:#ffd2d2;font-size:10px;font-weight:800}
 
-.skillbar{
-  min-height:0;padding:.5rem .65rem;display:flex;flex-wrap:wrap;gap:.4rem;
-  background:#0c141f;border-top:1px solid #2b3645;
-}
-.skillbar:empty{display:none}
-.skillbar button{width:auto;min-width:118px}
-.turn-actions{display:flex;gap:.45rem;padding:.45rem .65rem;background:#09101a;border-top:1px solid #2b3645}
-.turn-actions button{width:auto}
+/* Tactical menu anchored to selected Babylon unit */
+.skillbar{position:fixed;z-index:120;left:min(calc(var(--menu-x,50vw) + 40px),calc(100vw - 124px));top:clamp(84px,calc(var(--menu-y,50vh) - 18px),calc(100vh - 278px));width:112px;max-height:260px;overflow:auto;padding:0;border:0;background:transparent;pointer-events:none;opacity:0}
+.skillbar:not(:empty){display:flex;flex-direction:column;gap:3px;padding:4px;border:1px solid #71849a;border-radius:9px;background:#09121bf2;box-shadow:0 8px 22px #000b;pointer-events:auto;opacity:1}.skillbar button{width:100%;min-height:33px;padding:6px 5px;border-color:#53677c;background:linear-gradient(180deg,#26394d,#142231);font-size:10px}.skillbar>strong{font-size:10px;padding:4px;color:#f1dda6}
 
-.battle-sidebar{
-  min-height:0;overflow:auto;border-left:1px solid #303a49;background:#0b111a;padding:.65rem;
-}
-.side-card{border:1px solid #283445;border-radius:10px;background:#0d1520;padding:.7rem;margin-bottom:.65rem}
-.side-card h3{margin:.05rem 0 .55rem;font-size:.88rem;letter-spacing:.05em}
-.inspection-panel{font-size:.78rem;line-height:1.45;white-space:pre-wrap;color:#c4cdd8}
-.battle-log{font-size:.72rem;line-height:1.45;display:flex;flex-direction:column-reverse;gap:.28rem}
-.log-row{padding:.3rem .35rem;border-left:2px solid #40526b;background:#0a1018}
-.log-row.BATTLE{border-color:#c79454}.log-row.DETAIL{border-color:#5a7190}.log-row.SYSTEM{border-color:#6c8a66}
+/* Unit/tile info and right rail */
+.battle-unit-hud{position:absolute;z-index:75;left:10px;bottom:152px;width:min(390px,42vw);max-height:28vh;padding:9px 11px;border:1px solid #647487;border-radius:10px;background:#081018e8;box-shadow:0 8px 24px #0008;opacity:0;pointer-events:none;transition:.14s ease}.battle-unit-hud.visible{opacity:1;pointer-events:auto}.battle-unit-hud-close{position:absolute;right:5px;top:5px;width:24px;height:24px;padding:0;border-radius:50%}.inspection-panel{white-space:pre-wrap;padding-right:24px;font-size:11px;line-height:1.45}
+.battle-right-rail{position:absolute;z-index:78;right:8px;bottom:112px;display:flex;flex-direction:column;gap:8px}.battle-right-rail button{width:66px;background:#081018d9}.battle-right-rail #endTurn{border-color:#8d7a52}
+.battle-log-shell{display:none;position:absolute;z-index:110;right:80px;bottom:108px;width:min(430px,70vw);max-height:48vh;border:1px solid #5b6878;border-radius:10px;background:#081018f4;box-shadow:0 14px 44px #000b}.battle-log-shell.active{display:block}.battle-log-shell header{display:flex;justify-content:space-between;align-items:center;padding:7px 9px;border-bottom:1px solid #2e3a48}.battle-log-shell header button{width:28px;height:28px;padding:0}.battle-log{max-height:38vh;overflow:auto;padding:8px;font-size:10px}.log-row{padding:4px 6px;border-left:2px solid #40526b;margin:3px 0;background:#0a1018}.log-row.BATTLE{border-color:#c79454}.log-row.DETAIL{border-color:#5a7190}.log-row.SYSTEM{border-color:#6c8a66}
 
-@media(max-width:900px){
-  body{overflow:auto}
-  .title-copy{left:6vw;right:6vw;top:auto;bottom:8vh;width:auto}
-  .menu-panel{left:6vw;right:6vw;top:auto;bottom:5vh;width:auto}
-  .game-logo{font-size:32px;margin-bottom:.8rem}
-  .menu-panel>button{min-height:52px;font-size:20px;padding:8px 16px}
-  .battle-topbar{grid-template-columns:auto 1fr}.core-strip{grid-column:1/-1}
-  .battle-layout{height:auto;min-height:calc(100dvh - 110px);grid-template-columns:1fr}
-  .canvas-shell{height:56dvh;min-height:420px}
-  .battle-sidebar{border-left:0;border-top:1px solid #303a49;max-height:34dvh}
-  .hand{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .field-row{grid-template-columns:1fr}
+@media(max-width:700px){
+ .title-copy{left:5vw;right:5vw;top:auto;bottom:7vh;width:auto}.title-motto{display:none}.title-copy h1{font-size:38px}.press-start{margin-top:4vh}
+ .menu-panel{left:6vw;right:6vw;top:auto;bottom:4vh;width:auto}.game-logo{font-size:32px;margin-bottom:8px}.menu-panel>button{min-height:50px;font-size:19px;padding:7px 16px}
+ .shell-screen{padding:18px 10px}.shell-panel{margin-top:4vh}.deck-layout,.shop-layout{grid-template-columns:1fr}.pack-cards{grid-template-columns:1fr 1fr}.deck-list{max-height:220px}
+ .battle-view-controls{top:73px;right:5px}.battle-view-controls #battleBack{min-width:72px}.battle-view-controls button{font-size:10px;padding:6px;min-width:34px}.reset-battle{top:39px;right:5px;font-size:10px;padding:6px}
+ .versus-core-hud{top:35px;width:min(560px,72vw)}.turn-status{top:105px;max-width:58vw;font-size:10px}
+ .card-phase-panel{height:134px}.fan-hand{width:94vw;bottom:-47px}.fan-card{width:88px;min-width:88px;height:132px;margin-left:-30px;padding:7px 5px}.fan-name{font-size:12px}.fan-card small{font-size:9px}
+ .battle-resource,.battle-deck-count{bottom:5px;font-size:11px;padding:5px 7px}.card-phase-actions{right:5px;bottom:36px}.card-phase-actions button{font-size:10px;padding:6px}
+ .battle-unit-hud{left:5px;bottom:137px;width:48vw;max-height:20vh;font-size:10px}.battle-right-rail{right:5px;bottom:100px}.battle-right-rail button{width:62px;font-size:10px;padding:7px}
+ .skillbar{width:104px;max-height:245px}.skillbar button{font-size:10px;padding:5px;min-height:32px}.field-row{grid-template-columns:1fr}
+ .opponent-hand{top:-42px;width:92vw;height:132px}.opponent-card-back{width:66px;height:94px;margin-left:-25px}.opponent-meta{top:44px;font-size:9px}.opponent-message{top:66px;font-size:9px}
 }
