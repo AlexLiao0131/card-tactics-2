@@ -1,0 +1,1 @@
+export class GridPicker{constructor(scene,canvas,onTile){this.scene=scene;this.canvas=canvas;this.onTile=onTile;scene.onPointerObservable.add(info=>{if(info.type!==BABYLON.PointerEventTypes.POINTERPICK)return;const pick=info.pickInfo,meta=pick?.pickedMesh?.metadata;if(pick?.hit&&meta?.kind==="tile")onTile(meta.x,meta.y)})}}
