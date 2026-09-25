@@ -55,6 +55,7 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
 
 /* Old-style card hand and effects */
 .card-phase-panel{position:absolute;z-index:60;left:0;right:0;bottom:0;height:145px;pointer-events:none}
+.card-phase-panel.battle-pass-through,.card-phase-panel.battle-pass-through *{pointer-events:none!important}
 .battle-resource,.battle-deck-count{position:absolute;bottom:10px;z-index:66;padding:7px 10px;border:1px solid #5b6572;border-radius:8px;background:#081018dd;font-weight:800;pointer-events:auto}
 .battle-resource{left:8px}.battle-deck-count{right:8px}
 .fan-hand{position:absolute;left:50%;bottom:-43px;transform:translateX(-50%);height:176px;width:min(780px,82vw);display:flex;justify-content:center;align-items:flex-end;pointer-events:none}
