@@ -37,7 +37,7 @@ function create(ctx){
     if(cardState.lastExpiredTurnCards?.length)ctx.pushLog(`TURN 卡到期｜${cardState.lastExpiredTurnCards.length} 張離開本回合卡區。`,"DETAIL");if(drawn.length)ctx.pushLog(`抽牌 ${drawn.length} 張。`,"SYSTEM");ctx.setPendingCard(null);
     if(!maybeAutoEnd()){ctx.render();ctx.emitState();}
   }
-  function end({automatic=false}={}){const s=state();if(s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.resetActions?.(TEAM.PLAYER);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return true;}
+  function end({automatic=false}={}){const s=state();if(s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM");if(ctx.maybeAutoEndPlayerTurn?.())return true;ctx.render();ctx.emitState();return true;}
   function select(cardId){
     const s=state();if(s.phase!==PHASE.CARD)return false;const card=CardDatabase.get(cardId);if(!canResolve(card))return false;
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
@@ -69,7 +69,7 @@ function create(ctx){
     }
     ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
   }
-  function deployAt(tile){const s=state(),card=ctx.getPendingCard();if(!card||s.phase!==PHASE.CARD)return false;if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return false;const unit=ctx.createUnit(ctx.nextUnitId(),TEAM.PLAYER,card.characterId,tile.x,tile.y);unit.cardId=card.id;unit.deployedRound=s.round;if(!CardPhaseEngine.commit(s.cardState,card))return false;s.units.push(unit);ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
+  function deployAt(tile){const s=state(),card=ctx.getPendingCard();if(!card||s.phase!==PHASE.CARD)return false;if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return false;const unit=ctx.createUnit(ctx.nextUnitId(),TEAM.PLAYER,card.characterId,tile.x,tile.y);unit.cardId=card.id;unit.deployedRound=s.round;unit.moved=true;unit.acted=true;unit.waited=true;if(!CardPhaseEngine.commit(s.cardState,card))return false;s.units.push(unit);ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶。`,"SYSTEM");ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
   function cancel(){if(!ctx.getPendingCard())return false;ctx.setPendingCard(null);if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
   return{begin,end,select,resolveAt,deployAt,cancel,canResolve,hasPlayableCard,maybeAutoEnd};
 }

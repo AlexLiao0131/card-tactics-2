@@ -14,6 +14,8 @@ export class CardHandUI{
   render(){
     const r=this.runtime;if(!r)return;const state=r.getCardState(),phase=r.getPhase(),pending=r.getPendingCard(),enemy=r.getEnemyCardState?.(),view=r.getEnemyPresentation?.();
     if(!state){this.host.innerHTML="";return}
+    this.host.classList.toggle("battle-pass-through",phase!=="CARD_PHASE");
+    if(phase!=="CARD_PHASE")this.previewId=null;
     const cards=globalThis.CardDatabase.list(state.zones.hand),opening=phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone;
     if(pending)this.previewId=null;if(this.previewId&&!cards.some(c=>c.id===this.previewId))this.previewId=null;
     const preview=this.previewId?globalThis.CardDatabase.get(this.previewId):null,targeting=!!pending;
@@ -27,7 +29,7 @@ export class CardHandUI{
       (opening?`<div class="mulligan-guide"><strong>起手換牌</strong><span>選擇不要的牌；整場僅一次。</span></div><div class="mulligan-actions"><button id="confirmMulligan" ${this.mulligan.size?"":"disabled"}>換掉 ${this.mulligan.size} 張</button><button id="keepOpeningHand">全部保留</button></div>`:"")+
       (!opening&&!targeting&&preview?`<div class="card-preview"><div class="preview-card-face">${art?`<span class="preview-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="preview-cost">${preview.cost}</span><strong>${esc(preview.name)}</strong><small>${esc(preview.type)}</small><p>${esc(describe(preview))}</p></div><div class="preview-actions"><button id="confirmCardUse">使用</button><button id="cancelCardPreview">取消</button></div></div>`:"")+
       (targeting?`<div class="card-targeting-bar"><button id="cancelCardTarget">← 取消</button><strong>${esc(pending.name)}</strong><span>${pending.type==="CHARACTER"?"請選擇出生區中的部署格":"請在戰場選擇目標"}</span></div>`:"")+
-      (!opening&&!targeting?`<div class="card-phase-actions"><button id="endCardPhase" ${phase==="CARD_PHASE"?"":"disabled"}>結束卡牌階段</button></div>`:"");
+      (!opening&&!targeting&&phase==="CARD_PHASE"?`<div class="card-phase-actions"><button id="endCardPhase">結束卡牌階段</button></div>`:"");
     this.host.querySelectorAll("[data-card]").forEach(btn=>btn.onclick=()=>{const id=btn.dataset.card;if(opening){this.mulligan.has(id)?this.mulligan.delete(id):this.mulligan.add(id);this.render()}else{this.previewId=id;this.render()}});
     this.host.querySelector("#confirmMulligan")?.addEventListener("click",()=>{globalThis.CardPhaseEngine.mulligan(state,[...this.mulligan]);this.mulligan.clear();if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"))});
     this.host.querySelector("#keepOpeningHand")?.addEventListener("click",()=>{globalThis.CardPhaseEngine.keepOpeningHand(state);this.mulligan.clear();if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"))});

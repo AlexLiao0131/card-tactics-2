@@ -10,76 +10,31 @@ export class BattleCamera{
   constructor(scene,canvas,state){
     this.scene=scene;this.canvas=canvas;this.projection="ISO";this.quarterTurns=0;this.zoom=1;
     this.mapKey="";this.baseTarget=BABYLON.Vector3.Zero();this.panOffset=BABYLON.Vector3.Zero();
-    this.activePointers=new Map();this.gesture=null;this.suppressTap=false;
     this.camera=new BABYLON.ArcRotateCamera("battleCamera",-Math.PI/4,Math.PI/3.2,24,BABYLON.Vector3.Zero(),scene);
     this.camera.mode=BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
     this.camera.lowerRadiusLimit=this.camera.upperRadiusLimit=24;
     this.camera.inputs.clear();
-    this.installGestures();
     this.sync(state);
   }
 
-  installGestures(){
-    const down=e=>{
-      if(e.button!=null&&e.button!==0&&e.pointerType!=="touch")return;
-      this.activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-      this.canvas.setPointerCapture?.(e.pointerId);
-      if(this.activePointers.size>=2){
-        const pts=[...this.activePointers.values()];
-        this.gesture={type:"PINCH",distance:Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y),zoom:this.zoom};
-        this.suppressTap=true;
-      }else{
-        this.gesture={type:"PAN",id:e.pointerId,x:e.clientX,y:e.clientY,moved:false};
-      }
-    };
-    const move=e=>{
-      const prev=this.activePointers.get(e.pointerId);if(!prev)return;
-      this.activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-      if(this.activePointers.size>=2){
-        const pts=[...this.activePointers.values()],d=Math.max(1,Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y));
-        if(this.gesture?.type!=="PINCH")this.gesture={type:"PINCH",distance:d,zoom:this.zoom};
-        this.zoom=clamp(this.gesture.zoom*d/Math.max(1,this.gesture.distance),.38,2.8);this.suppressTap=true;this.apply();
-        return;
-      }
-      if(this.gesture?.type!=="PAN"||this.gesture.id!==e.pointerId)return;
-      const dx=e.clientX-this.gesture.x,dy=e.clientY-this.gesture.y;
-      if(Math.abs(dx)+Math.abs(dy)>4){this.gesture.moved=true;this.suppressTap=true}
-      if(this.gesture.moved){this.panPixels(dx,dy);this.gesture.x=e.clientX;this.gesture.y=e.clientY;this.apply()}
-    };
-    const up=e=>{
-      const g=this.gesture;
-      this.activePointers.delete(e.pointerId);
-      try{this.canvas.releasePointerCapture?.(e.pointerId)}catch(_){}
-      if(this.activePointers.size===1){
-        const [id,p]=[...this.activePointers.entries()][0];
-        this.gesture={type:"PAN",id,x:p.x,y:p.y,moved:true};this.suppressTap=true;
-      }else if(this.activePointers.size===0){
-        this.gesture=null;
-        if(g?.moved||g?.type==="PINCH")setTimeout(()=>{this.suppressTap=false},0);
-      }
-    };
-    const wheel=e=>{
-      e.preventDefault();
-      const factor=e.deltaY>0?.9:1.1;
-      this.zoom=clamp(this.zoom*factor,.38,2.8);this.suppressTap=true;this.apply();
-      setTimeout(()=>{this.suppressTap=false},0);
-    };
-    this.canvas.addEventListener("pointerdown",down);
-    this.canvas.addEventListener("pointermove",move);
-    this.canvas.addEventListener("pointerup",up);
-    this.canvas.addEventListener("pointercancel",up);
-    this.canvas.addEventListener("wheel",wheel,{passive:false});
-  }
-
-  panPixels(dx,dy){
+  panByPixels(dx,dy){
     const w=Math.max(1,this.camera.getEngine().getRenderWidth()),h=Math.max(1,this.camera.getEngine().getRenderHeight());
     const worldW=(this.camera.orthoRight-this.camera.orthoLeft),worldH=(this.camera.orthoTop-this.camera.orthoBottom);
     const sx=worldW/w,sy=worldH/h,a=this.camera.alpha;
     const right=new BABYLON.Vector3(Math.cos(a),0,-Math.sin(a));
     const forward=new BABYLON.Vector3(Math.sin(a),0,Math.cos(a));
-    this.panOffset.addInPlace(right.scale(-dx*sx));
-    this.panOffset.addInPlace(forward.scale(-dy*sy));
+    this.panOffset.addInPlace(right.scale(-Number(dx||0)*sx));
+    this.panOffset.addInPlace(forward.scale(-Number(dy||0)*sy));
+    this.apply();
   }
+
+  setZoom(value){
+    const next=clamp(Number(value)||1,.38,2.8);
+    if(Math.abs(next-this.zoom)<.0001)return false;
+    this.zoom=next;this.apply();this.emitView();return true;
+  }
+
+  zoomBy(factor){return this.setZoom(this.zoom*Number(factor||1));}
 
   sync(state){
     const info=mapInfo(state),key=`${info.id}|${info.width}x${info.height}`;
@@ -109,6 +64,5 @@ export class BattleCamera{
   toggleProjection(){return this.setProjection(this.projection==="ISO"?"TOP":"ISO")}
   resetView(){this.panOffset=BABYLON.Vector3.Zero();this.zoom=1;this.apply();this.emitView()}
   getViewState(){return{projection:this.projection,rotation:this.quarterTurns,zoom:this.zoom}}
-  consumeTapSuppression(){if(!this.suppressTap)return false;return true}
   emitView(){window.dispatchEvent(new CustomEvent("cardtactics:view-change",{detail:this.getViewState()}))}
 }

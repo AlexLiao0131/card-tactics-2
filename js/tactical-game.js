@@ -842,7 +842,7 @@
   if(!window.TacticalActionController?.create)throw new Error("TacticalActionController is not loaded.");
   const actionController=window.TacticalActionController.create(battleContext);
   const {
-    attackPlanForTarget,targetableEntities,approachTargetForAttack,resolveDirectTargetAttack,
+    attackPlanForTarget,targetableEntities,targetRangeTiles,approachTargetForAttack,resolveDirectTargetAttack,
     mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
     backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
     confirmEngagement,executeEngagement
@@ -851,7 +851,7 @@
   presentationController=window.BattlePresentationController.create({
     TEAM,PHASE,
     state:()=>({map,units,stage,round,phase,mode,selected,selectedSkill,environmentState,inspectedTile,cores,pendingCard,enemyCardState,renderRevision}),
-    targetType,targetableEntities,mapTargetTiles,unitAt,coreAt,effectiveSkill
+    targetType,targetableEntities,targetRangeTiles,mapTargetTiles,unitAt,coreAt,effectiveSkill
   });
   if(!window.BattleObjectiveController?.create)throw new Error("BattleObjectiveController is not loaded.");
   objectiveController=window.BattleObjectiveController.create({
@@ -887,7 +887,7 @@
     setPhase:value=>{phase=value;},
     getPendingCard:()=>pendingCard,
     setPendingCard:value=>{pendingCard=value;},
-    clearSelection,pushLog,render,emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),resetActions,
+    clearSelection,pushLog,render,emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),resetActions,maybeAutoEndPlayerTurn,
     unitAt,createUnit:(id,team,characterId,x,y)=>createUnit(id,team,characterId,x,y),
     nextUnitId:()=>`pc${unitSerial++}`,
     aoeTiles,applyForcedMovement,damageUnitFlat,applyEnvironmentHazardToUnit,resolveEnvironmentEvents,

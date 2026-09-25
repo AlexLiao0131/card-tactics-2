@@ -6,7 +6,8 @@ export class HighlightRenderer{
     this.scene=scene;this.dynamic=new Map();this.areas=new Map();
     this.materials={
       reachable:this.mat("reachable",new BABYLON.Color3(.18,.55,1),.35),
-      attackable:this.mat("attackable",new BABYLON.Color3(1,.25,.22),.38),
+      targetRange:this.mat("target-range",new BABYLON.Color3(1,.28,.22),.18),
+      attackable:this.mat("attackable",new BABYLON.Color3(1,.25,.22),.48),
       deployable:this.mat("deployable",new BABYLON.Color3(.25,.92,.48),.38),
       inspected:this.mat("inspected",new BABYLON.Color3(1,.78,.25),.42),
       PLAYER:this.mat("deploy-area-player",new BABYLON.Color3(.20,.48,.96),.18),
@@ -15,7 +16,7 @@ export class HighlightRenderer{
     };
   }
   mat(name,color,alpha){const m=new BABYLON.StandardMaterial(name,this.scene);m.diffuseColor=color;m.emissiveColor=color;m.alpha=alpha;m.disableLighting=true;return m}
-  tileMesh(name,tile,height=.026,scale=.91){
+  tileMesh(name,tile,height=.026,scale=.94){
     const mesh=BABYLON.MeshBuilder.CreateBox(name,{width:TILE_SIZE*scale,depth:TILE_SIZE*scale,height},this.scene);mesh.isPickable=false;return mesh;
   }
   sync(state){
@@ -28,10 +29,10 @@ export class HighlightRenderer{
         area.position.set(tile.x*TILE_SIZE,surface*ELEVATION_HEIGHT+.032,tile.y*TILE_SIZE);
         area.material=this.materials[areaOwner]||this.materials.NEUTRAL;
       }
-      const kind=tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.reachable?"reachable":null;
+      const kind=tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
       if(kind){
         dynAlive.add(key);let mesh=this.dynamic.get(key);
-        if(!mesh){mesh=this.tileMesh(`hl-${key}`,tile,.035,.88);this.dynamic.set(key,mesh)}
+        if(!mesh){mesh=this.tileMesh(`hl-${key}`,tile,.035,.985);this.dynamic.set(key,mesh)}
         mesh.position.set(tile.x*TILE_SIZE,surface*ELEVATION_HEIGHT+.058,tile.y*TILE_SIZE);mesh.material=this.materials[kind];
       }
     }

@@ -32,6 +32,34 @@
       return ctx.combatTargets(unit).filter(target=>attackPlanForTarget(unit,target,skill));
     }
 
+    function targetRangeTiles(unit,skill){
+      const {map,units,environmentState}=state();
+      if(!unit?.alive||unit.acted||!skill)return[];
+      if(ctx.targetType(skill)!=="SINGLE")return mapTargetTiles(unit,skill);
+      if(skill.target==="SELF"){
+        const own=TacticalEngine.tile(map,unit.x,unit.y);
+        return own?[own]:[];
+      }
+      const origins=[{x:unit.x,y:unit.y}];
+      if(!unit.moved&&!skill.approach){
+        TacticalEngine.reachable(map,units,unit).forEach((cost,key)=>{
+          const[x,y]=key.split(",").map(Number);origins.push({x,y});
+        });
+      }
+      const range=TacticalEngine.range(skill)||{min:0,max:0},seen=new Set(),out=[];
+      for(const origin of origins){
+        const probe={...unit,x:origin.x,y:origin.y};
+        for(const tile of map.tiles){
+          const key=`${tile.x},${tile.y}`;if(seen.has(key))continue;
+          const distance=Math.abs(origin.x-tile.x)+Math.abs(origin.y-tile.y);
+          if(distance<Number(range.min||0)||distance>Number(range.max||0))continue;
+          if(!TacticalEngine.hasLineOfSight(map,probe,tile,skill,environmentState))continue;
+          seen.add(key);out.push(tile);
+        }
+      }
+      return out;
+    }
+
     function beginPendingMove(unit){
       pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};
     }
@@ -291,7 +319,7 @@
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,
-      attackPlanForTarget,targetableEntities,approachTargetForAttack,resolveDirectTargetAttack,
+      attackPlanForTarget,targetableEntities,targetRangeTiles,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
       selectedSupportActions,confirmEngagement,executeEngagement

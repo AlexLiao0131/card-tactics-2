@@ -5,6 +5,7 @@ import { UnitRenderer } from "./unit-renderer.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { HighlightRenderer } from "./highlight-renderer.js";
 import { GridPicker } from "./grid-picker.js";
+import { BattleInputController } from "./battle-input-controller.js";
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 
 export class BabylonRenderer{
@@ -17,7 +18,8 @@ export class BabylonRenderer{
     this.camera=new BattleCamera(this.scene,canvas,state);
     this.terrain=new TerrainRenderer(this.scene);this.water=new WaterRenderer(this.scene);this.objectives=new ObjectiveRenderer(this.scene);
     this.highlights=new HighlightRenderer(this.scene);this.units=new UnitRenderer(this.scene);
-    this.picker=new GridPicker(this.scene,canvas,onTilePicked??(()=>{}),this.camera);
+    this.picker=new GridPicker(this.scene,canvas);
+    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
     this.engine.runRenderLoop(()=>this.scene.render());
     window.addEventListener("resize",()=>this.resize());
   }
