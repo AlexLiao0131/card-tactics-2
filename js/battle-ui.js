@@ -6,7 +6,7 @@ export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
-    this.logPanel=q("battleLog");this.endTurn=q("endTurn");
+    this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
   }
 
   bind(runtime,renderer){
@@ -26,12 +26,20 @@ export class BattleUI{
     q("mapClose").onclick=()=>this.mapShell.classList.remove("open");
 
     q("hudToggle").onclick=()=>{
-      const hud=q("versusCoreHud"),open=hud.classList.toggle("open");
-      hud.setAttribute("aria-hidden",String(!open));
+      const hud=q("versusCoreHud");
+      if(!hud.classList.contains("available"))return;
+      const open=hud.classList.toggle("open");
       q("hudToggle").classList.toggle("active",open);
     };
 
-    q("logToggle").onclick=()=>this.togglePanel(this.logShell,"active");
+    this.logTabs?.querySelectorAll("[data-log-type]").forEach(button=>{
+      button.onclick=()=>{
+        this.runtime?.setBattleLogTab?.(button.dataset.logType);
+        this.renderLog();
+      };
+    });
+
+    q("logToggle").onclick=()=>{this.togglePanel(this.logShell,"active");this.renderLog();};
     q("logClose").onclick=()=>this.logShell.classList.remove("active");
 
     window.TacticalUIController=Object.freeze({
@@ -60,6 +68,8 @@ export class BattleUI{
       if(panel!==this.context)this.context.classList.remove("open");
       if(panel!==this.mapShell)this.mapShell.classList.remove("open");
       if(panel!==this.logShell)this.logShell.classList.remove("active");
+      q("versusCoreHud")?.classList.remove("open");
+      q("hudToggle")?.classList.remove("active");
     }
   }
 
@@ -67,6 +77,11 @@ export class BattleUI{
     if(!this.runtime)return;
     const snapshot=this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
     const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");
+    const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
+    coreHud.classList.toggle("available",hasCores);
+    coreHud.setAttribute("aria-hidden",String(!hasCores));
+    q("hudToggle").disabled=!hasCores;
+    if(!hasCores){coreHud.classList.remove("open");q("hudToggle").classList.remove("active");}
     q("playerCoreHp").textContent=player?`${player.hp}/${player.maxHp}`:"—";
     q("enemyCoreHp").textContent=enemy?`${enemy.hp}/${enemy.maxHp}`:"—";
     q("playerCoreBar").style.width=player?`${Math.max(0,Math.min(100,player.hp/Math.max(1,player.maxHp)*100))}%`:"0%";
@@ -117,7 +132,10 @@ export class BattleUI{
     this.context.classList.toggle("open",!!open);
     this.context.setAttribute("aria-hidden",String(!open));
     q("infoToggle").classList.toggle("active",!!open);
-    if(open){this.mapShell.classList.remove("open");this.logShell.classList.remove("active")}
+    if(open){
+      this.mapShell.classList.remove("open");this.logShell.classList.remove("active");
+      q("versusCoreHud")?.classList.remove("open");q("hudToggle")?.classList.remove("active");
+    }
     this.renderContext();
     return !!open;
   }
@@ -169,7 +187,16 @@ export class BattleUI{
 
   renderLog(){
     const model=this.runtime?.getBattleLog?.();if(!model)return;
-    this.logPanel.innerHTML=(model.entries||[]).slice(-80).reverse().map(entry=>`<div class="log-row ${esc(entry.type)}">${esc(entry.text)}</div>`).join("");
+    this.logTabs?.querySelectorAll("[data-log-type]").forEach(button=>{
+      const active=button.dataset.logType===model.active;
+      button.classList.toggle("active",active);
+      button.setAttribute("aria-selected",String(active));
+    });
+    const entries=model.entries||[];
+    this.logPanel.innerHTML=entries.length
+      ?entries.map(entry=>`<div class="log-row ${esc(entry.type)}">${esc(entry.text)}</div>`).join("")
+      :`<div class="log-empty">（目前沒有${model.active==="BATTLE"?"戰鬥":model.active==="SYSTEM"?"系統":"詳細"}紀錄）</div>`;
+    if(this.logShell.classList.contains("active"))this.logPanel.scrollTop=this.logPanel.scrollHeight;
   }
 
   renderEngagement(){
