@@ -426,7 +426,7 @@
     const tile=TacticalEngine.tile(map,Number(x),Number(y));
     if(!tile)return false;
     const reachable=
-      selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"
+      selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&(mode==="command"||mode==="move")
         ?TacticalEngine.reachable(map,units,selected)
         :new Map();
     const targets=
@@ -482,19 +482,21 @@
       return;
     }
 
-    if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){
+    if(selected&&!selected.acted&&(mode==="command"||mode==="move")&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){
       commandPanelCollapsed=true;
       const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);
       beginPendingMove(selected);
       const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});
       selected.moved=true;
       if(!moveResult.completed)commitPendingMove(selected);
+      mode="command";
+      commandPanelCollapsed=false;
       pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);
       render();
       return;
     }
 
-    if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;
+    if(selected&&!selected.acted&&(mode==="command"||mode==="move")&&!unit)commandPanelCollapsed=true;
     render();
   }
 
@@ -714,6 +716,11 @@
       }
       addCommandPanelClose();
       if(!selected.moved){
+        addActionButton("移動",()=>{
+          mode="move";
+          commandPanelCollapsed=false;
+          render();
+        });
       }else if(actionController.pendingMove()?.unitId===selected.id){
         addActionButton("取消移動",cancelPendingMove);
       }
@@ -752,6 +759,15 @@
       return;
     }
 
+
+    if(mode==="move"){
+      addActionButton("取消移動選擇",()=>{
+        mode="command";
+        commandPanelCollapsed=false;
+        render();
+      });
+      return;
+    }
 
     const allSkills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills);
     const isSpecial=skill=>skill.category!=="ATTACK";
