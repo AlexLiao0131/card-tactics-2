@@ -45,12 +45,13 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
 .map-meta{font-size:11px;color:#d8e1ec;line-height:1.5}
 
 /* Core HUD is on-demand through the compact HUD button. */
-.versus-core-hud{position:absolute;z-index:65;left:50%;top:58px;transform:translate(-50%,-8px);width:min(760px,70vw);pointer-events:none;opacity:0;visibility:hidden;transition:.14s ease}
-.versus-core-hud.open{transform:translate(-50%,0);opacity:1;visibility:visible}
+.versus-core-hud{display:none;position:absolute;z-index:65;left:50%;top:58px;transform:translateX(-50%);width:min(760px,70vw);pointer-events:none}
+.versus-core-hud.available{display:block}
+.versus-core-hud.open{display:block}
 .versus-core-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 8px;border:1px solid #8c7447;border-radius:8px;background:#081018dd}
 .versus-core-side>div:first-child{display:flex;justify-content:space-between;gap:8px;font-size:10px}.versus-core-side.player strong{color:#5fb2ff}.versus-core-side.enemy strong{color:#ff6a7a}
 .core-track{height:5px;margin-top:3px;border-radius:99px;background:#331719;overflow:hidden}.core-track i{display:block;height:100%;width:100%}.player .core-track{background:#112841}.player .core-track i{background:#4da6ff}.enemy .core-track i{background:#ff5e72}
-.capture-summary{text-align:center;margin-top:3px;padding:3px 7px;border-radius:6px;background:#081018bd;color:#dfc67e;font-size:9px}
+.capture-summary{display:none;text-align:center;margin-top:3px;padding:3px 7px;border-radius:6px;background:#081018bd;color:#dfc67e;font-size:9px}.versus-core-hud.open .capture-summary{display:block}
 
 /* Old-style card hand and effects */
 .card-phase-panel{position:absolute;z-index:60;left:0;right:0;bottom:0;height:145px;pointer-events:none}
@@ -115,7 +116,10 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
 .context-skill strong,.context-skill small{display:block}.context-skill small{margin-top:2px;color:#aab6c4}
 .context-pre{white-space:pre-wrap;margin:8px 0 0;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:#c8d2dd}
 .map-info-shell{padding-bottom:10px}.map-info-shell .map-meta,.map-stage-info{padding:8px 10px}.map-stage-info{border-top:1px solid #263342;color:#c1cad5;font-size:10px;white-space:pre-wrap}
-.battle-log{max-height:42vh;overflow:auto;padding:8px;font-size:10px}.log-row{padding:4px 6px;border-left:2px solid #40526b;margin:3px 0;background:#0a1018}.log-row.BATTLE{border-color:#c79454}.log-row.DETAIL{border-color:#5a7190}.log-row.SYSTEM{border-color:#6c8a66}
+.battle-log-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:7px;border-bottom:1px solid #2e3a48;background:#081018f0}
+.battle-log-tabs button{min-height:32px;padding:5px 7px;font-size:10px;background:#0d1722}
+.battle-log-tabs button.active{border-color:#d7bd7a;background:#223044;color:#fff0c5}
+.battle-log{max-height:38vh;overflow:auto;padding:8px;font-size:10px}.log-row{padding:4px 6px;border-left:2px solid #40526b;margin:3px 0;background:#0a1018}.log-row.BATTLE{border-color:#c79454}.log-row.DETAIL{border-color:#5a7190}.log-row.SYSTEM{border-color:#6c8a66}.log-empty{padding:14px;color:#8995a4;text-align:center}
 
 @media(max-width:700px){
  .title-copy{left:5vw;right:5vw;top:auto;bottom:7vh;width:auto}.title-motto{display:none}.title-copy h1{font-size:38px}.press-start{margin-top:4vh}
