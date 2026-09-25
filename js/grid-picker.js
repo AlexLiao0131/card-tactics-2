@@ -1,1 +1,11 @@
-export class GridPicker{constructor(scene,canvas,onTile){this.scene=scene;this.canvas=canvas;this.onTile=onTile;scene.onPointerObservable.add(info=>{if(info.type!==BABYLON.PointerEventTypes.POINTERPICK)return;const pick=info.pickInfo,meta=pick?.pickedMesh?.metadata;if(pick?.hit&&meta?.kind==="tile")onTile(meta.x,meta.y)})}}
+export class GridPicker{
+  constructor(scene,canvas,onTile,gestureGuard=null){
+    this.scene=scene;this.canvas=canvas;this.onTile=onTile;this.gestureGuard=gestureGuard;
+    canvas.addEventListener("pointerup",e=>{
+      if(this.gestureGuard?.consumeTapSuppression?.())return;
+      const pick=scene.pick(scene.pointerX,scene.pointerY,mesh=>mesh?.metadata?.kind==="tile");
+      const meta=pick?.pickedMesh?.metadata;
+      if(pick?.hit&&meta?.kind==="tile")onTile(meta.x,meta.y);
+    });
+  }
+}
