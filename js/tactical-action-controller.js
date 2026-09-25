@@ -62,7 +62,7 @@
       ctx.damageCore(target.core.owner,raw,`${unit.character.name}【${skill.name}】`);
       commitPendingMove(unit);
       unit.moved=true;unit.acted=true;unit.waited=true;
-      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");ctx.render();return true;
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
     }
 
     function mapTargetTiles(attacker,skill){
@@ -130,7 +130,8 @@
       }
       if(ctx.checkMatchEnd()){ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.render();return true;}
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
-      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");ctx.render();
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
+      if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();
       return true;
     }
 
@@ -161,7 +162,7 @@
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
       if(ctx.checkMatchEnd()){ctx.render();return true;}
-      ctx.render();return true;
+      if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
     }
 
     function executeEffectSkill(attacker,target,skill){
@@ -283,8 +284,7 @@
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.clearEngagement();ctx.setMode("inspect");
       if(ctx.checkMatchEnd()){ctx.render();return;}
-      if(ctx.allFinished(ctx.TEAM.PLAYER))ctx.pushLog("我方所有存活角色皆已完成行動，可結束回合。");
-      ctx.render();
+      if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();
     }
 
     function reset(){pendingMove=null;}

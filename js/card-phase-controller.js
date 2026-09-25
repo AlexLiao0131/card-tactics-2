@@ -3,20 +3,47 @@
 function create(ctx){
   const {TEAM,PHASE}=ctx;const state=()=>ctx.state();
   function waterRecheckUnits(units,reason){(units||[]).filter(unit=>unit?.alive).forEach(unit=>ctx.applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false}));}
+  const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"]);
   function weatherName(weather){return weather==="THUNDERSTORM"?"雷雨":weather==="HEAVY_RAIN"?"豪大雨":weather==="FOG"?"迷霧":weather==="SNOW"?"降雪":weather==="BLIZZARD"?"暴風雪":weather;}
+  function hasDeploymentTile(s){
+    return DeploymentEngine.area(s.stage,"PLAYER").some(tile=>
+      DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})
+    );
+  }
+  function canResolve(card){
+    const s=state();
+    if(s.phase!==PHASE.CARD||!CardPhaseEngine.canPlay(s.cardState,card))return false;
+    if(CardDatabase.isCharacter(card))return hasDeploymentTile(s);
+    if(!CardDatabase.isSpell(card))return false;
+    if(card.effect?.type==="WEATHER")return true;
+    return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0;
+  }
+  function hasPlayableCard(){
+    const s=state();
+    return (s.cardState?.zones?.hand||[]).some(cardId=>canResolve(CardDatabase.get(cardId)));
+  }
+  function maybeAutoEnd(){
+    const s=state();
+    if(s.phase!==PHASE.CARD||ctx.getPendingCard())return false;
+    if(s.cardState?.mulliganAvailable&&!s.cardState?.mulliganDone)return false;
+    if(hasPlayableCard())return false;
+    ctx.pushLog(`Round ${s.round}｜目前已無可使用卡牌，自動結束卡牌階段。`,"SYSTEM");
+    return end({automatic:true});
+  }
   function begin({initial=false}={}){
     const s=state(),cardState=s.cardState;
     if(cardState.zones.deck.length===0&&cardState.zones.hand.length===0){cardState.crystals=Math.min(cardState.maxCrystals||10,cardState.startingCrystals||4);ctx.setPendingCard(null);CardPhaseEngine.end(cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜牌庫已抽完，跳過卡牌階段，直接進入戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return;}
     ctx.setPhase(PHASE.CARD);ctx.clearSelection();const drawn=CardPhaseEngine.begin(cardState,{handSize:Number(s.stage.cardRules?.handSize||5)});ctx.pushLog(`Round ${s.round}｜卡牌階段開始｜💎 ${cardState.crystals}。`,"SYSTEM");
-    if(cardState.lastExpiredTurnCards?.length)ctx.pushLog(`TURN 卡到期｜${cardState.lastExpiredTurnCards.length} 張離開本回合卡區。`,"DETAIL");if(drawn.length)ctx.pushLog(`抽牌 ${drawn.length} 張。`,"SYSTEM");ctx.setPendingCard(null);ctx.render();ctx.emitState();
+    if(cardState.lastExpiredTurnCards?.length)ctx.pushLog(`TURN 卡到期｜${cardState.lastExpiredTurnCards.length} 張離開本回合卡區。`,"DETAIL");if(drawn.length)ctx.pushLog(`抽牌 ${drawn.length} 張。`,"SYSTEM");ctx.setPendingCard(null);
+    if(!maybeAutoEnd()){ctx.render();ctx.emitState();}
   }
-  function end(){const s=state();if(s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.setPhase(PHASE.PLAYER);ctx.pushLog(`Round ${s.round}｜進入戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return true;}
+  function end({automatic=false}={}){const s=state();if(s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.resetActions?.(TEAM.PLAYER);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return true;}
   function select(cardId){
-    const s=state();if(s.phase!==PHASE.CARD)return false;const card=CardDatabase.get(cardId);if(!CardPhaseEngine.canPlay(s.cardState,card))return false;
+    const s=state();if(s.phase!==PHASE.CARD)return false;const card=CardDatabase.get(cardId);if(!canResolve(card))return false;
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER"){
-      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:true}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"天候造成水位／地表狀態變化"});ctx.pushLog(`天候變更：${weatherName(weather)}｜持續 ${duration} 回合。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();ctx.render();ctx.emitState();return true;
+      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:true}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"天候造成水位／地表狀態變化"});ctx.pushLog(`天候變更：${weatherName(weather)}｜持續 ${duration} 回合。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }
     if(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"].includes(card.effect?.type)){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
     return false;
@@ -40,11 +67,11 @@ function create(ctx){
     }else if(effect.type==="HYDROLOGY_FLOOD"){
       if(!window.HydrologyEngine?.floodArea)ctx.pushLog(`${card.name} 失敗：HydrologyEngine.floodArea 尚未載入。`,"SYSTEM");else{const events=HydrologyEngine.floodArea(s.map,affected,{surfaceRise:Number(effect.surfaceRise||1),source:card.id}),resolved=events.find(event=>event.type==="FLOOD_AREA_RESOLVED"),wetCount=resolved?.tiles?.filter(tile=>Number(tile.waterDepth||0)>0).length||0;ctx.pushLog(`${card.name}｜注入 Water Volume ${Number(resolved?.injectedVolume||0).toFixed(2)}｜目標水面 H${resolved?.targetSurface??"?"}｜${wetCount} 格形成／加深水域。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:`${card.name} 造成水位重新分配`});}
     }
-    ctx.setPendingCard(null);ctx.checkMatchEnd();ctx.render();ctx.emitState();return true;
+    ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
   }
-  function deployAt(tile){const s=state(),card=ctx.getPendingCard();if(!card||s.phase!==PHASE.CARD)return false;if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return false;const unit=ctx.createUnit(ctx.nextUnitId(),TEAM.PLAYER,card.characterId,tile.x,tile.y);unit.cardId=card.id;unit.deployedRound=s.round;unit.moved=false;unit.acted=false;unit.waited=false;if(!CardPhaseEngine.commit(s.cardState,card))return false;s.units.push(unit);ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});ctx.setPendingCard(null);ctx.checkMatchEnd();ctx.render();ctx.emitState();return true;}
-  function cancel(){if(!ctx.getPendingCard())return false;ctx.setPendingCard(null);ctx.render();ctx.emitState();return true;}
-  return{begin,end,select,resolveAt,deployAt,cancel};
+  function deployAt(tile){const s=state(),card=ctx.getPendingCard();if(!card||s.phase!==PHASE.CARD)return false;if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return false;const unit=ctx.createUnit(ctx.nextUnitId(),TEAM.PLAYER,card.characterId,tile.x,tile.y);unit.cardId=card.id;unit.deployedRound=s.round;if(!CardPhaseEngine.commit(s.cardState,card))return false;s.units.push(unit);ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
+  function cancel(){if(!ctx.getPendingCard())return false;ctx.setPendingCard(null);if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
+  return{begin,end,select,resolveAt,deployAt,cancel,canResolve,hasPlayableCard,maybeAutoEnd};
 }
 window.CardPhaseController={create};
 })();
