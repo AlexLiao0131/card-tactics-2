@@ -11,6 +11,14 @@ export const VerticalMobilityEngine=(()=>{
     SINKING:"SINKING"
   });
 
+  const LAYER=Object.freeze({
+    SURFACE:"SURFACE",
+    WATER_SURFACE:"WATER_SURFACE",
+    UNDERWATER:"UNDERWATER",
+    AIR:"AIR",
+    UNDERGROUND:"UNDERGROUND"
+  });
+
   const WATER_MODES=new Set([MODE.WADING,MODE.SWIMMING,MODE.DIVING,MODE.SINKING]);
   const VALID_MODES=new Set(Object.values(MODE));
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
@@ -85,6 +93,14 @@ export const VerticalMobilityEngine=(()=>{
     return waterStateMode(unit,tile);
   }
 
+  function layerForMode(mode){
+    if(mode===MODE.FLYING)return LAYER.AIR;
+    if(mode===MODE.BURROWED)return LAYER.UNDERGROUND;
+    if(mode===MODE.DIVING||mode===MODE.SINKING)return LAYER.UNDERWATER;
+    if(mode===MODE.WADING||mode===MODE.SWIMMING)return LAYER.WATER_SURFACE;
+    return LAYER.SURFACE;
+  }
+
   function describe(unit,tile,{mode=null,altitude=null,depth=null}={}){
     const profile=profileOf(unit),ground=groundZ(tile),waterDepthValue=waterDepth(tile),waterSurface=waterSurfaceZ(tile),surface=surfaceZ(tile);
     const effective=effectiveMode(unit,tile,{mode});
@@ -119,7 +135,22 @@ export const VerticalMobilityEngine=(()=>{
       immersionDepth,
       physicalZ,
       renderZ:physicalZ,
-      layer:effective===MODE.FLYING?"AIR":effective===MODE.BURROWED?"UNDERGROUND":effective===MODE.DIVING?"UNDERWATER":"SURFACE"
+      layer:layerForMode(effective)
+    });
+  }
+
+  function verticalSpan(unit,tile){
+    const state=describe(unit,tile);
+    const height=Math.max(.25,Number(unit?.character?.collision?.height??2));
+    return Object.freeze({
+      bottom:state.physicalZ,
+      top:state.physicalZ+height,
+      height,
+      center:state.physicalZ+height*.5,
+      layer:state.layer,
+      mode:state.mode,
+      groundZ:state.groundZ,
+      waterSurfaceZ:state.waterSurfaceZ
     });
   }
 
@@ -207,7 +238,7 @@ export const VerticalMobilityEngine=(()=>{
   }
 
   return Object.freeze({
-    MODE,capabilities,defaultMode,effectiveMode,describe,syncUnit,initialize,setMode,
+    MODE,LAYER,capabilities,defaultMode,effectiveMode,layerForMode,describe,verticalSpan,syncUnit,initialize,setMode,
     isAirborne,isBurrowed,isSubmerged,ignoresWaterInteraction,ignoresCurrent,contactsWater,contactsGround,
     ignoresFall,ignoresElevation,movementIgnoresTerrainCost,canOccupyTerrain,objectBlocks,traversalZ,eyeZ,
     groundZ,waterDepth,waterSurfaceZ,surfaceZ
