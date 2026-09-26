@@ -24,7 +24,7 @@ export class BabylonRenderer{
     window.addEventListener("resize",()=>this.resize());
   }
   sync(state){
-    this.lastState=state;this.camera.sync(state);this.terrain.sync(state);this.water.sync(state);this.objectives.sync(state);this.highlights.sync(state);this.units.sync(state);this.syncActionAnchor(state);
+    this.lastState=state;this.camera.sync(state);this.terrain.sync(state);this.water.sync(state);this.objectives.sync(state);this.highlights.sync(state);this.units.sync(state);this.picker.sync(state);this.syncActionAnchor(state);
   }
   syncActionAnchor(state){
     const selected=(state?.units||[]).find(u=>u.selected);if(!selected)return;
