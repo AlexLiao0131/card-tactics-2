@@ -29,10 +29,17 @@ export class UnitRenderer{
     material.emissiveTexture=texture;
     material.opacityTexture=texture;
     material.disableLighting=true;
-    material.backFaceCulling=false;
+    material.backFaceCulling=true;
     material.useAlphaFromDiffuseTexture=true;
 
-    const plane=BABYLON.MeshBuilder.CreatePlane(`unit-hud-${unit.id}`,{width:1.72,height:.48},this.scene);
+    // Babylon's Plane front face points toward -Z, while billboard facing uses the
+    // mesh forward direction (+Z). Build the HUD as BACKSIDE so its readable face
+    // is the one the billboard continuously presents to the active camera.
+    const plane=BABYLON.MeshBuilder.CreatePlane(
+      `unit-hud-${unit.id}`,
+      {width:1.72,height:.48,sideOrientation:BABYLON.Mesh.BACKSIDE},
+      this.scene
+    );
     plane.material=material;
     plane.isPickable=false;
     plane.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;

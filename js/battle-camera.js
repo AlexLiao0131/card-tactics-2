@@ -40,9 +40,14 @@ export function battleSideAnchors(state){
 }
 
 function horizontalScreenAxis(alpha){
-  // ArcRotateCamera looks from azimuth alpha toward the target.
-  // This is the world-space vector that points to screen-right on the ground plane.
   return{x:Math.sin(alpha),y:-Math.cos(alpha)};
+}
+
+function groundCameraAxis(camera,axis){
+  const v=camera.getDirection(axis);
+  v.y=0;
+  if(v.lengthSquared()<1e-8)return null;
+  return v.normalize();
 }
 
 export function homeQuarterTurnForState(state){
@@ -56,7 +61,6 @@ export function homeQuarterTurnForState(state){
     const alpha=BASE_ALPHA+q*Math.PI/2;
     const right=horizontalScreenAxis(alpha);
     const screenDelta=dx*right.x+dz*right.y;
-    // Choose the quarter-turn that places PLAYER furthest to screen-left of ENEMY.
     if(screenDelta<bestScore){bestScore=screenDelta;best=q;}
   }
   return best;
@@ -97,19 +101,23 @@ export class BattleCamera{
     const cssW=Math.max(1,rect.width),cssH=Math.max(1,rect.height);
     const worldW=Math.max(.001,this.camera.orthoRight-this.camera.orthoLeft);
     const worldH=Math.max(.001,this.camera.orthoTop-this.camera.orthoBottom);
-    const alpha=this.camera.alpha,beta=this.camera.beta;
 
-    // Ground-plane basis derived from the actual camera azimuth.
-    // Horizontal drag maps to screen-right; vertical drag maps to screen-up projected onto the board.
-    const screenRight=new BABYLON.Vector3(Math.sin(alpha),0,-Math.cos(alpha));
-    const groundForward=new BABYLON.Vector3(-Math.cos(alpha),0,-Math.sin(alpha));
+    // Derive panning from the camera's actual screen axes instead of hand-written
+    // left/right formulas, so drag direction stays correct for every 90° rotation.
+    const screenRight=
+      groundCameraAxis(this.camera,BABYLON.Axis.X)||
+      new BABYLON.Vector3(1,0,0);
+    const screenUp=
+      groundCameraAxis(this.camera,BABYLON.Axis.Y)||
+      new BABYLON.Vector3(0,0,-1);
+
     const horizontalScale=worldW/cssW;
-    const verticalProjection=Math.max(.12,Math.abs(Math.cos(beta)));
+    const verticalProjection=Math.max(.12,Math.abs(Math.cos(this.camera.beta)));
     const verticalScale=(worldH/cssH)/verticalProjection;
 
-    // Camera target moves opposite the drag vector, so the board itself follows the finger/mouse.
+    // Move the camera opposite the drag so the board itself follows the finger/mouse.
     this.panOffset.addInPlace(screenRight.scale(-dx*horizontalScale));
-    this.panOffset.addInPlace(groundForward.scale(dy*verticalScale));
+    this.panOffset.addInPlace(screenUp.scale(dy*verticalScale));
     this.apply();
     this.emitView();
     return true;
@@ -142,8 +150,6 @@ export class BattleCamera{
     }
 
     this.info=info;
-    // Keep the chosen orientation stable during a battle, but refresh the home side
-    // if a late snapshot supplies the side anchors that were absent at construction.
     const nextHome=homeQuarterTurnForState(state);
     if(!Number.isNaN(nextHome))this.homeQuarterTurns=nextHome;
     this.apply();
