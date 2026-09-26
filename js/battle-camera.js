@@ -43,13 +43,6 @@ function horizontalScreenAxis(alpha){
   return{x:Math.sin(alpha),y:-Math.cos(alpha)};
 }
 
-function groundCameraAxis(camera,axis){
-  const v=camera.getDirection(axis);
-  v.y=0;
-  if(v.lengthSquared()<1e-8)return null;
-  return v.normalize();
-}
-
 export function homeQuarterTurnForState(state){
   const anchors=battleSideAnchors(state);
   if(!anchors)return 2;
@@ -66,6 +59,14 @@ export function homeQuarterTurnForState(state){
   return best;
 }
 
+function safeCameraRadius(info){
+  const worldW=Math.max(TILE_SIZE,Number(info?.width||8)*TILE_SIZE);
+  const worldH=Math.max(TILE_SIZE,Number(info?.height||6)*TILE_SIZE);
+  // Orthographic size is controlled separately. Radius is only used to keep the
+  // camera safely outside the whole battlefield depth range.
+  return Math.max(24,Math.hypot(worldW,worldH)*1.15);
+}
+
 export class BattleCamera{
   constructor(scene,canvas,state){
     this.scene=scene;
@@ -77,7 +78,11 @@ export class BattleCamera{
     this.zoom=1;
     this.mapKey="";
     this.baseTarget=BABYLON.Vector3.Zero();
-    this.panOffset=BABYLON.Vector3.Zero();
+
+    // Panning is a screen-space view offset, not a world-space target translation.
+    // This keeps pan independent from camera depth and prevents the map from
+    // crossing the near clipping plane during large vertical drags.
+    this.panPixels=BABYLON.Vector2.Zero();
 
     this.camera=new BABYLON.ArcRotateCamera(
       "battleCamera",
@@ -88,36 +93,23 @@ export class BattleCamera{
       scene
     );
     this.camera.mode=BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
-    this.camera.lowerRadiusLimit=this.camera.upperRadiusLimit=24;
+    this.camera.minZ=.1;
+    this.camera.maxZ=1000;
     this.camera.inputs.clear();
     this.sync(state);
   }
 
   panByPixels(dx,dy){
-    dx=Number(dx||0);dy=Number(dy||0);
+    dx=Number(dx||0);
+    dy=Number(dy||0);
     if(!dx&&!dy)return false;
 
-    const rect=this.canvas.getBoundingClientRect();
-    const cssW=Math.max(1,rect.width),cssH=Math.max(1,rect.height);
-    const worldW=Math.max(.001,this.camera.orthoRight-this.camera.orthoLeft);
-    const worldH=Math.max(.001,this.camera.orthoTop-this.camera.orthoBottom);
+    // Store the drag in CSS pixels. apply() converts it into the current
+    // orthographic view units, so zooming/resizing does not change the user's
+    // perceived pan displacement.
+    this.panPixels.x+=dx;
+    this.panPixels.y+=dy;
 
-    // Derive panning from the camera's actual screen axes instead of hand-written
-    // left/right formulas, so drag direction stays correct for every 90° rotation.
-    const screenRight=
-      groundCameraAxis(this.camera,BABYLON.Axis.X)||
-      new BABYLON.Vector3(1,0,0);
-    const screenUp=
-      groundCameraAxis(this.camera,BABYLON.Axis.Y)||
-      new BABYLON.Vector3(0,0,-1);
-
-    const horizontalScale=worldW/cssW;
-    const verticalProjection=Math.max(.12,Math.abs(Math.cos(this.camera.beta)));
-    const verticalScale=(worldH/cssH)/verticalProjection;
-
-    // Move the camera opposite the drag so the board itself follows the finger/mouse.
-    this.panOffset.addInPlace(screenRight.scale(-dx*horizontalScale));
-    this.panOffset.addInPlace(screenUp.scale(dy*verticalScale));
     this.apply();
     this.emitView();
     return true;
@@ -135,7 +127,9 @@ export class BattleCamera{
   zoomBy(factor){return this.setZoom(this.zoom*Number(factor||1));}
 
   sync(state){
-    const info=mapInfo(state),key=`${info.id}|${info.width}x${info.height}`;
+    const info=mapInfo(state);
+    const key=`${info.id}|${info.width}x${info.height}`;
+
     if(key!==this.mapKey){
       this.mapKey=key;
       this.info=info;
@@ -158,7 +152,7 @@ export class BattleCamera{
   restoreHomeView(emit=true){
     this.projection=this.homeProjection;
     this.quarterTurns=this.homeQuarterTurns;
-    this.panOffset=BABYLON.Vector3.Zero();
+    this.panPixels=BABYLON.Vector2.Zero();
     this.zoom=1;
     this.apply();
     if(emit)this.emitView();
@@ -166,12 +160,19 @@ export class BattleCamera{
 
   apply(){
     const info=this.info||{width:8,height:6};
+
     this.camera.alpha=BASE_ALPHA+this.quarterTurns*Math.PI/2;
     this.camera.beta=this.projection==="TOP"?TOP_BETA:ISO_BETA;
 
+    const radius=safeCameraRadius(info);
+    this.camera.radius=radius;
+    this.camera.lowerRadiusLimit=radius;
+    this.camera.upperRadiusLimit=radius;
+
     const aspect=Math.max(
       .5,
-      this.camera.getEngine().getRenderWidth()/Math.max(1,this.camera.getEngine().getRenderHeight())
+      this.camera.getEngine().getRenderWidth()/
+      Math.max(1,this.camera.getEngine().getRenderHeight())
     );
     const isoBase=Math.max(8,(info.width+info.height)*TILE_SIZE*.27);
     const topBase=Math.max(7,Math.max(info.height,info.width/aspect)*TILE_SIZE*.62);
@@ -181,20 +182,41 @@ export class BattleCamera{
     this.camera.orthoBottom=-vertical;
     this.camera.orthoLeft=-vertical*aspect;
     this.camera.orthoRight=vertical*aspect;
-    this.camera.setTarget(this.baseTarget.add(this.panOffset),false,false,true);
+
+    // Keep the orbit target anchored at the battlefield center.
+    this.camera.setTarget(this.baseTarget,false,false,true);
+
+    // Babylon applies targetScreenOffset directly in camera view space. This is
+    // the correct layer for a UI-style drag pan: X/Y changes without changing
+    // object depth, camera radius, terrain geometry or game state.
+    const rect=this.canvas.getBoundingClientRect();
+    const cssW=Math.max(1,rect.width);
+    const cssH=Math.max(1,rect.height);
+    const worldW=this.camera.orthoRight-this.camera.orthoLeft;
+    const worldH=this.camera.orthoTop-this.camera.orthoBottom;
+
+    this.camera.targetScreenOffset.set(
+      this.panPixels.x*(worldW/cssW),
+      -this.panPixels.y*(worldH/cssH)
+    );
+
     this.scene.render();
   }
 
   rotate(delta=1){
     this.quarterTurns=((this.quarterTurns+Number(delta||0))%4+4)%4;
-    this.apply();this.emitView();return this.quarterTurns;
+    this.apply();
+    this.emitView();
+    return this.quarterTurns;
   }
 
   setProjection(mode){
     const next=mode==="TOP"?"TOP":"ISO";
     if(next===this.projection)return false;
     this.projection=next;
-    this.apply();this.emitView();return true;
+    this.apply();
+    this.emitView();
+    return true;
   }
 
   toggleProjection(){return this.setProjection(this.projection==="ISO"?"TOP":"ISO");}
@@ -212,6 +234,8 @@ export class BattleCamera{
   }
 
   emitView(){
-    window.dispatchEvent(new CustomEvent("cardtactics:view-change",{detail:this.getViewState()}));
+    window.dispatchEvent(
+      new CustomEvent("cardtactics:view-change",{detail:this.getViewState()})
+    );
   }
 }
