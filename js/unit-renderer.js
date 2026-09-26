@@ -1,6 +1,12 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 
 const DEFAULT_BATTLE_VISUAL=Object.freeze({kind:"CAPSULE"});
+const FACING_ANGLE=Object.freeze({S:0,E:Math.PI/2,N:Math.PI,W:-Math.PI/2});
+
+function normalizeFacing(value){
+  const facing=String(value||"S").toUpperCase();
+  return Object.hasOwn(FACING_ANGLE,facing)?facing:"S";
+}
 
 export class UnitRenderer{
   constructor(scene){
@@ -12,6 +18,7 @@ export class UnitRenderer{
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
       NEUTRAL:this.mat("neutral",new BABYLON.Color3(.75,.65,.25)),
+      facing:this.mat("unit-facing",new BABYLON.Color3(.96,.90,.42)),
       P:null,E:null,N:null
     };
     this.materials.P=this.materials.PLAYER;
@@ -29,15 +36,35 @@ export class UnitRenderer{
     return globalThis.VisualDatabase?.characterBattle?.(unit?.visualId)||DEFAULT_BATTLE_VISUAL;
   }
 
+  assetForFacing(unit,definition){
+    const facing=normalizeFacing(unit?.facing);
+    return definition?.facingAssets?.[facing]||definition?.asset||definition?.src||"";
+  }
+
   visualSignature(unit,definition){
     return[
       unit?.visualId||"",
       definition?.kind||"CAPSULE",
-      definition?.asset||definition?.src||"",
+      this.assetForFacing(unit,definition),
       Number(definition?.width||0),
       Number(definition?.height||0),
       Number(definition?.lift||0)
     ].join("|");
+  }
+
+  createFacingMarker(unit){
+    const root=new BABYLON.TransformNode(`unit-facing-${unit.id}`,this.scene);
+    const pointer=BABYLON.MeshBuilder.CreateCylinder(
+      `unit-facing-pointer-${unit.id}`,
+      {height:.42,diameterTop:0,diameterBottom:.22,tessellation:6},
+      this.scene
+    );
+    pointer.parent=root;
+    pointer.material=this.materials.facing;
+    pointer.rotation.x=Math.PI/2;
+    pointer.position.set(0,.055,.38);
+    pointer.isPickable=false;
+    return{root,meshes:[pointer]};
   }
 
   createCapsule(unit){
@@ -51,7 +78,7 @@ export class UnitRenderer{
   }
 
   createBillboard(unit,definition){
-    const asset=definition?.asset||definition?.src;
+    const asset=this.assetForFacing(unit,definition);
     if(!asset)return this.createCapsule(unit);
 
     const height=Math.max(.25,Number(definition.height||UNIT_VISUAL_HEIGHT));
@@ -83,6 +110,7 @@ export class UnitRenderer{
     return{
       root,
       meshes:[plane],
+      plane,
       kind:"BILLBOARD",
       height,
       lift:Number(definition.lift||0),
@@ -99,7 +127,8 @@ export class UnitRenderer{
       ?this.createBillboard(unit,definition)
       :this.createCapsule(unit);
 
-    const entry={...visual,signature};
+    const facingMarker=this.createFacingMarker(unit);
+    const entry={...visual,signature,facingMarker,definition};
     this.entries.set(unit.id,entry);
     this.meshes.set(unit.id,entry.root);
     return entry;
@@ -109,6 +138,7 @@ export class UnitRenderer{
     const entry=this.entries.get(id);
     if(!entry)return;
     entry.dispose?.();
+    entry.facingMarker?.root?.dispose?.();
     entry.root?.dispose?.();
     this.entries.delete(id);
     this.meshes.delete(id);
@@ -116,6 +146,23 @@ export class UnitRenderer{
 
   setVisibility(entry,value){
     for(const mesh of entry?.meshes||[])mesh.visibility=value;
+    for(const mesh of entry?.facingMarker?.meshes||[])mesh.visibility=value;
+  }
+
+  applyFacing(entry,unit,definition){
+    const facing=normalizeFacing(unit?.facing),angle=FACING_ANGLE[facing];
+    entry.facingMarker.root.rotation.y=angle;
+    if(entry.kind!=="BILLBOARD")entry.root.rotation.y=angle;
+
+    if(entry.kind==="BILLBOARD"&&entry.plane&&!definition?.facingAssets){
+      const base=String(definition?.baseFacing||"E").toUpperCase();
+      if(facing==="E"||facing==="W"){
+        const eastSign=base==="W"?-1:1;
+        entry.plane.scaling.x=facing==="E"?eastSign:-eastSign;
+      }else{
+        entry.plane.scaling.x=base==="W"?-1:1;
+      }
+    }
   }
 
   sync(state){
@@ -133,6 +180,7 @@ export class UnitRenderer{
         entry=null;
       }
       if(!entry)entry=this.createEntry(unit,definition,signature);
+      this.applyFacing(entry,unit,definition);
 
       if(entry.kind==="CAPSULE"){
         entry.root.material=this.materials[unit.team]??this.materials.NEUTRAL;
@@ -152,6 +200,7 @@ export class UnitRenderer{
 
       if(entry.kind==="CAPSULE")entry.root.position.set(x,baseY+entry.height/2+lift,z);
       else entry.root.position.set(x,baseY+lift,z);
+      entry.facingMarker.root.position.set(x,baseY,z);
     }
 
     for(const id of [...this.entries.keys()]){

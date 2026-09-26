@@ -16,6 +16,8 @@ export class UnitHudOverlay{
     this.camera=camera;
     this.units=[];
     this.nodes=new Map();
+    this.hudUnitId=null;
+    this.finishedState=new Map();
 
     const battleScreen=document.getElementById("battleScreen");
     if(!battleScreen)throw new Error("UnitHudOverlay requires #battleScreen.");
@@ -23,6 +25,18 @@ export class UnitHudOverlay{
     this.root=createElement("div","unit-hud-layer");
     this.root.setAttribute("aria-hidden","true");
     battleScreen.appendChild(this.root);
+
+    this.onInspection=()=>{
+      const snapshot=globalThis.CardTacticsRuntime?.getBattleSnapshot?.();
+      const inspected=snapshot?.map?.tiles?.find(tile=>tile.inspected);
+      const unit=inspected
+        ?(snapshot?.units||[]).find(candidate=>candidate.x===inspected.x&&candidate.y===inspected.y)
+        :null;
+      this.hudUnitId=unit?.id||null;
+      this.applyVisibility();
+      this.updateFrame();
+    };
+    window.addEventListener("cardtactics:inspection",this.onInspection);
   }
 
   createHud(unit){
@@ -61,22 +75,36 @@ export class UnitHudOverlay{
     hud.fill.classList.toggle("danger",pct<=.25);
   }
 
+  applyVisibility(){
+    for(const[id,hud]of this.nodes)hud.node.hidden=id!==this.hudUnitId;
+  }
+
   sync(state){
     this.units=[...(state?.units||[])];
     const alive=new Set();
+    let actionCompleted=false;
 
     for(const unit of this.units){
       alive.add(unit.id);
+      const previous=this.finishedState.get(unit.id);
+      if(previous===false&&unit.finished===true)actionCompleted=true;
+      this.finishedState.set(unit.id,!!unit.finished);
+
       const hud=this.nodes.get(unit.id)||this.createHud(unit);
       this.updateContent(hud,unit);
     }
+
+    if(actionCompleted)this.hudUnitId=null;
 
     for(const[id,hud]of this.nodes){
       if(alive.has(id))continue;
       hud.node.remove();
       this.nodes.delete(id);
+      this.finishedState.delete(id);
+      if(this.hudUnitId===id)this.hudUnitId=null;
     }
 
+    this.applyVisibility();
     this.updateFrame();
   }
 
@@ -98,6 +126,7 @@ export class UnitHudOverlay{
     for(const unit of this.units){
       const hud=this.nodes.get(unit.id);
       if(!hud)continue;
+      if(unit.id!==this.hudUnitId){hud.node.hidden=true;continue;}
 
       const world=new BABYLON.Vector3(
         Number(unit.x)*TILE_SIZE,
@@ -129,12 +158,15 @@ export class UnitHudOverlay{
   }
 
   diagnostics(){
-    return{count:this.nodes.size};
+    return{count:this.nodes.size,expandedUnitId:this.hudUnitId};
   }
 
   dispose(){
+    window.removeEventListener("cardtactics:inspection",this.onInspection);
     this.root.remove();
     this.nodes.clear();
+    this.finishedState.clear();
     this.units=[];
+    this.hudUnitId=null;
   }
 }
