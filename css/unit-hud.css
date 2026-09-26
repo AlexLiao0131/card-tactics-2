@@ -1,0 +1,77 @@
+.unit-hud-layer{
+  position:absolute;
+  inset:0;
+  z-index:64;
+  overflow:hidden;
+  pointer-events:none;
+}
+
+.unit-hud{
+  position:absolute;
+  left:0;
+  top:0;
+  width:156px;
+  padding:6px 7px 7px;
+  border:1px solid rgba(218,226,236,.72);
+  border-radius:4px;
+  background:rgba(5,10,16,.88);
+  box-shadow:0 4px 12px rgba(0,0,0,.52);
+  color:#fff;
+  transform-origin:50% 100%;
+  will-change:transform;
+  pointer-events:none;
+}
+
+.unit-hud[data-team="PLAYER"]{border-color:rgba(101,177,255,.82)}
+.unit-hud[data-team="ENEMY"]{border-color:rgba(255,103,116,.82)}
+.unit-hud[data-team="NEUTRAL"]{border-color:rgba(224,194,105,.82)}
+.unit-hud.finished{opacity:.72}
+
+.unit-hud-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  min-width:0;
+  font-size:11px;
+  line-height:1.15;
+  white-space:nowrap;
+}
+
+.unit-hud-name{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-weight:800;
+}
+
+.unit-hud-hp{
+  flex:0 0 auto;
+  font-weight:800;
+}
+
+.unit-hud-track{
+  height:8px;
+  margin-top:5px;
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.68);
+  background:rgba(24,28,34,.98);
+}
+
+.unit-hud-fill{
+  display:block;
+  width:100%;
+  height:100%;
+  background:#55b46c;
+}
+
+.unit-hud-fill.warn{background:#d9a441}
+.unit-hud-fill.danger{background:#d95b5b}
+
+@media(max-width:700px){
+  .unit-hud{
+    width:136px;
+    padding:5px 6px 6px;
+  }
+  .unit-hud-row{font-size:10px}
+  .unit-hud-track{height:7px}
+}
