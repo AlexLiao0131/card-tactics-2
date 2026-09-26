@@ -10,6 +10,12 @@ export const DeathLifecycleEngine=(()=>{
       if(finalized.has(unit.id))return false;
       finalized.add(unit.id);
 
+      globalThis.UnitAnimationEngine?.emitDeath?.(unit,{
+        sourceId:source?.id||null,
+        causeType:cause?.type||cause?.id||null,
+        causeName:cause?.name||null
+      });
+
       ctx.stageEvent({type:"UNIT_DEFEATED",unitId:unit.id,characterId:unit.character.id,team:unit.team});
 
       const cards=ctx.cardStateFor(unit);

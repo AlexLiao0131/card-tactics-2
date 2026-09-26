@@ -5,7 +5,7 @@ import { ShellUI } from "./shell-ui.js";
 
 const CORE_LOAD_ORDER=[
   "terrain-database.js","environment-object-engine.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
-  "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js",
+  "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js","unit-animation-engine.js",
   "skill-database.js","equipment-database.js","character-database.js","card-database.js","monster-database.js",
   "monster-content.js","ophi-content.js","church-content.js","seraphina-content.js","pack-database.js","pack-engine.js",
   "deck-engine.js","deployment-engine.js","card-phase-engine.js","battle-log.js","battle-engine.js","effect-engine.js",
@@ -39,7 +39,7 @@ const shell=new ShellUI(runtime,renderer);shell.bind();
 
 await import("./diagnostics.js");
 
-function sync(){const snap=runtime.getBattleSnapshot();renderer.sync(snap);battleUI.render()}
+function sync(){const snap=runtime.getBattleSnapshot(),prev=renderer.lastState;if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();globalThis.UnitAnimationEngine?.observe?.(snap);const events=globalThis.UnitAnimationEngine?.drain?.()||[];renderer.sync(snap,events);battleUI.render()}
 window.addEventListener("cardtactics:battle-render",sync);
 window.addEventListener("cardtactics:state",sync);
 window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();sync()});

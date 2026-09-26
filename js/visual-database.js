@@ -5,7 +5,18 @@ export const VISUALS={
       card:"assets/characters/livia/card.webp",
       tactical:"assets/characters/livia/tactical.webp",
       expressions:{},
-      battle:{kind:"CAPSULE"}
+      battle:{
+        kind:"CAPSULE",
+        baseFacing:"E",
+        animations:{
+          IDLE:{duration:1200,loop:true,procedural:"BREATHE"},
+          WALK:{duration:180,loop:true,procedural:"STEP"},
+          ATTACK:{duration:320,loop:false,procedural:"LUNGE"},
+          CAST:{duration:480,loop:false,procedural:"CAST"},
+          HURT:{duration:240,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:700,loop:false,procedural:"FALL"}
+        }
+      }
     }
   },
   cards:{},

@@ -37,6 +37,7 @@ export class BabylonRenderer{
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
 
     this.engine.runRenderLoop(()=>{
+      this.units.updateFrame();
       this.scene.render();
       this.unitHud.updateFrame();
     });
@@ -44,7 +45,7 @@ export class BabylonRenderer{
     window.addEventListener("resize",()=>this.resize());
   }
 
-  sync(state){
+  sync(state,presentationEvents=[]){
     this.lastState=state;
     this.camera.sync(state);
     this.terrain.sync(state);
@@ -53,7 +54,7 @@ export class BabylonRenderer{
     this.environment.sync(state);
     this.objectives.sync(state);
     this.highlights.sync(state);
-    this.units.sync(state);
+    this.units.sync(state,presentationEvents);
     this.unitHud.sync(state);
     this.picker.sync(state);
     this.syncActionAnchor(state);
@@ -109,7 +110,7 @@ export class BabylonRenderer{
       zoom:this.camera.getViewState().zoom,
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
-      units:this.units.meshes?.size??null,
+      units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };

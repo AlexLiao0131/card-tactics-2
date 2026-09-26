@@ -85,6 +85,7 @@
       if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return false;
       if(target.kind!=="CORE")return false;
       ctx.consumeSkill(unit,skill);skill=ctx.effectiveSkill(unit,skill);
+      globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
       const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-Number(target.core.defense||30)));
       ctx.damageCore(target.core.owner,raw,`${unit.character.name}【${skill.name}】`);
@@ -117,6 +118,7 @@
       if(!ctx.canUseSkill(attacker,skill))return false;
       ctx.consumeSkill(attacker,skill);
       skill=ctx.effectiveSkill(attacker,skill);
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       const affected=skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
@@ -128,6 +130,7 @@
           occupant.hp=Math.max(0,occupant.hp-result.damage);
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${result.damage} 傷害｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
+          else if(Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(result.damage||0)});
         });
       }
       if(skill.aoeDamage){
@@ -196,6 +199,7 @@
     function executeEffectSkill(attacker,target,skill){
       if(!window.EffectEngine||!ctx.canUseSkill(attacker,skill))return false;
       ctx.consumeSkill(attacker,skill);
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];
       if(Array.isArray(skill.relationEffects)){
         const rel=EffectEngine.relation(attacker,target);
@@ -207,6 +211,7 @@
             results.push({type:"MAGIC_DAMAGE",...result});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?result.damage+" 傷害":"MISS"}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
+            else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(result.damage||0)});
           }else{
             const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);
             if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${r.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
@@ -225,6 +230,7 @@
         const manaRestore=EffectEngine.apply({source:attacker,target:attacker,effect:{type:"RESTORE_MANA",amount:Math.round(Number(drain.damage||0)*Number(b.manaRatio||0))}});results.push(manaRestore);
         ctx.pushLog(`${attacker.character.name} 吸取 ${target.character.name} 的血｜${drain.damage||0} 傷害｜自癒 ${drain.healed||0} HP｜回復 ${manaRestore.amount||0} MP｜暫時恢復 5V。`,"BATTLE");
         if(!target.alive)ctx.handleDefeated(target,attacker,skill);
+        else if(Number(drain.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(drain.damage||0)});
         if(b.copySkill){
           const options=EffectEngine.copyableSkills(target);
           if(options.length){
