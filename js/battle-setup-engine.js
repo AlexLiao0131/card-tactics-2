@@ -50,8 +50,6 @@ export const BattleSetupEngine=(()=>{
       stage?.generatedBattlefield?.seed ??
       `${stage?.id||"stage"}:default`;
 
-    // Weather gets its own deterministic stream. It is reproducible from the
-    // battle seed but independent from how many RNG calls map generation uses.
     const weatherSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WEATHER`);
     const selected=weightedChoice(valid,createRandom(weatherSeed));
     if(!selected)return{environment:source,meta:null};
@@ -110,6 +108,9 @@ export const BattleSetupEngine=(()=>{
       map=MapDatabase.createMap(stage.mapId);
     }
 
+    if(window.EnvironmentObjectEngine){
+      EnvironmentObjectEngine.initializeMap(map,{seed:battleSetup?.seed??stage.generatedBattlefield?.seed??stage.id});
+    }
     if(window.HydrologyEngine)HydrologyEngine.initializeMap(map);
 
     const stageState=StageEngine.create(stage.scriptId,{

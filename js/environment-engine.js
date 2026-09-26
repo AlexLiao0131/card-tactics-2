@@ -11,7 +11,7 @@ export const EnvironmentEngine=(()=>{
   const HYDROLOGY=Object.freeze({WATERLINE:HydrologyEngine.WATERLINE,RAIN_FILL_PER_EVENT:HydrologyEngine.RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT:HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT:HydrologyEngine.STORM_RAIN_FILL_PER_EVENT});
   function key(x,y){return `${x},${y}`;}
   function tileAt(map,x,y){return map?.tiles?.find(t=>t.x===x&&t.y===y)||null;}
-  function objectAt(map,x,y){return (map?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null;}
+  function objectAt(map,x,y){return window.EnvironmentObjectEngine?.activeObjectsAt?.(map,x,y)?.[0]||(map?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null;}
   const elevation=tile=>HydrologyEngine.elevation(tile);
   const waterDepth=tile=>HydrologyEngine.waterDepth(tile);
   function environmentAt(map,x,y){const object=objectAt(map,x,y);if(object?.environment)return object.environment;const tile=tileAt(map,x,y);return TERRAINS[tile?.terrain]?.environment||ELEMENT.NONE;}
@@ -33,7 +33,8 @@ export const EnvironmentEngine=(()=>{
     if(window.EnvironmentResolver)events.push(...EnvironmentResolver.resolve(map,state,{source:"ENVIRONMENT_TICK"}));
     return events;
   }
-  function flammableAt(map,x,y){const tile=tileAt(map,x,y);if(!tile||HydrologyEngine.isWater(tile))return false;const object=objectAt(map,x,y);if(object&&(object.flammable===true||object.environment===ELEMENT.GRASS))return true;return TERRAINS[tile.terrain]?.environment===ELEMENT.GRASS;}
+  function recordDestroyedObjects(state,events){if(!state?.destroyedObjects)return;for(const event of events||[])if(event?.type==="ENV_OBJECT_DESTROYED"&&event.objectId)state.destroyedObjects.add(event.objectId);}
+  function flammableAt(map,x,y){const tile=tileAt(map,x,y);if(!tile||HydrologyEngine.isWater(tile))return false;if(window.EnvironmentObjectEngine?.flammableAt?.(map,x,y))return true;const object=objectAt(map,x,y);if(object&&(object.flammable===true||object.environment===ELEMENT.GRASS))return true;return TERRAINS[tile.terrain]?.environment===ELEMENT.GRASS;}
   function spreadFire(map,state){
     if(!map||!state||isRain(state)||isSnow(state))return[];
     const pending=new Map();
@@ -52,6 +53,8 @@ export const EnvironmentEngine=(()=>{
     weatherPulse(map,state,events);
     if(state.weather!==WEATHER.CLEAR&&state.weatherTurnsRemaining!=null)state.weatherTurnsRemaining=Math.max(0,Number(state.weatherTurnsRemaining||0)-1);
     events.push(...spreadFire(map,state));
+    window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);
+    recordDestroyedObjects(state,events);
     return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true}={}){
@@ -91,9 +94,13 @@ export const EnvironmentEngine=(()=>{
   function conductThunder(map,state,x,y,events=[],{damagedUnitIds=[]}={}){const region=conductiveRegion(map,state,x,y),hitRegistry=[...new Set(damagedUnitIds.map(String))];for(const tile of region)addEffect(state,tile.x,tile.y,{type:EFFECT.ELECTRIFIED,duration:1,damage:HAZARD.ELECTRIC_DAMAGE,damageType:"THUNDER",damagedUnitIds:hitRegistry,origin:{x,y}});if(region.length)events.push({type:"ELECTRIC_CONDUCTION",x,y,effect:EFFECT.ELECTRIFIED,origin:{x,y},regionSize:region.length,tiles:region.map(tile=>({x:tile.x,y:tile.y}))});return region;}
 
   function apply({map,state,x,y,forces=[]}){
-    const forceSet=new Set(forces),events=[],raining=isRain(state),burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM);
+    const forceSet=new Set(forces),events=[],raining=isRain(state),burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM),stoneObjectBefore=objectAt(map,x,y);
     if((forceSet.has(FORCE.FIRE)||forceSet.has(FORCE.HEAVY_FIRE))&&window.ClimateEngine)events.push(...ClimateEngine.applyHeat(map,state,x,y,{heavy:forceSet.has(FORCE.HEAVY_FIRE)}));
     if(forceSet.has(FORCE.IMPACT))events.push(...deformTerrain(map,x,y,{deltaElevation:-1,source:"IMPACT"}));
+    if(window.EnvironmentObjectEngine){
+      const objectForces=[...forceSet].filter(force=>force!==FORCE.FIRE||!raining);
+      EnvironmentObjectEngine.applyForces(map,x,y,objectForces,{events});
+    }
     const environment=environmentAt(map,x,y);
 
     if(forceSet.has(FORCE.WIND)&&steamBefore){removeEffect(state,x,y,EFFECT.STEAM);events.push({type:"STEAM_DISPERSED",x,y});}
@@ -107,7 +114,14 @@ export const EnvironmentEngine=(()=>{
 
     if(environment===ELEMENT.WATER){if(forceSet.has(FORCE.HEAVY_FIRE)){removeEffect(state,x,y,EFFECT.BURNING);const waterTile=tileAt(map,x,y);if(window.ClimateEngine?.isFrozen?.(waterTile))events.push({type:"ICE_HEATED",x,y,iceThickness:ClimateEngine.iceThickness(waterTile)});else heatWater(map,state,x,y,events);}else if(forceSet.has(FORCE.FIRE)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}}
     if(forceSet.has(FORCE.THUNDER)&&isConductive(map,state,x,y))conductThunder(map,state,x,y,events);
-    if(environment===ELEMENT.STONE&&forceSet.has(FORCE.EXPLOSION)){addEffect(state,x,y,{type:EFFECT.FRAGMENTS,duration:1,damageType:"PHYSICAL",radius:1});const object=objectAt(map,x,y),destroyed=destroyStoneObject(map,state,object);events.push({type:"STONE_FRAGMENT",x,y,effect:EFFECT.FRAGMENTS,destroyed,objectId:object?.id||null});}
+    const terrainEnvironment=TERRAINS[tileAt(map,x,y)?.terrain]?.environment||ELEMENT.NONE;
+    if((environment===ELEMENT.STONE||terrainEnvironment===ELEMENT.STONE||stoneObjectBefore?.environment===ELEMENT.STONE)&&forceSet.has(FORCE.EXPLOSION)){
+      addEffect(state,x,y,{type:EFFECT.FRAGMENTS,duration:1,damageType:"PHYSICAL",radius:1});
+      let destroyed=false;
+      if(window.EnvironmentObjectEngine){destroyed=events.some(e=>e.type==="ENV_OBJECT_DESTROYED"&&e.objectId===stoneObjectBefore?.id);}
+      else destroyed=destroyStoneObject(map,state,stoneObjectBefore);
+      events.push({type:"STONE_FRAGMENT",x,y,effect:EFFECT.FRAGMENTS,destroyed,objectId:stoneObjectBefore?.id||null});
+    }
     if(window.EnvironmentResolver){
       const disturbance=forceSet.has(FORCE.AVALANCHE_TRIGGER)?1.6:forceSet.has(FORCE.EXPLOSION)?1.25:forceSet.has(FORCE.IMPACT)?1:0;
       if(disturbance>0){
@@ -115,6 +129,7 @@ export const EnvironmentEngine=(()=>{
         events.push(...EnvironmentResolver.resolve(map,state,{source:"DISTURBANCE"}));
       }
     }
+    recordDestroyedObjects(state,events);
     return events;
   }
 

@@ -21,6 +21,7 @@ export class TerrainRenderer{
     this.materials={
       soil:this.mat("soil",new BABYLON.Color3(.30,.42,.24)),
       forest:this.mat("forest",new BABYLON.Color3(.16,.34,.20)),
+      sand:this.mat("sand",new BABYLON.Color3(.66,.58,.38)),
       rock:this.mat("rock",new BABYLON.Color3(.34,.36,.39)),
       mud:this.mat("mud",new BABYLON.Color3(.35,.27,.17)),
       wall:this.mat("wall",new BABYLON.Color3(.24,.25,.28))
@@ -36,6 +37,7 @@ export class TerrainRenderer{
 
   topMaterial(tile){
     return tile.terrain==="MUD"?this.materials.mud:
+      tile.terrain==="SAND"?this.materials.sand:
       tile.terrain==="FOREST"?this.materials.forest:
       tile.terrain==="WALL"?this.materials.wall:
       (tile.terrain==="HIGH_GROUND"||tile.material==="ROCK"?this.materials.rock:this.materials.soil);
@@ -43,6 +45,7 @@ export class TerrainRenderer{
 
   sideMaterial(tile){
     if(tile.terrain==="WALL")return this.materials.wall;
+    if(tile.terrain==="SAND")return this.materials.sand;
     if(elevationOf(tile)>0||tile.terrain==="HIGH_GROUND"||tile.material==="ROCK")return this.materials.rock;
     return this.materials.soil;
   }
@@ -94,8 +97,6 @@ export class TerrainRenderer{
     for(const dir of DIRS){
       const neighbor=byKey.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
       const neighborElevation=neighbor?elevationOf(neighbor):boundaryBase;
-
-      // Only the higher tile owns the visible cliff face between two cells.
       if(elevation<=neighborElevation+.0001)continue;
 
       const lowerY=neighborElevation*ELEVATION_HEIGHT;
@@ -114,13 +115,7 @@ export class TerrainRenderer{
       if(dir.axis==="X")face.position.x=dir.sign*TILE_SIZE/2;
       else face.position.z=dir.sign*TILE_SIZE/2;
       face.material=sideMaterial;
-      face.metadata={
-        kind:"terrain-cliff",
-        x:tile.x,y:tile.y,
-        side:dir.id,
-        fromElevation:elevation,
-        toElevation:neighborElevation
-      };
+      face.metadata={kind:"terrain-cliff",x:tile.x,y:tile.y,side:dir.id,fromElevation:elevation,toElevation:neighborElevation};
       face.isPickable=false;
       face.receiveShadows=true;
       children.push(face);
@@ -128,7 +123,6 @@ export class TerrainRenderer{
 
     const visibility=tile.fogged?.38:1;
     children.forEach(mesh=>mesh.visibility=visibility);
-
     this.meshes.set(key,{root,children,signature});
   }
 
@@ -136,26 +130,16 @@ export class TerrainRenderer{
     const tiles=tilesOf(state);
     const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
     const minElevation=tiles.length?Math.min(...tiles.map(elevationOf)):0;
-
-    // The map boundary has only a shallow visual skirt below the lowest terrain.
-    // Interior cliffs are always derived from real neighboring elevations.
     const boundaryBase=minElevation-.25;
     const alive=new Set();
 
     for(const tile of tiles){
-      const key=keyOf(tile.x,tile.y);
-      alive.add(key);
-
-      const signature=this.signature(tile,byKey,boundaryBase);
-      const current=this.meshes.get(key);
+      const key=keyOf(tile.x,tile.y);alive.add(key);
+      const signature=this.signature(tile,byKey,boundaryBase),current=this.meshes.get(key);
       if(current?.signature===signature)continue;
-
-      this.disposeTile(key);
-      this.createTile(tile,byKey,boundaryBase,signature);
+      this.disposeTile(key);this.createTile(tile,byKey,boundaryBase,signature);
     }
 
-    for(const key of [...this.meshes.keys()]){
-      if(!alive.has(key))this.disposeTile(key);
-    }
+    for(const key of [...this.meshes.keys()])if(!alive.has(key))this.disposeTile(key);
   }
 }

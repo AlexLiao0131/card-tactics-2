@@ -5,6 +5,7 @@ export const MassFlowEngine=(()=>{
   const CFG=Object.freeze({
     MAX_STEPS:12,
     MIN_DROP:.001,
+    OBJECT_RESISTANCE_FACTOR:.18,
     SOIL:{pickup:.35,transport:.68,minTerrainMove:.55,maxTerrainMove:1.45},
     ROCK:{pickup:.18,transport:.78,minTerrainMove:.65,maxTerrainMove:1.8},
     DEBRIS:{pickup:.18,transport:.76,minTerrainMove:.60,maxTerrainMove:1.7},
@@ -27,25 +28,29 @@ export const MassFlowEngine=(()=>{
     const cfg=CFG[material]||CFG.SOIL;
     if(material===MATERIAL.SNOW)return Math.min(.45,snow(tile)*cfg.pickup);
     if(material===MATERIAL.ROCK||material===MATERIAL.DEBRIS)return Math.min(.55,rockMass(tile)*cfg.pickup);
-    return Math.min(.35,moisture(tile)*cfg.pickup+(tile?.terrain==="MUD"?.06:0));
+    const sandBonus=tile?.terrain==="SAND"?.12:0;
+    return Math.min(.48,moisture(tile)*cfg.pickup+(tile?.terrain==="MUD"?.06:0)+sandBonus);
   }
   function downhill(map,tile,visited=new Set(),material=MATERIAL.SOIL){
     return DIRS.map(([dx,dy])=>tileAt(map,tile.x+dx,tile.y+dy))
       .filter(next=>flowPassable(next)&&!visited.has(key(next.x,next.y)))
-      .map(next=>({tile:next,drop:elevation(tile)-elevation(next)}))
-      .filter(entry=>entry.drop>CFG.MIN_DROP)
-      .sort((a,b)=>b.drop-a.drop||elevation(a.tile)-elevation(b.tile))[0]||null;
+      .map(next=>{
+        const drop=elevation(tile)-elevation(next),resistance=Math.max(0,Number(globalThis.EnvironmentObjectEngine?.flowResistanceAt?.(map,next)||0));
+        return{tile:next,drop,resistance,score:drop-resistance*CFG.OBJECT_RESISTANCE_FACTOR};
+      })
+      .filter(entry=>entry.drop>CFG.MIN_DROP&&entry.score>CFG.MIN_DROP)
+      .sort((a,b)=>b.score-a.score||b.drop-a.drop||elevation(a.tile)-elevation(b.tile))[0]||null;
   }
   function trace(map,start,material,initialMass,{maxSteps=CFG.MAX_STEPS}={}){
     material=normalizedMaterial(material);
     if(!map||!start||!flowPassable(start))return null;
-    const visited=new Set([key(start.x,start.y)]),path=[{x:start.x,y:start.y,elevation:elevation(start),drop:0,pickup:0}],baseMass=Math.max(0,Number(initialMass||0));
+    const visited=new Set([key(start.x,start.y)]),path=[{x:start.x,y:start.y,elevation:elevation(start),drop:0,pickup:0,resistance:Number(globalThis.EnvironmentObjectEngine?.flowResistanceAt?.(map,start)||0)}],baseMass=Math.max(0,Number(initialMass||0));
     let current=start,carried=baseMass;
     for(let i=0;i<Math.max(1,Number(maxSteps||CFG.MAX_STEPS));i++){
       const next=downhill(map,current,visited,material);if(!next)break;
       current=next.tile;visited.add(key(current.x,current.y));
       const pickup=pickupFor(current,material);carried+=pickup;
-      path.push({x:current.x,y:current.y,elevation:elevation(current),drop:next.drop,pickup:clean(pickup)});
+      path.push({x:current.x,y:current.y,elevation:elevation(current),drop:next.drop,pickup:clean(pickup),resistance:clean(next.resistance)});
     }
     return{material,initialMass:clean(baseMass),mass:clean(carried),path,end:current};
   }
@@ -58,6 +63,14 @@ export const MassFlowEngine=(()=>{
     const cfg=CFG[flow.material]||CFG.SOIL;if(!cfg.maxTerrainMove)return 0;
     return clamp(flow.mass*cfg.transport+Math.max(0,flow.path.length-2)*.035,cfg.minTerrainMove,cfg.maxTerrainMove);
   }
+  function erosionFactor(map,tile,material){
+    let susceptibility=1;
+    if(tile?.terrain==="SAND")susceptibility=1.35;
+    else if(tile?.terrain==="FOREST")susceptibility=.9;
+    if(material===MATERIAL.ROCK||material===MATERIAL.DEBRIS)susceptibility*=1.08;
+    const resistance=Math.max(0,Number(globalThis.EnvironmentObjectEngine?.erosionResistanceAt?.(map,tile)||0));
+    return susceptibility*clamp(1-resistance,.35,1);
+  }
   function markTerrainChange(tile,before,events,source,material){
     if(before===tile.terrain)return;
     events.push({type:"TERRAIN_CHANGED",x:tile.x,y:tile.y,from:before,to:tile.terrain,source,material});
@@ -68,9 +81,11 @@ export const MassFlowEngine=(()=>{
   }
   function applySoilSurface(tile,erosion,deposition,events,source){
     const impact=erosion+deposition,before=tile.terrain;if(impact<=.025)return;
-    if(tile.terrain==="WATER")tile.dryTerrain="MUD";
+    if(tile.terrain==="WATER")tile.dryTerrain=deposition>=.14?"MUD":(tile.dryTerrain||"PLAIN");
     else if(tile.terrain==="PLAIN"||tile.terrain==="FOREST"){tile.terrain="MUD";if(before==="FOREST")tile.vegetation=0;}
-    tile.soilMoisture=clean(Math.min(Number(globalThis.HydrologyEngine?.SOIL_SATURATION_CAPACITY||.45),Math.max(0,moisture(tile)-erosion*.22+deposition*.32)));
+    else if(tile.terrain==="SAND"&&deposition>=.18)tile.terrain="MUD";
+    const capacity=Number(globalThis.HydrologyEngine?.soilCapacity?.(tile)??globalThis.HydrologyEngine?.SOIL_SATURATION_CAPACITY??.45);
+    tile.soilMoisture=clean(Math.min(capacity,Math.max(0,moisture(tile)-erosion*.22+deposition*.32)));
     tile.massFlowResidue=clean(Number(tile.massFlowResidue||0)+impact);
     markTerrainChange(tile,before,events,source,MATERIAL.SOIL);
   }
@@ -92,7 +107,7 @@ export const MassFlowEngine=(()=>{
     const depositWeights=normalizedWeights(length,(i,n)=>{const t=n<=1?1:i/(n-1);return t>=.30?Math.pow(t,1.8):0;});
     let elevationChanges=0,terrainChanges=0,totalErosion=0,totalDeposit=0;
     for(let i=0;i<length;i++){
-      const tile=tiles[i],node=flow.path[i],erosion=budget*erosionWeights[i],deposition=budget*depositWeights[i],beforeElevation=elevation(tile),beforeTerrain=tile.terrain;
+      const tile=tiles[i],node=flow.path[i],baseErosion=budget*erosionWeights[i],erosion=baseErosion*erosionFactor(map,tile,flow.material),deposition=budget*depositWeights[i],beforeElevation=elevation(tile),beforeTerrain=tile.terrain;
       if(i>0&&Number(node?.pickup||0)>0){
         if(flow.material===MATERIAL.ROCK||flow.material===MATERIAL.DEBRIS)tile.rockMass=clean(Math.max(0,rockMass(tile)-Number(node.pickup)));
         else if(flow.material===MATERIAL.SOIL)tile.soilMoisture=clean(Math.max(0,moisture(tile)-Number(node.pickup)*.45));
@@ -127,7 +142,9 @@ export const MassFlowEngine=(()=>{
   }
   function apply(map,flow,{events=[],source="MASS_FLOW"}={}){
     if(!flow||flow.path?.length<2)return{changed:false};
-    return flow.material===MATERIAL.SNOW?evolveSnow(map,flow,{events,source}):evolveGround(map,flow,{events,source});
+    const terrain=flow.material===MATERIAL.SNOW?evolveSnow(map,flow,{events,source}):evolveGround(map,flow,{events,source});
+    const objects=globalThis.EnvironmentObjectEngine?.resolveMassFlow?.(map,flow,{events,source})||{affected:0,moved:0,destroyed:0};
+    return{...terrain,objects,changed:!!terrain.changed||objects.affected>0};
   }
   function event(flow,{type="MASS_FLOW",source="STABILITY_FAILURE",damage=0,forceDistance=1,contactProfile="SURFACE_FLOW",extra={}}={}){
     return{type,material:flow.material,x:flow.path[0]?.x,y:flow.path[0]?.y,source,path:flow.path.map(p=>({...p})),mass:clean(flow.mass),damage:Math.max(0,Math.round(Number(damage||0))),forceDistance:Math.max(0,Math.round(Number(forceDistance||0))),contactProfile,...extra};
