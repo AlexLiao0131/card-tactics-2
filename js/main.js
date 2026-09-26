@@ -26,7 +26,7 @@ globalThis.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"MEDIUM"
 for(let i=0;i<CORE_LOAD_ORDER.length;i++){
   const file=CORE_LOAD_ORDER[i];bootStatus.textContent=`載入戰鬥核心 ${i+1}/${CORE_LOAD_ORDER.length}｜${file}`;await import(`./${file}`);
 }
-bootStatus.textContent="啟動 1.0 Runtime orchestration...";
+bootStatus.textContent="啟動 Card Tactics Runtime...";
 await import("./tactical-game.js");
 
 const runtime=globalThis.CardTacticsRuntime;if(!runtime)throw new Error("CardTacticsRuntime failed to initialize.");
