@@ -16,7 +16,19 @@ export const STAGES={
   versus_core_battle:{
     id:"versus_core_battle",name:"Core Conquest",mode:"VERSUS",ruleset:"CORE_CAPTURE",
     battlefield:{type:"PROCEDURAL",generator:"VERSUS_CORE",defaultSize:"MEDIUM"},
-    environment:{timeOfDay:"DAY"},playerSpawns:[],enemySpawns:[],
+    environment:{
+      timeOfDay:"DAY",
+      weatherPool:[
+        {weather:"CLEAR",weight:35},
+        {weather:"FOG",weight:15},
+        {weather:"RAIN",weight:20},
+        {weather:"HEAVY_RAIN",weight:10},
+        {weather:"THUNDERSTORM",weight:8},
+        {weather:"SNOW",weight:8},
+        {weather:"BLIZZARD",weight:4}
+      ]
+    },
+    playerSpawns:[],enemySpawns:[],
     enemyDeck:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card","leon_card"],
     battleDeck:["livia_card","ophi_card","kahn_card","cassandra_card","thunderstorm_card","wildfire_card","tornado_card","miracle_card","fog_card","starfall_card"],
     coreRules:{hp:600,shield:0,defense:0},
