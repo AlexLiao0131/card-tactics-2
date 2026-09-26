@@ -32,17 +32,19 @@ export class UnitRenderer{
     material.backFaceCulling=true;
     material.useAlphaFromDiffuseTexture=true;
 
-    // Babylon's billboard implementation is designed to present a normal FRONT
-    // plane to the active camera. Keep one readable front face and cull the back;
-    // this prevents mirrored text without texture/scale flipping hacks.
+    // Position-based billboard points the mesh +Z axis toward the active camera.
+    // Babylon Plane BACKSIDE uses +Z as its readable front face, so the HUD stays
+    // front-facing and readable at every camera rotation without flipping texture UVs.
     const plane=BABYLON.MeshBuilder.CreatePlane(
       `unit-hud-${unit.id}`,
-      {width:1.72,height:.48,sideOrientation:BABYLON.Mesh.FRONTSIDE},
+      {width:1.72,height:.48,sideOrientation:BABYLON.Mesh.BACKSIDE},
       this.scene
     );
     plane.material=material;
     plane.isPickable=false;
-    plane.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
+    plane.billboardMode=
+      BABYLON.Mesh.BILLBOARDMODE_ALL|
+      BABYLON.Mesh.BILLBOARDMODE_USE_POSITION;
     plane.renderingGroupId=3;
 
     const hud={plane,texture,material,key:""};
