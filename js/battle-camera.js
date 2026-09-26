@@ -175,7 +175,7 @@ export class BattleCamera{
     this.camera.orthoBottom=-vertical;
     this.camera.orthoLeft=-vertical*aspect;
     this.camera.orthoRight=vertical*aspect;
-    this.camera.setTarget(this.baseTarget.add(this.panOffset));
+    this.camera.setTarget(this.baseTarget.add(this.panOffset),false,false,true);
     this.scene.render();
   }
 
