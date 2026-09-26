@@ -40,13 +40,17 @@ export const CollisionEngine=(()=>{
   function surfaceAt({map,units,x,y,z,excludeId}){
     const tile=TacticalEngine.tile(map,x,y);
     if(!tile)return terrainProfile(null);
+    const ground=Number(TacticalEngine.elevation(tile));
     const object=(map.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y&&o.blocksMovement===true);
     const op=objectProfile(object);
-    if(op&&Number(z)<=Number(op.height))return op;
+    if(op&&Number(z)>=ground&&Number(z)<=ground+Number(op.height))return op;
     const unit=occupantAt(units,x,y,{excludeId});
-    if(unit){const up=unitProfile(unit);if(Number(z)<=Number(TacticalEngine.elevation(tile))+Number(up.height))return up;}
+    if(unit){
+      const up=unitProfile(unit),bottom=Number.isFinite(Number(unit.z))?Number(unit.z):ground,top=bottom+Number(up.height);
+      if(Number(z)>=bottom&&Number(z)<=top)return up;
+    }
     const tp=terrainProfile(tile);
-    if(tp&&Number(z)<=Number(TacticalEngine.elevation(tile))+Number(tp.height))return tp;
+    if(tp&&Number(z)>=ground&&Number(z)<=ground+Number(tp.height))return tp;
     return null;
   }
   function impactDamage({remainingForce=0,mover,surface}){

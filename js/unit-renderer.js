@@ -143,7 +143,10 @@ export class UnitRenderer{
       this.setVisibility(entry,unit.finished?.62:1);
 
       const x=Number(unit.x)*TILE_SIZE;
-      const baseY=Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT;
+      // unit.z is now the authoritative physical vertical position.
+      // renderZ remains available for HUD/presentation anchoring, but must not pull
+      // swimming/diving/burrowed units back to the water/ground surface.
+      const baseY=Number(unit.z??unit.renderZ??0)*ELEVATION_HEIGHT;
       const z=Number(unit.y)*TILE_SIZE;
       const lift=Number(entry.lift||0);
 

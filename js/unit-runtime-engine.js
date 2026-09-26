@@ -35,6 +35,7 @@ export const UnitRuntimeEngine=(()=>{
     const unit={id,team,character,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
       hp:character.combat.hp,alive:true,moved:false,acted:false,waited:false,
       skillResources:createSkillResources(character),effects:[],grantedSkills:[]};
+    globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
     syncMana(unit,{initialize:true});
     return unit;
   }

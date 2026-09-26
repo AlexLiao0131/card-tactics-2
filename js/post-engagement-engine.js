@@ -3,6 +3,7 @@ export const PostEngagementEngine=(()=>{
   const tileElevation=(map,x,y)=>FallEngine.tileElevation(map,x,y);
   const groundZ=(map,unit)=>FallEngine.groundZ(map,unit);
   const syncGroundZ=(map,unit)=>FallEngine.syncGroundZ(map,unit);
+  const isAirborneState=state=>window.TrajectoryEngine?.isAirborneState?.(state)??(state==="AIRBORNE"||state==="FALLING");
   function direction(source,target,type){let dx=Math.sign(target.x-source.x),dy=Math.sign(target.y-source.y);if(dx&&dy){if(Math.abs(target.x-source.x)>=Math.abs(target.y-source.y))dy=0;else dx=0;}if(type==="PULL"){dx=-dx;dy=-dy}return{dx,dy}}
   function damageUnit(unit,amount){const d=Math.max(0,Math.round(Number(amount||0)));if(d&&unit?.alive){unit.hp=Math.max(0,unit.hp-d);if(unit.hp===0)unit.alive=false}return d}
   const fallDamage=drop=>FallEngine.fallDamage(drop);
@@ -19,13 +20,13 @@ export const PostEngagementEngine=(()=>{
     const displacement=DisplacementEngine.resolve(effect,target),distance=displacement.distance,lift=displacement.lift,startZ=groundZ(map,target),trajectory=TrajectoryEngine.begin(map,target,lift),travelZ=trajectory.z;
     target.z=trajectory.z;
     let dir=direction(source,target,effect.type);
-    if(!dir.dx&&!dir.dy){const f=fallbackDirection(map,units,target,distance,{z:trajectory.z,airborne:trajectory.state!=="GROUNDED"});dir={dx:f[0],dy:f[1]}}
+    if(!dir.dx&&!dir.dy){const f=fallbackDirection(map,units,target,distance,{z:trajectory.z,airborne:isAirborneState(trajectory.state)});dir={dx:f[0],dy:f[1]}}
     const start={x:target.x,y:target.y,z:startZ},steps=[],collisions=[];
     let lastSafeLanding={...start};
 
     if(!dir.dx&&!dir.dy){
       const landing=resolveLanding({map,target,fromZ:trajectory.z});
-      return{type:effect.type,applied:lift>0,reason:lift>0?null:"BLOCKED",start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:trajectory.state!=="GROUNDED",trajectoryState:trajectory.state,lift,travelZ,displacement,landing,falls:landing.damaging?[{from:landing.fromZ,to:landing.toZ,drop:landing.drop}]:[],fallDamage:landing.damage,defeated:!target.alive}
+      return{type:effect.type,applied:lift>0,reason:lift>0?null:"BLOCKED",start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(trajectory.state),trajectoryState:trajectory.state,lift,travelZ,displacement,landing,falls:landing.damaging?[{from:landing.fromZ,to:landing.toZ,drop:landing.drop}]:[],fallDamage:landing.damage,defeated:!target.alive}
     }
 
     for(let i=0;i<distance;i++){
@@ -35,7 +36,7 @@ export const PostEngagementEngine=(()=>{
       if(inspection.blocked){const surface={kind:"TERRAIN_FACE",solid:true,height:inspection.surface,hardness:2,response:"STOP",impactMultiplier:1},damage=CollisionEngine.impactDamage({remainingForce:remaining,mover:target,surface});damageUnit(target,damage);collisions.push({kind:"TERRAIN",x:nx,y:ny,surface,damage,stopped:true});break}
 
       const occupant=gridOccupant(units,nx,ny,target);
-      const surface=CollisionEngine.surfaceAt({map,units,x:nx,y:ny,z:trajectory.z,excludeId:target.id});
+      const surface=CollisionEngine.surfaceAt({map,units,x:nx,y:ny,z:inspection.z,excludeId:target.id});
       if(surface){
         const damage=CollisionEngine.impactDamage({remainingForce:remaining,mover:target,surface});damageUnit(target,damage);
         const hit=surface.unit;
@@ -58,10 +59,11 @@ export const PostEngagementEngine=(()=>{
         break;
       }
 
-      // A unit may pass over another unit while airborne, but an occupied grid cell is never a legal landing cell.
+      // Only a ballistic airborne unit may pass over an occupied grid cell.
       TrajectoryEngine.advance(trajectory,inspection);target.x=nx;target.y=ny;target.z=trajectory.z;
-      steps.push({x:nx,y:ny,z:trajectory.z,elevation:TacticalEngine.elevation(to),trajectoryState:trajectory.state,passedOverUnit:occupant?.id||null});
+      steps.push({x:nx,y:ny,z:trajectory.z,elevation:TacticalEngine.elevation(to),trajectoryState:trajectory.state,passedOverUnit:isAirborneState(trajectory.state)?occupant?.id||null:null});
       if(!occupant)lastSafeLanding={x:nx,y:ny,z:trajectory.z};
+      else if(!isAirborneState(trajectory.state))break;
     }
 
     const preLandingState=trajectory.state;
@@ -76,9 +78,10 @@ export const PostEngagementEngine=(()=>{
     const occupancyViolation=gridOccupant(units,target.x,target.y,target);
     if(occupancyViolation){
       target.x=start.x;target.y=start.y;target.z=start.z;
+      if(window.VerticalMobilityEngine){const tile=TacticalEngine.tile(map,target.x,target.y);if(tile)VerticalMobilityEngine.syncUnit(target,tile);}
       landingAdjusted=true;blockedBy=occupancyViolation.id;
     }
-    return{type:effect.type,applied:steps.length>0||lift>0||collisions.length>0,start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:preLandingState!=="GROUNDED",trajectoryState:preLandingState,lift,travelZ,displacement,landing,falls,fallDamage:landing.damage,defeated:!target.alive,landingAdjusted,blockedBy,occupancySafe:!gridOccupant(units,target.x,target.y,target)};
+    return{type:effect.type,applied:steps.length>0||lift>0||collisions.length>0,start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(preLandingState),trajectoryState:preLandingState,lift,travelZ,displacement,landing,falls,fallDamage:landing.damage,defeated:!target.alive,landingAdjusted,blockedBy,occupancySafe:!gridOccupant(units,target.x,target.y,target)};
   }
   function process({map,units,queue=[]},hooks={}){
     const results=[];
