@@ -31,9 +31,13 @@ await import("./tactical-game.js");
 
 const runtime=globalThis.CardTacticsRuntime;if(!runtime)throw new Error("CardTacticsRuntime failed to initialize.");
 const renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),{onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
+globalThis.CardTacticsRenderer=renderer;
+
 const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
 const cardUI=new CardHandUI();cardUI.bind(runtime);
 const shell=new ShellUI(runtime,renderer);shell.bind();
+
+await import("./diagnostics.js");
 
 function sync(){const snap=runtime.getBattleSnapshot();renderer.sync(snap);battleUI.render()}
 window.addEventListener("cardtactics:battle-render",sync);
