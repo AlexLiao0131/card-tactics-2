@@ -107,15 +107,29 @@ export const EnvironmentObjectEngine=(()=>{
 
   function seedTerrainObjects(map,{seed=null}={}){
     if(!map?.tiles)return map;map.objects??=[];
+    const resolvedSeed=seed??map.seed??map.id;
     for(const tile of map.tiles){
-      if(tile.terrain!=="FOREST")continue;
       const here=activeObjectsAt(map,tile.x,tile.y);
-      if(!here.some(o=>[TYPE.TREE,TYPE.DEAD_TREE,TYPE.STUMP].includes(normalizeType(o.type)))){
-        spawn(map,{id:`forest_tree_${tile.x}_${tile.y}`,type:TYPE.TREE,x:tile.x,y:tile.y});
+      const occupiedBySolid=here.some(o=>o.blocksMovement===true||String(o.type||"").toUpperCase()==="CORE");
+      const dry=Number(tile.waterDepth||0)<=0&&!tile.river;
+
+      if(tile.terrain==="FOREST"){
+        if(!here.some(o=>[TYPE.TREE,TYPE.DEAD_TREE,TYPE.STUMP].includes(normalizeType(o.type)))){
+          spawn(map,{id:`forest_tree_${tile.x}_${tile.y}`,type:TYPE.TREE,x:tile.x,y:tile.y});
+        }
+        const bushRoll=deterministic01(`${resolvedSeed}:forest-bush:${tile.x},${tile.y}`);
+        if(bushRoll<.32&&!activeObjectsAt(map,tile.x,tile.y).some(o=>normalizeType(o.type)===TYPE.BUSH)){
+          spawn(map,{id:`forest_bush_${tile.x}_${tile.y}`,type:TYPE.BUSH,x:tile.x,y:tile.y});
+        }
+        continue;
       }
-      const bushRoll=deterministic01(`${seed??map.seed??map.id}:bush:${tile.x},${tile.y}`);
-      if(bushRoll<.32&&!activeObjectsAt(map,tile.x,tile.y).some(o=>normalizeType(o.type)===TYPE.BUSH)){
-        spawn(map,{id:`forest_bush_${tile.x}_${tile.y}`,type:TYPE.BUSH,x:tile.x,y:tile.y});
+
+      if(!dry||tile.captureZone||occupiedBySolid)continue;
+      const bushChance=tile.terrain==="PLAIN"?.08:tile.terrain==="SAND"?.04:0;
+      if(bushChance<=0)continue;
+      const bushRoll=deterministic01(`${resolvedSeed}:open-bush:${tile.terrain}:${tile.x},${tile.y}`);
+      if(bushRoll<bushChance&&!activeObjectsAt(map,tile.x,tile.y).some(o=>normalizeType(o.type)===TYPE.BUSH)){
+        spawn(map,{id:`open_bush_${tile.x}_${tile.y}`,type:TYPE.BUSH,x:tile.x,y:tile.y});
       }
     }
     sortObjects(map);return map;

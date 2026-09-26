@@ -36,51 +36,33 @@ export const BattleSetupEngine=(()=>{
     const pool=Array.isArray(source.weatherPool)?source.weatherPool:[];
     delete source.weatherPool;
 
-    if(!pool.length||!window.EnvironmentEngine){
-      return{environment:source,meta:null};
-    }
-
-    const valid=pool.filter(entry=>EnvironmentEngine.WEATHER?.[entry?.weather]);
-    if(!valid.length){
-      return{environment:source,meta:null};
-    }
-
     const battleSeed=
       battleSetup?.seed ??
       stage?.generatedBattlefield?.seed ??
       `${stage?.id||"stage"}:default`;
 
-    const weatherSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WEATHER`);
-    const selected=weightedChoice(valid,createRandom(weatherSeed));
-    if(!selected)return{environment:source,meta:null};
-
-    const weather=selected.weather;
-    const weatherTurns=weather==="CLEAR"
-      ?null
-      :Math.max(
-        1,
-        Number(
-          selected.duration ??
-          EnvironmentEngine.WEATHER_TURNS?.[weather] ??
-          1
-        )
-      );
-
-    const environment={
-      ...source,
-      weather,
-      weatherTurns
-    };
-
-    return{
-      environment,
-      meta:{
-        weather,
-        weatherTurns,
-        weatherSeed,
-        battleSeed
+    let weather=EnvironmentEngine.WEATHER?.[source.weather]?source.weather:"CLEAR",weatherTurns=source.weatherTurns??null,weatherSeed=null;
+    const valid=pool.filter(entry=>EnvironmentEngine.WEATHER?.[entry?.weather]);
+    if(valid.length){
+      weatherSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WEATHER`);
+      const selected=weightedChoice(valid,createRandom(weatherSeed));
+      if(selected){
+        weather=selected.weather;
+        weatherTurns=weather==="CLEAR"?null:Math.max(1,Number(selected.duration??EnvironmentEngine.WEATHER_TURNS?.[weather]??1));
       }
-    };
+    }
+
+    const windSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WIND`),windRandom=createRandom(windSeed),dirs=[
+      {x:1,y:0},{x:1,y:1},{x:0,y:1},{x:-1,y:1},{x:-1,y:0},{x:-1,y:-1},{x:0,y:-1},{x:1,y:-1}
+    ],baseStrength={CLEAR:.75,FOG:.45,RAIN:1.0,HEAVY_RAIN:1.45,THUNDERSTORM:1.85,SNOW:.85,BLIZZARD:2.1}[weather]??.8;
+    const generatedDir=dirs[Math.floor(windRandom()*dirs.length)]||dirs[0],generatedStrength=Math.round((baseStrength*(.82+windRandom()*.36))*100)/100;
+    const explicit=source.wind&&typeof source.wind==="object"?source.wind:null;
+    const wind=EnvironmentEngine.normalizeWind?.(explicit||{x:source.windX??generatedDir.x,y:source.windY??generatedDir.y,strength:source.windStrength??generatedStrength})||{x:generatedDir.x,y:generatedDir.y,strength:generatedStrength};
+
+    const environment={...source,weather,weatherTurns,wind};
+    delete environment.windX;delete environment.windY;delete environment.windStrength;
+
+    return{environment,meta:{weather,weatherTurns,weatherSeed,battleSeed,windSeed,wind:{...wind}}};
   }
 
   function create({stageId,battleSetup,TEAM}){
@@ -139,6 +121,8 @@ export const BattleSetupEngine=(()=>{
       if(battleSetup){
         battleSetup.openingWeather=resolvedEnvironment.meta.weather;
         battleSetup.weatherSeed=resolvedEnvironment.meta.weatherSeed;
+        battleSetup.openingWind={...resolvedEnvironment.meta.wind};
+        battleSetup.windSeed=resolvedEnvironment.meta.windSeed;
       }
     }
 

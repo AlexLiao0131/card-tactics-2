@@ -16,6 +16,7 @@ export class EnvironmentRenderer{
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
       wind:this.mat("env-wind",new BABYLON.Color3(.68,.82,.90),.23,new BABYLON.Color3(.12,.18,.22)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
+      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.42),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.mat("env-snow",new BABYLON.Color3(.92,.96,1),.82),
       ice:this.mat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
@@ -79,6 +80,16 @@ export class EnvironmentRenderer{
       cloud.position.y=.62;
       cloud.scaling.set(1,.72,1);
       this.animated.set(key,{node:root,speed:.45});
+    }else if(type==="SMOKE"){
+      for(let i=0;i<4;i++){
+        const puff=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(
+          `smoke-${key}-${i}`,{diameter:.72+i*.08,segments:7},this.scene
+        ),this.materials.smoke);
+        const side=(i%2?1:-1)*(.10+i*.035);
+        puff.position.set(side,.48+i*.30,(i%3-1)*.08);
+        puff.scaling.set(1.05,.76,1.05);
+      }
+      this.animated.set(key,{node:root,speed:.18});
     }else if(type==="ELECTRIFIED"){
       const ring=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(
         `electric-${key}`,{diameter:1.05,thickness:.065,tessellation:20},this.scene
