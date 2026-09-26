@@ -1,6 +1,15 @@
 function q(id){return document.getElementById(id)}
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 const OWNER_LABEL={PLAYER:"我方",ENEMY:"敵方",NEUTRAL:"中立"};
+const WEATHER_LABEL=Object.freeze({
+  CLEAR:["☀","晴朗"],
+  FOG:["🌫","霧"],
+  RAIN:["🌧","雨"],
+  HEAVY_RAIN:["🌧","豪大雨"],
+  THUNDERSTORM:["⛈","雷雨"],
+  SNOW:["🌨","降雪"],
+  BLIZZARD:["❄","暴風雪"]
+});
 
 export class BattleUI{
   constructor(){
@@ -104,7 +113,21 @@ export class BattleUI{
     ].filter(Boolean).join("\n");
 
     this.endTurn.disabled=phase!=="PLAYER_TURN";
-    this.renderView();this.renderContext();this.renderLog();
+    this.renderWeather(snapshot);this.renderView();this.renderContext();this.renderLog();
+  }
+
+  renderWeather(snapshot){
+    const node=q("weatherIndicator");if(!node)return;
+    const env=snapshot?.presentation?.environment||{};
+    const weather=String(env.weather||"CLEAR").toUpperCase();
+    const [icon,label]=WEATHER_LABEL[weather]||["◌",weather];
+    const remaining=env.weatherTurnsRemaining;
+    const suffix=weather==="CLEAR"||remaining==null?"":Number(remaining)>0?` ${Number(remaining)}T`:" 即將結束";
+    node.textContent=`${icon} ${label}${suffix}`;
+    node.title=`目前天氣：${label}${weather==="CLEAR"||remaining==null?"":Number(remaining)>0?`｜剩餘 ${Number(remaining)} 回合`:"｜即將結束"}${env.timeOfDay==="NIGHT"?"｜夜間":""}`;
+    node.setAttribute("aria-label",node.title);
+    node.style.pointerEvents="none";
+    node.style.cursor="default";
   }
 
   renderView(){
