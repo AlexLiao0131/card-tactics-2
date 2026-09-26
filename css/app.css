@@ -7,11 +7,10 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
 .boot-screen.active{display:grid;place-items:center;background:#0b1118}.boot-card{padding:28px 38px;border:1px solid #716247;border-radius:14px;background:#091018;text-align:center}
 .boot-card h1{font-family:Georgia,serif;letter-spacing:.12em;color:#f2ead8}
 
-/* Restore the 1.0 shell. Local asset wins when copied to 2.0; old Pages is a fallback during migration. */
+/* Self-contained 2.0 title/menu background. */
 .title-screen,.menu-screen{position:relative;overflow:hidden;background:
  linear-gradient(90deg,rgba(3,8,16,.08),rgba(3,8,16,.12) 43%,rgba(3,8,16,.74)),
  url("../assets/ui/title-cover.png") center/cover no-repeat,
- url("https://alexliao0131.github.io/card-tactics/assets/ui/title-cover.png") center/cover no-repeat,
  #101723}
 .title-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,8,16,.06),rgba(3,8,16,.08) 44%,rgba(3,8,16,.68))}
 .title-copy{position:absolute;right:5vw;top:16vh;width:min(520px,42vw);z-index:2;text-align:center;text-shadow:0 3px 14px #000}
