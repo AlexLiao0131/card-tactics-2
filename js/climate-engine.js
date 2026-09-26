@@ -15,6 +15,7 @@ export const ClimateEngine=(()=>{
   const key=(x,y)=>`${x},${y}`;
   const tileAt=(map,x,y)=>map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
   const clean=n=>Math.max(0,Math.round(Number(n||0)*1000)/1000);
+  const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
   const weightClass=unit=>window.DisplacementEngine?.weightClass?.(unit)||"LIGHT";
   const isFrozen=tile=>Number(tile?.iceThickness||0)>=.25&&Number(tile?.waterDepth||0)>0;
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
@@ -65,7 +66,7 @@ export const ClimateEngine=(()=>{
       if(Math.abs(iceThickness(tile)-beforeIce)>.0001)iceChanged++;
       maxSnow=Math.max(maxSnow,snowDepth(tile));maxIce=Math.max(maxIce,iceThickness(tile));syncTileVisuals(state,tile);
     }
-    if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
+    if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
     if(snowChanged)events.push({type:isSnowWeather(state)?"SNOWFALL":"SNOW_THAW",changedTiles:snowChanged,maxSnow:clean(maxSnow),meltVolume:clean(totalMelt),weather:state.weather});
     if(iceChanged)events.push({type:isSnowWeather(state)?"FREEZE_PULSE":"ICE_THAW",changedTiles:iceChanged,maxIce:clean(maxIce),weather:state.weather});
     return events;
@@ -92,27 +93,20 @@ export const ClimateEngine=(()=>{
     if(changedWater)HydrologyEngine.redistribute(map,{source:"HEAT_MELT",events});syncTileVisuals(state,tile);return events;
   }
 
-  function downhillNeighbor(map,tile,visited){
-    const candidates=[[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dy])=>tileAt(map,tile.x+dx,tile.y+dy)).filter(Boolean).filter(t=>!visited.has(key(t.x,t.y)));
-    candidates.sort((a,b)=>Number(a.elevation||0)-Number(b.elevation||0)||snowDepth(b)-snowDepth(a));
-    const next=candidates[0];return next&&Number(next.elevation||0)<Number(tile.elevation||0)?next:null;
-  }
   function triggerAvalanche(map,x,y,{strength=1,source="SHOCK",state=null}={}){
-    if(!map)return[];let start=tileAt(map,x,y);
+    if(!map||!window.MassFlowEngine)return[];let start=tileAt(map,x,y);
     if(!start||snowDepth(start)<.6){
       const near=[];for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const t=tileAt(map,x+dx,y+dy);if(t&&snowDepth(t)>=.6)near.push(t);}near.sort((a,b)=>Number(b.elevation||0)-Number(a.elevation||0)||snowDepth(b)-snowDepth(a));start=near[0]||null;
     }
     if(!start||snowDepth(start)<.6)return[];
-    const visited=new Set([key(start.x,start.y)]),path=[{x:start.x,y:start.y,elevation:Number(start.elevation||0)}];let current=start,mass=Math.max(.6,snowDepth(start))*Math.max(.5,Number(strength||1));
-    start.snowDepth=clean(Math.max(0,snowDepth(start)-mass*.7));
-    for(let i=0;i<Math.min(12,map.width+map.height);i++){
-      const next=downhillNeighbor(map,current,visited);if(!next)break;visited.add(key(next.x,next.y));path.push({x:next.x,y:next.y,elevation:Number(next.elevation||0)});mass+=Math.min(.5,snowDepth(next)*.35);next.snowDepth=clean(Math.max(0,snowDepth(next)-Math.min(.5,snowDepth(next)*.35)));current=next;
-    }
-    if(path.length<2)return[];
-    current.snowDepth=clean(snowDepth(current)+mass*.55);
-    const damage=Math.round(18+mass*18),forceDistance=Math.max(1,Math.min(3,Math.round(mass/1.4)));
-    for(const p of path){const t=tileAt(map,p.x,p.y);if(t&&state)syncTileVisuals(state,t);}
-    return[{type:"AVALANCHE",x:start.x,y:start.y,source,path,mass:clean(mass),damage,forceDistance}];
+    const releaseRatio=clamp(.55+Math.max(0,Number(strength||1))*.16,.55,1),released=Math.min(snowDepth(start),Math.max(.6,snowDepth(start)*releaseRatio));
+    const flow=MassFlowEngine.trace(map,start,"SNOW",released,{maxSteps:Math.min(12,Number(map.width||0)+Number(map.height||0))});
+    if(!flow||flow.path.length<2)return[];
+    const events=[];MassFlowEngine.apply(map,flow,{events,source});
+    for(const p of flow.path){const t=tileAt(map,p.x,p.y);if(t&&state)syncTileVisuals(state,t);}
+    const damage=Math.round((18+flow.mass*18)*Math.max(.75,Math.min(1.5,Number(strength||1)))),forceDistance=Math.max(1,Math.min(3,Math.round(flow.mass/1.4)));
+    events.push(MassFlowEngine.event(flow,{type:"AVALANCHE",source,damage,forceDistance,extra:{strength:Number(strength||1)}}));
+    return events;
   }
 
   return Object.freeze({WEATHER,SAFE_ICE,CFG,initializeMap,advance,temperatureAt,isSnowWeather,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});

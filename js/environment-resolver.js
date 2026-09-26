@@ -38,7 +38,7 @@ const rockMass=t=>Math.max(0,Number(t?.rockMass??(rockMaterial(t)?Math.max(.5,el
 const frozenSoil=(state,t)=>temperature(state,t)<=CFG.FREEZE_POINT&&moisture(t)>=CFG.FROZEN_SOIL_MOISTURE&&water(t)<=.001;
 const slopeTo=(a,b)=>elevation(a)-elevation(b);
 function downhill(map,tile,visited=new Set()){
-  return neighbors(map,tile).filter(n=>!visited.has(key(n.x,n.y))).map(n=>({tile:n,drop:slopeTo(tile,n)})).filter(x=>x.drop>0).sort((a,b)=>b.drop-a.drop||elevation(a.tile)-elevation(b.tile))[0]||null;
+  return neighbors(map,tile).filter(n=>n.terrain!=="WALL"&&!visited.has(key(n.x,n.y))).map(n=>({tile:n,drop:slopeTo(tile,n)})).filter(x=>x.drop>0).sort((a,b)=>b.drop-a.drop||elevation(a.tile)-elevation(b.tile))[0]||null;
 }
 function surfaceFriction(state,tile){
   if(window.ClimateEngine?.isSolidIce?.(tile))return .08;
@@ -63,17 +63,14 @@ function ensureTileState(map,state){
     tile.disturbance=clean(Number(tile.disturbance||0)*CFG.DISTURBANCE_DECAY);
   }
 }
-function massFlowPath(map,start,kind,mass){
-  const visited=new Set([key(start.x,start.y)]),path=[{x:start.x,y:start.y,elevation:elevation(start)}];
-  let current=start,carried=Math.max(0,Number(mass||0));
-  for(let i=0;i<CFG.MAX_MASS_FLOW_STEPS;i++){
-    const next=downhill(map,current,visited);if(!next)break;
-    current=next.tile;visited.add(key(current.x,current.y));path.push({x:current.x,y:current.y,elevation:elevation(current)});
-    if(kind==="SNOW")carried+=Math.min(.45,snow(current)*.3);
-    else if(kind==="ROCK"||kind==="DEBRIS")carried+=Math.min(.55,rockMass(current)*.18);
-    else carried+=Math.min(.35,moisture(current)*.35);
-  }
-  return{path,mass:clean(carried),end:current};
+function createFlow(map,start,kind,mass){
+  return window.MassFlowEngine?.trace?.(map,start,kind,mass,{maxSteps:CFG.MAX_MASS_FLOW_STEPS})||null;
+}
+function applyFlowTerrain(map,state,flow,events,source){
+  if(!flow)return null;
+  const result=MassFlowEngine.apply(map,flow,{events,source});
+  if(flow.material==="SNOW"&&window.ClimateEngine?.syncTileVisuals){for(const p of flow.path){const t=tileAt(map,p.x,p.y);if(t)ClimateEngine.syncTileVisuals(state,t);}}
+  return result;
 }
 function resolveSnowFailure(map,state,tile,events){
   const next=downhill(map,tile);if(!next||next.drop<CFG.SNOW_FAILURE_MIN_DROP)return;
@@ -81,25 +78,19 @@ function resolveSnowFailure(map,state,tile,events){
   const snowStability=Math.max(0,Math.min(1,CFG.SNOW_FAILURE_BASE_STABILITY+(vegetation(tile)?.16:0)-Math.max(0,depth-CFG.SNOW_FAILURE_DEPTH)*.18-disturbance*.3));
   tile.snowStability=snowStability;
   if(depth<CFG.SNOW_FAILURE_DEPTH||snowStability>.45)return;
-  const released=Math.min(depth,Math.max(.55,depth*(.5+disturbance*.15))),flow=massFlowPath(map,tile,"SNOW",released);
-  if(flow.path.length<2)return;
-  tile.snowDepth=clean(depth-released);
-  flow.end.snowDepth=clean(snow(flow.end)+flow.mass*.72);
-  events.push({type:"MASS_FLOW",material:"SNOW",x:tile.x,y:tile.y,path:flow.path,mass:flow.mass,damage:Math.round(16+flow.mass*18),forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.4))),source:"STABILITY_FAILURE"});
+  const released=Math.min(depth,Math.max(.55,depth*(.5+disturbance*.15))),flow=createFlow(map,tile,"SNOW",released);
+  if(!flow||flow.path.length<2)return;
+  applyFlowTerrain(map,state,flow,events,"STABILITY_FAILURE");
+  events.push(MassFlowEngine.event(flow,{source:"STABILITY_FAILURE",damage:16+flow.mass*18,forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.4)))}));
 }
 function resolveSoilFailure(map,state,tile,events){
   const next=downhill(map,tile);if(!next||next.drop<CFG.SLOPE_FAILURE_MIN_DROP)return;
   const ratio=moistureRatio(tile),stab=stability(state,tile),disturbance=Number(tile.disturbance||0);
   if(ratio<CFG.SLOPE_FAILURE_MOISTURE_RATIO||frozenSoil(state,tile)||stab-disturbance*.2>.36)return;
-  const mass=Math.max(CFG.SLOPE_FAILURE_MIN_MASS,ratio*(1-stab)+disturbance*.15),flow=massFlowPath(map,tile,"SOIL",mass);
-  if(flow.path.length<2)return;
-  const erosion=Math.min(.35,flow.mass*.12),deposit=Math.min(.35,flow.mass*.10);
-  tile.elevation=Number((elevation(tile)-erosion).toFixed(3));
-  flow.end.elevation=Number((elevation(flow.end)+deposit).toFixed(3));
-  tile.soilMoisture=clean(Math.max(0,moisture(tile)-erosion));
-  flow.end.soilMoisture=clean(Math.min(Number(window.HydrologyEngine?.SOIL_SATURATION_CAPACITY||.45),moisture(flow.end)+deposit));
-  if(flow.end.terrain==="PLAIN")flow.end.terrain="MUD";
-  events.push({type:"MASS_FLOW",material:"SOIL",x:tile.x,y:tile.y,path:flow.path,mass:flow.mass,erosion,deposit,damage:Math.round(12+flow.mass*20),forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.2))),source:"SLOPE_FAILURE"});
+  const mass=Math.max(CFG.SLOPE_FAILURE_MIN_MASS,ratio*(1-stab)+disturbance*.15),flow=createFlow(map,tile,"SOIL",mass);
+  if(!flow||flow.path.length<2)return;
+  const terrain=applyFlowTerrain(map,state,flow,events,"SLOPE_FAILURE");
+  events.push(MassFlowEngine.event(flow,{source:"SLOPE_FAILURE",damage:12+flow.mass*20,forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.2))),extra:{terrainEvolution:terrain}}));
 }
 function resolveRockFailure(map,state,tile,events){
   if(!rockMaterial(tile))return;
@@ -112,14 +103,10 @@ function resolveRockFailure(map,state,tile,events){
   if(tile.rockFracture+disturbance*.35<=cohesion)return;
   const available=rockMass(tile),released=Math.min(available,Math.max(CFG.ROCK_MIN_MASS,available*(.35+Math.min(.45,disturbance*.18))));
   if(released<=0)return;
-  const flow=massFlowPath(map,tile,"ROCK",released);if(flow.path.length<2)return;
+  const flow=createFlow(map,tile,"ROCK",released);if(!flow||flow.path.length<2)return;
   tile.rockMass=clean(Math.max(0,available-released));
-  const erosion=Math.min(.6,flow.mass*.13),deposit=Math.min(.55,flow.mass*.11);
-  tile.elevation=Number((elevation(tile)-erosion).toFixed(3));
-  flow.end.elevation=Number((elevation(flow.end)+deposit).toFixed(3));
-  flow.end.rockMass=clean(rockMass(flow.end)+flow.mass*.62);
-  flow.end.debrisMass=clean(Number(flow.end.debrisMass||0)+flow.mass*.38);
-  events.push({type:"MASS_FLOW",material:"ROCK",x:tile.x,y:tile.y,path:flow.path,mass:flow.mass,erosion,deposit,damage:Math.round(20+flow.mass*24),forceDistance:Math.max(1,Math.min(4,Math.ceil(flow.mass/1.1))),source:"ROCK_FAILURE"});
+  const terrain=applyFlowTerrain(map,state,flow,events,"ROCK_FAILURE");
+  events.push(MassFlowEngine.event(flow,{source:"ROCK_FAILURE",damage:20+flow.mass*24,forceDistance:Math.max(1,Math.min(4,Math.ceil(flow.mass/1.1))),extra:{terrainEvolution:terrain}}));
 }
 function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
   const events=[];if(!map||!state)return events;ensureTileState(map,state);
@@ -133,7 +120,7 @@ function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
     resolveSoilFailure(map,state,tile,events);
     resolveRockFailure(map,state,tile,events);
   }
-  if(events.some(e=>e.type==="MASS_FLOW"&&(e.material==="SOIL"||e.material==="ROCK"||e.material==="DEBRIS")))window.HydrologyEngine?.redistribute?.(map,{source:"MASS_FLOW",events});
+  if(events.some(e=>e.type==="ELEVATION_CHANGED"&&e.source&&String(e.source).includes("FAILURE")))window.HydrologyEngine?.redistribute?.(map,{source:"MASS_FLOW",events});
   ensureTileState(map,state);
   events.push({type:"ENVIRONMENT_RESOLVED",source,tiles:map.tiles?.length||0,massFlows:events.filter(e=>e.type==="MASS_FLOW").length});
   return events;

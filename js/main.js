@@ -4,7 +4,7 @@ import { CardHandUI } from "./card-hand-ui.js";
 import { ShellUI } from "./shell-ui.js";
 
 const CORE_LOAD_ORDER=[
-  "terrain-database.js","map-database.js","hydrology-engine.js","climate-engine.js","environment-resolver.js",
+  "terrain-database.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
   "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js",
   "skill-database.js","equipment-database.js","character-database.js","card-database.js","monster-database.js",
   "monster-content.js","ophi-content.js","church-content.js","seraphina-content.js","pack-database.js","pack-engine.js",
