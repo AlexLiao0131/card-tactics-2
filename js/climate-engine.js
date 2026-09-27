@@ -21,11 +21,33 @@ export const ClimateEngine=(()=>{
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
   const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
-  const isSnowWeather=state=>state?.weather===WEATHER.SNOW||state?.weather===WEATHER.BLIZZARD;
-
-  function config(state){return CFG[state?.weather]||CFG.CLEAR;}
-  function temperatureAt(state,tile){return Number(state?.temperature??config(state).temperature)-Math.max(0,Number(tile?.elevation||0))*.9;}
-  function ensureState(state){if(!state)return;state.climate??={turn:0};state.effects??=new Map();}
+  function precipitationType(state){
+    const type=state?.climate?.precipitation?.type;
+    if(type)return type;
+    if(state?.weather===WEATHER.SNOW||state?.weather===WEATHER.BLIZZARD)return"SNOW";
+    if(state?.weather==="HEAVY_RAIN"||state?.weather==="THUNDERSTORM")return"HEAVY_RAIN";
+    if(state?.weather==="RAIN")return"RAIN";
+    return"NONE";
+  }
+  function windStrength(state){return Math.max(0,Number(state?.climate?.wind?.strength??state?.wind?.strength??0));}
+  function thunderIntensity(state){return Math.max(0,Number(state?.climate?.thunder?.intensity??(state?.weather==="THUNDERSTORM"?1:0)));}
+  function fogIntensity(state){return Math.max(0,Number(state?.climate?.fog?.intensity??(state?.weather==="FOG"?1:0)));}
+  const isSnowWeather=state=>precipitationType(state)==="SNOW";
+  const isBlizzard=state=>isSnowWeather(state)&&windStrength(state)>=1.75;
+  function config(state){
+    const precipitation=precipitationType(state);
+    if(precipitation==="SNOW")return isBlizzard(state)?CFG.BLIZZARD:CFG.SNOW;
+    if(precipitation==="HEAVY_RAIN")return thunderIntensity(state)>0?CFG.THUNDERSTORM:CFG.HEAVY_RAIN;
+    if(precipitation==="RAIN")return CFG.RAIN;
+    if(fogIntensity(state)>0)return CFG.FOG;
+    return CFG.CLEAR;
+  }
+  function temperatureAt(state,tile){
+    const explicit=state?.climate?.temperature??state?.temperature;
+    const base=explicit!=null&&Number.isFinite(Number(explicit))?Number(explicit):config(state).temperature;
+    return base-Math.max(0,Number(tile?.elevation||0))*.9;
+  }
+  function ensureState(state){if(!state)return;state.climate??={turn:0};state.climate.turn=Math.max(0,Number(state.climate.turn||0));state.effects??=new Map();}
   function visualEffect(state,tile,type,present,extra={}){
     if(!state?.effects||!tile)return;const k=key(tile.x,tile.y),list=state.effects.get(k)||[],idx=list.findIndex(e=>e.type===type);
     if(present){const effect={type,duration:null,visualOnly:true,...extra,x:tile.x,y:tile.y};if(idx>=0)list[idx]=effect;else list.push(effect);state.effects.set(k,list);}
@@ -38,10 +60,11 @@ export const ClimateEngine=(()=>{
   }
   function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(tile.iceThickness);if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=Number(tile.discharge||tile.baseDischarge);}syncTileVisuals(state,tile);}return map;}
 
+  function legacyWeather(state){return window.EnvironmentEngine?.legacyWeather?.(state)||state?.weather||"CLEAR";}
   function updateRiverFlow(map,state,events=[]){
     const mult=config(state).flow;let count=0,maxSpeed=0;
     for(const tile of map?.tiles||[]){if(!tile.river)continue;const depth=Math.max(.1,Number(tile.waterDepth||0)),depthFactor=1+Math.max(0,depth-1)*.25;tile.flowSpeed=clean(Number(tile.baseFlowSpeed||.62)*mult*depthFactor);tile.discharge=clean(Math.max(.2,Number(tile.baseDischarge||1))*mult*depthFactor);maxSpeed=Math.max(maxSpeed,tile.flowSpeed);count++;syncTileVisuals(state,tile);}
-    if(count&&mult>=1.8)events.push({type:"RIVER_SURGE",tiles:count,maxSpeed,weather:state?.weather});
+    if(count&&mult>=1.8)events.push({type:"RIVER_SURGE",tiles:count,maxSpeed,weather:legacyWeather(state)});
   }
 
   function addMeltWater(map,tile,amount,events,source){
@@ -49,14 +72,14 @@ export const ClimateEngine=(()=>{
   }
 
   function advance(map,state){
-    const events=[];if(!map||!state)return events;ensureState(state);state.climate.turn=Number(state.climate.turn||0)+1;const cfg=config(state);
+    const events=[];if(!map||!state)return events;ensureState(state);state.climate.turn=Number(state.climate.turn||0)+1;const cfg=config(state),blizzard=isBlizzard(state);
     updateRiverFlow(map,state,events);
     let changedWater=false,snowChanged=0,iceChanged=0,totalMelt=0,maxSnow=0,maxIce=0;const hydroEvents=[];
     for(const tile of map.tiles||[]){
       const temp=temperatureAt(state,tile),beforeSnow=snowDepth(tile),beforeIce=iceThickness(tile);
       if(isSnowWeather(state)){
         const altitudeBonus=Math.max(0,Number(tile.elevation||0))*.035;
-        if(Number(tile.waterDepth||0)>0&&temp<=0)tile.iceThickness=clean(beforeIce+(state.weather===WEATHER.BLIZZARD?.42:.22));
+        if(Number(tile.waterDepth||0)>0&&temp<=0)tile.iceThickness=clean(beforeIce+(blizzard ? .42 : .22));
         const canSettle=Number(tile.waterDepth||0)<=0||isSolidIce(tile);if(canSettle)tile.snowDepth=clean(beforeSnow+cfg.snowRate+altitudeBonus);
       }else if(temp>0){
         if(beforeSnow>0){const melt=Math.min(beforeSnow,cfg.melt+Math.max(0,temp)*.015);tile.snowDepth=clean(beforeSnow-melt);if(melt>0){window.HydrologyEngine?.addWater?.(tile,melt,hydroEvents);changedWater=true;totalMelt+=melt;}}
@@ -67,8 +90,9 @@ export const ClimateEngine=(()=>{
       maxSnow=Math.max(maxSnow,snowDepth(tile));maxIce=Math.max(maxIce,iceThickness(tile));syncTileVisuals(state,tile);
     }
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
-    if(snowChanged)events.push({type:isSnowWeather(state)?"SNOWFALL":"SNOW_THAW",changedTiles:snowChanged,maxSnow:clean(maxSnow),meltVolume:clean(totalMelt),weather:state.weather});
-    if(iceChanged)events.push({type:isSnowWeather(state)?"FREEZE_PULSE":"ICE_THAW",changedTiles:iceChanged,maxIce:clean(maxIce),weather:state.weather});
+    const weather=legacyWeather(state);
+    if(snowChanged)events.push({type:isSnowWeather(state)?"SNOWFALL":"SNOW_THAW",changedTiles:snowChanged,maxSnow:clean(maxSnow),meltVolume:clean(totalMelt),weather});
+    if(iceChanged)events.push({type:isSnowWeather(state)?"FREEZE_PULSE":"ICE_THAW",changedTiles:iceChanged,maxIce:clean(maxIce),weather});
     return events;
   }
 
@@ -109,6 +133,6 @@ export const ClimateEngine=(()=>{
     return events;
   }
 
-  return Object.freeze({WEATHER,SAFE_ICE,CFG,initializeMap,advance,temperatureAt,isSnowWeather,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
+  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
 })();
 globalThis.ClimateEngine=ClimateEngine;

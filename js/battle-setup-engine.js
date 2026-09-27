@@ -33,36 +33,70 @@ export const BattleSetupEngine=(()=>{
 
   function resolveEnvironment(stage,battleSetup={}){
     const source={...(stage?.environment||{})};
-    const pool=Array.isArray(source.weatherPool)?source.weatherPool:[];
-    delete source.weatherPool;
+    const legacyPool=Array.isArray(source.weatherPool)?source.weatherPool:[];
+    const climatePool=source.climatePool&&typeof source.climatePool==="object"?source.climatePool:null;
+    delete source.weatherPool;delete source.climatePool;
 
     const battleSeed=
       battleSetup?.seed ??
       stage?.generatedBattlefield?.seed ??
       `${stage?.id||"stage"}:default`;
 
-    let weather=EnvironmentEngine.WEATHER?.[source.weather]?source.weather:"CLEAR",weatherTurns=source.weatherTurns??null,weatherSeed=null;
-    const valid=pool.filter(entry=>EnvironmentEngine.WEATHER?.[entry?.weather]);
-    if(valid.length){
-      weatherSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WEATHER`);
-      const selected=weightedChoice(valid,createRandom(weatherSeed));
-      if(selected){
-        weather=selected.weather;
-        weatherTurns=weather==="CLEAR"?null:Math.max(1,Number(selected.duration??EnvironmentEngine.WEATHER_TURNS?.[weather]??1));
+    const climateSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|CLIMATE`),climateRandom=createRandom(climateSeed);
+    const fogSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|FOG`),fogRandom=createRandom(fogSeed);
+    let climate=source.climate&&typeof source.climate==="object"?JSON.parse(JSON.stringify(source.climate)):null;
+    let selectedPreset=null,selectedPrecipitation=null;
+
+    if(climatePool){
+      const precipitationEntries=Array.isArray(climatePool.precipitation)?climatePool.precipitation:[];
+      selectedPrecipitation=weightedChoice(precipitationEntries,climateRandom);
+      climate=climate||{};
+      if(selectedPrecipitation){
+        climate.precipitation={
+          type:selectedPrecipitation.type||"NONE",
+          intensity:Number(selectedPrecipitation.intensity??(selectedPrecipitation.type==="HEAVY_RAIN"?1.5:selectedPrecipitation.type==="NONE"?0:1)),
+          turnsRemaining:selectedPrecipitation.type==="NONE"?null:Math.max(1,Number(selectedPrecipitation.duration??EnvironmentEngine.WEATHER_TURNS?.[selectedPrecipitation.type]??2))
+        };
+        if(Number(selectedPrecipitation.thunder||0)>0){
+          climate.thunder={intensity:Number(selectedPrecipitation.thunder||1),turnsRemaining:Math.max(1,Number(selectedPrecipitation.duration??2))};
+        }
+      }
+      const fogChance=Math.max(0,Math.min(1,Number(climatePool.fogChance||0)));
+      if(fogRandom()<fogChance){
+        climate.fog={intensity:Number(climatePool.fogIntensity||1),turnsRemaining:Math.max(1,Number(climatePool.fogDuration||EnvironmentEngine.WEATHER_TURNS?.FOG||2))};
+      }else if(!climate.fog){
+        climate.fog={intensity:0,turnsRemaining:null};
+      }
+    }else{
+      const valid=legacyPool.filter(entry=>EnvironmentEngine.WEATHER?.[entry?.weather]);
+      if(valid.length){
+        selectedPreset=weightedChoice(valid,climateRandom);
+        if(selectedPreset)climate=EnvironmentEngine.climateFromWeather(selectedPreset.weather,selectedPreset.duration??EnvironmentEngine.WEATHER_TURNS?.[selectedPreset.weather]??null);
+      }else if(!climate){
+        climate=EnvironmentEngine.climateFromWeather(source.weather||"CLEAR",source.weatherTurns??null);
       }
     }
 
+    climate=climate||EnvironmentEngine.climateFromWeather("CLEAR",null);
+
+    const precipType=climate.precipitation?.type||"NONE",thunder=Number(climate.thunder?.intensity||0)>0,fog=Number(climate.fog?.intensity||0)>0;
+    let baseStrength=precipType==="SNOW"?.85:precipType==="HEAVY_RAIN"?1.45:precipType==="RAIN"?1.0:fog?.45:.75;
+    if(thunder)baseStrength=Math.max(baseStrength,1.85);
+    if(Number(selectedPrecipitation?.windMin||0)>0)baseStrength=Math.max(baseStrength,Number(selectedPrecipitation.windMin));
+
     const windSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|WIND`),windRandom=createRandom(windSeed),dirs=[
       {x:1,y:0},{x:1,y:1},{x:0,y:1},{x:-1,y:1},{x:-1,y:0},{x:-1,y:-1},{x:0,y:-1},{x:1,y:-1}
-    ],baseStrength={CLEAR:.75,FOG:.45,RAIN:1.0,HEAVY_RAIN:1.45,THUNDERSTORM:1.85,SNOW:.85,BLIZZARD:2.1}[weather]??.8;
+    ];
     const generatedDir=dirs[Math.floor(windRandom()*dirs.length)]||dirs[0],generatedStrength=Math.round((baseStrength*(.82+windRandom()*.36))*100)/100;
     const explicit=source.wind&&typeof source.wind==="object"?source.wind:null;
-    const wind=EnvironmentEngine.normalizeWind?.(explicit||{x:source.windX??generatedDir.x,y:source.windY??generatedDir.y,strength:source.windStrength??generatedStrength})||{x:generatedDir.x,y:generatedDir.y,strength:generatedStrength};
+    const wind=EnvironmentEngine.normalizeWind?.(explicit||climate.wind||{x:source.windX??generatedDir.x,y:source.windY??generatedDir.y,strength:Math.max(Number(source.windStrength??0),generatedStrength)})||{x:generatedDir.x,y:generatedDir.y,strength:generatedStrength};
+    climate.wind={...wind};
 
-    const environment={...source,weather,weatherTurns,wind};
-    delete environment.windX;delete environment.windY;delete environment.windStrength;
+    const environment={...source,climate,wind};
+    delete environment.weather;delete environment.weatherTurns;delete environment.windX;delete environment.windY;delete environment.windStrength;
+    const preview=EnvironmentEngine.create(environment),snapshot=EnvironmentEngine.climateSnapshot(preview),weather=snapshot.legacyWeather,weatherTurns=preview.weatherTurnsRemaining;
 
-    return{environment,meta:{weather,weatherTurns,weatherSeed,battleSeed,windSeed,wind:{...wind}}};
+    return{environment,meta:{weather,weatherTurns,weatherSeed:climateSeed,battleSeed,climateSeed,fogSeed,windSeed,wind:{...wind},climate:snapshot,selectedPreset:selectedPreset?.weather||null,selectedPrecipitation:selectedPrecipitation?{...selectedPrecipitation}:null}};
   }
 
   function create({stageId,battleSetup,TEAM}){
@@ -121,6 +155,8 @@ export const BattleSetupEngine=(()=>{
       if(battleSetup){
         battleSetup.openingWeather=resolvedEnvironment.meta.weather;
         battleSetup.weatherSeed=resolvedEnvironment.meta.weatherSeed;
+        battleSetup.openingClimate=JSON.parse(JSON.stringify(resolvedEnvironment.meta.climate));
+        battleSetup.climateSeed=resolvedEnvironment.meta.climateSeed;
         battleSetup.openingWind={...resolvedEnvironment.meta.wind};
         battleSetup.windSeed=resolvedEnvironment.meta.windSeed;
       }

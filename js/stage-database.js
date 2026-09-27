@@ -18,15 +18,19 @@ export const STAGES={
     battlefield:{type:"PROCEDURAL",generator:"VERSUS_CORE",defaultSize:"MEDIUM"},
     environment:{
       timeOfDay:"DAY",
-      weatherPool:[
-        {weather:"CLEAR",weight:35},
-        {weather:"FOG",weight:15},
-        {weather:"RAIN",weight:20},
-        {weather:"HEAVY_RAIN",weight:10},
-        {weather:"THUNDERSTORM",weight:8},
-        {weather:"SNOW",weight:8},
-        {weather:"BLIZZARD",weight:4}
-      ]
+      climatePool:{
+        precipitation:[
+          {type:"NONE",weight:50},
+          {type:"RAIN",weight:20,duration:3},
+          {type:"HEAVY_RAIN",weight:10,duration:2},
+          {type:"HEAVY_RAIN",weight:8,duration:2,thunder:1,windMin:1.85},
+          {type:"SNOW",weight:8,duration:3},
+          {type:"SNOW",weight:4,duration:2,windMin:2.1}
+        ],
+        fogChance:.15,
+        fogIntensity:1,
+        fogDuration:2
+      }
     },
     playerSpawns:[],enemySpawns:[],
     enemyDeck:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card","leon_card"],
