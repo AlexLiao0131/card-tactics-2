@@ -3,6 +3,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
 const DEFAULT_BATTLE_VISUAL=Object.freeze({kind:"CAPSULE"});
 const FACING_ANGLE=Object.freeze({S:0,E:Math.PI/2,N:Math.PI,W:-Math.PI/2});
 const FACING_VECTOR=Object.freeze({N:{x:0,z:-1},E:{x:1,z:0},S:{x:0,z:1},W:{x:-1,z:0}});
+const DEBUG_MIN_DURATION=Object.freeze({WALK:360,ATTACK:620,CAST:760,HURT:520,DEATH:1050});
 
 function normalizeFacing(value){
   const facing=String(value||"S").toUpperCase();
@@ -25,6 +26,7 @@ export class UnitRenderer{
     this.meshes=new Map();
     this.animationQueues=new Map();
     this.activeAnimations=new Map();
+    this.animationDebug=true;
     this.materials={
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -88,6 +90,74 @@ export class UnitRenderer{
     return{root,meshes:[pointer]};
   }
 
+  createAnimationBadge(unit){
+    const root=new BABYLON.TransformNode(`unit-animation-badge-${unit.id}`,this.scene);
+    const plane=BABYLON.MeshBuilder.CreatePlane(
+      `unit-animation-badge-plane-${unit.id}`,
+      {width:.92,height:.25,sideOrientation:BABYLON.Mesh.DOUBLESIDE},
+      this.scene
+    );
+    plane.parent=root;
+    plane.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
+    plane.isPickable=false;
+
+    const texture=new BABYLON.DynamicTexture(
+      `unit-animation-badge-texture-${unit.id}`,
+      {width:256,height:64},
+      this.scene,
+      false
+    );
+    texture.hasAlpha=true;
+
+    const material=new BABYLON.StandardMaterial(`unit-animation-badge-material-${unit.id}`,this.scene);
+    material.diffuseTexture=texture;
+    material.opacityTexture=texture;
+    material.emissiveTexture=texture;
+    material.disableLighting=true;
+    material.backFaceCulling=false;
+    material.specularColor=BABYLON.Color3.Black();
+    plane.material=material;
+    root.setEnabled(false);
+
+    return{
+      root,plane,texture,material,lastText:"",
+      dispose:()=>{texture.dispose();material.dispose();root.dispose();}
+    };
+  }
+
+  drawAnimationBadge(badge,text){
+    if(!badge||badge.lastText===text)return;
+    badge.lastText=text;
+    badge.texture.drawText(
+      text,
+      null,
+      45,
+      "bold 34px Arial",
+      "#ffffff",
+      "rgba(0,0,0,0.78)",
+      true,
+      true
+    );
+  }
+
+  updateAnimationBadge(entry,unit,state){
+    const badge=entry?.animationBadge;
+    if(!badge)return;
+    const show=this.animationDebug&&(state!=="IDLE"||unit?.selected===true);
+    badge.root.setEnabled(show);
+    if(!show)return;
+
+    this.drawAnimationBadge(badge,state);
+    const extra=entry.kind==="CAPSULE"
+      ?Number(entry.height||UNIT_VISUAL_HEIGHT)/2+.42
+      :Number(entry.height||UNIT_VISUAL_HEIGHT)+.42;
+    badge.root.position.set(
+      entry.root.position.x,
+      entry.root.position.y+extra,
+      entry.root.position.z
+    );
+  }
+
   createCapsule(unit){
     const mesh=BABYLON.MeshBuilder.CreateCapsule(
       `unit-${unit.id}`,
@@ -148,8 +218,9 @@ export class UnitRenderer{
     const kind=String(definition?.kind||"CAPSULE").toUpperCase();
     const visual=kind==="BILLBOARD"?this.createBillboard(unit,definition):this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
+    const animationBadge=this.createAnimationBadge(unit);
     const entry={
-      ...visual,signature,facingMarker,definition,lastUnit:{...unit},baseScale:1,
+      ...visual,signature,facingMarker,animationBadge,definition,lastUnit:{...unit},baseScale:1,
       basePosition:new BABYLON.Vector3(0,0,0),baseMarkerPosition:new BABYLON.Vector3(0,0,0)
     };
     this.entries.set(unit.id,entry);
@@ -161,6 +232,7 @@ export class UnitRenderer{
     const entry=this.entries.get(id);
     if(!entry)return;
     entry.dispose?.();
+    entry.animationBadge?.dispose?.();
     entry.facingMarker?.root?.dispose?.();
     entry.root?.dispose?.();
     this.entries.delete(id);
@@ -230,13 +302,19 @@ export class UnitRenderer{
     return (this.animationQueues.get(id)||[]).some(event=>event.state==="DEATH");
   }
 
+  debugDuration(event){
+    const raw=Math.max(1,Number(event?.duration||300));
+    if(!this.animationDebug)return raw;
+    return Math.max(raw,Number(DEBUG_MIN_DURATION[event?.state]||0));
+  }
+
   startNext(id,now){
     if(this.activeAnimations.has(id))return this.activeAnimations.get(id);
     const queue=this.animationQueues.get(id)||[];
     if(!queue.length)return null;
     const event=queue.shift();
     if(!queue.length)this.animationQueues.delete(id);
-    const active={event,startedAt:now,duration:Math.max(1,Number(event.duration||300))};
+    const active={event,startedAt:now,duration:this.debugDuration(event)};
     this.activeAnimations.set(id,active);
     return active;
   }
@@ -271,46 +349,68 @@ export class UnitRenderer{
     entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
-    entry.root.position.y+=Math.abs(Math.sin(local*Math.PI*2))*.075;
-    entry.root.rotation.z=Math.sin(local*Math.PI*2)*.025;
+    entry.root.position.y+=Math.abs(Math.sin(local*Math.PI*2))*.17;
+    entry.root.rotation.z=Math.sin(local*Math.PI*2)*.11;
   }
 
   applyProcedural(entry,unit,state,progress,now,event,definition){
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress);return;}
+
     if(procedural==="BREATHE"||state==="IDLE"){
-      entry.root.position.y+=Math.sin(now/330)*.025;
+      const breathe=Math.sin(now/300);
+      entry.root.position.y+=breathe*.055;
+      entry.root.scaling.y=entry.baseScale*(1+breathe*.035);
       return;
     }
+
     if(procedural==="STEP"||state==="WALK"){
-      entry.root.position.y+=Math.abs(Math.sin(progress*Math.PI*4))*.07;
-      entry.root.rotation.z=Math.sin(progress*Math.PI*4)*.035;
+      entry.root.position.y+=Math.abs(Math.sin(progress*Math.PI*4))*.16;
+      entry.root.rotation.z=Math.sin(progress*Math.PI*4)*.11;
       return;
     }
+
     if(procedural==="LUNGE"||state==="ATTACK"){
-      const distance=Math.sin(Math.PI*progress)*.24;
-      entry.root.position.x+=vector.x*distance;entry.root.position.z+=vector.z*distance;
-      entry.root.rotation.z=Math.sin(Math.PI*progress)*-.08;
+      const thrust=Math.sin(Math.PI*progress);
+      const distance=thrust*.72;
+      entry.root.position.x+=vector.x*distance;
+      entry.root.position.z+=vector.z*distance;
+      entry.root.rotation.z=thrust*-.30;
+      entry.root.scaling.set(
+        entry.baseScale*(1-thrust*.08),
+        entry.baseScale*(1+thrust*.13),
+        entry.baseScale*(1-thrust*.08)
+      );
       return;
     }
+
     if(procedural==="CAST"||state==="CAST"){
       const pulse=Math.sin(Math.PI*progress);
-      entry.root.position.y+=pulse*.08;
-      entry.root.scaling.setAll(entry.baseScale*(1+pulse*.08));
+      entry.root.position.y+=pulse*.30;
+      entry.root.rotation.y+=progress*Math.PI*2;
+      entry.root.scaling.setAll(entry.baseScale*(1+pulse*.18));
       return;
     }
+
     if(procedural==="RECOIL"||state==="HURT"){
-      const recoil=Math.sin(Math.PI*progress)*.16;
-      entry.root.position.x-=vector.x*recoil;entry.root.position.z-=vector.z*recoil;
-      entry.root.rotation.z=Math.sin(Math.PI*progress)*.12;
+      const recoil=Math.sin(Math.PI*progress);
+      entry.root.position.x-=vector.x*recoil*.48;
+      entry.root.position.z-=vector.z*recoil*.48;
+      entry.root.rotation.z=recoil*.38;
+      entry.root.scaling.set(
+        entry.baseScale*(1+recoil*.10),
+        entry.baseScale*(1-recoil*.12),
+        entry.baseScale*(1+recoil*.10)
+      );
       return;
     }
+
     if(procedural==="FALL"||state==="DEATH"){
       const p=clamp01(progress),side=facing==="W"||facing==="N"?-1:1;
-      entry.root.rotation.z=side*p*Math.PI*.46;
-      entry.root.position.y-=p*.22;
-      entry.root.scaling.set(entry.baseScale,entry.baseScale*(1-p*.42),entry.baseScale);
+      entry.root.rotation.z=side*p*Math.PI*.5;
+      entry.root.position.y-=p*.34;
+      entry.root.scaling.set(entry.baseScale,entry.baseScale*(1-p*.30),entry.baseScale);
     }
   }
 
@@ -333,6 +433,7 @@ export class UnitRenderer{
       this.applyFacing(entry,unit,entry.definition,event.facing??unit.facing,state);
       this.setBillboardAsset(entry,unit,state,event.facing??unit.facing,progress);
       this.applyProcedural(entry,unit,state,progress,now,event,definition);
+      this.updateAnimationBadge(entry,unit,state);
     }
   }
 
@@ -371,9 +472,23 @@ export class UnitRenderer{
     this.updateFrame();
   }
 
+  setAnimationDebug(value){
+    this.animationDebug=!!value;
+    if(!this.animationDebug){
+      for(const entry of this.entries.values())entry.animationBadge?.root?.setEnabled(false);
+    }
+    return this.animationDebug;
+  }
+
   diagnostics(){
     const states={};
     for(const active of this.activeAnimations.values())states[active.event.state]=(states[active.event.state]||0)+1;
-    return{units:this.entries.size,activeAnimations:this.activeAnimations.size,queuedAnimations:[...this.animationQueues.values()].reduce((n,q)=>n+q.length,0),states};
+    return{
+      units:this.entries.size,
+      activeAnimations:this.activeAnimations.size,
+      queuedAnimations:[...this.animationQueues.values()].reduce((n,q)=>n+q.length,0),
+      animationDebug:this.animationDebug,
+      states
+    };
   }
 }
