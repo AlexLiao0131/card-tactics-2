@@ -27,7 +27,8 @@ export const CARDS={
   elf_shapeshifter_card:{id:"elf_shapeshifter_card",name:"精靈幻獸者",type:"CHARACTER",characterId:"elf_shapeshifter",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
   elf_ranger_card:{id:"elf_ranger_card",name:"精靈遊俠",type:"CHARACTER",characterId:"elf_ranger",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
   elf_guard_card:{id:"elf_guard_card",name:"精靈衛士",type:"CHARACTER",characterId:"elf_guard",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
-  elf_priest_card:{id:"elf_priest_card",name:"精靈祭司",type:"CHARACTER",characterId:"elf_priest",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4}
+  elf_priest_card:{id:"elf_priest_card",name:"精靈祭司",type:"CHARACTER",characterId:"elf_priest",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
+  nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"}
 };
 export const CardDatabase=(()=>{
   const AVAILABILITY=Object.freeze({COLLECTION:"COLLECTION",BATTLE_ONLY:"BATTLE_ONLY"});

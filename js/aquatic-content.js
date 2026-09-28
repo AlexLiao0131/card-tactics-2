@@ -59,5 +59,4 @@
   };
 
   CHARACTERS.nereia=EquipmentDatabase.resolveCharacter(raw);
-  CARDS.nereia_card={id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:F,unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"};
 })();
