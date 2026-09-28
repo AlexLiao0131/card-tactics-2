@@ -9,7 +9,7 @@ function create(ctx){
   if(!ctx?.state)throw new Error("BattlePresentationController requires state().");
   function teamPresentation(team){if(team===ctx.TEAM?.PLAYER||team==="P"||team==="PLAYER")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E"||team==="ENEMY")return"ENEMY";if(team===ctx.TEAM?.NEUTRAL||team==="N"||team==="NEUTRAL")return"NEUTRAL";return String(team||"NEUTRAL");}
   function tileHydrology(tile){const depth=Number(window.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);return{waterDepth:Math.max(0,Number.isFinite(depth)?depth:0),waterSurfaceZ:surface==null?null:Number(surface),snowDepth:Number(tile?.snowDepth||0),iceThickness:Number(tile?.iceThickness||0),flowSpeed:Number(tile?.flowSpeed||0),river:!!tile?.river,ford:!!tile?.ford,...(tile?.dryTerrain?{dryTerrain:tile.dryTerrain}:{})};}
-  function unitRenderZ(unit,tile){const physical=Number(unit?.z??TacticalEngine.elevation(tile)??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);if(window.ClimateEngine?.isSolidIce?.(tile)&&surface!=null)return Math.max(physical,Number(surface));return surface==null?physical:Math.max(physical,Number(surface));}
+  function unitRenderZ(unit,tile){const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile);return Number(vertical?.renderZ??unit?.z??TacticalEngine.elevation(tile)??0);}
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function visibilityModel(){

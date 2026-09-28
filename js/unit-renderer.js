@@ -321,13 +321,13 @@ export class UnitRenderer{
 
   positionFor(entry,point){
     const x=Number(point?.x||0)*TILE_SIZE,z=Number(point?.y||0)*TILE_SIZE;
-    const baseY=Number(point?.z??point?.renderZ??0)*ELEVATION_HEIGHT,lift=Number(entry.lift||0);
+    const baseY=Number(point?.renderZ??point?.z??0)*ELEVATION_HEIGHT,lift=Number(entry.lift||0);
     const y=entry.kind==="CAPSULE"?baseY+entry.height/2+lift:baseY+lift;
     return new BABYLON.Vector3(x,y,z);
   }
 
   markerPositionFor(point){
-    return new BABYLON.Vector3(Number(point?.x||0)*TILE_SIZE,Number(point?.z??point?.renderZ??0)*ELEVATION_HEIGHT,Number(point?.y||0)*TILE_SIZE);
+    return new BABYLON.Vector3(Number(point?.x||0)*TILE_SIZE,Number(point?.renderZ??point?.z??0)*ELEVATION_HEIGHT,Number(point?.y||0)*TILE_SIZE);
   }
 
   resetPose(entry,unit){

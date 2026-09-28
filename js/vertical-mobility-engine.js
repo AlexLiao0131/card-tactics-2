@@ -101,17 +101,40 @@ export const VerticalMobilityEngine=(()=>{
     return LAYER.SURFACE;
   }
 
+  function rememberedFlightAltitude(unit,explicit=null){
+    const state=unit?.verticalState||{},profile=profileOf(unit);
+    if(explicit!=null)return Number(explicit);
+    if(Number.isFinite(Number(state.flightAltitude)))return Number(state.flightAltitude);
+    if(state.mode===MODE.FLYING&&Number.isFinite(Number(state.altitude)))return Number(state.altitude);
+    return Number(profile.flightAltitude??2);
+  }
+
+  function rememberedDiveDepth(unit,explicit=null){
+    const state=unit?.verticalState||{},profile=profileOf(unit);
+    if(explicit!=null)return Number(explicit);
+    if(Number.isFinite(Number(state.diveDepth)))return Number(state.diveDepth);
+    if(state.mode===MODE.DIVING&&Number.isFinite(Number(state.depth)))return Number(state.depth);
+    return Number(profile.diveDepth??1.5);
+  }
+
+  function rememberedBurrowDepth(unit){
+    const state=unit?.verticalState||{},profile=profileOf(unit);
+    if(Number.isFinite(Number(state.burrowDepth)))return Number(state.burrowDepth);
+    if(state.mode===MODE.BURROWED&&Number.isFinite(Number(state.depth)))return Number(state.depth);
+    return Number(profile.burrowDepth??unit?.character?.collision?.height??2);
+  }
+
   function describe(unit,tile,{mode=null,altitude=null,depth=null}={}){
     const profile=profileOf(unit),ground=groundZ(tile),waterDepthValue=waterDepth(tile),waterSurface=waterSurfaceZ(tile),surface=surfaceZ(tile);
     const effective=effectiveMode(unit,tile,{mode});
-    const requestedAltitude=altitude??unit?.verticalState?.altitude??profile.flightAltitude??2;
+    const requestedAltitude=rememberedFlightAltitude(unit,altitude);
     const maxAltitude=Math.max(0,Number(profile.maxFlightAltitude??requestedAltitude??2));
     const flightAltitude=clamp(requestedAltitude,0,maxAltitude||Number(requestedAltitude||0));
-    const requestedDepth=depth??unit?.verticalState?.depth??profile.diveDepth??1.5;
+    const requestedDepth=rememberedDiveDepth(unit,depth);
     const maxDive=Math.max(0,Math.min(waterDepthValue,Number(profile.maxDiveDepth??waterDepthValue)));
     const diveDepth=clamp(requestedDepth,0,maxDive);
     const surfaceImmersion=Math.max(0,Number(profile.surfaceImmersion??(traitsOf(unit).has("AQUATIC")?1:.65)));
-    const burrowDepth=Math.max(0,Number(unit?.verticalState?.depth??profile.burrowDepth??unit?.character?.collision?.height??2));
+    const burrowDepth=Math.max(0,rememberedBurrowDepth(unit));
 
     let physicalZ=ground;
     if(effective===MODE.WATER_WALK||effective===MODE.ICE)physicalZ=surface;
@@ -132,6 +155,9 @@ export const VerticalMobilityEngine=(()=>{
       waterDepth:waterDepthValue,
       altitude:effective===MODE.FLYING?flightAltitude:0,
       depth:effective===MODE.DIVING?diveDepth:effective===MODE.BURROWED?burrowDepth:0,
+      flightAltitude,
+      diveDepth,
+      burrowDepth,
       immersionDepth,
       physicalZ,
       renderZ:physicalZ,
@@ -165,6 +191,9 @@ export const VerticalMobilityEngine=(()=>{
       layer:next.layer,
       altitude:next.altitude,
       depth:next.depth,
+      flightAltitude:next.flightAltitude,
+      diveDepth:next.diveDepth,
+      burrowDepth:next.burrowDepth,
       immersionDepth:next.immersionDepth,
       groundZ:next.groundZ,
       surfaceZ:next.surfaceZ,
@@ -188,7 +217,12 @@ export const VerticalMobilityEngine=(()=>{
     if(!VALID_MODES.has(normalized))return{ok:false,reason:"UNKNOWN_MODE"};
     if((normalized===MODE.FLYING&&!caps.canFly)||(normalized===MODE.DIVING&&!caps.canDive)||(normalized===MODE.BURROWED&&!caps.canBurrow))return{ok:false,reason:"MODE_NOT_AVAILABLE"};
     if(normalized===MODE.DIVING&&waterDepth(tile)<=0)return{ok:false,reason:"NO_WATER"};
-    unit.verticalState={...(unit.verticalState||{}),requestedMode:normalized,...(altitude==null?{}:{altitude:Number(altitude)}),...(depth==null?{}:{depth:Number(depth)})};
+    unit.verticalState={
+      ...(unit.verticalState||{}),
+      requestedMode:normalized,
+      ...(altitude==null?{}:{flightAltitude:Number(altitude)}),
+      ...(depth==null?{}:{diveDepth:Number(depth)})
+    };
     return{ok:true,state:syncUnit(unit,tile,{mode:normalized,altitude,depth})};
   }
 

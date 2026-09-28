@@ -293,7 +293,8 @@ export const EnvironmentEngine=(()=>{
       if(window.EnvironmentObjectEngine)destroyed=events.some(e=>e.type==="ENV_OBJECT_DESTROYED"&&e.objectId===stoneObjectBefore?.id);else destroyed=destroyStoneObject(map,state,stoneObjectBefore);
       events.push({type:"STONE_FRAGMENT",x,y,effect:EFFECT.FRAGMENTS,destroyed,objectId:stoneObjectBefore?.id||null});
     }
-    if(window.EnvironmentResolver){const disturbance=forceSet.has(FORCE.AVALANCHE_TRIGGER)?1.6:forceSet.has(FORCE.EXPLOSION)?1.25:forceSet.has(FORCE.IMPACT)?1:0;if(disturbance>0){events.push(...EnvironmentResolver.disturb(map,x,y,disturbance,{source:forceSet.has(FORCE.EXPLOSION)?"EXPLOSION":forceSet.has(FORCE.IMPACT)?"IMPACT":"ENVIRONMENT_FORCE"}));events.push(...EnvironmentResolver.resolve(map,state,{source:"DISTURBANCE"}));}}
+    if(forceSet.has(FORCE.AVALANCHE_TRIGGER)&&window.ClimateEngine?.triggerAvalanche)events.push(...ClimateEngine.triggerAvalanche(map,x,y,{strength:1.6,source:"AVALANCHE_TRIGGER",state}));
+    if(window.EnvironmentResolver){const disturbance=forceSet.has(FORCE.EXPLOSION)?1.25:forceSet.has(FORCE.IMPACT)?1:0;if(disturbance>0){events.push(...EnvironmentResolver.disturb(map,x,y,disturbance,{source:forceSet.has(FORCE.EXPLOSION)?"EXPLOSION":"IMPACT"}));events.push(...EnvironmentResolver.resolve(map,state,{source:"DISTURBANCE"}));}}
     recordDestroyedObjects(state,events);return events;
   }
 
