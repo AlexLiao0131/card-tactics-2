@@ -1,7 +1,12 @@
-import { BabylonRenderer } from "./babylon-renderer.js";
-import { BattleUI } from "./battle-ui.js";
-import { CardHandUI } from "./card-hand-ui.js";
-import { ShellUI } from "./shell-ui.js";
+const BOOT_REVISION=Date.now().toString(36);
+const versioned=path=>`${path}${path.includes("?")?"&":"?"}boot=${BOOT_REVISION}`;
+const load=path=>import(versioned(path));
+
+const bootStatus=document.getElementById("bootStatus"),canvas=document.getElementById("battleCanvas");
+globalThis.turnStatus=document.getElementById("turnStatus");
+globalThis.skillBar=document.getElementById("skillBar");
+globalThis.resetMap=document.getElementById("resetMap");
+globalThis.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"MEDIUM"};
 
 const CORE_LOAD_ORDER=[
   "terrain-database.js","environment-object-engine.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
@@ -17,31 +22,56 @@ const CORE_LOAD_ORDER=[
   "tactical-enemy-controller.js","card-phase-controller.js"
 ];
 
-const bootStatus=document.getElementById("bootStatus"),canvas=document.getElementById("battleCanvas");
-globalThis.turnStatus=document.getElementById("turnStatus");
-globalThis.skillBar=document.getElementById("skillBar");
-globalThis.resetMap=document.getElementById("resetMap");
-globalThis.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"MEDIUM"};
+let loadingStep="啟動器";
+try{
+  loadingStep="畫面模組";
+  const [{BabylonRenderer},{BattleUI},{CardHandUI},{ShellUI}]=await Promise.all([
+    load("./babylon-renderer.js"),
+    load("./battle-ui.js"),
+    load("./card-hand-ui.js"),
+    load("./shell-ui.js")
+  ]);
 
-for(let i=0;i<CORE_LOAD_ORDER.length;i++){
-  const file=CORE_LOAD_ORDER[i];bootStatus.textContent=`載入戰鬥核心 ${i+1}/${CORE_LOAD_ORDER.length}｜${file}`;await import(`./${file}`);
+  for(let i=0;i<CORE_LOAD_ORDER.length;i++){
+    const file=CORE_LOAD_ORDER[i];
+    loadingStep=file;
+    bootStatus.textContent=`載入戰鬥核心 ${i+1}/${CORE_LOAD_ORDER.length}｜${file}`;
+    await load(`./${file}`);
+  }
+
+  loadingStep="tactical-game.js";
+  bootStatus.textContent="啟動 Card Tactics Runtime...";
+  await load("./tactical-game.js");
+
+  const runtime=globalThis.CardTacticsRuntime;
+  if(!runtime)throw new Error("CardTacticsRuntime failed to initialize.");
+
+  loadingStep="BabylonRenderer";
+  const renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),{onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
+  globalThis.CardTacticsRenderer=renderer;
+
+  const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
+  const cardUI=new CardHandUI();cardUI.bind(runtime);
+  const shell=new ShellUI(runtime,renderer);shell.bind();
+
+  loadingStep="diagnostics.js";
+  await load("./diagnostics.js");
+  loadingStep="battle-test-console.js";
+  await load("./battle-test-console.js");
+
+  function sync(){const snap=runtime.getBattleSnapshot(),prev=renderer.lastState;if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();globalThis.UnitAnimationEngine?.observe?.(snap);const events=globalThis.UnitAnimationEngine?.drain?.()||[];renderer.sync(snap,events);battleUI.render()}
+  window.addEventListener("cardtactics:battle-render",sync);
+  window.addEventListener("cardtactics:state",sync);
+  window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();sync()});
+  sync();
+}catch(error){
+  const name=error?.name||"Error",message=error?.message||String(error);
+  if(bootStatus){
+    bootStatus.textContent=`啟動失敗｜${loadingStep}｜${name}: ${message}`;
+    bootStatus.style.color="#ff9b9b";
+    bootStatus.style.whiteSpace="normal";
+    bootStatus.style.overflowWrap="anywhere";
+  }
+  console.error("Card Tactics boot failed",{step:loadingStep,error});
+  throw error;
 }
-bootStatus.textContent="啟動 Card Tactics Runtime...";
-await import("./tactical-game.js");
-
-const runtime=globalThis.CardTacticsRuntime;if(!runtime)throw new Error("CardTacticsRuntime failed to initialize.");
-const renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),{onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
-globalThis.CardTacticsRenderer=renderer;
-
-const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
-const cardUI=new CardHandUI();cardUI.bind(runtime);
-const shell=new ShellUI(runtime,renderer);shell.bind();
-
-await import("./diagnostics.js");
-await import("./battle-test-console.js");
-
-function sync(){const snap=runtime.getBattleSnapshot(),prev=renderer.lastState;if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();globalThis.UnitAnimationEngine?.observe?.(snap);const events=globalThis.UnitAnimationEngine?.drain?.()||[];renderer.sync(snap,events);battleUI.render()}
-window.addEventListener("cardtactics:battle-render",sync);
-window.addEventListener("cardtactics:state",sync);
-window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();sync()});
-sync();
