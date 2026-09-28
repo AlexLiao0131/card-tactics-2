@@ -75,3 +75,19 @@
   .unit-hud-row{font-size:10px}
   .unit-hud-track{height:7px}
 }
+
+.unit-hud-mana-row{
+  margin-top:4px;
+  display:flex;
+  justify-content:flex-end;
+  font-size:10px;
+  line-height:1;
+  font-weight:800;
+  white-space:nowrap;
+}
+.unit-hud-mana-track{height:6px;margin-top:3px}
+.unit-hud-mana-fill{background:#4f86df}
+@media(max-width:700px){
+  .unit-hud-mana-row{font-size:9px}
+  .unit-hud-mana-track{height:5px}
+}
