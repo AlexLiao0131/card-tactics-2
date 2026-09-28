@@ -1,6 +1,6 @@
 export const HydrologyEngine=(()=>{
   const WATERLINE=0,RAIN_FILL_PER_EVENT=0.06,HEAVY_RAIN_FILL_PER_EVENT=0.12,STORM_RAIN_FILL_PER_EVENT=0.16,NATURAL_WATER_DEPTH=1;
-  const SOIL_SATURATION_CAPACITY=.45,SAND_SOIL_CAPACITY=.22,DRYING_PER_CLEAR_TURN=.10,SAND_DRYING_PER_CLEAR_TURN=.16;
+  const SOIL_SATURATION_CAPACITY=.45,SAND_SOIL_CAPACITY=.22,DRYING_PER_CLEAR_TURN=.10,SAND_DRYING_PER_CLEAR_TURN=.16,EVAPORATION_PER_CLEAR_TURN=.06;
   const EPSILON=0.0001,FLOW_EPSILON=0.0005,MAX_FLOW_ITERATIONS=256;
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],FLOW_DIRS=[[1,0],[0,1]],key=(x,y)=>`${x},${y}`;
   const elevation=t=>Number(t?.elevation||0);
@@ -21,6 +21,33 @@ export const HydrologyEngine=(()=>{
   function soilWaterVolume(map){return (map?.tiles||[]).reduce((sum,tile)=>sum+(hasSoil(tile)?soilMoisture(tile):0),0)}
   function totalWater(map){return surfaceWaterVolume(map)+soilWaterVolume(map)}
 
+  function sourceFedWaterKeys(map){
+    const tiles=map?.tiles||[],by=new Map(tiles.map(t=>[key(t.x,t.y),t])),seen=new Set(),q=[];
+    for(const tile of tiles)if(tile?.hydrologySource===true||tile?.river===true)q.push(tile);
+    while(q.length){
+      const t=q.shift(),k=key(t.x,t.y);
+      if(seen.has(k))continue;
+      const isSource=t?.hydrologySource===true||t?.river===true;
+      if(!isSource&&!isWater(t))continue;
+      seen.add(k);
+      for(const[dX,dY]of DIRS){
+        const n=by.get(key(t.x+dX,t.y+dY));
+        if(!n||seen.has(key(n.x,n.y)))continue;
+        if(isWater(n)||n.hydrologySource===true||n.river===true)q.push(n);
+      }
+    }
+    return seen;
+  }
+  const baselineDepth=t=>Math.max(0,Number(t?.hydrologyBaseWaterDepth||0));
+  function captureSourceBaselines(map){
+    const fed=sourceFedWaterKeys(map);
+    for(const tile of map?.tiles||[])tile.hydrologyBaseWaterDepth=fed.has(key(tile.x,tile.y))?clean(waterDepth(tile)):0;
+    return fed;
+  }
+  function protectedDepth(tile,fed){
+    return fed?.has(key(tile.x,tile.y))?Math.min(waterDepth(tile),baselineDepth(tile)):0;
+  }
+
   function initializeMap(map){
     for(const tile of map?.tiles||[]){
       if(tile.terrain==="MUD"){
@@ -40,6 +67,7 @@ export const HydrologyEngine=(()=>{
       tile.dryTerrain??="PLAIN";
       if(terrainHasSoil(tile.dryTerrain))tile.soilMoisture=soilCapacity(tile);
     }
+    captureSourceBaselines(map);
     return map;
   }
 
@@ -121,10 +149,12 @@ export const HydrologyEngine=(()=>{
     return next-before;
   }
 
-  function pairEquilibrium(a,b){
+  function pairEquilibrium(a,b,minA=0,minB=0){
     if(!canHoldWater(a)||!canHoldWater(b))return 0;
     const va=waterDepth(a),vb=waterDepth(b),total=va+vb;
     if(total<=EPSILON)return 0;
+    minA=Math.min(va,Math.max(0,Number(minA||0)));
+    minB=Math.min(vb,Math.max(0,Number(minB||0)));
     const ga=elevation(a),gb=elevation(b);
     let nextA=0,nextB=0;
     if(ga<=gb){
@@ -136,7 +166,18 @@ export const HydrologyEngine=(()=>{
       if(total<=rise){nextA=0;nextB=total;}
       else{const level=(total+ga+gb)/2;nextA=level-ga;nextB=level-gb;}
     }
-    nextA=Math.max(0,nextA);nextB=Math.max(0,nextB);
+    nextA=Math.max(0,nextA,minA);nextB=Math.max(0,nextB,minB);
+    let over=nextA+nextB-total;
+    if(over>EPSILON){
+      const reducibleA=Math.max(0,nextA-minA),reducibleB=Math.max(0,nextB-minB);
+      if(reducibleA>=reducibleB){
+        const take=Math.min(over,reducibleA);nextA-=take;over-=take;
+        if(over>EPSILON)nextB-=Math.min(over,reducibleB);
+      }else{
+        const take=Math.min(over,reducibleB);nextB-=take;over-=take;
+        if(over>EPSILON)nextA-=Math.min(over,reducibleA);
+      }
+    }
     const delta=Math.max(Math.abs(nextA-va),Math.abs(nextB-vb));
     a.waterDepth=nextA;b.waterDepth=nextB;
     return delta;
@@ -144,13 +185,16 @@ export const HydrologyEngine=(()=>{
 
   function absorbStandingWater(map,events=[],source="INFILTRATION"){
     let absorbed=0;
+    const fed=sourceFedWaterKeys(map);
     for(const tile of map?.tiles||[]){
       if(waterDepth(tile)<=EPSILON||!hasSoil(tile))continue;
-      const before=waterDepth(tile),excess=saturateSoil(tile,before,events,source),used=before-excess;
+      const floor=protectedDepth(tile,fed),before=waterDepth(tile),available=Math.max(0,before-floor);
+      if(available<=EPSILON)continue;
+      const excess=saturateSoil(tile,available,events,source),used=available-excess;
       if(used>EPSILON){
-        tile.waterDepth=excess;
+        tile.waterDepth=floor+excess;
         absorbed+=used;
-        events.push({type:"WATER_INFILTRATED",x:tile.x,y:tile.y,amount:used,waterDepth:excess,source});
+        events.push({type:"WATER_INFILTRATED",x:tile.x,y:tile.y,amount:used,waterDepth:tile.waterDepth,source});
       }
     }
     return absorbed;
@@ -158,13 +202,16 @@ export const HydrologyEngine=(()=>{
 
   function applyOutlets(map,events=[],source="DRAINAGE"){
     let drained=0;
-    const openBoundary=map?.hydrology?.openBoundary===true;
+    const fed=sourceFedWaterKeys(map);
+    const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
     for(const tile of map?.tiles||[]){
       const outlet=tile.hydrologyDrain===true||tile.drain===true||
         (openBoundary&&(tile.x===0||tile.y===0||tile.x===Number(map.width||0)-1||tile.y===Number(map.height||0)-1));
       if(!outlet||waterDepth(tile)<=EPSILON)continue;
-      const amount=waterDepth(tile);tile.waterDepth=0;drained+=amount;
-      events.push({type:"WATER_DRAINED_OFF_MAP",x:tile.x,y:tile.y,amount,source});
+      const floor=protectedDepth(tile,fed),amount=Math.max(0,waterDepth(tile)-floor);
+      if(amount<=EPSILON)continue;
+      tile.waterDepth=clean(floor);drained+=amount;
+      events.push({type:"WATER_DRAINED_OFF_MAP",x:tile.x,y:tile.y,amount,source,protectedDepth:floor});
     }
     return drained;
   }
@@ -173,6 +220,7 @@ export const HydrologyEngine=(()=>{
     if(!map?.tiles?.length)return events;
     const beforeDepth=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),waterDepth(tile)]));
     const beforeVolume=totalWater(map),by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const fed=sourceFedWaterKeys(map);
     let iterations=0,maxDelta=0;
     for(;iterations<MAX_FLOW_ITERATIONS;iterations++){
       maxDelta=0;
@@ -181,7 +229,11 @@ export const HydrologyEngine=(()=>{
         for(const[dX,dY]of FLOW_DIRS){
           const other=by.get(key(tile.x+dX,tile.y+dY));
           if(!other)continue;
-          maxDelta=Math.max(maxDelta,pairEquilibrium(tile,other));
+          maxDelta=Math.max(maxDelta,pairEquilibrium(
+            tile,other,
+            fed.has(key(tile.x,tile.y))?baselineDepth(tile):0,
+            fed.has(key(other.x,other.y))?baselineDepth(other):0
+          ));
         }
       }
       const absorbed=absorbStandingWater(map,events,source);
@@ -205,6 +257,27 @@ export const HydrologyEngine=(()=>{
         type:"HYDROLOGY_REBALANCED",source,changedTiles:changed,iterations:iterations+1,
         beforeVolume,afterVolume,surfaceWater:surfaceWaterVolume(map),soilWater:soilWaterVolume(map),drained,maxDelta
       });
+    }
+    return events;
+  }
+
+  function evaporateUnfedWater(map,{amount=EVAPORATION_PER_CLEAR_TURN,source="CLIMATE_EVAPORATION"}={}){
+    const events=[];if(!map?.tiles?.length)return events;
+    const fed=sourceFedWaterKeys(map),rate=Math.max(0,Number(amount||0));
+    let evaporated=0,changedTiles=0;
+    for(const tile of map.tiles){
+      const before=waterDepth(tile);if(before<=EPSILON)continue;
+      const floor=protectedDepth(tile,fed),removable=Math.max(0,before-floor);
+      if(removable<=EPSILON)continue;
+      const removed=Math.min(removable,rate);
+      if(removed<=EPSILON)continue;
+      tile.waterDepth=clean(before-removed);evaporated+=removed;changedTiles++;
+      events.push({type:"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterDepth>0?elevation(tile)+tile.waterDepth:null,source});
+      sync(tile,events);
+    }
+    if(changedTiles){
+      redistribute(map,{source,events});
+      events.push({type:"SURFACE_WATER_EVAPORATED",source,changedTiles,amount:clean(evaporated)});
     }
     return events;
   }
@@ -299,10 +372,11 @@ export const HydrologyEngine=(()=>{
 
   return Object.freeze({
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
-    SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,
-    initializeMap,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,fillCapacity,
+    SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
+    EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,
+    initializeMap,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
-    setWaterDepth,addWater,removeWater,redistribute,floodArea,deformTerrain,applyRain,drySoil
+    setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();
 globalThis.HydrologyEngine=HydrologyEngine;

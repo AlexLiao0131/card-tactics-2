@@ -90,6 +90,16 @@ export const ClimateEngine=(()=>{
       maxSnow=Math.max(maxSnow,snowDepth(tile));maxIce=Math.max(maxIce,iceThickness(tile));syncTileVisuals(state,tile);
     }
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
+
+    if(precipitationType(state)==="NONE"&&window.HydrologyEngine?.evaporateUnfedWater){
+      const fogFactor=fogIntensity(state)>0?.5:1;
+      const evaporation=HydrologyEngine.evaporateUnfedWater(map,{
+        amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*fogFactor,
+        source:"CLIMATE_EVAPORATION"
+      });
+      events.push(...evaporation);
+    }
+
     const weather=legacyWeather(state);
     if(snowChanged)events.push({type:isSnowWeather(state)?"SNOWFALL":"SNOW_THAW",changedTiles:snowChanged,maxSnow:clean(maxSnow),meltVolume:clean(totalMelt),weather});
     if(iceChanged)events.push({type:isSnowWeather(state)?"FREEZE_PULSE":"ICE_THAW",changedTiles:iceChanged,maxIce:clean(maxIce),weather});
