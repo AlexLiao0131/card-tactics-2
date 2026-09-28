@@ -24,6 +24,8 @@ export const VerticalMobilityEngine=(()=>{
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
   const traitsOf=unit=>new Set(unit?.character?.terrainTraits||[]);
   const profileOf=unit=>unit?.character?.verticalMobility||{};
+  const bodyHeight=unit=>Math.max(.25,Number(unit?.character?.collision?.height??2));
+  const wadingLimit=unit=>bodyHeight(unit);
   const groundZ=tile=>Number(tile?.elevation||0);
   const waterDepth=tile=>Math.max(0,Number(globalThis.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0));
   const waterSurfaceZ=tile=>{
@@ -58,9 +60,10 @@ export const VerticalMobilityEngine=(()=>{
   function defaultMode(unit,tile){
     const traits=traitsOf(unit),profile=profileOf(unit),caps=capabilities(unit);
     const requested=String(profile.defaultMode||"").toUpperCase();
-    if(VALID_MODES.has(requested)&&caps.modes.includes(requested))return requested;
+    if(requested===MODE.DIVING&&caps.canDive&&waterDepth(tile)>=bodyHeight(unit))return MODE.DIVING;
+    if(VALID_MODES.has(requested)&&requested!==MODE.DIVING&&caps.modes.includes(requested))return requested;
     if(traits.has("FLYING")&&caps.canFly)return MODE.FLYING;
-    if(traits.has("AQUATIC")&&waterDepth(tile)>0)return MODE.SWIMMING;
+    if(waterDepth(tile)>0)return waterStateMode(unit,tile);
     return MODE.GROUND;
   }
 
@@ -70,25 +73,20 @@ export const VerticalMobilityEngine=(()=>{
   }
 
   function waterStateMode(unit,tile){
-    if(waterDepth(tile)<=0)return MODE.GROUND;
-    const state=String(unit?.waterInteraction?.state||"").toUpperCase();
-    if(state==="WATER_WALK")return MODE.WATER_WALK;
+    const depth=waterDepth(tile);
+    if(depth<=0)return MODE.GROUND;
+    const state=String(unit?.waterInteraction?.state||"").toUpperCase(),traits=traitsOf(unit);
+    if(state==="WATER_WALK"||traits.has("WATER_WALK"))return MODE.WATER_WALK;
     if(state==="ICE")return MODE.ICE;
-    if(state==="AQUATIC")return MODE.SWIMMING;
-    if(state==="WADING")return MODE.WADING;
-    if(state==="SWIMMING")return MODE.SWIMMING;
     if(state==="SINKING")return MODE.SINKING;
-    const traits=traitsOf(unit);
-    if(traits.has("WATER_WALK"))return MODE.WATER_WALK;
-    if(traits.has("AQUATIC"))return MODE.SWIMMING;
-    return waterDepth(tile)<2?MODE.WADING:MODE.SWIMMING;
+    return depth<wadingLimit(unit)?MODE.WADING:MODE.SWIMMING;
   }
 
   function effectiveMode(unit,tile,{mode=null}={}){
     const caps=capabilities(unit),requested=String(mode||requestedMode(unit,tile)).toUpperCase();
     if(requested===MODE.FLYING&&caps.canFly)return MODE.FLYING;
     if(requested===MODE.BURROWED&&caps.canBurrow)return MODE.BURROWED;
-    if(requested===MODE.DIVING&&caps.canDive&&waterDepth(tile)>0)return MODE.DIVING;
+    if(requested===MODE.DIVING&&caps.canDive&&waterDepth(tile)>=bodyHeight(unit))return MODE.DIVING;
     if(requested===MODE.WATER_WALK&&traitsOf(unit).has("WATER_WALK")&&waterDepth(tile)>0)return MODE.WATER_WALK;
     return waterStateMode(unit,tile);
   }
@@ -130,7 +128,7 @@ export const VerticalMobilityEngine=(()=>{
     const requestedAltitude=rememberedFlightAltitude(unit,altitude);
     const maxAltitude=Math.max(0,Number(profile.maxFlightAltitude??requestedAltitude??2));
     const flightAltitude=clamp(requestedAltitude,0,maxAltitude||Number(requestedAltitude||0));
-    const requestedDepth=rememberedDiveDepth(unit,depth);
+    const requestedDepth=depth==null?Math.max(rememberedDiveDepth(unit),bodyHeight(unit)):Number(depth);
     const maxDive=Math.max(0,Math.min(waterDepthValue,Number(profile.maxDiveDepth??waterDepthValue)));
     const diveDepth=clamp(requestedDepth,0,maxDive);
     const surfaceImmersion=Math.max(0,Number(profile.surfaceImmersion??(traitsOf(unit).has("AQUATIC")?1:.65)));
@@ -217,6 +215,7 @@ export const VerticalMobilityEngine=(()=>{
     if(!VALID_MODES.has(normalized))return{ok:false,reason:"UNKNOWN_MODE"};
     if((normalized===MODE.FLYING&&!caps.canFly)||(normalized===MODE.DIVING&&!caps.canDive)||(normalized===MODE.BURROWED&&!caps.canBurrow))return{ok:false,reason:"MODE_NOT_AVAILABLE"};
     if(normalized===MODE.DIVING&&waterDepth(tile)<=0)return{ok:false,reason:"NO_WATER"};
+    if(normalized===MODE.DIVING&&waterDepth(tile)<bodyHeight(unit))return{ok:false,reason:"WATER_TOO_SHALLOW",requiredDepth:bodyHeight(unit),waterDepth:waterDepth(tile)};
     unit.verticalState={
       ...(unit.verticalState||{}),
       requestedMode:normalized,
@@ -275,7 +274,7 @@ export const VerticalMobilityEngine=(()=>{
     MODE,LAYER,capabilities,defaultMode,effectiveMode,layerForMode,describe,verticalSpan,syncUnit,initialize,setMode,
     isAirborne,isBurrowed,isSubmerged,ignoresWaterInteraction,ignoresCurrent,contactsWater,contactsGround,
     ignoresFall,ignoresElevation,movementIgnoresTerrainCost,canOccupyTerrain,objectBlocks,traversalZ,eyeZ,
-    groundZ,waterDepth,waterSurfaceZ,surfaceZ
+    groundZ,waterDepth,waterSurfaceZ,surfaceZ,bodyHeight,wadingLimit
   });
 })();
 globalThis.VerticalMobilityEngine=VerticalMobilityEngine;

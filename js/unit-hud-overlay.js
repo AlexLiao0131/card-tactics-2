@@ -44,15 +44,21 @@ export class UnitHudOverlay{
     const row=createElement("div","unit-hud-row");
     const name=createElement("strong","unit-hud-name");
     const hp=createElement("span","unit-hud-hp");
-    const track=createElement("div","unit-hud-track");
-    const fill=createElement("i","unit-hud-fill");
+    const track=createElement("div","unit-hud-track unit-hud-hp-track");
+    const fill=createElement("i","unit-hud-fill unit-hud-hp-fill");
+    const manaRow=createElement("div","unit-hud-mana-row");
+    const mana=createElement("span","unit-hud-mana");
+    const manaTrack=createElement("div","unit-hud-track unit-hud-mana-track");
+    const manaFill=createElement("i","unit-hud-fill unit-hud-mana-fill");
 
     row.append(name,hp);
     track.appendChild(fill);
-    node.append(row,track);
+    manaRow.appendChild(mana);
+    manaTrack.appendChild(manaFill);
+    node.append(row,track,manaRow,manaTrack);
     this.root.appendChild(node);
 
-    const hud={node,name,hp,fill,key:""};
+    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,key:""};
     this.nodes.set(unit.id,hud);
     return hud;
   }
@@ -61,13 +67,17 @@ export class UnitHudOverlay{
     const hp=Math.max(0,Number(unit.hp||0));
     const maxHp=Math.max(1,Number(unit.maxHp||hp||1));
     const pct=clamp01(hp/maxHp);
-    const key=`${unit.name}|${hp}|${maxHp}|${unit.team}|${unit.finished?1:0}`;
+    const mana=Math.max(0,Number(unit.mana||0)),maxMana=Math.max(0,Number(unit.maxMana||0)),manaPct=maxMana>0?clamp01(mana/maxMana):0;
+    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${unit.team}|${unit.finished?1:0}`;
     if(hud.key===key)return;
     hud.key=key;
 
     hud.name.textContent=String(unit.name||unit.id||"UNIT");
     hud.hp.textContent=`HP ${hp}/${maxHp}`;
     hud.fill.style.width=`${Math.round(pct*10000)/100}%`;
+    const showMana=maxMana>0;
+    hud.manaRow.hidden=!showMana;hud.manaTrack.hidden=!showMana;
+    if(showMana){hud.mana.textContent=`MP ${Math.round(mana)}/${Math.round(maxMana)}`;hud.manaFill.style.width=`${Math.round(manaPct*10000)/100}%`;}
 
     hud.node.dataset.team=String(unit.team||"NEUTRAL");
     hud.node.classList.toggle("finished",!!unit.finished);
@@ -158,7 +168,7 @@ export class UnitHudOverlay{
   }
 
   diagnostics(){
-    return{count:this.nodes.size,expandedUnitId:this.hudUnitId};
+    return{count:this.nodes.size,expandedUnitId:this.hudUnitId;
   }
 
   dispose(){

@@ -19,15 +19,7 @@ export const UnitRuntimeEngine=(()=>{
     return unit.mana-before;
   }
   function manaCost(skill){return Math.max(0,Math.round(Number(skill?.manaCost||0)))}
-  function createSkillResources(character){
-    const resources={};
-    SkillDatabase.list(character?.skills||[]).forEach(skill=>{
-      const resource=skill.resource||{type:"UNLIMITED"};
-      if(resource.type==="USES")resources[skill.id]={type:"USES",remaining:Number(resource.max||0),max:Number(resource.max||0)};
-      else resources[skill.id]={type:resource.type||"UNLIMITED"};
-    });
-    return resources;
-  }
+  function createSkillResources(){return{}}
   function createFromCharacter({id,team,character,x,y,map}){
     if(!character)return null;
     const runtimeCharacter=JSON.parse(JSON.stringify(character));
@@ -62,7 +54,7 @@ export const UnitRuntimeEngine=(()=>{
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
   function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
-  function resourceFor(unit,skill){const id=skill?.baseSkillId||skill?.id;return unit?.skillResources?.[id]||unit?.skillResources?.[skill?.id]||{type:"UNLIMITED"}}
+  function resourceFor(unit,skill){return{type:"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0))}}
   function canUseSkill(unit,skill){
     if(skill?.approach&&unit?.moved)return false;
     const req=skill?.requirements||{};
@@ -70,10 +62,10 @@ export const UnitRuntimeEngine=(()=>{
     if(req.notCarrying===true&&!!unit?.carryingUnitId)return false;
     if(req.notMoved===true&&!!unit?.moved)return false;
     if(req.water===true){const tile=globalThis.CardTacticsRuntime?.getBattleMap?.()?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
-    syncMana(unit);if(unit.mana<manaCost(skill))return false;const r=resourceFor(unit,skill);return r.type!=="USES"||r.remaining>0
+    syncMana(unit);return unit.mana>=manaCost(skill)
   }
-  function consumeSkill(unit,skill){if(!canUseSkill(unit,skill))return null;unit.mana-=manaCost(skill);const r=resourceFor(unit,skill);if(r.type==="USES"&&r.remaining>0)r.remaining--;return r}
-  function resourceLabel(unit,skill){syncMana(unit);const r=resourceFor(unit,skill),uses=r.type==="USES"?`${r.remaining}/${r.max}`:"∞",cost=manaCost(skill);return cost>0?`${uses}｜MP ${cost}`:uses}
+  function consumeSkill(unit,skill){if(!canUseSkill(unit,skill))return null;const cost=manaCost(skill);unit.mana=Math.max(0,unit.mana-cost);return{type:"MANA",cost,remaining:unit.mana}}
+  function resourceLabel(unit,skill){syncMana(unit);const cost=manaCost(skill);return cost>0?`MP ${cost}`:"無消耗"}
   function targetType(skill){return skill?.targetType||"SINGLE"}
   return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,createFromCharacter,create,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType});
 })();

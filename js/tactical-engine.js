@@ -54,9 +54,8 @@ export const TacticalEngine=(()=>{
   function canTraverseElevation(fromTile,toTile,u=null){
     if(!fromTile||!toTile)return false;
     if(u&&window.VerticalMobilityEngine?.ignoresElevation?.(u))return true;
-    const traits=terrainTraits(u);
-    if(traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile)))return true;
-    const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u),maxClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),maxDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP);
+    const traits=terrainTraits(u),mountainWalk=traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile));
+    const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u),baseClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),baseDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP),maxClimb=baseClimb+(mountainWalk?1:0),maxDrop=baseDrop+(mountainWalk?1:0);
     return delta<=maxClimb&&delta>=-maxDrop;
   }
   function canActiveMove(m,us,u,x,y,{ignoreElevation=false}={}){const from=tile(m,u.x,u.y),to=tile(m,x,y);if(!to||!canOccupyTerrain(u,to)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id))return false;return ignoreElevation||canTraverseElevation(from,to,u);}
