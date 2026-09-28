@@ -38,6 +38,7 @@ const cardUI=new CardHandUI();cardUI.bind(runtime);
 const shell=new ShellUI(runtime,renderer);shell.bind();
 
 await import("./diagnostics.js");
+await import("./battle-test-console.js");
 
 function sync(){const snap=runtime.getBattleSnapshot(),prev=renderer.lastState;if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();globalThis.UnitAnimationEngine?.observe?.(snap);const events=globalThis.UnitAnimationEngine?.drain?.()||[];renderer.sync(snap,events);battleUI.render()}
 window.addEventListener("cardtactics:battle-render",sync);

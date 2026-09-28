@@ -923,6 +923,98 @@
     logEnvironmentEvent,checkMatchEnd:()=>objectiveController.checkMatchEnd(),handleDefeated
   });
 
+
+  function debugEmit(){
+    render();
+    window.dispatchEvent(new CustomEvent("cardtactics:state"));
+    return true;
+  }
+
+  function debugSetWeather(weather,duration=5){
+    if(!environmentState||!map||!EnvironmentEngine.WEATHER?.[weather])return false;
+    const events=EnvironmentEngine.setWeather(environmentState,weather,map,{duration:Math.max(0,Number(duration||0)),applyPulse:true})||[];
+    events.forEach(logEnvironmentEvent);
+    resolveEnvironmentEvents(events,{reason:"Battle Test Console 氣候切換"});
+    pushLog(`TEST｜天氣切換為 ${weather}｜${Math.max(0,Number(duration||0))} 回合。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugApplyEnvironmentForce(x,y,force){
+    x=Number(x);y=Number(y);force=String(force||"").toUpperCase();
+    const tile=TacticalEngine.tile(map,x,y);
+    if(!tile||!EnvironmentEngine.FORCE?.[force])return false;
+    const events=EnvironmentEngine.apply({map,state:environmentState,x,y,forces:[force]})||[];
+    events.forEach(logEnvironmentEvent);
+    resolveEnvironmentEvents(events,{reason:`Battle Test Console ${force}`});
+    pushLog(`TEST｜(${x},${y}) 套用環境力 ${force}。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugClearTileEffects(x,y){
+    x=Number(x);y=Number(y);
+    const tile=TacticalEngine.tile(map,x,y);
+    if(!tile||!environmentState)return false;
+    environmentState.effects?.delete?.(`${x},${y}`);
+    pushLog(`TEST｜清除 (${x},${y}) 的暫時環境效果。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugGiveCard(cardId,owner="PLAYER"){
+    const card=CardDatabase.get(cardId);
+    if(!card)return false;
+    const target=String(owner).toUpperCase()==="ENEMY"?enemyCardState:cardState;
+    if(!target?.zones?.hand)return false;
+    target.zones.hand.push(card.id);
+    const required=Math.max(0,Number(card.cost||0));
+    target.maxCrystals=Math.max(Number(target.maxCrystals||0),required,10);
+    target.crystalCapacity=Math.max(Number(target.crystalCapacity||0),required,10);
+    target.crystals=Math.max(Number(target.crystals||0),required,10);
+    pushLog(`TEST｜${String(owner).toUpperCase()==="ENEMY"?"敵方":"我方"}手牌加入「${card.name}」。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugSpawnCharacterCard(cardId,owner="ENEMY",x=0,y=0){
+    const card=CardDatabase.get(cardId);
+    if(!CardDatabase.isCharacter(card))return false;
+    x=Number(x);y=Number(y);
+    const tile=TacticalEngine.tile(map,x,y);
+    if(!tile||unitAt(x,y))return false;
+    const requested=String(owner).toUpperCase(),team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;
+    const prefix=team===TEAM.PLAYER?"tp":team===TEAM.NEUTRAL?"tn":"te";
+    let id;
+    do{id=`${prefix}${unitSerial++}`;}while(units.some(unit=>unit.id===id));
+    const unit=createUnit(id,team,card.characterId,x,y);
+    if(!unit)return false;
+    unit.cardId=card.id;unit.deployedRound=round;unit.moved=false;unit.acted=false;unit.waited=false;
+    units.push(unit);
+    applyEnvironmentHazardToUnit(unit,{reason:"Battle Test Console 生成",waterTrigger:"ENTER"});
+    pushLog(`TEST｜${team===TEAM.PLAYER?"我方":team===TEAM.NEUTRAL?"中立":"敵方"}生成「${card.name}」於 (${x},${y})。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugMoveUnit(unitId,x,y){
+    const unit=units.find(candidate=>candidate.id===unitId&&candidate.alive);
+    x=Number(x);y=Number(y);
+    const tile=TacticalEngine.tile(map,x,y),occupant=unitAt(x,y);
+    if(!unit||!tile||(occupant&&occupant.id!==unit.id))return false;
+    unit.x=x;unit.y=y;
+    if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);
+    else unit.z=Number(TacticalEngine.elevation(tile)||0);
+    pushLog(`TEST｜${unit.character.name} 移動至 (${x},${y})。`,"SYSTEM");
+    return debugEmit();
+  }
+
+  function debugState(){
+    return{
+      weather:environmentState?.weather||"CLEAR",
+      map:{width:map?.width||0,height:map?.height||0},
+      units:(units||[]).filter(unit=>unit.alive).map(unit=>({
+        id:unit.id,name:unit.character?.name||unit.id,team:unit.team,x:unit.x,y:unit.y,z:unit.z,
+        stealthed:!!globalThis.EffectEngine?.isStealthed?.(unit)
+      }))
+    };
+  }
+
   window.CardTacticsRuntime={
     getCardState:()=>cardState,
     getEnemyCardState:()=>enemyCardState,
@@ -953,7 +1045,16 @@
     cancelCard:()=>cardPhaseController.cancel(),
     endPlayerTurn,
     refresh:render,
-    resetBattle
+    resetBattle,
+    debug:Object.freeze({
+      state:debugState,
+      setWeather:debugSetWeather,
+      applyEnvironmentForce:debugApplyEnvironmentForce,
+      clearTileEffects:debugClearTileEffects,
+      giveCard:debugGiveCard,
+      spawnCharacterCard:debugSpawnCharacterCard,
+      moveUnit:debugMoveUnit
+    })
   };
 
   resetBattle();

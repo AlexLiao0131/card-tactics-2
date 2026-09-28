@@ -96,7 +96,22 @@ export const TacticalEngine=(()=>{
     for(const rule of observationRules(observer)){if(revealStealth&&rule.revealStealth!==true)continue;const network=connectedObservationNodes(m,observer,rule);if(network.nodes.some(node=>D(node,target)<=network.nodeVisionRange))return true;}
     return false;
   }
-  function canSee(m,observer,target,environmentState=null){if(!m||!observer||!target)return false;if(observer.x===target.x&&observer.y===target.y)return true;if(observationNetworkCanObserve(m,observer,target))return true;const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);if(senseRange>0&&D(observer,target)<=senseRange)return true;if(!environmentState||!window.EnvironmentEngine?.visionModifier)return true;const limit=Number(window.EnvironmentEngine?.visionRange?.(environmentState));if(Number.isFinite(limit)&&D(observer,target)>limit)return false;if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return false;return lineCells(observer,target).every(p=>!visionBlocked(environmentState,p.x,p.y));}
+  function canSee(m,observer,target,environmentState=null){
+    if(!m||!observer||!target)return false;
+    if(target?.character&&observer?.team!==target?.team&&globalThis.EffectEngine?.isStealthed?.(target)){
+      const proximityVisible=globalThis.EffectEngine?.directTargetAllowed?.(observer,target)===true;
+      const networkVisible=observationNetworkCanObserve(m,observer,target,{revealStealth:true});
+      if(!proximityVisible&&!networkVisible)return false;
+    }
+    if(observer.x===target.x&&observer.y===target.y)return true;
+    if(observationNetworkCanObserve(m,observer,target))return true;
+    const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
+    if(senseRange>0&&D(observer,target)<=senseRange)return true;
+    if(!environmentState||!window.EnvironmentEngine?.visionModifier)return true;
+    const limit=Number(window.EnvironmentEngine?.visionRange?.(environmentState));if(Number.isFinite(limit)&&D(observer,target)>limit)return false;
+    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return false;
+    return lineCells(observer,target).every(p=>!visionBlocked(environmentState,p.x,p.y));
+  }
   function companionVisionSource(u,s){const companionId=s?.requiresCompanionVision;if(!companionId)return null;return globalThis.CompanionDatabase?.targetingUnit?.(u,s.id,companionId)||null}
   function hasCompanionVision(m,u,target,s,environmentState=null){const companion=companionVisionSource(u,s);if(!companion?.alive)return false;const visionRange=Number(companion.character?.visionRange);if(Number.isFinite(visionRange)&&D(companion,target)>visionRange)return false;return canSee(m,companion,target,environmentState)}
   function hasLineOfSight(m,u,target,s,environmentState=null){

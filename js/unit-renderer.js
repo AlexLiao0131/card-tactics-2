@@ -455,7 +455,8 @@ export class UnitRenderer{
 
       const scale=unit.selected?1.13:unit.finished?.92:1;
       entry.baseScale=scale;
-      this.setVisibility(entry,unit.finished?.62:1);
+      const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.45:1;
+      this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity);
 
       entry.basePosition.copyFrom(this.positionFor(entry,unit));
       entry.baseMarkerPosition.copyFrom(this.markerPositionFor(unit));

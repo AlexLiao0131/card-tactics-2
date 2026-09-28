@@ -46,9 +46,9 @@ export const CARDS={
   church_entrenchment_card:{id:"church_entrenchment_card",name:"陣地戰",type:"SPELL",spellType:"BUFF",faction:"CHURCH",cost:4,effect:{type:"AREA_BUFF",radius:2,duration:3,targetFilter:{relation:"ALLY",faction:"CHURCH"},buff:{id:"CHURCH_ENTRENCHMENT",classification:"POSITIVE",modifiers:{def:15,mdef:10,guardMultiplier:.8}}}},
   church_saint_card:{id:"church_saint_card",name:"伊莉絲・羅恩菲爾",type:"CHARACTER",characterId:"church_saint",faction:"CHURCH",unitType:"HERO",cost:6,pack:"SAINT_SUPPLEMENT"},
 
-  seraphina_card:{id:"seraphina_card",name:"Seraphina",type:"CHARACTER",characterId:"seraphina",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
+  seraphina_card:{id:"seraphina_card",name:"瑟拉菲娜",type:"CHARACTER",characterId:"seraphina",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
   nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"},
-  cat_thief_hero_card:{id:"cat_thief_hero_card",name:"貓女盜賊",type:"CHARACTER",characterId:"cat_thief_hero",faction:"BEAST",unitType:"HERO",cost:6,pack:"BEAST_SUPPLEMENT"},
+  cat_thief_hero_card:{id:"cat_thief_hero_card",name:"米菈",type:"CHARACTER",characterId:"cat_thief_hero",faction:"BEAST",unitType:"HERO",cost:6,pack:"BEAST_SUPPLEMENT"},
   angel_archer_hero_card:{id:"angel_archer_hero_card",name:"天使族弓箭手",type:"CHARACTER",characterId:"angel_archer_hero",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"}
 };
 export const CardDatabase=(()=>{
