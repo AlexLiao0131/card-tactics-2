@@ -8,6 +8,9 @@ export const EnvironmentEngine=(()=>{
   const WEATHER_RULES={THUNDERSTORM:{lightningChance:0.35,lightningDamage:60,metalWeight:2,waterWeight:2,treeWeight:2}};
   const WEATHER_TURNS=Object.freeze({FOG:2,RAIN:3,HEAVY_RAIN:2,THUNDERSTORM:2,SNOW:3,BLIZZARD:2});
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
+  const WIND_DIRECTION=Object.freeze({CALM:"CALM",N:"N",NE:"NE",E:"E",SE:"SE",S:"S",SW:"SW",W:"W",NW:"NW"});
+  const WIND_VECTORS=Object.freeze({N:{x:0,y:-1},NE:{x:1,y:-1},E:{x:1,y:0},SE:{x:1,y:1},S:{x:0,y:1},SW:{x:-1,y:1},W:{x:-1,y:0},NW:{x:-1,y:-1},CALM:{x:0,y:0}});
+  const WIND_LABEL=Object.freeze({CALM:"無風",N:"北向",NE:"東北向",E:"東向",SE:"東南向",S:"南向",SW:"西南向",W:"西向",NW:"西北向"});
   const METAL_EQUIPMENT_IDS=new Set(["black_sword","imperial_sword","standard_sword","blessed_sword","imperial_spear","imperial_hammer","imperial_medium_armor","imperial_heavy_shield_armor","water_medium_armor","imperial_heavy_armor","imperial_heavy_plate","imperial_large_shield","nereia_royal_trident","beast_dual_daggers","beast_poison_throwing_knife"]);
   const HAZARD={BURNING_DAMAGE:20,BOILING_DAMAGE:30,FIRE_TORNADO_DAMAGE:45,ELECTRIC_DAMAGE:35};
   const HYDROLOGY=Object.freeze({WATERLINE:HydrologyEngine.WATERLINE,RAIN_FILL_PER_EVENT:HydrologyEngine.RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT:HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT:HydrologyEngine.STORM_RAIN_FILL_PER_EVENT});
@@ -17,11 +20,15 @@ export const EnvironmentEngine=(()=>{
   const elevation=tile=>HydrologyEngine.elevation(tile);
   const waterDepth=tile=>HydrologyEngine.waterDepth(tile);
   function environmentAt(map,x,y){const object=objectAt(map,x,y);if(object?.environment)return object.environment;const tile=tileAt(map,x,y);return TERRAINS[tile?.terrain]?.environment||ELEMENT.NONE;}
+  function windDirection(value={}){const strength=Math.max(0,Number(value?.strength||0));if(strength<=.001)return WIND_DIRECTION.CALM;const x=Math.sign(Number(value?.x||0)),y=Math.sign(Number(value?.y||0));return x===0&&y<0?WIND_DIRECTION.N:x>0&&y<0?WIND_DIRECTION.NE:x>0&&y===0?WIND_DIRECTION.E:x>0&&y>0?WIND_DIRECTION.SE:x===0&&y>0?WIND_DIRECTION.S:x<0&&y>0?WIND_DIRECTION.SW:x<0&&y===0?WIND_DIRECTION.W:x<0&&y<0?WIND_DIRECTION.NW:WIND_DIRECTION.CALM;}
+  function windVector(direction="CALM"){return{...(WIND_VECTORS[String(direction||"CALM").toUpperCase()]||WIND_VECTORS.CALM)}}
+  function windLabel(value={}){const direction=typeof value==="string"?String(value).toUpperCase():windDirection(value);if(direction===WIND_DIRECTION.CALM)return WIND_LABEL.CALM;const strength=Math.max(0,Number(value?.strength||0));return `${WIND_LABEL[direction]||direction}${strength>0?` ${strength.toFixed(2)}`:""}`;}
   function normalizeWind(value={}){
-    let x=Number(value?.x??value?.windX??1),y=Number(value?.y??value?.windY??0),strength=Math.max(0,Math.min(3,Number(value?.strength??value?.windStrength??.8)));
-    if(!Number.isFinite(x))x=1;if(!Number.isFinite(y))y=0;if(!Number.isFinite(strength))strength=.8;
-    x=Math.sign(x);y=Math.sign(y);if(x===0&&y===0&&strength>0)x=1;
-    return{x,y,strength};
+    const requestedDirection=String(value?.direction||"").toUpperCase(),vector=WIND_VECTORS[requestedDirection];
+    let x=Number(value?.x??value?.windX??vector?.x??0),y=Number(value?.y??value?.windY??vector?.y??0),strength=Math.max(0,Math.min(3,Number(value?.strength??value?.windStrength??0)));
+    if(!Number.isFinite(x))x=0;if(!Number.isFinite(y))y=0;if(!Number.isFinite(strength))strength=0;
+    if(requestedDirection===WIND_DIRECTION.CALM||strength<=.001)return{x:0,y:0,strength:0,direction:WIND_DIRECTION.CALM,calm:true};
+    x=Math.sign(x);y=Math.sign(y);if(x===0&&y===0)x=1;const normalized={x,y,strength};return{...normalized,direction:windDirection(normalized),calm:false};
   }
   function turns(value,fallback=null){if(value==null)return fallback;return Math.max(0,Number(value||0));}
   function climateFromWeather(weather="CLEAR",duration=null){
@@ -308,6 +315,6 @@ export const EnvironmentEngine=(()=>{
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
   function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);return range;}
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windLabel,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

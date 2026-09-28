@@ -48,13 +48,15 @@ export const UnitRuntimeEngine=(()=>{
   }
   function reconcileCompanions(units){
     if(!globalThis.CompanionDatabase?.spawnForOwner)return[];
-    const spawned=[];
-    for(const owner of [...(units||[])]){if(!owner?.alive||owner.unitRole==="COMPANION"||!owner.character?.companionIds?.length)continue;spawned.push(...CompanionDatabase.spawnForOwner({owner,map:owner._runtimeMap,units}));}
+    const roster=units||[],spawned=[];
+    for(const companion of roster.filter(unit=>unit?.alive&&unit.unitRole==="COMPANION")){const owner=roster.find(unit=>unit.id===companion.ownerUnitId);if(!owner?.alive)companion.alive=false;}
+    for(const owner of [...roster]){if(!owner?.alive||owner.unitRole==="COMPANION"||!owner.character?.companionIds?.length)continue;spawned.push(...CompanionDatabase.spawnForOwner({owner,map:owner._runtimeMap,units:roster}));}
     return spawned;
   }
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
-  function resetActions(units,team){reconcileCompanions(units);living(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
-  function allFinished(units,team){reconcileCompanions(units);const alive=living(units,team);return alive.length>0&&alive.every(u=>u.acted)}
+  function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false&&u.unitRole!=="COMPANION")}
+  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
+  function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){const id=skill?.baseSkillId||skill?.id;return unit?.skillResources?.[id]||unit?.skillResources?.[skill?.id]||{type:"UNLIMITED"}}
   function canUseSkill(unit,skill){
     if(skill?.approach&&unit?.moved)return false;
@@ -68,6 +70,6 @@ export const UnitRuntimeEngine=(()=>{
   function consumeSkill(unit,skill){if(!canUseSkill(unit,skill))return null;unit.mana-=manaCost(skill);const r=resourceFor(unit,skill);if(r.type==="USES"&&r.remaining>0)r.remaining--;return r}
   function resourceLabel(unit,skill){syncMana(unit);const r=resourceFor(unit,skill),uses=r.type==="USES"?`${r.remaining}/${r.max}`:"∞",cost=manaCost(skill);return cost>0?`${uses}｜MP ${cost}`:uses}
   function targetType(skill){return skill?.targetType||"SINGLE"}
-  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,createFromCharacter,create,reconcileCompanions,living,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType});
+  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,createFromCharacter,create,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

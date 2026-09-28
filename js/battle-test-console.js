@@ -5,6 +5,10 @@ const WEATHER_OPTIONS=[
   ["CLEAR","晴朗"],["FOG","迷霧"],["RAIN","雨"],["HEAVY_RAIN","豪大雨"],
   ["THUNDERSTORM","雷雨"],["SNOW","降雪"],["BLIZZARD","暴風雪"]
 ];
+const WIND_OPTIONS=[
+  ["CALM","無風"],["N","北向"],["NE","東北向"],["E","東向"],["SE","東南向"],
+  ["S","南向"],["SW","西南向"],["W","西向"],["NW","西北向"]
+];
 const FORCE_OPTIONS=[
   ["FIRE","火"],["HEAVY_FIRE","高熱"],["EXPLOSION","爆炸"],["WIND","風"],
   ["THUNDER","雷"],["IMPACT","衝擊"],["AVALANCHE_TRIGGER","雪崩觸發"]
@@ -61,6 +65,11 @@ function mount(){
           <input id="testWeatherTurns" type="number" min="0" max="99" value="5" inputmode="numeric" aria-label="天氣回合">
         </div>
         <button id="testApplyWeather" type="button">立即切換天氣</button>
+        <div class="battle-test-row">
+          <select id="testWindDirection">${WIND_OPTIONS.map(([v,n])=>option(v,n)).join("")}</select>
+          <input id="testWindStrength" type="number" min="0" max="3" step="0.1" value="1" inputmode="decimal" aria-label="風力">
+        </div>
+        <button id="testApplyWind" type="button">立即切換風向／風力</button>
         <div class="battle-test-row triple">
           <input id="testEnvX" type="number" min="0" value="0" inputmode="numeric" placeholder="X">
           <input id="testEnvY" type="number" min="0" value="0" inputmode="numeric" placeholder="Y">
@@ -116,6 +125,13 @@ function mount(){
     cardSelect.insertAdjacentHTML("beforeend",option(card.id,`[${kind}] ${card.name}｜${card.id}`));
   }
 
+  function syncEnvironmentControls(){
+    const data=runtime()?.state?.(),wind=data?.wind;if(!wind)return;
+    const direction=String(wind.direction||(wind.calm?"CALM":"CALM")).toUpperCase();
+    if([...$("testWindDirection").options].some(o=>o.value===direction))$("testWindDirection").value=direction;
+    $("testWindStrength").value=direction==="CALM"?0:Number(wind.strength||0);
+  }
+
   function refreshUnits(){
     const debug=runtime(),data=debug?.state?.(),select=$("testUnit"),previous=select.value;
     select.innerHTML="";
@@ -135,7 +151,7 @@ function mount(){
     $("testMoveX").value=unit.x;$("testMoveY").value=unit.y;
   }
 
-  toggle.onclick=()=>{panel.classList.toggle("open");if(panel.classList.contains("open"))refreshUnits();};
+  toggle.onclick=()=>{panel.classList.toggle("open");if(panel.classList.contains("open")){refreshUnits();syncEnvironmentControls();}};
   $("battleTestClose").onclick=()=>panel.classList.remove("open");
   $("testUnit").onchange=syncMoveCoords;
 
@@ -143,6 +159,13 @@ function mount(){
     const ok=runtime()?.setWeather?.($("testWeather").value,Number($("testWeatherTurns").value));
     status(ok?`天氣已切換：${$("testWeather").selectedOptions[0]?.textContent}`:"天氣切換失敗。",!!ok);
   };
+  $("testApplyWind").onclick=()=>{
+    const direction=$("testWindDirection").value,strength=direction==="CALM"?0:Number($("testWindStrength").value);
+    const ok=runtime()?.setWind?.(direction,strength);
+    status(ok?`風況已切換：${$("testWindDirection").selectedOptions[0]?.textContent}${direction==="CALM"?"":`｜風力 ${strength.toFixed(1)}`}`:"風況切換失敗。",!!ok);
+    if(ok)syncEnvironmentControls();
+  };
+  $("testWindDirection").onchange=()=>{if($("testWindDirection").value==="CALM")$("testWindStrength").value=0;else if(Number($("testWindStrength").value)<=0)$("testWindStrength").value=1;};
   $("testApplyForce").onclick=()=>{
     const ok=runtime()?.applyEnvironmentForce?.(Number($("testEnvX").value),Number($("testEnvY").value),$("testEnvForce").value);
     status(ok?"環境力已套用。":"環境力套用失敗，請檢查座標。",!!ok);

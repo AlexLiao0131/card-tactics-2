@@ -225,9 +225,10 @@
           if(ctx.checkMatchEnd()){ctx.render();return;}
           ctx.resetActions(ctx.TEAM.ENEMY);
           ctx.resetActions(NEUTRAL);
-          ctx.living(ctx.TEAM.ENEMY).filter(unit=>unit.deployedRound===state.round).forEach(unit=>{unit.moved=true;unit.acted=true;unit.waited=true;});
-          const enemies=ctx.living(ctx.TEAM.ENEMY).filter(unit=>unit.deployedRound!==state.round);
-          const neutrals=ctx.living(NEUTRAL);
+          const enemyActors=(ctx.turnActors?.(ctx.TEAM.ENEMY)||ctx.living(ctx.TEAM.ENEMY));
+          enemyActors.filter(unit=>unit.deployedRound===state.round).forEach(unit=>{unit.moved=true;unit.acted=true;unit.waited=true;});
+          const enemies=enemyActors.filter(unit=>unit.deployedRound!==state.round);
+          const neutrals=(ctx.turnActors?.(NEUTRAL)||ctx.living(NEUTRAL));
           queue=[...enemies,...neutrals];
           showStep("TACTICAL",neutrals.length?"敵方進入戰棋階段｜野怪將於敵軍後自主行動":"敵方進入戰棋階段");
           afterStep(continuePhase,350);

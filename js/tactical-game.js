@@ -145,6 +145,7 @@
   }
 
   function living(team){return UnitRuntimeEngine.living(units,team);}
+  function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}
   function resetActions(team){return UnitRuntimeEngine.resetActions(units,team);}
   function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}
   function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}
@@ -203,7 +204,7 @@
       TEAM,PHASE,
       state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),
       map:()=>map,
-      living,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,coreForOwner,
+      living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,coreForOwner,
       canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>objectiveController.checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,
       clearSelection,clearEnemyReaction,
       skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),
@@ -502,7 +503,7 @@
       }
     }
 
-    if(unit&&unit.team===TEAM.PLAYER){
+    if(unit&&unit.team===TEAM.PLAYER&&unit.unitRole!=="COMPANION"){
       if(selected&&selected!==unit)commitPendingMove(selected);
       commandPanelCollapsed=false;
       selected=unit;
@@ -538,8 +539,8 @@
     }
 
     const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";
-    const ready=living(TEAM.PLAYER).filter(u=>!u.acted).length;
-    turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${living(TEAM.PLAYER).length}`;
+    const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;
+    turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;
   }
 
   function addActionButton(text,onClick,disabled=false){
@@ -840,6 +841,7 @@
           if(!usable)return;
           selectedSkill=skill;
           selectedSkillVariant=null;
+          if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}
           mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");
           render();
         };
@@ -939,6 +941,16 @@
     return debugEmit();
   }
 
+  function debugSetWind(direction="CALM",strength=0){
+    if(!environmentState||!globalThis.EnvironmentEngine?.setWind)return false;
+    const vector=EnvironmentEngine.windVector?.(direction)||{x:0,y:0};
+    const requested=String(direction||"CALM").toUpperCase(),value=requested==="CALM"?{x:0,y:0,strength:0}:{...vector,strength:Math.max(0,Math.min(3,Number(strength||0)))};
+    const wind=EnvironmentEngine.setWind(environmentState,value);
+    if(!wind)return false;
+    pushLog(`TEST｜風況切換為 ${EnvironmentEngine.windLabel?.(wind)||requested}。`,"SYSTEM");
+    return debugEmit();
+  }
+
   function debugApplyEnvironmentForce(x,y,force){
     x=Number(x);y=Number(y);force=String(force||"").toUpperCase();
     const tile=TacticalEngine.tile(map,x,y);
@@ -1007,6 +1019,7 @@
   function debugState(){
     return{
       weather:environmentState?.weather||"CLEAR",
+      wind:globalThis.EnvironmentEngine?.climateSnapshot?.(environmentState)?.wind||null,
       map:{width:map?.width||0,height:map?.height||0},
       units:(units||[]).filter(unit=>unit.alive).map(unit=>({
         id:unit.id,name:unit.character?.name||unit.id,team:unit.team,x:unit.x,y:unit.y,z:unit.z,
@@ -1049,6 +1062,7 @@
     debug:Object.freeze({
       state:debugState,
       setWeather:debugSetWeather,
+      setWind:debugSetWind,
       applyEnvironmentForce:debugApplyEnvironmentForce,
       clearTileEffects:debugClearTileEffects,
       giveCard:debugGiveCard,

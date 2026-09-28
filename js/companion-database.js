@@ -6,6 +6,8 @@ export const COMPANIONS={
     kind:"SCOUT",
     movement:"FLYING",
     occupiesCardSlot:false,
+    occupiesTile:false,
+    participatesInTurn:false,
     canAttack:false,
     canCapture:false,
     countsForObjectives:false,
@@ -56,7 +58,7 @@ export const CompanionDatabase=(()=>{
   }
   function spawnTile(owner,map,units,character){
     if(!owner?.alive||!map?.tiles)return null;
-    const occupied=new Set((units||[]).filter(unit=>unit?.alive).map(unit=>`${unit.x},${unit.y}`));
+    const occupied=new Set((units||[]).filter(unit=>unit?.alive&&unit.occupiesTile!==false).map(unit=>`${unit.x},${unit.y}`));
     const probe={team:owner.team,character,x:owner.x,y:owner.y,z:owner.z,alive:true};
     return map.tiles
       .map(tile=>({tile,d:Math.abs(tile.x-owner.x)+Math.abs(tile.y-owner.y)}))
@@ -76,6 +78,8 @@ export const CompanionDatabase=(()=>{
       const unit=UnitRuntimeEngine.createFromCharacter({id:`${owner.id}::${companion.id}`,team:owner.team,character,x:tile.x,y:tile.y,map});
       if(!unit)continue;
       unit.unitRole="COMPANION";
+      unit.participatesInTurn=companion.participatesInTurn===true;
+      unit.occupiesTile=companion.occupiesTile!==false;
       unit.companionId=companion.id;
       unit.ownerUnitId=owner.id;
       unit.countsForObjectives=companion.countsForObjectives===true;
