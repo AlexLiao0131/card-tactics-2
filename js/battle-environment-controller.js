@@ -171,13 +171,22 @@ function create(ctx){
   return affected;
  }
  function resolveWeatherEvents(){const s=state();if(!s.environmentState)return;for(const event of EnvironmentEngine.rollWeatherEvent({map:s.map,state:s.environmentState,units:s.units})){if(event.type!=="LIGHTNING_STRIKE")continue;const unit=event.unit;if(!unit?.alive)continue;const names=(event.riskReasons||[]).map(r=>r==="METAL"?"金屬裝備":r==="WATER"?"水域":"樹木／森林");unit.hp=Math.max(0,unit.hp-Number(event.damage||0));ctx.pushLog(`⚡ 落雷擊中 ${unit.character.name}｜${event.damage} 傷害｜HP ${unit.hp}${names.length?`｜高風險：${names.join("＋")}`:""}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.handleDefeated(unit,null,{type:"LIGHTNING"});}if(EnvironmentEngine.isConductive(s.map,s.environmentState,event.x,event.y)){const conduction=[];EnvironmentEngine.conductThunder(s.map,s.environmentState,event.x,event.y,conduction,{damagedUnitIds:[unit.id]});conduction.forEach(logEnvironmentEvent);resolveEnvironmentEvents(conduction,{reason:"雷雨落雷引發水體傳導"});}}}
+ function mudSourceLabel(event){
+  const source=String(event?.source||"").toUpperCase();
+  if(source.includes("SNOW")||source.includes("ICE")||source.includes("MELT"))return"融雪／積水";
+  if(source.includes("RAIN")||source.includes("THUNDERSTORM"))return"降雨";
+  if(source.includes("FLOOD"))return"洪水／積水";
+  if(source.includes("MASS_FLOW"))return"土石流後積水";
+  if(source.includes("ACCUMULATION")||source.includes("DRAIN")||source.includes("FLOW"))return"積水";
+  return"土壤飽和／積水";
+ }
  function logEnvironmentEvent(event){
   if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
   else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
   else if(event.type==="RAIN_EXTINGUISHED_FIRE")ctx.pushLog(`豪雨熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
   else if(event.type==="SNOW_EXTINGUISHED_FIRE")ctx.pushLog(`降雪熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
   else if(event.type==="RAIN_SUPPRESSED_FIRE")ctx.pushLog(`豪雨壓制 (${event.x},${event.y}) 的小火，無法形成燃燒地形。`,"SYSTEM");
-  else if(event.type==="MUD_CREATED")ctx.pushLog(`降雨／積水使 (${event.x},${event.y}) 的平地先轉為泥濘。`,"DETAIL");
+  else if(event.type==="MUD_CREATED")ctx.pushLog(`${mudSourceLabel(event)}使 (${event.x},${event.y}) 的平地轉為泥濘。`,"DETAIL");
   else if(event.type==="MUD_DRY")ctx.pushLog(`(${event.x},${event.y}) 的泥濘乾燥，恢復為平地。`,"DETAIL");
   else if(event.type==="WATER_BOILING")ctx.pushLog(`♨ (${event.x},${event.y}) 水域開始沸騰｜水中單位會受到高熱傷害。`,"SYSTEM");
   else if(event.type==="WATER_EVAPORATION")ctx.pushLog(`高熱持續作用於 (${event.x},${event.y})｜蒸發水量 ${Number(event.amount||0).toFixed(2)}。`,"SYSTEM");
@@ -194,6 +203,7 @@ function create(ctx){
   else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="ICE_THAW")ctx.pushLog(`解凍｜${event.changedTiles||0} 格冰面變薄。`,"DETAIL");
+  else if(event.type==="MASS_FLOW_TERRAIN_CHANGED")ctx.pushLog(`地貌變化｜${event.material==="SOIL"?"土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"山崩／落石":"質量流"}影響 ${event.tiles||0} 格｜高程改變 ${event.elevationChanges||0} 格｜地形類型改變 ${event.terrainChanges||0} 格。`,"DETAIL");
   else if(event.type==="MASS_FLOW"){const label=event.material==="SOIL"?"⛰️ 土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"🪨 山崩／落石":"❄️ 雪崩";ctx.pushLog(`${label}由 (${event.x},${event.y}) 發生｜路徑 ${event.path?.length||0} 格｜質量 ${Number(event.mass||0).toFixed(2)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
   else if(event.type==="SOIL_FROZEN")ctx.pushLog(`🧊 (${event.x},${event.y}) 含水土壤凍結｜形成凍土。`,"DETAIL");
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");

@@ -97,6 +97,9 @@ function resolveSnowFailure(map,state,tile,events){
   events.push(MassFlowEngine.event(flow,{source:"STABILITY_FAILURE",damage:16+flow.mass*18,forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.4)))}));
 }
 function resolveSoilFailure(map,state,tile,events){
+  // Active water tiles are submerged beds, not exposed soil slopes. They keep saturated
+  // soil state for hydrology bookkeeping, but must not become landslide sources.
+  if(water(tile)>.001||tile?.terrain==="WATER")return;
   const next=downhill(map,tile);if(!next||next.drop<CFG.SLOPE_FAILURE_MIN_DROP)return;
   const ratio=moistureRatio(tile),stab=stability(state,tile,map),disturbance=Number(tile.disturbance||0);
   if(ratio<CFG.SLOPE_FAILURE_MOISTURE_RATIO||frozenSoil(state,tile)||stab-disturbance*.2>.36)return;
