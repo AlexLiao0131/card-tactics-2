@@ -30,16 +30,4 @@
     church_saint:{id:"church_saint",name:"聖女",faction:F,race:"ANCIENT_HUMAN",archetype:"SAINT",genetics:{grade:"3V"},attributes:{str:9,agi:14,int:20,wil:20,vit:13,luk:20},combat:{hp:215,atk:42,matk:110,def:48,mdef:108,move:4},armorId:"church_bishop_robe",weaponIds:{staff:"imperial_staff"},skills:["saint_heal","saint_dispel","saint_blessing"],lore:{genetics:"3V",notes:"亡國王女、女聖殿騎士之妹。以治療、驅散與祝福為核心。"}}
   };
   Object.entries(raw).forEach(([id,c])=>CHARACTERS[id]=EquipmentDatabase.resolveCharacter(c));
-  Object.assign(CARDS,{
-    church_apprentice_card:{id:"church_apprentice_card",name:"騎士學徒",type:"CHARACTER",characterId:"church_apprentice",faction:F,unitType:"UNIT",cost:3},
-    church_heavy_knight_card:{id:"church_heavy_knight_card",name:"重裝騎士",type:"CHARACTER",characterId:"church_heavy_knight",faction:F,unitType:"UNIT",cost:4},
-    church_templar_card:{id:"church_templar_card",name:"聖殿騎士",type:"CHARACTER",characterId:"church_templar",faction:F,unitType:"UNIT",cost:5},
-    church_bishop_card:{id:"church_bishop_card",name:"主教",type:"CHARACTER",characterId:"church_bishop",faction:F,unitType:"UNIT",cost:4},
-    church_templar_hero_card:{id:"church_templar_hero_card",name:"女聖殿騎士",type:"CHARACTER",characterId:"church_templar_hero",faction:F,unitType:"HERO",cost:6},
-    church_redemption_card:{id:"church_redemption_card",name:"救贖",type:"SPELL",spellType:"REVIVE",faction:F,cost:6,effect:{type:"REVIVE",zone:"GRAVEYARD"}},
-    church_dispel_card:{id:"church_dispel_card",name:"驅散",type:"SPELL",spellType:"DISPEL",faction:F,cost:3,effect:{type:"DISPEL",classification:"NEGATIVE",target:"ALLY"}},
-    church_judgement_card:{id:"church_judgement_card",name:"懲戒",type:"SPELL",spellType:"TACTICAL",faction:F,cost:5,effect:{type:"AREA_RELATION",radius:1,effects:[{relation:"ALLY",type:"HEAL",amount:60},{relation:"ENEMY",type:"MAGIC_DAMAGE",amount:65,element:"HOLY",traitMultipliers:{UNDEAD:2}}]}},
-    church_entrenchment_card:{id:"church_entrenchment_card",name:"陣地戰",type:"SPELL",spellType:"BUFF",faction:F,cost:4,effect:{type:"AREA_BUFF",radius:2,duration:3,targetFilter:{relation:"ALLY",faction:F},buff:{id:"CHURCH_ENTRENCHMENT",classification:"POSITIVE",modifiers:{def:15,mdef:10,guardMultiplier:.8}}}},
-    church_saint_card:{id:"church_saint_card",name:"聖女",type:"CHARACTER",characterId:"church_saint",faction:F,unitType:"HERO",cost:6,pack:"SAINT_SUPPLEMENT"}
-  });
 })();

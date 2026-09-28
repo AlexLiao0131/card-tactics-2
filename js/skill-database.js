@@ -33,7 +33,11 @@ export const SKILLS={
   cassandra_magic_bolt:{id:"cassandra_magic_bolt",name:"魔力彈",category:"MAGIC",weapon:"cassandra_staff",power:1,range:{min:2,max:4},attackType:"MAGIC",element:"NONE",speed:0,target:"ENEMY",support:true,resource:{type:"UNLIMITED"},affixes:[]},
   cassandra_fire_burst:{id:"cassandra_fire_burst",name:"炎爆術",category:"MAGIC",weapon:"cassandra_staff",power:1.25,range:{min:2,max:4},attackType:"MAGIC",element:"FIRE",speed:-5,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:[],statusEffects:[{type:"BURN",chance:100}]},
   cassandra_frost:{id:"cassandra_frost",name:"寒霜術",category:"MAGIC",weapon:"cassandra_staff",power:1.1,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:[]},
-  cassandra_dissolve:{id:"cassandra_dissolve",name:"異端術式・崩解",category:"MAGIC",weapon:"cassandra_staff",power:1.5,range:{min:2,max:5},attackType:"MAGIC",element:"NONE",speed:-15,target:"ENEMY",support:false,resource:{type:"USES",max:2},affixes:[]}
+  cassandra_dissolve:{id:"cassandra_dissolve",name:"異端術式・崩解",category:"MAGIC",weapon:"cassandra_staff",power:1.5,range:{min:2,max:5},attackType:"MAGIC",element:"NONE",speed:-15,target:"ENEMY",support:false,resource:{type:"USES",max:2},affixes:[]},
+
+  nereia_trident_thrust:{id:"nereia_trident_thrust",name:"三叉戟突刺",category:"ATTACK",weapon:"trident",power:1.10,range:{min:1,max:2},attackType:"PIERCE",element:"INHERIT",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
+  nereia_water_bullet:{id:"nereia_water_bullet",name:"水彈",category:"MAGIC",weapon:"trident",power:1.05,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
+  nereia_tsunami:{id:"nereia_tsunami",name:"海嘯",category:"MAGIC",weapon:"trident",power:0,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,speed:-10,support:false,resource:{type:"USES",max:2},requiresVision:true,hydrologyFlood:{surfaceRise:1.25},affixes:["WATER_TERRAIN_CONTROL"]}
 };
 export const PASSIVES={
   GUARDIAN_INSTINCT:{id:"GUARDIAN_INSTINCT",name:"守護本能",category:"PASSIVE",defenseProfiles:[{id:"guardian_instinct_guard",method:"GUARD",name:"守護本能",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.70},PIERCE:{damageMultiplier:.75},SHOT:{damageMultiplier:.70},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.90}}}]},
@@ -50,7 +54,9 @@ export const PASSIVES={
   AMBUSH:{id:"AMBUSH",name:"伏擊",category:"PASSIVE",terrain:"FOREST",weaponKind:"BOW",powerMultiplier:1.20,speedBonus:20},
   PERFECT_GENOME_5V:{id:"PERFECT_GENOME_5V",name:"純種舊人類",category:"PASSIVE"},
   NO_CHANT:{id:"NO_CHANT",name:"無詠唱",category:"PASSIVE",magicNegativeSpeedAsZero:true},
-  CAPTAIN_HIGHEST_AUTHORITY:{id:"CAPTAIN_HIGHEST_AUTHORITY",name:"最高艦長權限",category:"PASSIVE",turnEndEffect:{type:"DRAW",count:1}}
+  CAPTAIN_HIGHEST_AUTHORITY:{id:"CAPTAIN_HIGHEST_AUTHORITY",name:"最高艦長權限",category:"PASSIVE",turnEndEffect:{type:"DRAW",count:1}},
+  DEEP_SEA_PHYSIQUE:{id:"DEEP_SEA_PHYSIQUE",name:"深海體魄",category:"PASSIVE",description:"能承受深海水壓的異常強韌體魄。受到近戰傷害降低 30%。",damageTakenRules:[{attackClass:"MELEE",multiplier:.70}]},
+  SEA_SOVEREIGN:{id:"SEA_SOVEREIGN",name:"王者",category:"PASSIVE",description:"海世界女王的支配權。可直接控制深潭巨章，並在不擊敗牠的情況下取得其洪水卡牌。",encounterDominion:{monsterIds:["water_lurker"],fromTeams:["N"],grantEncounterRewards:true}}
 };
 export const SkillDatabase=(()=>{
   function get(id){const skill=SKILLS[id];if(!skill)throw new Error("Unknown skill: "+id);return skill}

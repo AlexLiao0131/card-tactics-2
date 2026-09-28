@@ -32,12 +32,7 @@ export class ShellUI{
   cardLabel(c){const type=c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL");return`<strong>${c.name}</strong><span>${type}　💎 ${c.cost}</span>`}
   openDeck({from,deploy}){this.deckReturn=from;this.deckCanDeploy=deploy;$("deckScreenTitle").textContent=deploy?"出擊牌組設定":"卡牌整理";this.renderTabs();this.renderGroup();this.renderDeck();this.show("deckScreen")}
   renderTabs(){const packs=globalThis.PackDatabase.list();if(!this.activeGroup)this.activeGroup=packs[0]?.id;$("packTabs").innerHTML=packs.map(p=>`<button class="pack-tab ${p.id===this.activeGroup?"active":""}" data-group="${p.id}">${p.name}</button>`).join("");document.querySelectorAll("[data-group]").forEach(b=>b.onclick=()=>{this.activeGroup=b.dataset.group;this.renderTabs();this.renderGroup()})}
-  renderGroup(){
-    const group=globalThis.PackDatabase.get(this.activeGroup),cards=globalThis.PackDatabase.cards(this.activeGroup);
-    if(!cards.length){$("packCards").innerHTML=`<div class="deck-empty">${group?.cards?.length?"卡牌資料尚未載入，請重新整理頁面。":"此分類目前沒有卡牌。"}</div>`;return}
-    $("packCards").innerHTML=cards.map(c=>{const count=this.deck.filter(id=>id===c.id).length,chosen=count>0;return`<button class="collection-card ${chosen?"chosen":""}" data-card="${c.id}">${this.cardLabel(c)}<em>${c.unitType==="HERO"?(chosen?"HERO 已加入":"加入牌組"):(chosen?`牌組 ×${count}｜再加入`:"加入牌組")}</em></button>`}).join("");
-    document.querySelectorAll("[data-card]").forEach(b=>b.onclick=()=>{const c=globalThis.CardDatabase.get(b.dataset.card);if(c?.unitType==="HERO"&&this.deck.includes(c.id))return;this.deck.push(c.id);this.renderDeck();this.renderGroup()})
-  }
+  renderGroup(){const cards=globalThis.PackDatabase.cards(this.activeGroup);$("packCards").innerHTML=cards.map(c=>{const count=this.deck.filter(id=>id===c.id).length,chosen=count>0;return`<button class="collection-card ${chosen?"chosen":""}" data-card="${c.id}">${this.cardLabel(c)}<em>${c.unitType==="HERO"?(chosen?"HERO 已加入":"加入牌組"):(chosen?`牌組 ×${count}｜再加入`:"加入牌組")}</em></button>`}).join("");document.querySelectorAll("[data-card]").forEach(b=>b.onclick=()=>{const c=globalThis.CardDatabase.get(b.dataset.card);if(c?.unitType==="HERO"&&this.deck.includes(c.id))return;this.deck.push(c.id);this.renderDeck();this.renderGroup()})}
   renderDeck(){$("deckCount").textContent=`目前牌組 ${this.deck.length} 張`;$("deckList").innerHTML=this.deck.length?this.deck.map((id,i)=>`<button class="deck-row" data-remove="${i}">${globalThis.CardDatabase.get(id)?.name||id}<span>移除</span></button>`).join(""):`<div class="deck-empty">尚未加入卡牌</div>`;document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{this.deck.splice(Number(b.dataset.remove),1);this.renderDeck();this.renderGroup()});$("deployDeck").hidden=!this.deckCanDeploy;$("deployDeck").disabled=this.deck.length===0}
   replaceDeck(ids){this.deck.splice(0,this.deck.length,...globalThis.DeckEngine.normalize(ids));this.renderDeck();this.renderGroup()}
   deploy(){
@@ -51,13 +46,8 @@ export class ShellUI{
     const products=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})||globalThis.PackDatabase.list?.()||[];
     $("shopTabs").innerHTML=products.map(p=>`<button class="pack-tab ${p.id===this.activeShopPack?"active":""}" data-shop="${p.id}">${p.name}</button>`).join("");
     document.querySelectorAll("[data-shop]").forEach(b=>b.onclick=()=>{this.activeShopPack=b.dataset.shop;this.renderShop()});
-    const pack=globalThis.PackDatabase.product?.(this.activeShopPack)||products[0];if(!pack){$("shopPackInfo").innerHTML="<p>目前沒有卡包資料。</p>";$("shopResults").innerHTML="";return}
-    this.activeShopPack=pack.id;
-    const isSupplement=pack.kind==="SUPPLEMENT",fixedCards=isSupplement?(globalThis.PackDatabase.productCards?.(pack.id)||[]):[];
-    $("shopPackInfo").innerHTML=`<h3>${pack.name}</h3><p>${pack.description||""}</p><button id="testOpenPack" class="deploy-button">${isSupplement?"測試取得固定內容":"測試開包"}</button>`;
-    $("shopResults").innerHTML=isSupplement
-      ?(fixedCards.length?fixedCards.map(c=>`<div class="collection-card">${this.cardLabel(c)}</div>`).join(""):`<div class="deck-empty">固定內容尚未載入。</div>`)
-      :"";
-    $("testOpenPack").onclick=()=>{const opened=globalThis.PackEngine.open(pack.id);$("shopResults").innerHTML=opened.ok?opened.cards.map(id=>{const card=globalThis.CardDatabase.get(id);return card?`<div class="collection-card">${this.cardLabel(card)}</div>`:""}).join(""):`<div class="deck-empty">${opened.reason}</div>`}
+    const pack=globalThis.PackDatabase.product?.(this.activeShopPack)||products[0];if(!pack){$("shopPackInfo").innerHTML="<p>目前沒有卡包資料。</p>";return}
+    this.activeShopPack=pack.id;$("shopPackInfo").innerHTML=`<h3>${pack.name}</h3><p>${pack.description||""}</p><button id="testOpenPack" class="deploy-button">測試開包</button>`;
+    $("testOpenPack").onclick=()=>{const opened=globalThis.PackEngine.open(pack.id);$("shopResults").innerHTML=opened.ok?opened.cards.map(id=>`<div class="collection-card">${this.cardLabel(globalThis.CardDatabase.get(id))}</div>`).join(""):`<div class="deck-empty">${opened.reason}</div>`}
   }
 }

@@ -28,6 +28,25 @@ export const CARDS={
   elf_ranger_card:{id:"elf_ranger_card",name:"精靈遊俠",type:"CHARACTER",characterId:"elf_ranger",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
   elf_guard_card:{id:"elf_guard_card",name:"精靈衛士",type:"CHARACTER",characterId:"elf_guard",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
   elf_priest_card:{id:"elf_priest_card",name:"精靈祭司",type:"CHARACTER",characterId:"elf_priest",faction:"ELF_EMPIRE",unitType:"UNIT",cost:4},
+
+  flood_card:{id:"flood_card",name:"洪水術",type:"SPELL",spellType:"TACTICAL",faction:"MONSTER",cost:4,acquisition:"ENCOUNTER",lifetime:"BATTLE",collectible:false,availability:"BATTLE_ONLY",source:"ENCOUNTER",effect:{type:"HYDROLOGY_FLOOD",radius:2,surfaceRise:1}},
+
+  ophi_card:{id:"ophi_card",name:"奧菲",type:"CHARACTER",characterId:"ophi",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"},
+  colin_card:{id:"colin_card",name:"寇林",type:"CHARACTER",characterId:"colin",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"},
+  moon_goddess_blessing_card:{id:"moon_goddess_blessing_card",name:"月神祝福",type:"SPELL",spellType:"BUFF",faction:"ELVEN",cost:4,pack:"OPHI_SUPPLEMENT",effect:{type:"RACE_NIGHT_BUFF",race:"ELF",scope:"ALL_FRIENDLY_ON_FIELD",requiresTimeOfDay:"NIGHT",modifiers:{powerMultiplier:1.15,speed:10}}},
+
+  church_apprentice_card:{id:"church_apprentice_card",name:"騎士學徒",type:"CHARACTER",characterId:"church_apprentice",faction:"CHURCH",unitType:"UNIT",cost:3},
+  church_heavy_knight_card:{id:"church_heavy_knight_card",name:"重裝騎士",type:"CHARACTER",characterId:"church_heavy_knight",faction:"CHURCH",unitType:"UNIT",cost:4},
+  church_templar_card:{id:"church_templar_card",name:"聖殿騎士",type:"CHARACTER",characterId:"church_templar",faction:"CHURCH",unitType:"UNIT",cost:5},
+  church_bishop_card:{id:"church_bishop_card",name:"主教",type:"CHARACTER",characterId:"church_bishop",faction:"CHURCH",unitType:"UNIT",cost:4},
+  church_templar_hero_card:{id:"church_templar_hero_card",name:"女聖殿騎士",type:"CHARACTER",characterId:"church_templar_hero",faction:"CHURCH",unitType:"HERO",cost:6},
+  church_redemption_card:{id:"church_redemption_card",name:"救贖",type:"SPELL",spellType:"REVIVE",faction:"CHURCH",cost:6,effect:{type:"REVIVE",zone:"GRAVEYARD"}},
+  church_dispel_card:{id:"church_dispel_card",name:"驅散",type:"SPELL",spellType:"DISPEL",faction:"CHURCH",cost:3,effect:{type:"DISPEL",classification:"NEGATIVE",target:"ALLY"}},
+  church_judgement_card:{id:"church_judgement_card",name:"懲戒",type:"SPELL",spellType:"TACTICAL",faction:"CHURCH",cost:5,effect:{type:"AREA_RELATION",radius:1,effects:[{relation:"ALLY",type:"HEAL",amount:60},{relation:"ENEMY",type:"MAGIC_DAMAGE",amount:65,element:"HOLY",traitMultipliers:{UNDEAD:2}}]}},
+  church_entrenchment_card:{id:"church_entrenchment_card",name:"陣地戰",type:"SPELL",spellType:"BUFF",faction:"CHURCH",cost:4,effect:{type:"AREA_BUFF",radius:2,duration:3,targetFilter:{relation:"ALLY",faction:"CHURCH"},buff:{id:"CHURCH_ENTRENCHMENT",classification:"POSITIVE",modifiers:{def:15,mdef:10,guardMultiplier:.8}}}},
+  church_saint_card:{id:"church_saint_card",name:"聖女",type:"CHARACTER",characterId:"church_saint",faction:"CHURCH",unitType:"HERO",cost:6,pack:"SAINT_SUPPLEMENT"},
+
+  seraphina_card:{id:"seraphina_card",name:"Seraphina",type:"CHARACTER",characterId:"seraphina",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
   nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"}
 };
 export const CardDatabase=(()=>{

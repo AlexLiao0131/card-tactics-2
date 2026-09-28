@@ -30,19 +30,13 @@
     colin_full_shield_defense:{
       id:"colin_full_shield_defense",name:"大盾防禦",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",
       speed:-5,support:false,resource:{type:"UNLIMITED"},requiresEquipment:"colin_full_body_shield",
-      stance:{
-        type:"FULL_SHIELD_DEFENSE",
-        protectsBehind:true,
-        blocksEnemyRoute:true,
-        enhancedGuard:true
-      },
+      stance:{type:"FULL_SHIELD_DEFENSE",protectsBehind:true,blocksEnemyRoute:true,enhancedGuard:true},
       affixes:["FULL_SHIELD_DEFENSE"]
     },
     colin_armor_breaking_strike:{
       id:"colin_armor_breaking_strike",name:"破甲打擊",category:"ATTACK",weapon:"colin_hammer",power:1.15,
       range:{min:1,max:1},attackType:"STRIKE",element:"INHERIT",speed:-10,target:"ENEMY",support:false,
-      resource:{type:"UNLIMITED"},affixes:["ARMOR_BREAK"],
-      statusEffects:[{type:"DEF_DOWN",value:20,duration:2}],
+      resource:{type:"UNLIMITED"},affixes:["ARMOR_BREAK"],statusEffects:[{type:"DEF_DOWN",value:20,duration:2}],
       postEffects:[{type:"KNOCKBACK",distance:2}]
     }
   });
@@ -76,8 +70,4 @@
     lore:{role:"專職坦克",genetics:"2V",notes:"STR、AGI為V。以足以遮蔽全身的大盾守住戰線，戰錘負責破甲與擊退。"}
   };
   CHARACTERS.colin=EquipmentDatabase.resolveCharacter(rawColin);
-
-  CARDS.ophi_card={id:"ophi_card",name:"奧菲",type:"CHARACTER",characterId:"ophi",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"};
-  CARDS.colin_card={id:"colin_card",name:"寇林",type:"CHARACTER",characterId:"colin",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"};
-  CARDS.moon_goddess_blessing_card={id:"moon_goddess_blessing_card",name:"月神祝福",type:"SPELL",spellType:"BUFF",faction:"ELVEN",cost:4,pack:"OPHI_SUPPLEMENT",effect:{type:"RACE_NIGHT_BUFF",race:"ELF",scope:"ALL_FRIENDLY_ON_FIELD",requiresTimeOfDay:"NIGHT",modifiers:{powerMultiplier:1.15,speed:10}}};
 })();

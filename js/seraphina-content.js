@@ -10,5 +10,4 @@
   });
   const raw={id:"seraphina",name:"Seraphina",race:"ANCIENT_HUMAN",traits:["VAMPIRE"],faction:"VAMPIRE",visualId:"seraphina_default",archetype:"MELEE_BURST",genetics:{grade:"IMPERFECT_ANCIENT_HUMAN",restoredGrade:"5V",trigger:"BLOOD"},attributes:{str:18,agi:19,int:17,wil:16,vit:15,luk:14},combat:{hp:245,atk:104,matk:78,def:64,mdef:72,move:5},armorId:"livia_light_armor",weaponIds:{claw:"seraphina_claws"},skills:["seraphina_rending_claw","seraphina_blood_drain","seraphina_blood_burst","seraphina_regeneration"],lore:{genetics:"IMPERFECT_ANCIENT_HUMAN",notes:"遠古人類時代的病患。吸血鬼是不完美的遠古人類；吸血後可暫時恢復5V並複製供血者一項可複製能力。"}};
   CHARACTERS.seraphina=EquipmentDatabase.resolveCharacter(raw);
-  CARDS.seraphina_card={id:"seraphina_card",name:"Seraphina",type:"CHARACTER",characterId:"seraphina",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"};
 })();
