@@ -16,12 +16,17 @@ export const FallEngine=(()=>{
   function fallDamage(drop){
     return drop>=FALL_THRESHOLD?(drop-FALL_THRESHOLD+1)*FALL_DAMAGE_PER_LEVEL:0;
   }
+  function fallDamageFor(target,drop){
+    let safe=FALL_THRESHOLD-1,multiplier=1;
+    for(const passive of globalThis.SkillDatabase?.passiveList?.(target?.character?.passives)||[]){const rule=passive?.fallRules;if(!rule)continue;if(Number.isFinite(Number(rule.safeDrop)))safe=Math.max(safe,Number(rule.safeDrop));if(Number.isFinite(Number(rule.damageMultiplier)))multiplier*=Number(rule.damageMultiplier);}
+    if(drop<=safe)return 0;return Math.max(0,Math.round(fallDamage(drop)*multiplier));
+  }
   function resolveLanding({map,target,fromZ,applyDamage}){
     const tile=TacticalEngine.tile(map,target.x,target.y);
     const vertical=globalThis.VerticalMobilityEngine&&tile?VerticalMobilityEngine.describe(target,tile):null;
     const landingZ=vertical?vertical.physicalZ:tileElevation(map,target.x,target.y);
     const drop=globalThis.VerticalMobilityEngine?.ignoresFall?.(target)?0:Math.max(0,Number(fromZ)-landingZ);
-    const damage=fallDamage(drop);
+    const damage=fallDamageFor(target,drop);
     if(damage>0)applyDamage?.(target,damage);
     target.z=landingZ;
     if(vertical)VerticalMobilityEngine.syncUnit(target,tile);
@@ -29,7 +34,7 @@ export const FallEngine=(()=>{
   }
   return Object.freeze({
     FALL_THRESHOLD,FALL_DAMAGE_PER_LEVEL,
-    tileElevation,groundZ,syncGroundZ,fallDamage,resolveLanding
+    tileElevation,groundZ,syncGroundZ,fallDamage,fallDamageFor,resolveLanding
   });
 })();
 globalThis.FallEngine=FallEngine;

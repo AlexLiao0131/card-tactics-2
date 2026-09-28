@@ -97,7 +97,26 @@ export const EffectEngine=(()=>{
     (unit.grantedSkills||[]).forEach(g=>{if(g.remaining!=null)g.remaining--;});
     unit.grantedSkills=(unit.grantedSkills||[]).filter(g=>g.remaining==null||g.remaining>0);
   }
+  function isStealthed(unit){return state(unit).some(e=>e.type==="STEALTH");}
+  function applyStealth(unit,{id="STEALTH",detectionRange=1,source=null}={}){return addEffect(unit,{id,type:"STEALTH",classification:"POSITIVE",detectionRange},source);}
+  function breakStealth(unit,reason="ACTION"){
+    if(!unit?.effects)return false;const before=unit.effects.length;unit.effects=unit.effects.filter(e=>e.type!=="STEALTH");if(before!==unit.effects.length){syncModifiers(unit);return true}return false;
+  }
+  function directTargetAllowed(observer,target){
+    if(!isStealthed(target)||observer?.team===target?.team)return true;
+    const stealth=state(target).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));
+    return Math.abs(Number(observer?.x)-Number(target?.x))+Math.abs(Number(observer?.y)-Number(target?.y))<=range;
+  }
+  function resolveProximityReveal(mover,units=[]){
+    if(!mover?.alive)return[];const revealed=[];
+    if(isStealthed(mover)){
+      const stealth=state(mover).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));
+      if((units||[]).some(unit=>unit?.alive&&unit.team!==mover.team&&Math.abs(unit.x-mover.x)+Math.abs(unit.y-mover.y)<=range)&&breakStealth(mover,"PROXIMITY"))revealed.push(mover);
+    }
+    for(const unit of units){if(!unit?.alive||unit.id===mover.id||unit.team===mover.team||!isStealthed(unit))continue;const stealth=state(unit).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));if(Math.abs(unit.x-mover.x)+Math.abs(unit.y-mover.y)<=range&&breakStealth(unit,"PROXIMITY"))revealed.push(unit);}
+    return revealed;
+  }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,removeNegative,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,skillIds};
+  return{relation,traits,hasTrait,state,targetMatches,heal,damage,removeNegative,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

@@ -47,7 +47,9 @@ export const CARDS={
   church_saint_card:{id:"church_saint_card",name:"聖女",type:"CHARACTER",characterId:"church_saint",faction:"CHURCH",unitType:"HERO",cost:6,pack:"SAINT_SUPPLEMENT"},
 
   seraphina_card:{id:"seraphina_card",name:"Seraphina",type:"CHARACTER",characterId:"seraphina",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
-  nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"}
+  nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"},
+  cat_thief_hero_card:{id:"cat_thief_hero_card",name:"貓女盜賊",type:"CHARACTER",characterId:"cat_thief_hero",faction:"BEAST",unitType:"HERO",cost:6,pack:"BEAST_SUPPLEMENT"},
+  angel_archer_hero_card:{id:"angel_archer_hero_card",name:"天使族弓箭手",type:"CHARACTER",characterId:"angel_archer_hero",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"}
 };
 export const CardDatabase=(()=>{
   const AVAILABILITY=Object.freeze({COLLECTION:"COLLECTION",BATTLE_ONLY:"BATTLE_ONLY"});

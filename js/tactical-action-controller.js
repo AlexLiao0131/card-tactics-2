@@ -2,13 +2,54 @@
   "use strict";
 
   function create(ctx){
-    let pendingMove=null;
+    let pendingMove=null,pendingTransport=null;
 
     function state(){return ctx.actionState();}
+
+    function weightRank(value){
+      const key=String(value||"LIGHT").toUpperCase();
+      return Number(globalThis.DisplacementEngine?.WEIGHT?.[key]??0);
+    }
+    function canLiftTarget(carrier,target){
+      if(!carrier?.alive||!target?.alive||!target?.character)return false;
+      const capacity=String(carrier.character?.transport?.capacityClass||"LIGHT").toUpperCase();
+      return weightRank(globalThis.DisplacementEngine?.weightClass?.(target)||"LIGHT")<weightRank(capacity);
+    }
+    function runtimeCardStates(attacker){
+      const runtime=globalThis.CardTacticsRuntime;if(!runtime)return{own:null,other:null};
+      if(attacker?.team===ctx.TEAM?.PLAYER)return{own:runtime.getCardState?.(),other:runtime.getEnemyCardState?.()};
+      if(attacker?.team===ctx.TEAM?.ENEMY)return{own:runtime.getEnemyCardState?.(),other:runtime.getCardState?.()};
+      return{own:null,other:null};
+    }
+    function finishFreeUtility(attacker){
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setCommandPanelCollapsed?.(false);ctx.setMode("command");ctx.render();ctx.emitState?.();return true;
+    }
+    function restorePendingTransport({silent=false}={}){
+      if(!pendingTransport)return false;
+      const {carrier,passenger,origin,carrierVertical}=pendingTransport;
+      if(passenger){passenger.x=origin.x;passenger.y=origin.y;passenger.z=origin.z;passenger.verticalState=origin.verticalState;delete passenger.carriedByUnitId;delete passenger.transportHidden;}
+      if(carrier){delete carrier.carryingUnitId;const tile=TacticalEngine.tile(state().map,carrier.x,carrier.y);if(tile&&carrierVertical?.mode&&globalThis.VerticalMobilityEngine?.setMode)VerticalMobilityEngine.setMode(carrier,tile,carrierVertical.mode,{altitude:carrierVertical.altitude,depth:carrierVertical.depth});}
+      if(!silent)ctx.pushLog(`${passenger?.character?.name||"友軍"} 的空運取消，返回原位置。`,"SYSTEM");
+      pendingTransport=null;return true;
+    }
+    function transportReleasePlan(attacker,destination){
+      const {map,units}=state(),pending=pendingTransport;if(!pending||pending.carrier?.id!==attacker?.id||!destination)return null;
+      const passenger=pending.passenger;if(!passenger?.alive||ctx.unitAt(destination.x,destination.y)||TERRAINS[destination.terrain]?.passable===false||TacticalEngine.isBlockedByObject(map,destination.x,destination.y,passenger)||!TacticalEngine.canOccupyTerrain(passenger,destination))return null;
+      const dirs=[[1,0],[-1,0],[0,1],[0,-1]],plans=[],originalFacing=attacker.facing;
+      for(const[dx,dy]of dirs){
+        const anchor=TacticalEngine.tile(map,destination.x+dx,destination.y+dy);if(!anchor||!TacticalEngine.canOccupyTerrain(attacker,anchor)||TacticalEngine.isBlockedByObject(map,anchor.x,anchor.y,attacker))continue;
+        const occupant=ctx.unitAt(anchor.x,anchor.y);if(occupant&&occupant.id!==attacker.id)continue;
+        let path=[];if(anchor.x!==attacker.x||anchor.y!==attacker.y){path=TacticalEngine.pathTo(map,units,attacker,anchor.x,anchor.y);attacker.facing=originalFacing;if(!path.length)continue;}
+        const anchorZ=globalThis.VerticalMobilityEngine?.surfaceZ?.(anchor)??Number(anchor.elevation||0),destinationZ=globalThis.VerticalMobilityEngine?.surfaceZ?.(destination)??Number(destination.elevation||0);
+        plans.push({anchor,path,heightGap:Math.abs(Number(anchorZ)-Number(destinationZ))});
+      }
+      attacker.facing=originalFacing;plans.sort((a,b)=>a.heightGap-b.heightGap||a.path.length-b.path.length||a.anchor.y-b.anchor.y||a.anchor.x-b.anchor.x);return plans[0]||null;
+    }
 
     function attackPlanForTarget(unit,target,skill){
       const {map,units,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
+      if(skill.utilityAction?.type==="CARRY_ALLY")return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
       if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
       const positions=[{x:unit.x,y:unit.y,cost:0,path:[]}];
       if(!unit.moved){
@@ -29,7 +70,12 @@
     }
 
     function targetableEntities(unit,skill){
-      return ctx.combatTargets(unit).filter(target=>attackPlanForTarget(unit,target,skill));
+      return ctx.combatTargets(unit).filter(target=>{
+        if(skill?.utilityAction&&target?.kind==="CORE")return false;
+        if(skill?.utilityAction?.type==="CARRY_ALLY"&&(target?.id===unit?.id||!canLiftTarget(unit,target)))return false;
+        if(skill?.utilityAction?.type==="LIFT_DROP"&&!canLiftTarget(unit,target))return false;
+        return !!attackPlanForTarget(unit,target,skill);
+      });
     }
 
     function targetRangeTiles(unit,skill){
@@ -84,6 +130,7 @@
       const {map,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return false;
       if(target.kind!=="CORE")return false;
+      globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
       ctx.consumeSkill(unit,skill);skill=ctx.effectiveSkill(unit,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
@@ -97,6 +144,7 @@
     function mapTargetTiles(attacker,skill){
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
+      if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>!!transportReleasePlan(attacker,tile));
       return map.tiles.filter(tile=>{
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
         if(d<range.min||d>range.max)return false;
@@ -107,18 +155,83 @@
         if(skill.shape==="W_STEP"){
           if(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false)return false;
         }
+        if(skill.trapPlacement&&(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false))return false;
         if(skill.requiresVision!==false&&!TacticalEngine.canSee(map,attacker,tile,environmentState))return false;
         if(skill.environmentRequirement==="CONDUCTIVE"&&!EnvironmentEngine.isConductive(map,environmentState,tile.x,tile.y))return false;
         return true;
       });
     }
 
+    function executeUtilitySkill(attacker,target,skill){
+      const {map,units}=state(),action=skill?.utilityAction;if(!action||!ctx.canUseSkill(attacker,skill))return false;
+      if(action.type==="SET_VERTICAL_MODE"){
+        const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
+        if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
+        ctx.consumeSkill(attacker,skill);ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${result.state.mode}。`,"SYSTEM");
+        return action.consumeTurn===true?finishActiveSkill(attacker):finishFreeUtility(attacker);
+      }
+      if(action.type==="ENTER_STEALTH"){
+        ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
+        const adjacent=(units||[]).some(u=>u?.alive&&u.team!==attacker.team&&Math.abs(u.x-attacker.x)+Math.abs(u.y-attacker.y)<=1);
+        if(adjacent){globalThis.EffectEngine?.breakStealth?.(attacker,"PROXIMITY");ctx.pushLog(`${attacker.character.name} 嘗試再次潛行，但敵人就在身旁，潛行立即解除。`,"BATTLE");}
+        else ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，再次進入潛行。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      if(action.type==="STEAL_CARD"){
+        if(!target?.character||target.team===attacker.team)return false;
+        const {own,other}=runtimeCardStates(attacker),hand=other?.zones?.hand;
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
+        if(!own?.zones?.hand||!Array.isArray(hand)||!hand.length){ctx.pushLog(`${attacker.character.name} 使用偷竊，但對方手牌已空。`,"BATTLE");return finishActiveSkill(attacker);}
+        const index=Math.floor(Math.random()*hand.length),cardId=hand.splice(index,1)[0];own.zones.hand.push(cardId);
+        ctx.pushLog(`${attacker.character.name} 偷走對方一張手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅限本場戰鬥。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      if(action.type==="LIFT_DROP"){
+        if(!target?.character||target.team===attacker.team||!canLiftTarget(attacker,target)){ctx.pushLog(`${skill.name} 只能抓起比搬運能力更輕的敵人。`,"SYSTEM");ctx.render();return false;}
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        const tile=TacticalEngine.tile(map,target.x,target.y),landingState=globalThis.VerticalMobilityEngine?.describe?.(target,tile),landingZ=Number(landingState?.physicalZ??target.z??TacticalEngine.elevation(tile)),drop=Math.max(Number(action.minDrop||0),Number(globalThis.FallEngine?.FALL_THRESHOLD||2)+1),fromZ=landingZ+drop;
+        target.z=fromZ;const landing=FallEngine.resolveLanding({map,target,fromZ,applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,skill.name)});
+        ctx.pushLog(`${attacker.character.name} 抓起 ${target.character.name} 升至 Z${fromZ} 後放開｜墜落 ${landing.drop}｜傷害 ${landing.damage}。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      if(action.type==="CARRY_ALLY"){
+        if(!target?.character||target.id===attacker.id||target.team!==attacker.team||!canLiftTarget(attacker,target)){ctx.pushLog(`${skill.name} 只能搬運比搬運能力更輕的友軍。`,"SYSTEM");ctx.render();return false;}
+        if(pendingTransport)return false;
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
+        pendingTransport={carrier:attacker,passenger:target,origin:{x:target.x,y:target.y,z:target.z,verticalState:target.verticalState?JSON.parse(JSON.stringify(target.verticalState)):null},carrierVertical:attacker.verticalState?JSON.parse(JSON.stringify(attacker.verticalState)):null};
+        attacker.carryingUnitId=target.id;target.carriedByUnitId=attacker.id;target.transportHidden=true;target.x=-9999;target.y=-9999;target.z=attacker.z;
+        const carrierTile=TacticalEngine.tile(map,attacker.x,attacker.y);if(attacker.verticalState?.mode==="FLYING"&&carrierTile)VerticalMobilityEngine.setMode(attacker,carrierTile,"FLYING",{altitude:1});
+        const releaseSkill=SkillDatabase.get(action.releaseSkillId);ctx.setSelectedSkill(releaseSkill);ctx.setSelectedSkillVariant(null);ctx.setMode("map-target");ctx.pushLog(`${attacker.character.name} 抓起 ${target.character.name}｜請選擇放下位置。`,"SYSTEM");ctx.render();return true;
+      }
+      return false;
+    }
+
+    function executeMapUtility(attacker,center,skill){
+      const action=skill?.utilityAction;if(action?.type!=="RELEASE_CARRIED"||!pendingTransport||pendingTransport.carrier?.id!==attacker?.id)return false;
+      const {map}=state(),plan=transportReleasePlan(attacker,center);if(!plan){ctx.pushLog(`${skill.name}：沒有合法的空運放置路徑。`,"SYSTEM");ctx.render();return false;}
+      if(plan.path.length){const moved=ctx.traverseUnitPath(attacker,plan.path,{kind:"UNIT"});if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運途中受到環境影響而中斷。`,"SYSTEM");return finishActiveSkill(attacker);}}
+      attacker.moved=true;const pending=pendingTransport,passenger=pending.passenger,destination=TacticalEngine.tile(map,center.x,center.y),fromZ=Number(globalThis.VerticalMobilityEngine?.describe?.(attacker,TacticalEngine.tile(map,attacker.x,attacker.y))?.physicalZ??attacker.z??0);
+      ctx.consumeSkill(attacker,skill);passenger.x=destination.x;passenger.y=destination.y;passenger.z=fromZ;delete passenger.carriedByUnitId;delete passenger.transportHidden;delete attacker.carryingUnitId;
+      const landing=FallEngine.resolveLanding({map,target:passenger,fromZ,applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,skill.name)});
+      if(passenger.alive)ctx.enterTile(passenger);
+      const previous=pending.carrierVertical;if(previous?.mode&&globalThis.VerticalMobilityEngine?.setMode){const carrierTile=TacticalEngine.tile(map,attacker.x,attacker.y);VerticalMobilityEngine.setMode(attacker,carrierTile,previous.mode,{altitude:previous.altitude,depth:previous.depth});}
+      pendingTransport=null;ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 放到 (${destination.x},${destination.y})｜Z${fromZ}→H${landing.toZ}｜墜落傷害 ${landing.damage}。`,landing.damage>0?"BATTLE":"SYSTEM");
+      return finishActiveSkill(attacker);
+    }
+
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
+      if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
       if(!ctx.canUseSkill(attacker,skill))return false;
+      globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       ctx.consumeSkill(attacker,skill);
       skill=ctx.effectiveSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+      if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
+        const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
+        ctx.pushLog(`${attacker.character.name} 在 (${center.x},${center.y}) 設置「${trap?.name||skill.name}」。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       const affected=skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
@@ -184,6 +297,9 @@
     function backFromTargeting(){
       const {selectedSkill}=state();
       if(!selectedSkill)return false;
+      if(pendingTransport&&selectedSkill?.utilityAction?.type==="RELEASE_CARRIED"){
+        restorePendingTransport();ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("special-menu");ctx.render();return true;
+      }
       const previousSkill=selectedSkill;
       if(previousSkill?.baseSkillId){
         ctx.setSelectedSkill(SkillDatabase.get(previousSkill.baseSkillId));
@@ -205,6 +321,7 @@
 
     function executeEffectSkill(attacker,target,skill){
       if(!window.EffectEngine||!ctx.canUseSkill(attacker,skill))return false;
+      globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       ctx.consumeSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];
@@ -271,6 +388,7 @@
       if(skill.approach&&!approachForSkill(attacker,defender,skill)){
         ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
+      if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
       if(skill.effects||skill.relationEffects||skill.bloodAction){executeEffectSkill(attacker,defender,skill);return;}
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
@@ -329,7 +447,7 @@
       if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();
     }
 
-    function reset(){pendingMove=null;}
+    function reset(){pendingMove=null;pendingTransport=null;}
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,

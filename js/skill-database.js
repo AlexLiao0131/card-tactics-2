@@ -37,7 +37,29 @@ export const SKILLS={
 
   nereia_trident_thrust:{id:"nereia_trident_thrust",name:"三叉戟突刺",category:"ATTACK",weapon:"trident",power:1.10,range:{min:1,max:2},attackType:"PIERCE",element:"INHERIT",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
   nereia_water_bullet:{id:"nereia_water_bullet",name:"水彈",category:"MAGIC",weapon:"trident",power:1.05,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
-  nereia_tsunami:{id:"nereia_tsunami",name:"海嘯",category:"MAGIC",weapon:"trident",power:0,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,speed:-10,support:false,resource:{type:"USES",max:2},requiresVision:true,hydrologyFlood:{surfaceRise:1.25},affixes:["WATER_TERRAIN_CONTROL"]}
+  nereia_tsunami:{id:"nereia_tsunami",name:"海嘯",category:"MAGIC",weapon:"trident",power:0,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,speed:-10,support:false,resource:{type:"USES",max:2},requiresVision:true,hydrologyFlood:{surfaceRise:1.25},affixes:["WATER_TERRAIN_CONTROL"]},
+  aquatic_depth_control:{id:"aquatic_depth_control",name:"水深控制",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"UNLIMITED"},variants:[
+    {id:"AQUATIC_DIVE",name:"下潛",requirements:{water:true},utilityAction:{type:"SET_VERTICAL_MODE",mode:"DIVING",consumeTurn:false}},
+    {id:"AQUATIC_SURFACE",name:"浮上海面",requirements:{water:true},utilityAction:{type:"SET_VERTICAL_MODE",mode:"SWIMMING",consumeTurn:false}}
+  ]},
+
+  cat_dual_slash:{id:"cat_dual_slash",name:"雙匕首連斬",category:"ATTACK",weapon:"daggers",power:1.0,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:15,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
+  cat_backstab:{id:"cat_backstab",name:"背刺",category:"ATTACK",weapon:"daggers",power:1.05,range:{min:1,max:1},attackType:"PIERCE",element:"INHERIT",speed:20,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},backstabMultiplier:1.65,affixes:["BACKSTAB"]},
+  cat_poison_knife:{id:"cat_poison_knife",name:"淬毒投擲刀",category:"ATTACK",weapon:"throwing_knife",power:.8,range:{min:2,max:4},attackType:"PIERCE",attackClass:"RANGED",element:"INHERIT",speed:10,target:"ENEMY",support:false,resource:{type:"USES",max:3},onHitBonusDamage:{amount:18,damageType:"POISON",name:"毒藥"},affixes:["POISON"]},
+  cat_thief_trap:{id:"cat_thief_trap",name:"盜賊陷阱",category:"SPECIAL",power:0,range:{min:1,max:3},target:"TILE",targetType:"AOE",radius:0,support:false,resource:{type:"USES",max:2},trapPlacement:{duration:4,damage:25,name:"盜賊陷阱"}},
+  cat_steal_card:{id:"cat_steal_card",name:"偷竊",category:"SPECIAL",power:0,range:{min:1,max:1},target:"ENEMY",support:false,resource:{type:"USES",max:2},utilityAction:{type:"STEAL_CARD",consumeTurn:true}},
+  cat_hide:{id:"cat_hide",name:"再次潛行",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"UNLIMITED"},utilityAction:{type:"ENTER_STEALTH",consumeTurn:true}},
+
+  angel_bow_shot:{id:"angel_bow_shot",name:"天使弓射",category:"ATTACK",weapon:"bow",power:1.05,range:{min:2,max:5},attackType:"SHOT",element:"INHERIT",speed:10,target:"ENEMY",support:true,resource:{type:"UNLIMITED"},affixes:[]},
+  angel_holy_shot:{id:"angel_holy_shot",name:"神聖附魔射擊",category:"MAGIC",weapon:"bow",power:1.15,range:{min:2,max:5},attackType:"SHOT",attackClass:"RANGED",element:"HOLY",speed:5,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:["HOLY_ENCHANT"]},
+  angel_heal:{id:"angel_heal",name:"治療魔法",category:"MAGIC",power:0,range:{min:1,max:4},target:"ALLY",support:false,resource:{type:"USES",max:3},effects:[{type:"HEAL",amount:80}]},
+  angel_lift_drop:{id:"angel_lift_drop",name:"升空摔落",category:"SPECIAL",power:0,range:{min:1,max:1},target:"ENEMY",support:false,resource:{type:"USES",max:2},utilityAction:{type:"LIFT_DROP",consumeTurn:true,minDrop:3}},
+  angel_carry_ally:{id:"angel_carry_ally",name:"空運友軍",category:"SPECIAL",power:0,range:{min:1,max:1},target:"ALLY",support:false,resource:{type:"UNLIMITED"},requirements:{notCarrying:true,notMoved:true},utilityAction:{type:"CARRY_ALLY",releaseSkillId:"angel_release_ally",consumeTurn:false}},
+  angel_release_ally:{id:"angel_release_ally",name:"放下友軍",category:"SPECIAL",power:0,range:{min:1,max:5},target:"TILE",targetType:"AOE",radius:0,support:false,resource:{type:"UNLIMITED"},requirements:{carrying:true},utilityAction:{type:"RELEASE_CARRIED",consumeTurn:true}},
+  angel_wing_control:{id:"angel_wing_control",name:"翼行控制",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"UNLIMITED"},variants:[
+    {id:"ANGEL_LAND",name:"降落",utilityAction:{type:"SET_VERTICAL_MODE",mode:"GROUND",consumeTurn:false}},
+    {id:"ANGEL_TAKEOFF",name:"起飛",utilityAction:{type:"SET_VERTICAL_MODE",mode:"FLYING",consumeTurn:false}}
+  ]}
 };
 export const PASSIVES={
   GUARDIAN_INSTINCT:{id:"GUARDIAN_INSTINCT",name:"守護本能",category:"PASSIVE",defenseProfiles:[{id:"guardian_instinct_guard",method:"GUARD",name:"守護本能",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.70},PIERCE:{damageMultiplier:.75},SHOT:{damageMultiplier:.70},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.90}}}]},
@@ -56,7 +78,9 @@ export const PASSIVES={
   NO_CHANT:{id:"NO_CHANT",name:"無詠唱",category:"PASSIVE",magicNegativeSpeedAsZero:true},
   CAPTAIN_HIGHEST_AUTHORITY:{id:"CAPTAIN_HIGHEST_AUTHORITY",name:"最高艦長權限",category:"PASSIVE",turnEndEffect:{type:"DRAW",count:1}},
   DEEP_SEA_PHYSIQUE:{id:"DEEP_SEA_PHYSIQUE",name:"深海體魄",category:"PASSIVE",description:"能承受深海水壓的異常強韌體魄。受到近戰傷害降低 30%。",damageTakenRules:[{attackClass:"MELEE",multiplier:.70}]},
-  SEA_SOVEREIGN:{id:"SEA_SOVEREIGN",name:"王者",category:"PASSIVE",description:"海世界女王的支配權。可直接控制深潭巨章，並在不擊敗牠的情況下取得其洪水卡牌。",encounterDominion:{monsterIds:["water_lurker"],fromTeams:["N"],grantEncounterRewards:true}}
+  SEA_SOVEREIGN:{id:"SEA_SOVEREIGN",name:"王者",category:"PASSIVE",description:"海世界女王的支配權。可直接控制深潭巨章，並在不擊敗牠的情況下取得其洪水卡牌。",encounterDominion:{monsterIds:["water_lurker"],fromTeams:["N"],grantEncounterRewards:true}},
+  FELINE_BODY:{id:"FELINE_BODY",name:"貓族體態",category:"PASSIVE",description:"靈活的貓族身體能直接攀上兩層高差，並大幅減輕墜落傷害。",movementRules:{maxClimb:2},fallRules:{safeDrop:2,damageMultiplier:.5}},
+  CAT_OPENING_STEALTH:{id:"CAT_OPENING_STEALTH",name:"夜行潛伏",category:"PASSIVE",description:"戰鬥開始時進入潛行。潛行無法阻止範圍攻擊，主動出手或被近距離發現時解除。",openingEffects:[{id:"STEALTH",type:"STEALTH",classification:"POSITIVE",detectionRange:1}]}
 };
 export const SkillDatabase=(()=>{
   function get(id){const skill=SKILLS[id];if(!skill)throw new Error("Unknown skill: "+id);return skill}

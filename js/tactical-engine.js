@@ -33,13 +33,18 @@ export const TacticalEngine=(()=>{
   function facingToward(from,to,fallback=null){if(!from||!to)return fallback;const dx=Number(to.x)-Number(from.x),dy=Number(to.y)-Number(from.y);if(!dx&&!dy)return fallback;if(Math.abs(dx)>Math.abs(dy))return dx>0?"E":"W";if(Math.abs(dy)>Math.abs(dx))return dy>0?"S":"N";if(fallback&&FACINGS.includes(fallback)){if((fallback==="E"&&dx>0)||(fallback==="W"&&dx<0)||(fallback==="S"&&dy>0)||(fallback==="N"&&dy<0))return fallback;}return dy>0?"S":"N";}
   function faceToward(u,target){if(!u)return null;u.facing=facingToward(u,target,ensureFacing(u));return u.facing}
   function relativeArc(defender,source){const facing=ensureFacing(defender),incoming=facingToward(defender,source,facing);if(incoming===facing)return"FRONT";const opposite={N:"S",S:"N",E:"W",W:"E"};return incoming===opposite[facing]?"BACK":"SIDE";}
+  function movementLimit(u,key,fallback){
+    let value=Number(u?.character?.movementProfile?.[key]??fallback);
+    for(const passive of globalThis.SkillDatabase?.passiveList?.(u?.character?.passives)||[]){const candidate=Number(passive?.movementRules?.[key]);if(Number.isFinite(candidate))value=Math.max(value,candidate);}
+    return value;
+  }
   function canTraverseElevation(fromTile,toTile,u=null){
     if(!fromTile||!toTile)return false;
     if(u&&window.VerticalMobilityEngine?.ignoresElevation?.(u))return true;
     const traits=terrainTraits(u);
     if(traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile)))return true;
-    const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u);
-    return delta<=MAX_NORMAL_CLIMB&&delta>=-MAX_NORMAL_DROP;
+    const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u),maxClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),maxDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP);
+    return delta<=maxClimb&&delta>=-maxDrop;
   }
   function canActiveMove(m,us,u,x,y,{ignoreElevation=false}={}){const from=tile(m,u.x,u.y),to=tile(m,x,y);if(!to||!canOccupyTerrain(u,to)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id))return false;return ignoreElevation||canTraverseElevation(from,to,u);}
   function cost(u,t){
@@ -64,9 +69,9 @@ export const TacticalEngine=(()=>{
     const toEye=target?.character&&window.VerticalMobilityEngine?.eyeZ?VerticalMobilityEngine.eyeZ(target,to):elevation(to)+.5;
     return lineCells(u,target).every(p=>{const middle=tile(m,p.x,p.y);if(!middle)return false;const rayHeight=fromEye+(toEye-fromEye)*p.t;return elevation(middle)<rayHeight;});
   }
-  function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;return hasLineOfSight(m,u,target,s,environmentState);}
+  function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
-  function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;let ac={...a.character,modifiers:{...(a.character.modifiers||{}),accuracy:Number(a.character.modifiers?.accuracy||0)+acc}},dc={...d.character,modifiers:{...(d.character.modifiers||{}),evasion:Number(d.character.modifiers?.evasion||0)+eva}},distance=D(a,d);return{result:BattleEngine.calculate(ac,dc,s,{...opt,distance}),terrain:{acc,eva,at,dt},facing:{attacker:a.facing,defender:d.facing,arc:relativeArc(d,a)}}}
+  function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;let ac={...a.character,modifiers:{...(a.character.modifiers||{}),accuracy:Number(a.character.modifiers?.accuracy||0)+acc}},dc={...d.character,modifiers:{...(d.character.modifiers||{}),evasion:Number(d.character.modifiers?.evasion||0)+eva}},distance=D(a,d),arc=relativeArc(d,a),result=BattleEngine.calculate(ac,dc,s,{...opt,distance});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt},facing:{attacker:a.facing,defender:d.facing,arc}}}
   return{tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,visionBlocked,canSee,hasLineOfSight,canTarget,targets,resolve,ensureFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

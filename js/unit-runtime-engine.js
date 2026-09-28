@@ -35,6 +35,9 @@ export const UnitRuntimeEngine=(()=>{
     const unit={id,team,character,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
       hp:character.combat.hp,alive:true,moved:false,acted:false,waited:false,
       skillResources:createSkillResources(character),effects:[],grantedSkills:[]};
+    for(const passive of SkillDatabase.passiveList(character?.passives||[])){
+      for(const effect of passive.openingEffects||[])unit.effects.push(JSON.parse(JSON.stringify(effect)));
+    }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
     syncMana(unit,{initialize:true});
     return unit;
@@ -43,7 +46,15 @@ export const UnitRuntimeEngine=(()=>{
   function resetActions(units,team){living(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
   function allFinished(units,team){const alive=living(units,team);return alive.length>0&&alive.every(u=>u.acted)}
   function resourceFor(unit,skill){const id=skill?.baseSkillId||skill?.id;return unit?.skillResources?.[id]||unit?.skillResources?.[skill?.id]||{type:"UNLIMITED"}}
-  function canUseSkill(unit,skill){if(skill?.approach&&unit?.moved)return false;syncMana(unit);if(unit.mana<manaCost(skill))return false;const r=resourceFor(unit,skill);return r.type!=="USES"||r.remaining>0}
+  function canUseSkill(unit,skill){
+    if(skill?.approach&&unit?.moved)return false;
+    const req=skill?.requirements||{};
+    if(req.carrying===true&&!unit?.carryingUnitId)return false;
+    if(req.notCarrying===true&&!!unit?.carryingUnitId)return false;
+    if(req.notMoved===true&&!!unit?.moved)return false;
+    if(req.water===true){const tile=globalThis.CardTacticsRuntime?.getBattleMap?.()?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
+    syncMana(unit);if(unit.mana<manaCost(skill))return false;const r=resourceFor(unit,skill);return r.type!=="USES"||r.remaining>0
+  }
   function consumeSkill(unit,skill){if(!canUseSkill(unit,skill))return null;unit.mana-=manaCost(skill);const r=resourceFor(unit,skill);if(r.type==="USES"&&r.remaining>0)r.remaining--;return r}
   function resourceLabel(unit,skill){syncMana(unit);const r=resourceFor(unit,skill),uses=r.type==="USES"?`${r.remaining}/${r.max}`:"∞",cost=manaCost(skill);return cost>0?`${uses}｜MP ${cost}`:uses}
   function targetType(skill){return skill?.targetType||"SINGLE"}
