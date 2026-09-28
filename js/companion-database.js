@@ -3,34 +3,20 @@ export const COMPANIONS={
     id:"ophi_eagle",
     name:"奧菲的老鷹",
     ownerCharacterId:"ophi",
+    characterId:"ophi_eagle",
+    deploymentCardId:"ophi_eagle_card",
     kind:"SCOUT",
     movement:"FLYING",
     occupiesCardSlot:false,
-    occupiesTile:false,
-    participatesInTurn:false,
+    occupiesTile:true,
+    participatesInTurn:true,
     canAttack:false,
     canCapture:false,
     countsForObjectives:false,
     sharedVision:true,
     targetingMode:"SCOUT_SHARED_VISION",
     requiresOwnerCompanionRule:"sharedVision",
-    providesTargetingFor:["ophi_eagle_arc_shot"],
-    runtime:{
-      visualId:"ophi_eagle",
-      race:"ANIMAL",
-      archetype:"COMPANION_SCOUT",
-      attributes:{str:6,agi:20,int:4,wil:10,vit:8,luk:16},
-      combat:{hp:90,atk:0,matk:0,def:28,mdef:45,move:7},
-      armorId:"natural_hide",
-      weaponIds:{},
-      skills:[],
-      terrainTraits:["FLYING"],
-      verticalMobility:{defaultMode:"FLYING",modes:["FLYING"],canFly:true,flightAltitude:2,maxFlightAltitude:4},
-      displacement:{weightClass:"LIGHT"},
-      collision:{height:.7},
-      visionRange:5,
-      resourceRules:{mana:false}
-    }
+    providesTargetingFor:["ophi_eagle_arc_shot"]
   }
 };
 
@@ -38,59 +24,48 @@ export const CompanionDatabase=(()=>{
   function get(id){return COMPANIONS[id]||null}
   function list(ids=[]){return(ids||[]).map(get).filter(Boolean)}
   function forOwner(characterId){return Object.values(COMPANIONS).filter(c=>c.ownerCharacterId===characterId)}
+  function deploymentCardsForOwner(characterId){return forOwner(characterId).map(c=>c.deploymentCardId).filter(Boolean)}
   function ownerHasCompanionRule(owner,rule){
     if(!rule)return true;
     const character=owner?.character||owner;
     return SkillDatabase.passiveList(character?.passives||[]).some(passive=>passive?.companionRules?.[rule]===true);
   }
-  function runtimeCharacter(companion,owner){
-    if(!companion?.runtime)return null;
-    const raw={
-      id:`companion:${companion.id}`,
-      name:companion.name,
-      visualId:companion.runtime.visualId||companion.id,
-      faction:owner?.character?.faction||owner?.faction||"COMPANION",
-      ...JSON.parse(JSON.stringify(companion.runtime)),
-      canAttack:companion.canAttack!==false,
-      companionId:companion.id
-    };
-    return globalThis.EquipmentDatabase?.resolveCharacter?EquipmentDatabase.resolveCharacter(raw):raw;
+  function companionForUnit(unit){
+    const id=unit?.companionId||unit?.character?.companionId;
+    if(id&&COMPANIONS[id])return COMPANIONS[id];
+    const characterId=unit?.character?.id;
+    return Object.values(COMPANIONS).find(c=>c.characterId===characterId)||null;
   }
-  function spawnTile(owner,map,units,character){
-    if(!owner?.alive||!map?.tiles)return null;
-    const occupied=new Set((units||[]).filter(unit=>unit?.alive&&unit.occupiesTile!==false).map(unit=>`${unit.x},${unit.y}`));
-    const probe={team:owner.team,character,x:owner.x,y:owner.y,z:owner.z,alive:true};
-    return map.tiles
-      .map(tile=>({tile,d:Math.abs(tile.x-owner.x)+Math.abs(tile.y-owner.y)}))
-      .filter(entry=>entry.d>=1&&entry.d<=3)
-      .sort((a,b)=>a.d-b.d||a.tile.y-b.tile.y||a.tile.x-b.tile.x)
-      .map(entry=>entry.tile)
-      .find(tile=>!occupied.has(`${tile.x},${tile.y}`)&&TacticalEngine.canOccupyTerrain(probe,tile)&&!TacticalEngine.isBlockedByObject(map,tile.x,tile.y,probe))||null;
-  }
-  function spawnForOwner({owner,map,units}={}){
-    if(!owner?.alive||!owner?.character)return[];
+  function bindUnit(unit,units=[]){
+    if(!unit?.alive)return null;
+    const companion=companionForUnit(unit);if(!companion)return null;
+    const owner=(units||[]).find(candidate=>
+      candidate?.alive&&candidate.team===unit.team&&candidate.character?.id===companion.ownerCharacterId
+    )||null;
+    unit.unitRole="COMPANION";
+    unit.companionId=companion.id;
+    unit.participatesInTurn=companion.participatesInTurn!==false;
+    unit.occupiesTile=companion.occupiesTile!==false;
+    unit.countsForObjectives=companion.countsForObjectives===true;
+    unit.canCapture=companion.canCapture===true;
+    unit.canAttack=companion.canAttack===true;
+    if(!owner){unit.ownerUnitId=null;return null;}
     owner.companionRuntime??={};
-    const spawned=[];
-    for(const companion of list(owner.character.companionIds||[])){
-      if(owner.companionRuntime[companion.id])continue;
-      const character=runtimeCharacter(companion,owner),tile=spawnTile(owner,map,units,character);
-      if(!character||!tile||!globalThis.UnitRuntimeEngine?.createFromCharacter)continue;
-      const unit=UnitRuntimeEngine.createFromCharacter({id:`${owner.id}::${companion.id}`,team:owner.team,character,x:tile.x,y:tile.y,map});
-      if(!unit)continue;
-      unit.unitRole="COMPANION";
-      unit.participatesInTurn=companion.participatesInTurn===true;
-      unit.occupiesTile=companion.occupiesTile!==false;
-      unit.companionId=companion.id;
-      unit.ownerUnitId=owner.id;
-      unit.countsForObjectives=companion.countsForObjectives===true;
-      unit.canCapture=companion.canCapture===true;
-      unit.canAttack=companion.canAttack===true;
-      unit.deployedRound=owner.deployedRound;
-      unit.moved=!!owner.moved;unit.acted=!!owner.acted;unit.waited=!!owner.waited;
-      owner.companionRuntime[companion.id]=unit;
-      (units||[]).push(unit);spawned.push(unit);
+    owner.companionRuntime[companion.id]=unit;
+    unit.ownerUnitId=owner.id;
+    return owner;
+  }
+  function reconcileUnits(units=[]){
+    const roster=units||[];
+    for(const owner of roster){
+      if(!owner?.companionRuntime)continue;
+      for(const[id,unit]of Object.entries(owner.companionRuntime)){
+        if(!unit?.alive||!roster.includes(unit))delete owner.companionRuntime[id];
+      }
     }
-    return spawned;
+    const bound=[];
+    for(const unit of roster){const owner=bindUnit(unit,roster);if(owner)bound.push({owner,unit});}
+    return bound;
   }
   function targetingUnit(owner,skillId,companionId=null){
     const character=owner?.character||owner;if(!character)return null;
@@ -104,7 +79,7 @@ export const CompanionDatabase=(()=>{
     return null;
   }
   function providesTargeting(owner,skillId,companionId=null){return !!targetingUnit(owner,skillId,companionId)}
-  return Object.freeze({get,list,forOwner,ownerHasCompanionRule,runtimeCharacter,spawnForOwner,targetingUnit,providesTargeting});
+  return Object.freeze({get,list,forOwner,deploymentCardsForOwner,ownerHasCompanionRule,companionForUnit,bindUnit,reconcileUnits,targetingUnit,providesTargeting});
 })();
 
 globalThis.COMPANIONS=COMPANIONS;

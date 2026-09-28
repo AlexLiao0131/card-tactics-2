@@ -32,11 +32,15 @@ export class UnitRenderer{
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
       NEUTRAL:this.mat("neutral",new BABYLON.Color3(.75,.65,.25)),
       facing:this.mat("unit-facing",new BABYLON.Color3(.96,.90,.42)),
+      submerged:this.mat("unit-submerged",new BABYLON.Color3(.35,.78,.98)),
+      airborne:this.mat("unit-airborne",new BABYLON.Color3(.90,.88,.55)),
       P:null,E:null,N:null
     };
     this.materials.P=this.materials.PLAYER;
     this.materials.E=this.materials.ENEMY;
     this.materials.N=this.materials.NEUTRAL;
+    this.materials.submerged.alpha=.68;this.materials.submerged.disableLighting=true;
+    this.materials.airborne.alpha=.52;this.materials.airborne.disableLighting=true;
   }
 
   mat(name,color){
@@ -71,7 +75,8 @@ export class UnitRenderer{
       this.baseAssetForFacing(unit,definition),
       Number(definition?.width||0),
       Number(definition?.height||0),
-      Number(definition?.lift||0)
+      Number(definition?.lift||0),
+      Number(unit?.collisionHeight||0)
     ].join("|");
   }
 
@@ -159,13 +164,41 @@ export class UnitRenderer{
   }
 
   createCapsule(unit){
+    const height=Math.max(.35,Number(unit?.collisionHeight||UNIT_VISUAL_HEIGHT));
+    const radius=Math.max(.14,Math.min(.42,height*.28));
     const mesh=BABYLON.MeshBuilder.CreateCapsule(
       `unit-${unit.id}`,
-      {height:UNIT_VISUAL_HEIGHT,radius:.42},
+      {height,radius},
       this.scene
     );
     mesh.metadata={kind:"unit",unitId:unit.id,visualKind:"CAPSULE"};
-    return{root:mesh,meshes:[mesh],kind:"CAPSULE",height:UNIT_VISUAL_HEIGHT,lift:0};
+    return{root:mesh,meshes:[mesh],kind:"CAPSULE",height,lift:0};
+  }
+
+  createVerticalCue(unit){
+    const ring=BABYLON.MeshBuilder.CreateTorus(
+      `unit-vertical-cue-${unit.id}`,
+      {diameter:.78,thickness:.045,tessellation:28},
+      this.scene
+    );
+    ring.isPickable=false;
+    ring.setEnabled(false);
+    return ring;
+  }
+
+  updateVerticalCue(entry,unit){
+    const cue=entry?.verticalCue;if(!cue)return;
+    const mode=String(unit?.verticalMode||"");
+    const visible=mode==="DIVING"||mode==="FLYING";
+    cue.setEnabled(visible);
+    if(!visible)return;
+    cue.material=mode==="DIVING"?this.materials.submerged:this.materials.airborne;
+    cue.position.set(
+      Number(unit.x||0)*TILE_SIZE,
+      Number(unit.verticalSurfaceZ??unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+.055,
+      Number(unit.y||0)*TILE_SIZE
+    );
+    cue.scaling.setAll(mode==="DIVING"?1.06:.88);
   }
 
   createBillboard(unit,definition){
@@ -219,8 +252,9 @@ export class UnitRenderer{
     const visual=kind==="BILLBOARD"?this.createBillboard(unit,definition):this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);
+    const verticalCue=this.createVerticalCue(unit);
     const entry={
-      ...visual,signature,facingMarker,animationBadge,definition,lastUnit:{...unit},baseScale:1,
+      ...visual,signature,facingMarker,animationBadge,verticalCue,definition,lastUnit:{...unit},baseScale:1,
       basePosition:new BABYLON.Vector3(0,0,0),baseMarkerPosition:new BABYLON.Vector3(0,0,0)
     };
     this.entries.set(unit.id,entry);
@@ -233,6 +267,7 @@ export class UnitRenderer{
     if(!entry)return;
     entry.dispose?.();
     entry.animationBadge?.dispose?.();
+    entry.verticalCue?.dispose?.();
     entry.facingMarker?.root?.dispose?.();
     entry.root?.dispose?.();
     this.entries.delete(id);
@@ -453,10 +488,13 @@ export class UnitRenderer{
 
       if(entry.kind==="CAPSULE")entry.root.material=this.materials[unit.team]??this.materials.NEUTRAL;
 
-      const scale=unit.selected?1.13:unit.finished?.92:1;
+      const verticalMode=String(unit.verticalMode||"");
+      const scale=(unit.selected?1.13:unit.finished?.92:1)*(verticalMode==="DIVING"?.9:1);
       entry.baseScale=scale;
       const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.45:1;
-      this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity);
+      const verticalOpacity=verticalMode==="DIVING"?.5:1;
+      this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity*verticalOpacity);
+      this.updateVerticalCue(entry,unit);
 
       entry.basePosition.copyFrom(this.positionFor(entry,unit));
       entry.baseMarkerPosition.copyFrom(this.markerPositionFor(unit));

@@ -33,6 +33,14 @@ export const UnitRuntimeEngine=(()=>{
     const runtimeCharacter=JSON.parse(JSON.stringify(character));
     const unit={id,team,character:runtimeCharacter,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
       hp:runtimeCharacter.combat.hp,alive:true,moved:false,acted:false,waited:false,
+      unitRole:runtimeCharacter.unitRole||"UNIT",
+      participatesInTurn:runtimeCharacter.participatesInTurn!==false,
+      occupiesTile:runtimeCharacter.occupiesTile!==false,
+      canAttack:runtimeCharacter.canAttack!==false,
+      canCapture:runtimeCharacter.canCapture!==false,
+      countsForObjectives:runtimeCharacter.countsForObjectives!==false,
+      companionId:runtimeCharacter.companionId||null,
+      ownerCharacterId:runtimeCharacter.ownerCharacterId||null,
       skillResources:createSkillResources(runtimeCharacter),effects:[],grantedSkills:[],_runtimeMap:map};
     for(const passive of SkillDatabase.passiveList(runtimeCharacter?.passives||[])){
       for(const effect of passive.openingEffects||[])unit.effects.push(JSON.parse(JSON.stringify(effect)));
@@ -47,14 +55,11 @@ export const UnitRuntimeEngine=(()=>{
     return createFromCharacter({id,team,character:sourceCharacter,x,y,map});
   }
   function reconcileCompanions(units){
-    if(!globalThis.CompanionDatabase?.spawnForOwner)return[];
-    const roster=units||[],spawned=[];
-    for(const companion of roster.filter(unit=>unit?.alive&&unit.unitRole==="COMPANION")){const owner=roster.find(unit=>unit.id===companion.ownerUnitId);if(!owner?.alive)companion.alive=false;}
-    for(const owner of [...roster]){if(!owner?.alive||owner.unitRole==="COMPANION"||!owner.character?.companionIds?.length)continue;spawned.push(...CompanionDatabase.spawnForOwner({owner,map:owner._runtimeMap,units:roster}));}
-    return spawned;
+    if(!globalThis.CompanionDatabase?.reconcileUnits)return[];
+    return CompanionDatabase.reconcileUnits(units||[]);
   }
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
-  function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false&&u.unitRole!=="COMPANION")}
+  function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
   function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){const id=skill?.baseSkillId||skill?.id;return unit?.skillResources?.[id]||unit?.skillResources?.[skill?.id]||{type:"UNLIMITED"}}

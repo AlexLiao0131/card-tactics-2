@@ -32,6 +32,7 @@ export const CARDS={
   flood_card:{id:"flood_card",name:"洪水術",type:"SPELL",spellType:"TACTICAL",faction:"MONSTER",cost:4,acquisition:"ENCOUNTER",lifetime:"BATTLE",collectible:false,availability:"BATTLE_ONLY",source:"ENCOUNTER",effect:{type:"HYDROLOGY_FLOOD",radius:2,surfaceRise:1}},
 
   ophi_card:{id:"ophi_card",name:"奧菲",type:"CHARACTER",characterId:"ophi",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"},
+  ophi_eagle_card:{id:"ophi_eagle_card",name:"奧菲的老鷹",type:"CHARACTER",characterId:"ophi_eagle",faction:"ELVEN",unitType:"COMPANION",cost:0,acquisition:"GENERATED",lifetime:"BATTLE",collectible:false,availability:"BATTLE_ONLY",source:"OPHI_COMPANION",handSizeExempt:true,mulliganEligible:false},
   colin_card:{id:"colin_card",name:"寇林",type:"CHARACTER",characterId:"colin",faction:"ELVEN",unitType:"HERO",cost:6,pack:"OPHI_SUPPLEMENT"},
   moon_goddess_blessing_card:{id:"moon_goddess_blessing_card",name:"月神祝福",type:"SPELL",spellType:"BUFF",faction:"ELVEN",cost:4,pack:"OPHI_SUPPLEMENT",effect:{type:"RACE_NIGHT_BUFF",race:"ELF",scope:"ALL_FRIENDLY_ON_FIELD",requiresTimeOfDay:"NIGHT",modifiers:{powerMultiplier:1.15,speed:10}}},
 

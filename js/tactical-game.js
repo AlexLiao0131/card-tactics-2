@@ -57,6 +57,19 @@
     return MapDatabase.createMap(stage.mapId);
   }
 
+  function grantInitialGeneratedCards(){
+    if(!cardState?.zones?.hand)return[];
+    const granted=[];
+    for(const unit of units||[]){
+      if(!unit?.alive||unit.team!==TEAM.PLAYER)continue;
+      for(const cardId of unit.character?.generatedCardsOnDeploy||[]){
+        const card=CardDatabase.get(cardId);if(!card)continue;
+        cardState.zones.hand.push(card.id);granted.push(card);
+      }
+    }
+    return granted;
+  }
+
   function createUnit(id,team,characterId,x,y){
     return UnitRuntimeEngine.create({id,team,characterId,x,y,map});
   }
@@ -82,6 +95,8 @@
     selectedGuardInterception=null;
     mode="idle";
     logs=[];
+    grantInitialGeneratedCards();
+    UnitRuntimeEngine.reconcileCompanions(units);
     round=1;
     phase=PHASE.CARD;
     matchResult=null;
@@ -503,7 +518,7 @@
       }
     }
 
-    if(unit&&unit.team===TEAM.PLAYER&&unit.unitRole!=="COMPANION"){
+    if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){
       if(selected&&selected!==unit)commitPendingMove(selected);
       commandPanelCollapsed=false;
       selected=unit;
@@ -757,11 +772,13 @@
       directVerticalActions(selected).forEach(({parent,variant})=>{
         addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant));
       });
-      addActionButton("攻擊",()=>{
-        selectedSkill=null;
-        mode="attack-menu";
-        render();
-      });
+      if(selected.canAttack!==false){
+        addActionButton("攻擊",()=>{
+          selectedSkill=null;
+          mode="attack-menu";
+          render();
+        });
+      }
 
       addActionButton("道具",()=>{
         pushLog(`${selected.character.name}｜道具系統尚未接入。`);
