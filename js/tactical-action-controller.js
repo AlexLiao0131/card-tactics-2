@@ -46,59 +46,70 @@
       attacker.facing=originalFacing;plans.sort((a,b)=>a.heightGap-b.heightGap||a.path.length-b.path.length||a.anchor.y-b.anchor.y||a.anchor.x-b.anchor.x);return plans[0]||null;
     }
 
+    function attackOrigins(unit){
+      const {map,units}=state();
+      const origins=[{x:unit.x,y:unit.y,cost:0}];
+      if(!unit.moved){
+        TacticalEngine.reachable(map,units,unit).forEach((cost,key)=>{
+          const[x,y]=key.split(",").map(Number);origins.push({x,y,cost});
+        });
+      }
+      origins.sort((a,b)=>a.cost-b.cost||a.y-b.y||a.x-b.x);
+      return origins;
+    }
+
+    function canTargetFromOrigin(map,environmentState,unit,target,skill,origin){
+      return TacticalEngine.canTarget(map,{...unit,x:origin.x,y:origin.y},target,skill,environmentState);
+    }
+
     function attackPlanForTarget(unit,target,skill){
       const {map,units,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
       if(skill.utilityAction?.type==="CARRY_ALLY")return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
       if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
-      const positions=[{x:unit.x,y:unit.y,cost:0,path:[]}];
-      if(!unit.moved){
-        const reachable=TacticalEngine.reachable(map,units,unit);
-        reachable.forEach((cost,key)=>{
-          const [x,y]=key.split(",").map(Number);
-          const facing=unit.facing,path=TacticalEngine.pathTo(map,units,unit,x,y);
-          unit.facing=facing;
-          if(path.length)positions.push({x,y,cost,path});
-        });
+
+      const legal=attackOrigins(unit).filter(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
+      if(!legal.length)return null;
+      const originalFacing=unit.facing;
+      for(const origin of legal){
+        if(origin.x===unit.x&&origin.y===unit.y)return{...origin,path:[]};
+        const path=TacticalEngine.pathTo(map,units,unit,origin.x,origin.y);
+        unit.facing=originalFacing;
+        if(path.length)return{...origin,path};
       }
-      const legal=positions.filter(pos=>{
-        const probe={...unit,x:pos.x,y:pos.y};
-        return TacticalEngine.canTarget(map,probe,target,skill,environmentState);
-      });
-      legal.sort((a,b)=>a.cost-b.cost||a.y-b.y||a.x-b.x);
-      return legal[0]||null;
+      return null;
     }
 
     function targetableEntities(unit,skill){
+      const {map,environmentState}=state();
+      const fixedOrigin=skill?.utilityAction?.type==="CARRY_ALLY"||skill?.approach;
+      const origins=fixedOrigin?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       return ctx.combatTargets(unit).filter(target=>{
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
         if(skill?.utilityAction?.type==="CARRY_ALLY"&&(target?.id===unit?.id||!canLiftTarget(unit,target)))return false;
         if(skill?.utilityAction?.type==="LIFT_DROP"&&!canLiftTarget(unit,target))return false;
-        return !!attackPlanForTarget(unit,target,skill);
+        return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       });
     }
 
     function targetRangeTiles(unit,skill){
-      const {map,units,environmentState}=state();
+      const {map,environmentState}=state();
       if(!unit?.alive||unit.acted||!skill)return[];
       if(ctx.targetType(skill)!=="SINGLE")return mapTargetTiles(unit,skill);
       if(skill.target==="SELF"){
         const own=TacticalEngine.tile(map,unit.x,unit.y);
         return own?[own]:[];
       }
-      const origins=[{x:unit.x,y:unit.y}];
-      if(!unit.moved&&!skill.approach){
-        TacticalEngine.reachable(map,units,unit).forEach((cost,key)=>{
-          const[x,y]=key.split(",").map(Number);origins.push({x,y});
-        });
-      }
-      const range=TacticalEngine.range(skill)||{min:0,max:0},seen=new Set(),out=[];
+      const origins=skill.approach?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
+      const range=TacticalEngine.range(skill)||{min:0,max:0};
+      const min=Math.max(0,Number(range.min||0)),max=Math.max(min,Number(range.max||0));
+      const tileByKey=new Map(map.tiles.map(tile=>[`${tile.x},${tile.y}`,tile])),seen=new Set(),out=[];
       for(const origin of origins){
         const probe={...unit,x:origin.x,y:origin.y};
-        for(const tile of map.tiles){
+        for(let dx=-max;dx<=max;dx++)for(let dy=-max;dy<=max;dy++){
+          const distance=Math.abs(dx)+Math.abs(dy);if(distance<min||distance>max)continue;
+          const tile=tileByKey.get(`${origin.x+dx},${origin.y+dy}`);if(!tile)continue;
           const key=`${tile.x},${tile.y}`;if(seen.has(key))continue;
-          const distance=Math.abs(origin.x-tile.x)+Math.abs(origin.y-tile.y);
-          if(distance<Number(range.min||0)||distance>Number(range.max||0))continue;
           if(!TacticalEngine.hasLineOfSight(map,probe,tile,skill,environmentState))continue;
           seen.add(key);out.push(tile);
         }
