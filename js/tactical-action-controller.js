@@ -125,7 +125,8 @@
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);
           if(!occupant||occupant.team===attacker.team)return;
-          const result=BattleEngine.calculate(attacker.character,occupant.character,skill);
+          const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
+          const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
           occupant.hp=Math.max(0,occupant.hp-result.damage);
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${result.damage} 傷害｜HP ${occupant.hp}。`,"BATTLE");
@@ -143,7 +144,13 @@
           :[];
         environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);
       });
-      ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${skill.name} 引發水體雷電傳導`});
+      if(skill.hydrologyFlood&&window.HydrologyEngine?.floodArea){
+        const floodEvents=HydrologyEngine.floodArea(map,affected,{surfaceRise:Number(skill.hydrologyFlood.surfaceRise||1),source:skill.id});
+        environmentEvents.push(...floodEvents);floodEvents.forEach(ctx.logEnvironmentEvent);
+        const resolved=floodEvents.find(event=>event.type==="FLOOD_AREA_RESOLVED"),wetCount=resolved?.tiles?.filter(tile=>Number(tile.waterDepth||0)>0).length||0;
+        ctx.pushLog(`${skill.name}｜注入 Water Volume ${Number(resolved?.injectedVolume||0).toFixed(2)}｜${wetCount} 格形成／加深水域。`,"SYSTEM");
+      }
+      ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${skill.name} 引發環境連鎖`});
       affected.forEach(tile=>{
         if(!EnvironmentEngine.effectAt(environmentState,tile.x,tile.y).some(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING))return;
         const occupant=ctx.unitAt(tile.x,tile.y);
@@ -206,7 +213,8 @@
         for(const effect of skill.relationEffects.filter(e=>e.relation===rel)){
           if(effect.type==="MAGIC_DAMAGE"){
             const attackSkill={...skill,power:Number(effect.power||1),attackType:"MAGIC",element:effect.element||"NONE",traitMultipliers:effect.traitMultipliers||{},weapon:effect.weapon||skill.weapon};
-            const result=BattleEngine.calculate(attacker.character,target.character,attackSkill);
+            const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
+            const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
             if(result.hit){target.hp=Math.max(0,target.hp-result.damage);if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?result.damage+" 傷害":"MISS"}｜HP ${target.hp}。`,"BATTLE");

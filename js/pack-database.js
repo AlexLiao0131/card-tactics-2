@@ -5,7 +5,10 @@ export const CARD_GROUPS={
   ELF_EMPIRE:{id:"ELF_EMPIRE",name:"精靈帝國",cards:["reina_card","elf_shapeshifter_card","elf_ranger_card","elf_guard_card","elf_priest_card"]},
   OPHI_SUPPLEMENT:{id:"OPHI_SUPPLEMENT",name:"奧菲補充包",cards:["ophi_card","colin_card","moon_goddess_blessing_card"]},
   CHURCH:{id:"CHURCH",name:"教會",cards:["church_templar_hero_card","church_apprentice_card","church_heavy_knight_card","church_templar_card","church_bishop_card","church_redemption_card","church_dispel_card","church_judgement_card","church_entrenchment_card"]},
-  SAINT_SUPPLEMENT:{id:"SAINT_SUPPLEMENT",name:"聖女補充包",cards:["church_saint_card"]},SERAPHINA_SUPPLEMENT:{id:"SERAPHINA_SUPPLEMENT",name:"Seraphina 補充包",cards:["seraphina_card"]},OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
+  SAINT_SUPPLEMENT:{id:"SAINT_SUPPLEMENT",name:"聖女補充包",cards:["church_saint_card"]},
+  SERAPHINA_SUPPLEMENT:{id:"SERAPHINA_SUPPLEMENT",name:"Seraphina 補充包",cards:["seraphina_card"]},
+  SEA_WORLD_SUPPLEMENT:{id:"SEA_WORLD_SUPPLEMENT",name:"海世界補充包",cards:["nereia_card"]},
+  OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
 };
 export const PACK_PRODUCTS={
   IMPERIAL_SEASON_TEST:{id:"IMPERIAL_SEASON_TEST",name:"帝國陣營包",kind:"FACTION",season:"TEST_SEASON",description:"15 張測試包｜7 基礎士兵・3 中階士兵・3 陣營戰術／魔法・2 高階抽選｜HERO Bonus 0.5%",slots:{basic:7,mid:3,factionSpell:3,advancedRolls:2},advancedChance:.25,heroBonusChance:.005,pools:{basic:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card"],mid:["imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"],advanced:["imperial_cavalry_card"],factionSpell:[],hero:["leon_card"]},fallback:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"]},
@@ -15,7 +18,8 @@ export const PACK_PRODUCTS={
   LIVIA_FIXED:{id:"LIVIA_FIXED",name:"莉維亞補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容測試｜買斷型補充包，不進行隨機抽取。",cards:["livia_card","kahn_card","cassandra_card","bear_trap_card","avalanche_card","cassandra_blessing_card"]},
   OPHI_FIXED:{id:"OPHI_FIXED",name:"奧菲補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容測試｜買斷型補充包，不進行隨機抽取。",cards:["ophi_card","colin_card","moon_goddess_blessing_card"]},
   SAINT_FIXED:{id:"SAINT_FIXED",name:"聖女補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄聖女 HERO，其餘固定內容待故事卡設計完成後加入。",cards:["church_saint_card"]},
-  SERAPHINA_FIXED:{id:"SERAPHINA_FIXED",name:"Seraphina 補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄 Seraphina HERO，其餘固定內容待後續設計。",cards:["seraphina_card"]}
+  SERAPHINA_FIXED:{id:"SERAPHINA_FIXED",name:"Seraphina 補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄 Seraphina HERO，其餘固定內容待後續設計。",cards:["seraphina_card"]},
+  SEA_WORLD_FIXED:{id:"SEA_WORLD_FIXED",name:"海世界補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄深海女王・涅瑞雅 HERO，第二張擴充 HERO 待設計完成後加入。",cards:["nereia_card"]}
 };
 export const PackDatabase=(()=>({get:id=>CARD_GROUPS[id]||null,list:()=>Object.values(CARD_GROUPS),cards:id=>(CARD_GROUPS[id]?.cards||[]).map(cardId=>CardDatabase.get(cardId)).filter(Boolean),product:id=>PACK_PRODUCTS[id]||null,products:({season}={})=>Object.values(PACK_PRODUCTS).filter(p=>!season||p.season===season||p.season==="PERMANENT")}))();
 globalThis.CARD_GROUPS=CARD_GROUPS;

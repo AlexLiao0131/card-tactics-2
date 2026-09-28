@@ -7,7 +7,7 @@ const CORE_LOAD_ORDER=[
   "terrain-database.js","environment-object-engine.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
   "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js","unit-animation-engine.js",
   "skill-database.js","equipment-database.js","character-database.js","card-database.js","monster-database.js",
-  "monster-content.js","ophi-content.js","church-content.js","seraphina-content.js","pack-database.js","pack-engine.js",
+  "monster-content.js","aquatic-content.js","ophi-content.js","church-content.js","seraphina-content.js","pack-database.js","pack-engine.js",
   "deck-engine.js","deployment-engine.js","card-phase-engine.js","battle-log.js","battle-engine.js","effect-engine.js",
   "tactical-engine.js","vertical-mobility-engine.js","environment-contact-engine.js","unit-runtime-engine.js","battle-setup-engine.js","battle-presentation-controller.js",
   "tile-inspection-presentation.js","displacement-engine.js","collision-engine.js","fall-engine.js","trajectory-engine.js",
