@@ -4,7 +4,7 @@ const T={ENEMY_WIPED:"ENEMY_WIPED",PLAYER_WIPED:"PLAYER_WIPED",DEFEAT_TARGET:"DE
 const aliases={DEFEAT_ALL_ENEMIES:{type:T.ENEMY_WIPED},DEFEAT_ALL_PLAYERS:{type:T.PLAYER_WIPED},DESTROY_ENEMY_CORE:{type:T.DESTROY_CORE,owner:"ENEMY"},PLAYER_CORE_DESTROYED:{type:T.DESTROY_CORE,owner:"PLAYER"}};
 function norm(n){if(!n)return null;if(typeof n==="string")n={type:n};return aliases[n.type]?{...aliases[n.type],...n,type:aliases[n.type].type}:n}
 const team=t=>t==="PLAYER"?"P":"E";
-const living=(c,t)=>(c.units||[]).filter(u=>u.alive&&u.team===team(t));
+const living=(c,t)=>(c.units||[]).filter(u=>u.alive&&u.team===team(t)&&u.countsForObjectives!==false);
 function reserve(c,t){const s=t==="PLAYER"?c.cardState:c.enemyCardState;return !!s?.zones&&[...(s.zones.hand||[]),...(s.zones.deck||[])].some(id=>c.isCharacterCard?.(id))}
 function wiped(c,t){return living(c,t).length===0&&!reserve(c,t)&&!c.hasPendingReinforcement?.(t)}
 function targets(n,c){return(c.units||[]).filter(u=>(!n.team||u.team===team(n.team))&&(!n.unitId||u.id===n.unitId)&&(!n.characterId||u.character?.id===n.characterId))}
