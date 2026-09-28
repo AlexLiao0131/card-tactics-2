@@ -5,6 +5,7 @@ export const BattleResolution=(()=>{
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
   function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
   function defenseMethods(d){return[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character),...effectDefenseProfiles(d)]}
+  function passiveGuardRules(u){return SkillDatabase.passiveList(u?.character?.passives).map(p=>p?.guardRules).filter(Boolean)}
   function guardProfiles(u){return defenseMethods(u).filter(p=>p.canGuardAlly===true)}
   function guardCandidates({map,units,target}){if(!target?.alive)return[];const tt=TacticalEngine.tile(map,target.x,target.y);return(units||[]).filter(g=>{if(!g.alive||g.id===target.id||g.team!==target.team||distance(g,target)!==1)return false;const gt=TacticalEngine.tile(map,g.x,g.y);return !!gt&&!!tt&&TacticalEngine.canTraverseElevation(gt,tt,g)}).map(guardian=>({guardian,profiles:guardProfiles(guardian)})).filter(x=>x.profiles.length)}
   function createGuardInterception(guardian,methodId){if(!guardian?.alive)throw new Error("Guard Ally requires a living guardian.");const p=guardProfiles(guardian).find(x=>x.id===methodId);if(!p)throw new Error(`Invalid Guard Ally method: ${methodId}`);return{type:"GUARD_ALLY",guardian,methodId:p.id}}
@@ -32,14 +33,37 @@ export const BattleResolution=(()=>{
   function defenseProfileById(d,id){return id?defenseMethods(d).find(p=>p.id===id)||null:null}
   function isPrimaryIncomingAction(c,a){return a.role==="INITIATOR"&&a.actor?.id===c.initiator?.id&&a.target?.id===c.target?.id}
   function resolveEvade(map,a,t,s){const z=TacticalEngine.resolve(map,a,t,s,{forceHit:true}),b=z.result,o=b.hc,f=Math.max(0,o-ACTIVE_EVADE_PENALTY),roll=Math.random()*100;let outcome="MISS",m=0;if(roll<f){outcome="HIT";m=1}else if(roll<o){outcome="GRAZE";m=GRAZE_DAMAGE_MULTIPLIER}return{...z,result:{...b,hit:outcome!=="MISS",graze:outcome==="GRAZE",evadeOutcome:outcome,evadeRoll:roll,originalHitChance:o,activeHitChance:f,damage:Math.round(b.damage*m)}}}
-  function resolveDefense(map,a,t,s,r){const p=defenseProfileById(t,r?.methodId);if(!p)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:null,valid:false,reason:"DEFENSE_METHOD_NOT_FOUND"}};const type=attackType(a,s),rule=p.vs?.[type];if(!rule)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:p,valid:false,reason:"ATTACK_TYPE_NOT_SUPPORTED",attackType:type}};const z=TacticalEngine.resolve(map,a,t,s),b=z.result;if(!b.hit)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,reason:"ATTACK_MISSED"}};if(p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};let success=true,roll=null;if(Number.isFinite(Number(rule.chance))){roll=Math.random()*100;success=roll<Number(rule.chance)}let m=1;if(success)m=p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1);return{...z,result:{...b,damage:Math.round(b.damage*m)},defense:{method:p,valid:true,attackType:type,triggered:true,success,roll,chance:Number.isFinite(Number(rule.chance))?Number(rule.chance):null,damageMultiplier:m}}}
+  function resolveDefense(map,a,t,s,r){
+    const p=defenseProfileById(t,r?.methodId);
+    if(!p)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:null,valid:false,reason:"DEFENSE_METHOD_NOT_FOUND"}};
+    const type=attackType(a,s),rule=p.vs?.[type];
+    if(!rule)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:p,valid:false,reason:"ATTACK_TYPE_NOT_SUPPORTED",attackType:type}};
+    const z=TacticalEngine.resolve(map,a,t,s),b=z.result;
+    if(!b.hit)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,reason:"ATTACK_MISSED"}};
+    if(p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};
+    let success=true,roll=null;
+    if(Number.isFinite(Number(rule.chance))){roll=Math.random()*100;success=roll<Number(rule.chance)}
+    let m=1,waitedMultiplier=1,afterInterceptEffects=[];
+    if(success){
+      m=p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1);
+      if(p.method==="GUARD")m*=Number(t?.character?.modifiers?.guardMultiplier??1);
+      if(r?.guardInterception){
+        for(const guardRules of passiveGuardRules(t)){
+          if(t.waited&&Number.isFinite(Number(guardRules.waitedDamageMultiplier)))waitedMultiplier*=Number(guardRules.waitedDamageMultiplier);
+          for(const effect of guardRules.afterInterceptEffects||[])afterInterceptEffects.push(effect);
+        }
+        m*=waitedMultiplier;
+      }
+    }
+    return{...z,result:{...b,damage:Math.round(b.damage*m)},defense:{method:p,valid:true,attackType:type,triggered:true,success,roll,chance:Number.isFinite(Number(rule.chance))?Number(rule.chance):null,damageMultiplier:m,waitedMultiplier,afterInterceptEffects:success&&r?.guardInterception?afterInterceptEffects:[]}};
+  }
   function resolveAction(c,a){
     TacticalEngine.ensureFacing(a.actor);TacticalEngine.ensureFacing(a.target);
     globalThis.EffectEngine?.breakStealth?.(a.actor,"ACTION");
     if(a.target?.character&&Math.abs(a.actor.x-a.target.x)+Math.abs(a.actor.y-a.target.y)<=1)globalThis.EffectEngine?.breakStealth?.(a.target,"PROXIMITY");
     if(a.role!=="INITIATOR")TacticalEngine.faceToward(a.actor,a.target);
     if(!isPrimaryIncomingAction(c,a))return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill);
-    if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId});
+    if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
     if(c.reaction?.type==="EVADE")return resolveEvade(c.map,a.actor,a.target,a.skill);
     if(c.reaction?.type==="DEFENSE")return resolveDefense(c.map,a.actor,a.target,a.skill,c.reaction);
     return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill)
@@ -55,7 +79,30 @@ export const BattleResolution=(()=>{
     return applied;
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
-  function execute(c,hooks={}){const queue=buildQueue(c),results=[];for(const a of queue){if(!a.actor.alive||!a.target.alive)continue;if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;const resolved=resolveAction(c,a),baseResult=resolved.result;globalThis.UnitAnimationEngine?.emitAction?.(a.actor,a.target,a.skill,{role:a.role});hooks.consumeSkill?.(a.actor,a.skill);const shield=globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(a.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp};a.target.hp=Math.max(0,a.target.hp-result.damage);if(a.target.hp===0){a.target.alive=false;hooks.onDefeated?.(a.target,a.actor,a.skill)}else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(a.target,{sourceId:a.actor.id,skillId:a.skill?.id||null,damage:Number(result.damage||0)});const e={...a,resolved:{...resolved,result},result,hpAfter:a.target.hp};e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e)}const pq=postQueue(results);const post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};return{context:c,queue,results,postEngagement:post}}
+  function execute(c,hooks={}){
+    const queue=buildQueue(c),results=[];
+    for(const a of queue){
+      if(!a.actor.alive||!a.target.alive)continue;
+      if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
+      const resolved=resolveAction(c,a),baseResult=resolved.result;
+      globalThis.UnitAnimationEngine?.emitAction?.(a.actor,a.target,a.skill,{role:a.role});
+      hooks.consumeSkill?.(a.actor,a.skill);
+      const shield=globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(a.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp};
+      a.target.hp=Math.max(0,a.target.hp-result.damage);
+      if(a.target.hp===0){a.target.alive=false;hooks.onDefeated?.(a.target,a.actor,a.skill)}
+      else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(a.target,{sourceId:a.actor.id,skillId:a.skill?.id||null,damage:Number(result.damage||0)});
+      if(a.target.alive&&globalThis.EffectEngine){
+        for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:a.target,target:a.target,effect});
+      }
+      if(a.actor.alive&&globalThis.EffectEngine){
+        for(const effect of a.skill?.afterUseEffects||[])EffectEngine.apply({source:a.actor,target:a.actor,effect});
+      }
+      const e={...a,resolved:{...resolved,result},result,hpAfter:a.target.hp};
+      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
+    }
+    const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
+    return{context:c,queue,results,postEngagement:post};
+  }
   function resolve(options,hooks={}){const actions=[...(options.actions||[])];if(options.reaction?.type==="COUNTER"&&options.reaction.skill)actions.push(createCounterAction(options.target,options.initiator,options.reaction.skill));return execute(createContext({...options,actions}),hooks)}
   return{createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 })();

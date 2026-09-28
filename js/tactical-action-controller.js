@@ -221,6 +221,22 @@
       if(skill.target==="ENEMY")return occupant.team!==attacker.team;
       return true;
     }
+    function applyPassiveSkillTriggers(attacker,target,skill){
+      if(!globalThis.EffectEngine||!attacker?.character||!target?.alive)return[];
+      const tags=new Set(skill?.tags||[]),rel=EffectEngine.relation(attacker,target),results=[];
+      if(!tags.size)return results;
+      for(const passive of SkillDatabase.passiveList(attacker.character.passives||[])){
+        for(const trigger of passive?.skillTriggers||[]){
+          const whenTags=trigger.whenTags||[];
+          if(whenTags.length&&!whenTags.some(tag=>tags.has(tag)))continue;
+          if(Array.isArray(trigger.relations)&&!trigger.relations.includes(rel))continue;
+          if(!trigger.effect)continue;
+          const result=EffectEngine.apply({source:attacker,target,effect:trigger.effect});results.push({passive,trigger,result});
+          if(result?.applied)ctx.pushLog(`${passive.name} → ${target.character.name}｜獲得「${trigger.effect.name||trigger.effect.id||trigger.effect.type}」。`,"BATTLE");
+        }
+      }
+      return results;
+    }
     function applyMapEffects(attacker,affected,skill){
       if(!globalThis.EffectEngine||(!Array.isArray(skill.effects)&&!Array.isArray(skill.relationEffects)))return;
       for(const tile of affected){
@@ -228,11 +244,16 @@
         const effects=Array.isArray(skill.relationEffects)?skill.relationEffects.filter(effect=>!effect.relation||effect.relation===EffectEngine.relation(attacker,occupant)):(skill.effects||[]);
         for(const effect of effects){
           const result=EffectEngine.apply({source:attacker,target:occupant,effect});
-          if(!result?.applied)continue;
+          if(!result?.applied){
+            if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${occupant.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");
+            continue;
+          }
           if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜回復 ${result.amount||0} HP｜HP ${occupant.hp}。`,"BATTLE");
           else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
           else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
+          else if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜${result.amount||0} 傷害｜HP ${occupant.hp}。`,"BATTLE");
         }
+        applyPassiveSkillTriggers(attacker,occupant,skill);
       }
     }
 
@@ -339,6 +360,7 @@
     }
 
     function logAppliedEffect(skill,target,effect,result){
+      if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");return;}
       if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
       else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
       else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
@@ -371,6 +393,7 @@
       }else if(Array.isArray(skill.effects)){
         for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);}
       }
+      applyPassiveSkillTriggers(attacker,target,skill);
       if(skill.bloodAction){
         const b=skill.bloodAction,bonus=b.bonusAgainstEffect,bonusActive=bonus?.id&&EffectEngine.hasEffect(target,bonus.id),drainAmount=Math.round(Number(b.damage||0)*(bonusActive?Number(bonus.multiplier||1):1));
         const drain=EffectEngine.apply({source:attacker,target,effect:{type:"DRAIN",amount:drainAmount,healRatio:b.healRatio}});results.push(drain);

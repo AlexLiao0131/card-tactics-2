@@ -36,6 +36,15 @@ export const EffectEngine=(()=>{
     target.effects=target.effects.filter(e=>e.classification!=="NEGATIVE");
     return before-target.effects.length;
   }
+  function consumeNegativeEffectGuard(target,effect){
+    if(effect?.classification!=="NEGATIVE"||["DAMAGE","MAGIC_DAMAGE","DRAIN"].includes(effect?.type))return null;
+    const guard=state(target).find(e=>e.classification==="POSITIVE"&&Number(e?.negativeEffectGuard?.charges||0)>0);
+    if(!guard)return null;
+    guard.negativeEffectGuard.charges=Math.max(0,Number(guard.negativeEffectGuard.charges||0)-1);
+    if(guard.negativeEffectGuard.charges<=0)target.effects=state(target).filter(e=>e!==guard);
+    syncModifiers(target);
+    return guard;
+  }
   function syncModifiers(unit){
     if(!unit?.character)return;
     if(!unit._effectBaseCombat)unit._effectBaseCombat=clone(unit.character.combat||{});
@@ -83,6 +92,8 @@ export const EffectEngine=(()=>{
   function apply({source,target,effect,chooseSkill}={}){
     if(!target||!effect)return{applied:false,reason:"INVALID_TARGET"};
     if(effect.targetFilter&&!targetMatches(source,target,effect.targetFilter))return{applied:false,reason:"TARGET_FILTER"};
+    const guardedBy=consumeNegativeEffectGuard(target,effect);
+    if(guardedBy)return{applied:false,reason:"NEGATIVE_EFFECT_GUARD",blockedBy:guardedBy.id||guardedBy.name||"GUARD"};
     if(effect.type==="HEAL")return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
     if(effect.type==="HEAL_OVER_TIME"||effect.type==="DAMAGE_OVER_TIME")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="SHIELD"){
@@ -142,6 +153,6 @@ export const EffectEngine=(()=>{
     return revealed;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

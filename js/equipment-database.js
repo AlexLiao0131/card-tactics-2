@@ -26,6 +26,8 @@ export const EQUIPMENT={
   church_heavy_plate:{id:"church_heavy_plate",name:"教團重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"NONE",affixes:[]},
   church_templar_plate:{id:"church_templar_plate",name:"聖殿騎士重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"HOLY",affixes:[]},
   church_bishop_robe:{id:"church_bishop_robe",name:"主教法衣",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"HOLY",affixes:[]},
+  church_royal_saint_staff:{id:"church_royal_saint_staff",name:"王家聖杖",kind:"WEAPON",weaponKind:"STAFF",attackType:"MAGIC",element:"HOLY",affixes:[],defenseProfiles:[{id:"royal_saint_staff_barrier",method:"BARRIER",name:"聖杖屏障",vs:{SLASH:{damageMultiplier:.85},PIERCE:{damageMultiplier:.85},SHOT:{damageMultiplier:.75},STRIKE:{damageMultiplier:.90},MAGIC:{damageMultiplier:.55}}}]},
+  church_saint_vestment:{id:"church_saint_vestment",name:"聖女禮裝",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"HOLY",affixes:[]},
 
   seraphina_rapier:{id:"seraphina_rapier",name:"血族細劍",kind:"WEAPON",weaponKind:"RAPIER",attackType:"PIERCE",element:"DARK",affixes:[],defenseProfiles:[{id:"seraphina_rapier_parry",method:"PARRY",name:"細劍招架",vs:{SLASH:{chance:45},PIERCE:{chance:55},SHOT:{chance:0},STRIKE:{chance:0},MAGIC:{chance:0}}}]},
 
