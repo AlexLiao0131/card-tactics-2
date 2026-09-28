@@ -1,7 +1,7 @@
 export const BATTLE_RULES={mult:{[-2]:.70,[-1]:.85,0:1,1:1.15,2:1.30},physical:{SLASH:{NONE:1,LIGHT:1,MEDIUM:0,HEAVY:-1,SHIELD:-1},PIERCE:{NONE:1,LIGHT:0,MEDIUM:1,HEAVY:1,SHIELD:-1},STRIKE:{NONE:0,LIGHT:0,MEDIUM:1,HEAVY:1,SHIELD:1},SHOT:{NONE:1,LIGHT:1,MEDIUM:0,HEAVY:-1,SHIELD:-2},MAGIC:{NONE:0,LIGHT:0,MEDIUM:0,HEAVY:0,SHIELD:0}},elemental:{FIRE:{NATURE:1,WATER:-1},NATURE:{THUNDER:1,FIRE:-1},THUNDER:{WATER:1,NATURE:-1},WATER:{FIRE:1,THUNDER:-1},LIGHT:{DARK:1},HOLY:{DARK:1},DARK:{LIGHT:1,HOLY:-1},NONE:{}},combatParams:{baseHit:85,agiHitStep:2,minHit:15,maxHit:99,baseCrit:5,lukCritStep:.5,agiSpeedStep:4}};
 export const BattleEngine=(()=>{
   const R=BATTLE_RULES,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),match=(t,a,b)=>t[a]?.[b]??0,aff=(o,a)=>o?.affixes?.includes(a)??false;
-  const MELEE_WEAPON_KINDS=new Set(["SWORD","POLEARM","TRIDENT","HAMMER","KNIFE","CLAW","GREATSWORD","AXE","MACE"]);
+  const MELEE_WEAPON_KINDS=new Set(["SWORD","RAPIER","POLEARM","TRIDENT","HAMMER","KNIFE","CLAW","GREATSWORD","AXE","MACE"]);
   function getSkill(c,id){if(!c.skills.includes(id))return null;return SkillDatabase.get(id)}
   function armorTypes(d){return Array.isArray(d?.armor?.types)&&d.armor.types.length?d.armor.types:[d?.armor?.type??"NONE"]}
   function physicalMatch(type,d){return armorTypes(d).map(x=>match(R.physical,type,x)).reduce((a,b)=>a+b,0)}

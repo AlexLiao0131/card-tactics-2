@@ -8,6 +8,7 @@ export const COMPANIONS={
     occupiesCardSlot:false,
     canAttack:false,
     sharedVision:true,
+    targetingMode:"SCOUT_SHARED_VISION",
     providesTargetingFor:["ophi_eagle_arc_shot"]
   }
 };
@@ -16,7 +17,11 @@ export const CompanionDatabase=(()=>{
   function get(id){return COMPANIONS[id]||null}
   function list(ids=[]){return(ids||[]).map(get).filter(Boolean)}
   function forOwner(characterId){return Object.values(COMPANIONS).filter(c=>c.ownerCharacterId===characterId)}
-  return Object.freeze({get,list,forOwner});
+  function providesTargeting(owner,skillId,companionId=null){
+    const character=owner?.character||owner;if(!character)return false;
+    return list(character.companionIds).some(companion=>companion.sharedVision===true&&(!companionId||companion.id===companionId)&&(companion.providesTargetingFor||[]).includes(skillId));
+  }
+  return Object.freeze({get,list,forOwner,providesTargeting});
 })();
 
 globalThis.COMPANIONS=COMPANIONS;

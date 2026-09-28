@@ -27,7 +27,7 @@ export const EQUIPMENT={
   church_templar_plate:{id:"church_templar_plate",name:"聖殿騎士重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"HOLY",affixes:[]},
   church_bishop_robe:{id:"church_bishop_robe",name:"主教法衣",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"HOLY",affixes:[]},
 
-  seraphina_claws:{id:"seraphina_claws",name:"血族利爪",kind:"WEAPON",weaponKind:"CLAW",attackType:"SLASH",element:"DARK",affixes:[]},
+  seraphina_rapier:{id:"seraphina_rapier",name:"血族細劍",kind:"WEAPON",weaponKind:"RAPIER",attackType:"PIERCE",element:"DARK",affixes:[],defenseProfiles:[{id:"seraphina_rapier_parry",method:"PARRY",name:"細劍招架",vs:{SLASH:{chance:45},PIERCE:{chance:55},SHOT:{chance:0},STRIKE:{chance:0},MAGIC:{chance:0}}}]},
 
   forest_claw:{id:"forest_claw",name:"利爪",kind:"WEAPON",attackType:"SLASH",element:"NONE",affixes:[]},training_club:{id:"training_club",name:"訓練木棒",kind:"WEAPON",attackType:"STRIKE",element:"NONE",affixes:[]},standard_sword:{id:"standard_sword",name:"制式長劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"standard_sword_parry",method:"PARRY",name:"長劍招架",vs:{SLASH:{chance:70},PIERCE:{chance:65},SHOT:{chance:15},STRIKE:{chance:0},MAGIC:{chance:0}}}]},blessed_sword:{id:"blessed_sword",name:"精靈祝福長劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"blessed_sword_parry",method:"PARRY",name:"祝福長劍招架",vs:{SLASH:{chance:80},PIERCE:{chance:75},SHOT:{chance:30},STRIKE:{chance:10},MAGIC:{chance:0}}}]},
   livia_light_armor:{id:"livia_light_armor",name:"輕型防具",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"NONE",affixes:[]},

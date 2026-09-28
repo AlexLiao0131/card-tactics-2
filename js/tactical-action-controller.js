@@ -106,13 +106,8 @@
       return out;
     }
 
-    function beginPendingMove(unit){
-      pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};
-    }
-
-    function commitPendingMove(unit){
-      if(pendingMove?.unitId===unit?.id)pendingMove=null;
-    }
+    function beginPendingMove(unit){pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};}
+    function commitPendingMove(unit){if(pendingMove?.unitId===unit?.id)pendingMove=null;}
 
     function approachTargetForAttack(unit,target,skill){
       const plan=attackPlanForTarget(unit,target,skill);
@@ -219,6 +214,28 @@
       return finishActiveSkill(attacker);
     }
 
+    function relationAllows(skill,attacker,occupant){
+      if(!occupant?.alive)return false;
+      if(skill.target==="SELF")return occupant.id===attacker.id;
+      if(skill.target==="ALLY")return occupant.team===attacker.team;
+      if(skill.target==="ENEMY")return occupant.team!==attacker.team;
+      return true;
+    }
+    function applyMapEffects(attacker,affected,skill){
+      if(!globalThis.EffectEngine||(!Array.isArray(skill.effects)&&!Array.isArray(skill.relationEffects)))return;
+      for(const tile of affected){
+        const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant||!relationAllows(skill,attacker,occupant))continue;
+        const effects=Array.isArray(skill.relationEffects)?skill.relationEffects.filter(effect=>!effect.relation||effect.relation===EffectEngine.relation(attacker,occupant)):(skill.effects||[]);
+        for(const effect of effects){
+          const result=EffectEngine.apply({source:attacker,target:occupant,effect});
+          if(!result?.applied)continue;
+          if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜回復 ${result.amount||0} HP｜HP ${occupant.hp}。`,"BATTLE");
+          else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
+          else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
+        }
+      }
+    }
+
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
@@ -241,15 +258,17 @@
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
-          occupant.hp=Math.max(0,occupant.hp-result.damage);
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${result.damage} 傷害｜HP ${occupant.hp}。`,"BATTLE");
+          const shield=globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
+          occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
-          else if(Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(result.damage||0)});
+          else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
         });
       }
       if(skill.aoeDamage){
         affected.forEach(tile=>{const occupant=ctx.unitAt(tile.x,tile.y);if(occupant)ctx.damageUnitFlat(occupant,skill.aoeDamage,skill.name);});
       }
+      applyMapEffects(attacker,affected,skill);
       const environmentEvents=[];
       affected.forEach(tile=>{
         const events=environmentState&&skill.environmentForces
@@ -319,6 +338,13 @@
       if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
     }
 
+    function logAppliedEffect(skill,target,effect,result){
+      if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
+      else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
+      else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
+      else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
+    }
+
     function executeEffectSkill(attacker,target,skill){
       if(!window.EffectEngine||!ctx.canUseSkill(attacker,skill))return false;
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
@@ -332,36 +358,31 @@
             const attackSkill={...skill,power:Number(effect.power||1),attackType:"MAGIC",element:effect.element||"NONE",traitMultipliers:effect.traitMultipliers||{},weapon:effect.weapon||skill.weapon};
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
             const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
-            if(result.hit){target.hp=Math.max(0,target.hp-result.damage);if(target.hp===0)target.alive=false;}
-            results.push({type:"MAGIC_DAMAGE",...result});
-            ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?result.damage+" 傷害":"MISS"}｜HP ${target.hp}。`,"BATTLE");
+            let dealt=0,absorbed=0;
+            if(result.hit){const shield=EffectEngine.resolveIncomingDamage(target,result.damage);dealt=shield.damage;absorbed=shield.absorbed;target.hp=Math.max(0,target.hp-dealt);if(target.hp===0)target.alive=false;}
+            results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});
+            ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
-            else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(result.damage||0)});
+            else if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(dealt||0)});
           }else{
-            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);
-            if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${r.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
+            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);
           }
         }
       }else if(Array.isArray(skill.effects)){
-        for(const effect of skill.effects){
-          const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);
-          if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${r.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
-        }
+        for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);}
       }
       if(skill.bloodAction){
-        const b=skill.bloodAction;
-        const drain=EffectEngine.apply({source:attacker,target,effect:{type:"DRAIN",amount:b.damage,healRatio:b.healRatio}});results.push(drain);
-        EffectEngine.apply({source:attacker,target:attacker,effect:{type:"ATTRIBUTE_OVERRIDE",id:"BLOOD_GENOME_RESTORATION",classification:"POSITIVE",duration:b.duration,values:b.restoresGenome}});
+        const b=skill.bloodAction,bonus=b.bonusAgainstEffect,bonusActive=bonus?.id&&EffectEngine.hasEffect(target,bonus.id),drainAmount=Math.round(Number(b.damage||0)*(bonusActive?Number(bonus.multiplier||1):1));
+        const drain=EffectEngine.apply({source:attacker,target,effect:{type:"DRAIN",amount:drainAmount,healRatio:b.healRatio}});results.push(drain);
+        const passive=b.restoreFromPassive?SkillDatabase.getPassive(b.restoreFromPassive):null,restoration=passive?.bloodRestoration||null,restoreValues=b.restoresGenome||restoration?.values||null,restoreDuration=Number(b.duration||restoration?.duration||0);
+        if(restoreValues)EffectEngine.apply({source:attacker,target:attacker,effect:{type:"ATTRIBUTE_OVERRIDE",id:"BLOOD_GENOME_RESTORATION",classification:"POSITIVE",duration:restoreDuration,values:restoreValues}});
         const manaRestore=EffectEngine.apply({source:attacker,target:attacker,effect:{type:"RESTORE_MANA",amount:Math.round(Number(drain.damage||0)*Number(b.manaRatio||0))}});results.push(manaRestore);
-        ctx.pushLog(`${attacker.character.name} 吸取 ${target.character.name} 的血｜${drain.damage||0} 傷害｜自癒 ${drain.healed||0} HP｜回復 ${manaRestore.amount||0} MP｜暫時恢復 5V。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 吸取 ${target.character.name} 的血${bonusActive?"｜流血目標吸血強化":""}｜${drain.damage||0} 傷害｜自癒 ${drain.healed||0} HP｜回復 ${manaRestore.amount||0} MP${restoreValues?"｜病患：暫時恢復 5V":""}。`,"BATTLE");
         if(!target.alive)ctx.handleDefeated(target,attacker,skill);
         else if(Number(drain.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(drain.damage||0)});
         if(b.copySkill){
           const options=EffectEngine.copyableSkills(target);
-          if(options.length){
-            ctx.setPendingCopySkill({attacker,target,options,duration:b.copyDuration});
-            ctx.setMode("copy-skill-select");ctx.render();return true;
-          }
+          if(options.length){ctx.setPendingCopySkill({attacker,target,options,duration:b.copyDuration});ctx.setMode("copy-skill-select");ctx.render();return true;}
         }
       }
       return finishActiveSkill(attacker);
@@ -393,12 +414,7 @@
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
-      const candidates=BattleResolution.supportCandidates({
-        units,initiator:attacker,target:defender,canUseSkill:ctx.canUseSkill
-      }).map(candidate=>({
-        ...candidate,
-        skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))
-      })).filter(candidate=>candidate.skills.length);
+      const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill:ctx.canUseSkill}).map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))})).filter(candidate=>candidate.skills.length);
       ctx.setPendingEngagement({attacker,defender,skill,candidates});
       ctx.setSupportSelection(new Map());
       ctx.setMode("support-select");
@@ -411,10 +427,7 @@
       if(!pendingEngagement)return [];
       const supportSelection=ctx.getSupportSelection();
       const actions=[];
-      pendingEngagement.candidates.forEach(({ally},index)=>{
-        const skill=supportSelection.get(ally.id);
-        if(skill)actions.push(BattleResolution.createSupportAction(ally,pendingEngagement.defender,skill,index));
-      });
+      pendingEngagement.candidates.forEach(({ally},index)=>{const skill=supportSelection.get(ally.id);if(skill)actions.push(BattleResolution.createSupportAction(ally,pendingEngagement.defender,skill,index));});
       return actions;
     }
 
@@ -429,17 +442,9 @@
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
         {map,units,initiator:attacker,target:defender,skill,actions},
-        {
-          canUseSkill:ctx.canUseSkill,
-          consumeSkill:ctx.consumeSkill,
-          onDefeated:ctx.handleDefeated,
-          onAction:ctx.logBattleAction,
-          onPostEffect:ctx.logPostEffect
-        }
+        {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
-      if(!engagement.results.length){
-        ctx.clearEngagement();ctx.setMode("command");ctx.render();return;
-      }
+      if(!engagement.results.length){ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
       commitPendingMove(attacker);
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.clearEngagement();ctx.setMode("inspect");

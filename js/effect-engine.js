@@ -10,7 +10,20 @@ export const EffectEngine=(()=>{
   }
   function maxHp(unit){return Math.max(1,Number(unit?.character?.combat?.hp||unit?.hp||1));}
   function heal(unit,amount){const before=unit.hp;unit.hp=Math.min(maxHp(unit),unit.hp+Math.max(0,Math.round(Number(amount||0))));return unit.hp-before;}
-  function damage(unit,amount){const before=unit.hp;unit.hp=Math.max(0,unit.hp-Math.max(0,Math.round(Number(amount||0))));if(unit.hp<=0)unit.alive=false;return before-unit.hp;}
+  function hasEffect(unit,id){return state(unit).some(effect=>effect.id===id||effect.type===id)}
+  function shieldHp(unit){return state(unit).filter(effect=>effect.type==="SHIELD").reduce((sum,effect)=>sum+Math.max(0,Number(effect.shieldHp||0)),0)}
+  function resolveIncomingDamage(unit,amount){
+    let remaining=Math.max(0,Math.round(Number(amount||0))),absorbed=0;
+    if(!unit||remaining<=0)return{damage:remaining,absorbed,shieldHp:shieldHp(unit)};
+    for(const effect of state(unit)){
+      if(effect.type!=="SHIELD"||remaining<=0)continue;
+      const available=Math.max(0,Number(effect.shieldHp||0));if(available<=0)continue;
+      const blocked=Math.min(available,remaining);effect.shieldHp=available-blocked;remaining-=blocked;absorbed+=blocked;
+    }
+    unit.effects=state(unit).filter(effect=>effect.type!=="SHIELD"||Number(effect.shieldHp||0)>0);
+    return{damage:remaining,absorbed,shieldHp:shieldHp(unit)};
+  }
+  function damage(unit,amount){const resolved=resolveIncomingDamage(unit,amount),before=unit.hp;unit.hp=Math.max(0,unit.hp-resolved.damage);if(unit.hp<=0)unit.alive=false;return before-unit.hp;}
   function targetMatches(source,target,filter={}){
     if(filter.relation&&filter.relation!==relation(source,target))return false;
     if(filter.faction&&target?.character?.faction!==filter.faction)return false;
@@ -71,6 +84,11 @@ export const EffectEngine=(()=>{
     if(!target||!effect)return{applied:false,reason:"INVALID_TARGET"};
     if(effect.targetFilter&&!targetMatches(source,target,effect.targetFilter))return{applied:false,reason:"TARGET_FILTER"};
     if(effect.type==="HEAL")return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
+    if(effect.type==="HEAL_OVER_TIME"||effect.type==="DAMAGE_OVER_TIME")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    if(effect.type==="SHIELD"){
+      const amount=Math.max(0,Math.round(Number(effect.amount||0))),entry=addEffect(target,{...effect,shieldHp:amount,maxShieldHp:amount},source);
+      return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
+    }
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m);return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
@@ -91,11 +109,17 @@ export const EffectEngine=(()=>{
     return selected.map(effect=>apply({source,target,effect}));
   }
   function tick(unit){
-    state(unit).forEach(e=>{if(e.remaining!=null)e.remaining--;});
+    const events=[];
+    for(const effect of [...state(unit)]){
+      if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
+      if(effect.type==="DAMAGE_OVER_TIME"){const amount=damage(unit,effect.amount);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
+      if(effect.remaining!=null)effect.remaining--;
+    }
     unit.effects=unit.effects.filter(e=>e.remaining==null||e.remaining>0);
     syncModifiers(unit);
     (unit.grantedSkills||[]).forEach(g=>{if(g.remaining!=null)g.remaining--;});
     unit.grantedSkills=(unit.grantedSkills||[]).filter(g=>g.remaining==null||g.remaining>0);
+    return events;
   }
   function isStealthed(unit){return state(unit).some(e=>e.type==="STEALTH");}
   function applyStealth(unit,{id="STEALTH",detectionRange=1,source=null}={}){return addEffect(unit,{id,type:"STEALTH",classification:"POSITIVE",detectionRange},source);}
@@ -104,7 +128,8 @@ export const EffectEngine=(()=>{
   }
   function directTargetAllowed(observer,target){
     if(!isStealthed(target)||observer?.team===target?.team)return true;
-    const stealth=state(target).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));
+    const stealth=state(target).find(e=>e.type==="STEALTH"),normalRange=Math.max(0,Number(stealth?.detectionRange??1));
+    const senseRange=state(observer).reduce((max,effect)=>Math.max(max,Number(effect?.revealStealthRange||0)),0),range=Math.max(normalRange,senseRange);
     return Math.abs(Number(observer?.x)-Number(target?.x))+Math.abs(Number(observer?.y)-Number(target?.y))<=range;
   }
   function resolveProximityReveal(mover,units=[]){
@@ -117,6 +142,6 @@ export const EffectEngine=(()=>{
     return revealed;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,removeNegative,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;
