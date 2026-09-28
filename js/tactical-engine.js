@@ -6,7 +6,20 @@ export const TacticalEngine=(()=>{
   function objectAt(m,x,y){return (m?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null}
   function occupied(us,x,y,id){return us.some(u=>u.alive&&u.id!==id&&u.x===x&&u.y===y)}
   function elevation(t){return Number(t?.elevation||0)}
-  function terrainTraits(u){return u?.character?.terrainTraits||[]}
+  function terrainTraits(u){
+    const set=new Set(u?.character?.terrainTraits||[]);
+    for(const passive of globalThis.SkillDatabase?.passiveList?.(u?.character?.passives)||[])for(const trait of passive?.terrainTraits||[])set.add(trait);
+    return [...set];
+  }
+  function terrainPassiveModifiers(character,t){
+    const out={accuracy:0,evasion:0,crit:0,speed:0};
+    if(!character||!t)return out;
+    for(const passive of globalThis.SkillDatabase?.passiveList?.(character.passives)||[]){
+      if(passive?.terrain&&passive.terrain!==t.terrain)continue;
+      for(const key of Object.keys(out))out[key]+=Number(passive?.modifiers?.[key]||0);
+    }
+    return out;
+  }
   function isAquatic(u){const traits=terrainTraits(u);return traits.includes("AQUATIC")&&!traits.includes("AMPHIBIOUS")}
   function isLiveWater(t){return !!window.HydrologyEngine?.isWater?.(t)}
   function canOccupyTerrain(u,t){
@@ -77,7 +90,7 @@ export const TacticalEngine=(()=>{
   }
   function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
-  function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;let ac={...a.character,modifiers:{...(a.character.modifiers||{}),accuracy:Number(a.character.modifiers?.accuracy||0)+acc}},dc={...d.character,modifiers:{...(d.character.modifiers||{}),evasion:Number(d.character.modifiers?.evasion||0)+eva}},distance=D(a,d),arc=relativeArc(d,a),result=BattleEngine.calculate(ac,dc,s,{...opt,distance});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,visionBlocked,canSee,hasCompanionVision,hasLineOfSight,canTarget,targets,resolve,ensureFacing,facingToward,faceToward,relativeArc}
+  function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({ ...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a),result=BattleEngine.calculate(ac,dc,s,{...opt,distance});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
+  return{tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,terrainTraits,terrainPassiveModifiers,visionBlocked,canSee,hasCompanionVision,hasLineOfSight,canTarget,targets,resolve,ensureFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

@@ -21,14 +21,19 @@ export const DisplacementEngine=(()=>{
     if(!enabled||base<=0)return base;
     return Math.max(Math.max(0,Number(min||0)),base-resist);
   }
+  function immuneTo(target,type){
+    const character=target?.character||target||{};
+    return (globalThis.SkillDatabase?.passiveList?.(character.passives)||[]).some(passive=>(passive?.immunities||[]).includes(type));
+  }
   function resolve(effect={},target){
     const r=resistance(target),force=effect.force||{},resistAxes=effect.resistAxes||{};
     const baseDistance=Math.max(0,Number(force.horizontal??effect.distance??0));
     const baseLift=Math.max(0,Number(force.vertical??effect.lift??effect.launchHeight??0));
+    if(immuneTo(target,effect.type))return {weightClass:r.weightClass,resistance:r.value,baseDistance,baseLift,distance:0,lift:0,immune:true};
     const distance=axis(baseDistance,r.value,resistAxes.horizontal!==false,force.minHorizontal??effect.minDistance??0);
     const lift=axis(baseLift,r.value,resistAxes.vertical!==false,force.minVertical??effect.minLift??0);
     return {weightClass:r.weightClass,resistance:r.value,baseDistance,baseLift,distance,lift};
   }
-  return Object.freeze({WEIGHT,weightClass,resistance,resolve});
+  return Object.freeze({WEIGHT,weightClass,resistance,immuneTo,resolve});
 })();
 globalThis.DisplacementEngine=DisplacementEngine;

@@ -12,7 +12,15 @@ export const BattleEngine=(()=>{
   function evasion(c){return sumMod(c,"evasion")}
   function hitChance(a,d,s){const q=R.combatParams;return clamp(q.baseHit+(a.attributes.agi-d.attributes.agi)*q.agiHitStep+accuracy(a,s)-evasion(d),q.minHit,q.maxHit)}
   function critChance(a,s){const q=R.combatParams;return clamp(q.baseCrit+a.attributes.luk*q.lukCritStep+sumMod(a,"crit")+skillMod(s,"crit"),0,100)}
-  function actionSpeed(a,s){return a.attributes.agi*R.combatParams.agiSpeedStep+sumMod(a,"speed")+Number(s?.speed??0)+skillMod(s,"speed")}
+  function passives(c){return globalThis.SkillDatabase?.passiveList?.(c?.passives)||[]}
+  function hasWeaponKind(c,kind){const wanted=String(kind||"").toUpperCase();return !!wanted&&Object.values(c?.weapons||{}).some(w=>String(w?.weaponKind||"").toUpperCase()===wanted)}
+  function actionSpeed(a,s,d=null){
+    let skillSpeed=Number(s?.speed??0);
+    if(s?.category==="MAGIC"&&skillSpeed<0&&passives(a).some(p=>p.magicNegativeSpeedAsZero===true))skillSpeed=0;
+    let passiveBonus=0;
+    if(d)for(const passive of passives(a))if(passive.vsWeaponKind&&hasWeaponKind(d,passive.vsWeaponKind))passiveBonus+=Number(passive.speedBonus||0);
+    return a.attributes.agi*R.combatParams.agiSpeedStep+sumMod(a,"speed")+skillSpeed+skillMod(s,"speed")+passiveBonus;
+  }
   function hasTrait(c,trait){return c?.race===trait||(c?.traits||[]).includes(trait)}
   function traitMultiplier(d,s){let m=1;for(const [trait,value] of Object.entries(s?.traitMultipliers||{}))if(hasTrait(d,trait))m*=Number(value||1);return m}
   function attackClass(w,s,type,opt={}){
@@ -45,11 +53,11 @@ export const BattleEngine=(()=>{
     return{attackClass:cls,multiplier,applied};
   }
   function calculate(a,d,s,opt={}){
-    const w=a.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,el=s.element==="INHERIT"?w?.element:s.element,basePt=physicalMatch(type,d),et=match(R.elemental,el,d.armor.element),aid=aff(w,"PHYSICAL_DEFENSE_IGNORE"),aia=aff(w,"IGNORE_ARMOR_DISADVANTAGE"),parry=hasDefenderAffix(d,"ARTIFACT_PARRY")&&(aid||aia);let ignore=aid&&!parry,armorDisadvIgnored=aia&&!parry,pt=basePt;if(armorDisadvIgnored&&pt<0)pt=0;const tierRaw=pt+et,tier=clamp(tierRaw,-2,2),m=R.mult[tier],magic=type==="MAGIC",offenseStat=String(s?.offenseStat||(magic?"MATK":"ATK")).toUpperCase(),defenseStat=String(s?.defenseStat||(magic?"MDEF":"DEF")).toUpperCase(),off=Number(a.combat[offenseStat.toLowerCase()]??(magic?a.combat.matk:a.combat.atk)),defBase=Number(d.combat[defenseStat.toLowerCase()]??(magic?d.combat.mdef:d.combat.def)),def=defenseStat==="DEF"&&ignore?0:defBase,raw=Math.max(1,off*s.power-def*.5),hc=hitChance(a,d,s),cc=critChance(a,s),spd=actionSpeed(a,s),traitM=traitMultiplier(d,s),passiveTaken=passiveDamageTakenMultiplier(d,w,s,type,opt);
+    const w=a.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,el=s.element==="INHERIT"?w?.element:s.element,basePt=physicalMatch(type,d),rawEt=match(R.elemental,el,d.armor.element),ignoreElementResistance=rawEt<0&&passives(a).some(p=>p.ignoreElementResistance===true),et=ignoreElementResistance?0:rawEt,aid=aff(w,"PHYSICAL_DEFENSE_IGNORE"),aia=aff(w,"IGNORE_ARMOR_DISADVANTAGE"),parry=hasDefenderAffix(d,"ARTIFACT_PARRY")&&(aid||aia);let ignore=aid&&!parry,armorDisadvIgnored=aia&&!parry,pt=basePt;if(armorDisadvIgnored&&pt<0)pt=0;const tierRaw=pt+et,tier=clamp(tierRaw,-2,2),m=R.mult[tier],magic=type==="MAGIC",offenseStat=String(s?.offenseStat||(magic?"MATK":"ATK")).toUpperCase(),defenseStat=String(s?.defenseStat||(magic?"MDEF":"DEF")).toUpperCase(),off=Number(a.combat[offenseStat.toLowerCase()]??(magic?a.combat.matk:a.combat.atk)),defBase=Number(d.combat[defenseStat.toLowerCase()]??(magic?d.combat.mdef:d.combat.def)),def=defenseStat==="DEF"&&ignore?0:defBase,raw=Math.max(1,off*s.power-def*.5),hc=hitChance(a,d,s),cc=critChance(a,s),spd=actionSpeed(a,s,d),traitM=traitMultiplier(d,s),passiveTaken=passiveDamageTakenMultiplier(d,w,s,type,opt);
     const guaranteed=aff(w,"GUARANTEED_HIT")||aff(s,"GUARANTEED_HIT"),hitRoll=opt.forceMiss||opt.forceHit||guaranteed?null:Math.random()*100;
     let hit=opt.forceMiss?false:opt.forceHit?true:(guaranteed?true:hitRoll<hc);
     const critRoll=hit&&!opt.forceCrit&&!opt.disableCrit?Math.random()*100:null,crit=hit&&(opt.forceCrit?true:(!opt.disableCrit&&critRoll<cc)),damageTakenM=Number(d?.modifiers?.damageTakenMultiplier??1)*passiveTaken.multiplier,damage=hit?Math.round(raw*m*traitM*damageTakenM*(crit?1.5:1)):0;
-    return{weapon:w,type,el,basePt,pt,et,tierRaw,tier,m,ignore,armorDisadvIgnored,artifactParry:parry,offenseStat,defenseStat,off,def,raw,hc,cc,spd,traitMultiplier:traitM,attackClass:passiveTaken.attackClass,passiveDamageTakenMultiplier:passiveTaken.multiplier,passiveDamageTakenRules:passiveTaken.applied,damageTakenMultiplier:damageTakenM,accuracy:accuracy(a,s),evasion:evasion(d),hitRoll,critRoll,guaranteedHit:guaranteed,hit,crit,damage,hpAfter:Math.max(0,d.combat.hp-damage)}
+    return{weapon:w,type,el,basePt,pt,rawEt,et,ignoreElementResistance,tierRaw,tier,m,ignore,armorDisadvIgnored,artifactParry:parry,offenseStat,defenseStat,off,def,raw,hc,cc,spd,traitMultiplier:traitM,attackClass:passiveTaken.attackClass,passiveDamageTakenMultiplier:passiveTaken.multiplier,passiveDamageTakenRules:passiveTaken.applied,damageTakenMultiplier:damageTakenM,accuracy:accuracy(a,s),evasion:evasion(d),hitRoll,critRoll,guaranteedHit:guaranteed,hit,crit,damage,hpAfter:Math.max(0,d.combat.hp-damage)}
   }
   return{getSkill,calculate,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
 })();

@@ -32,8 +32,12 @@ export const SKILLS={
   kahn_knife:{id:"kahn_knife",name:"近身獵殺",category:"ATTACK",weapon:"hunting_knife",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:5,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
   cassandra_magic_bolt:{id:"cassandra_magic_bolt",name:"魔力彈",category:"MAGIC",weapon:"cassandra_staff",power:1,manaCost:12,range:{min:2,max:4},attackType:"MAGIC",element:"NONE",speed:0,target:"ENEMY",support:true,resource:{type:"UNLIMITED"},affixes:[]},
   cassandra_fire_burst:{id:"cassandra_fire_burst",name:"炎爆術",category:"MAGIC",weapon:"cassandra_staff",power:1.25,manaCost:24,range:{min:2,max:4},attackType:"MAGIC",element:"FIRE",speed:-5,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:[],statusEffects:[{type:"BURN",chance:100}]},
-  cassandra_frost:{id:"cassandra_frost",name:"寒霜術",category:"MAGIC",weapon:"cassandra_staff",power:1.1,manaCost:18,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:[]},
+  cassandra_frost:{id:"cassandra_frost",name:"寒霜術",category:"MAGIC",weapon:"cassandra_staff",power:1.1,manaCost:18,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"USES",max:3},affixes:[],statusEffects:[{type:"BUFF",id:"FROST_SLOW",name:"寒霜遲滯",classification:"NEGATIVE",duration:2,modifiers:{move:-1,speed:-20},chance:100}]},
   cassandra_dissolve:{id:"cassandra_dissolve",name:"異端術式・崩解",category:"MAGIC",weapon:"cassandra_staff",power:1.5,manaCost:30,range:{min:2,max:5},attackType:"MAGIC",element:"NONE",speed:-15,target:"ENEMY",support:false,resource:{type:"USES",max:2},affixes:[]},
+
+  reina_blessed_slash:{id:"reina_blessed_slash",name:"隊長劍術",category:"ATTACK",weapon:"blessed_sword",power:1.15,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:10,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
+  reina_command_shot:{id:"reina_command_shot",name:"指揮射擊",category:"ATTACK",weapon:"bow",power:1.1,range:{min:2,max:5},attackType:"SHOT",element:"INHERIT",speed:5,target:"ENEMY",support:true,resource:{type:"UNLIMITED"},affixes:[]},
+  reina_rally:{id:"reina_rally",name:"遊俠號令",category:"SPECIAL",power:0,manaCost:14,range:{min:0,max:3},target:"ALLY",support:false,resource:{type:"USES",max:3},effects:[{type:"BUFF",id:"RANGER_CAPTAIN_ORDER",name:"遊俠號令",classification:"POSITIVE",duration:2,modifiers:{accuracy:10,evasion:10,speed:10}}]},
 
   nereia_trident_thrust:{id:"nereia_trident_thrust",name:"三叉戟突刺",category:"ATTACK",weapon:"trident",power:1.10,range:{min:1,max:2},attackType:"PIERCE",element:"INHERIT",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
   nereia_water_bullet:{id:"nereia_water_bullet",name:"水彈",category:"MAGIC",weapon:"trident",power:1.05,manaCost:12,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[]},
@@ -65,7 +69,7 @@ export const SKILLS={
   ophi_eagle_arc_shot:{id:"ophi_eagle_arc_shot",name:"鷹眼曲射",category:"ATTACK",weapon:"elven_bow",power:1.25,range:{min:3,max:8},attackType:"SHOT",element:"INHERIT",speed:-10,target:"ENEMY",support:false,resource:{type:"USES",max:2},trajectory:"ARC",requiresCompanionVision:"ophi_eagle",affixes:["ARC_SHOT"]},
   ophi_healing_song:{id:"ophi_healing_song",name:"治癒歌聲",category:"MAGIC",power:0,manaCost:24,range:{min:0,max:3},target:"ALLY",targetType:"AOE",radius:2,speed:-5,support:false,resource:{type:"USES",max:2},effects:[{type:"HEAL_OVER_TIME",id:"OPHI_HEALING_SONG",name:"治癒歌聲",classification:"POSITIVE",amount:20,duration:3}],soundMagic:true,affixes:["HEAL_OVER_TIME"]},
   ophi_listen_to_forest:{id:"ophi_listen_to_forest",name:"聆聽森語",category:"SPECIAL",power:0,manaCost:12,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"UNLIMITED"},effects:[{type:"BUFF",id:"FOREST_SENSE",name:"森語感知",classification:"POSITIVE",duration:2,revealStealthRange:4,visionRules:{ignoreEnvironmentBlockers:true,maxRange:4},modifiers:{accuracy:10}}],informationSkill:true,affixes:["FOREST_SENSE"]},
-  colin_full_shield_defense:{id:"colin_full_shield_defense",name:"大盾防禦",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",speed:-5,support:false,resource:{type:"UNLIMITED"},requiresEquipment:"colin_full_body_shield",stance:{type:"FULL_SHIELD_DEFENSE",protectsBehind:true,blocksEnemyRoute:true,enhancedGuard:true},affixes:["FULL_SHIELD_DEFENSE"]},
+  colin_full_shield_defense:{id:"colin_full_shield_defense",name:"大盾防禦",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",speed:-5,support:false,resource:{type:"UNLIMITED"},requiresEquipment:"colin_full_body_shield",stance:{type:"FULL_SHIELD_DEFENSE",protectsBehind:true,blocksEnemyRoute:true,enhancedGuard:true},effects:[{type:"BUFF",id:"FULL_SHIELD_DEFENSE",name:"大盾防禦",classification:"POSITIVE",duration:1,modifiers:{damageTakenMultiplier:.85},collision:{kind:"SHIELD",solid:true,height:3,hardness:4,response:"STOP",impactMultiplier:1.25,priority:90},defenseProfiles:[{id:"full_shield_stance_guard",method:"GUARD",name:"全身大盾架勢",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.25},PIERCE:{damageMultiplier:.30},SHOT:{damageMultiplier:.20},STRIKE:{damageMultiplier:.45},MAGIC:{damageMultiplier:.70}}}]}],affixes:["FULL_SHIELD_DEFENSE"]},
   colin_armor_breaking_strike:{id:"colin_armor_breaking_strike",name:"破甲打擊",category:"ATTACK",weapon:"colin_hammer",power:1.15,range:{min:1,max:1},attackType:"STRIKE",element:"INHERIT",speed:-10,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:["ARMOR_BREAK"],statusEffects:[{type:"DEF_DOWN",value:20,duration:2}],postEffects:[{type:"KNOCKBACK",distance:2}]},
 
   church_slash:{id:"church_slash",name:"騎士斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"}},
@@ -96,8 +100,8 @@ export const PASSIVES={
   HEAVY_STRIKE:{id:"HEAVY_STRIKE",name:"重擊",category:"PASSIVE"},
   ARCANE_TRAINING:{id:"ARCANE_TRAINING",name:"魔導",category:"PASSIVE"},
   RIDING:{id:"RIDING",name:"騎乘",category:"PASSIVE"},
-  CHAMPION_SWORDSMAN:{id:"CHAMPION_SWORDSMAN",name:"冠軍劍士",category:"PASSIVE",vsWeaponKind:"SWORD",speedBonus:20},
-  HUNTER_OF_THE_EDGE:{id:"HUNTER_OF_THE_EDGE",name:"林邊的獵人",category:"PASSIVE",terrain:"FOREST",modifiers:{accuracy:10,evasion:10}},
+  CHAMPION_SWORDSMAN:{id:"CHAMPION_SWORDSMAN",name:"冠軍劍士",category:"PASSIVE",description:"面對持劍對手時，以冠軍級劍術搶得交鋒先機。",vsWeaponKind:"SWORD",speedBonus:20},
+  HUNTER_OF_THE_EDGE:{id:"HUNTER_OF_THE_EDGE",name:"林邊的獵人",category:"PASSIVE",description:"森林是卡恩最熟悉的獵場；在森林中提高命中與迴避，並忽略森林移動成本。",terrain:"FOREST",terrainTraits:["FOREST_WALK"],modifiers:{accuracy:10,evasion:10}},
   HERETIC:{id:"HERETIC",name:"異端",category:"PASSIVE",ignoreElementResistance:true},
   AMBUSH:{id:"AMBUSH",name:"伏擊",category:"PASSIVE",terrain:"FOREST",weaponKind:"BOW",powerMultiplier:1.20,speedBonus:20},
   PERFECT_GENOME_5V:{id:"PERFECT_GENOME_5V",name:"純種舊人類",category:"PASSIVE"},
@@ -112,6 +116,7 @@ export const PASSIVES={
   FOREST_LANGUAGE:{id:"FOREST_LANGUAGE",name:"森語",category:"PASSIVE",description:"以聽覺感知魔力，並能聽見植物的語言。"},
   EAGLE_SHARED_VISION:{id:"EAGLE_SHARED_VISION",name:"鷹眼共享",category:"PASSIVE",description:"與老鷹夥伴共享視覺，作為超遠距離曲射的觀測來源。"},
   STRONG_PHYSIQUE:{id:"STRONG_PHYSIQUE",name:"強健體魄",category:"PASSIVE",description:"異常強韌的體格使寇林不會被敵方擊退。",immunities:["KNOCKBACK"]},
+  RANGER_COMMANDER:{id:"RANGER_COMMANDER",name:"遊俠隊長",category:"PASSIVE",description:"蕾娜能在更大的隊形範圍內發動支援射擊。",supportRules:{allyDistance:2}},
   CHURCH_GUARDIAN:{id:"CHURCH_GUARDIAN",name:"聖殿援護",category:"PASSIVE",defenseProfiles:[{id:"church_guard_ally",method:"GUARD",name:"聖殿援護",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.55},PIERCE:{damageMultiplier:.60},SHOT:{damageMultiplier:.55},STRIKE:{damageMultiplier:.70},MAGIC:{damageMultiplier:.80}}}]},
   PATIENT:{id:"PATIENT",name:"病患",category:"PASSIVE",description:"不完整的遠古人類病患。吸血後可暫時恢復為5V規格。",bloodRestoration:{grade:"5V",duration:3,values:{str:20,agi:20,int:20,wil:20,vit:20}}}
 };

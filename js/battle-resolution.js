@@ -3,12 +3,14 @@ export const BattleResolution=(()=>{
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
-  function defenseMethods(d){return[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character)]}
+  function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
+  function defenseMethods(d){return[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character),...effectDefenseProfiles(d)]}
   function guardProfiles(u){return defenseMethods(u).filter(p=>p.canGuardAlly===true)}
   function guardCandidates({map,units,target}){if(!target?.alive)return[];const tt=TacticalEngine.tile(map,target.x,target.y);return(units||[]).filter(g=>{if(!g.alive||g.id===target.id||g.team!==target.team||distance(g,target)!==1)return false;const gt=TacticalEngine.tile(map,g.x,g.y);return !!gt&&!!tt&&TacticalEngine.canTraverseElevation(gt,tt,g)}).map(guardian=>({guardian,profiles:guardProfiles(guardian)})).filter(x=>x.profiles.length)}
   function createGuardInterception(guardian,methodId){if(!guardian?.alive)throw new Error("Guard Ally requires a living guardian.");const p=guardProfiles(guardian).find(x=>x.id===methodId);if(!p)throw new Error(`Invalid Guard Ally method: ${methodId}`);return{type:"GUARD_ALLY",guardian,methodId:p.id}}
   function supportSkills({ally,target,canUseSkill}){return SkillDatabase.list(ally.character.skills).filter(s=>{if(s.support!==true||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(ally,s))return false;const r=s.range||{min:1,max:1},d=distance(ally,target);return d>=r.min&&d<=r.max})}
-  function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;if(Math.abs(ally.x-initiator.x)>1||Math.abs(ally.y-initiator.y)>1)continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
+  function supportAnchorDistance(ally){let value=1;for(const passive of SkillDatabase.passiveList(ally?.character?.passives)){const n=Number(passive?.supportRules?.allyDistance);if(Number.isFinite(n))value=Math.max(value,n)}return value}
+  function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;const anchor=Math.max(Math.abs(ally.x-initiator.x),Math.abs(ally.y-initiator.y));if(anchor>supportAnchorDistance(ally))continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
   function createSupportAction(ally,target,skill,index=0){return{id:`support-${ally.id}-${index}`,role:"SUPPORT",actor:ally,target,skill}}
   function counterSkills({defender,attacker,canUseSkill}){if(!defender?.alive||!attacker?.alive)return[];return SkillDatabase.list(defender.character.skills).filter(s=>{if(s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(defender,s))return false;const r=s.range||{min:1,max:1},d=distance(defender,attacker);return d>=r.min&&d<=r.max})}
   function createCounterAction(defender,attacker,skill){return{id:`counter-${defender.id}`,role:"COUNTER",actor:defender,target:attacker,skill}}
@@ -23,7 +25,7 @@ export const BattleResolution=(()=>{
     [initiator,originalTarget,effectiveTarget,...actions.map(a=>a.actor)].forEach(u=>{if(u&&!seen.has(u.id)){seen.add(u.id);participants.push(u)}});
     return{map,units,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?interception:null,skill,reaction,participants,actions:[primary,...actions]}
   }
-  const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill);
+  const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill,a.target?.character||null);
   function buildQueue(c){return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill).map((a,index)=>({...a,index,spd:actionSpeed(a)})).sort((a,b)=>b.spd-a.spd||a.index-b.index)}
   function attackType(a,s){const w=a?.character?.weapons?.[s?.weapon];return s?.attackType==="INHERIT"?w?.attackType:s?.attackType}
   const attackWeapon=(a,s)=>a?.character?.weapons?.[s?.weapon]||null,hasAffix=(i,id)=>i?.affixes?.includes(id)===true;
