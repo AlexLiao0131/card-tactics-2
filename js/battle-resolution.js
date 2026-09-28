@@ -9,11 +9,11 @@ export const BattleResolution=(()=>{
   function guardProfiles(u){return defenseMethods(u).filter(p=>p.canGuardAlly===true)}
   function guardCandidates({map,units,target}){if(!target?.alive)return[];const tt=TacticalEngine.tile(map,target.x,target.y);return(units||[]).filter(g=>{if(!g.alive||g.id===target.id||g.team!==target.team||distance(g,target)!==1)return false;const gt=TacticalEngine.tile(map,g.x,g.y);return !!gt&&!!tt&&TacticalEngine.canTraverseElevation(gt,tt,g)}).map(guardian=>({guardian,profiles:guardProfiles(guardian)})).filter(x=>x.profiles.length)}
   function createGuardInterception(guardian,methodId){if(!guardian?.alive)throw new Error("Guard Ally requires a living guardian.");const p=guardProfiles(guardian).find(x=>x.id===methodId);if(!p)throw new Error(`Invalid Guard Ally method: ${methodId}`);return{type:"GUARD_ALLY",guardian,methodId:p.id}}
-  function supportSkills({ally,target,canUseSkill}){return SkillDatabase.list(ally.character.skills).filter(s=>{if(s.support!==true||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(ally,s))return false;const r=s.range||{min:1,max:1},d=distance(ally,target);return d>=r.min&&d<=r.max})}
+  function supportSkills({ally,target,canUseSkill}){return SkillDatabase.list(ally.character.skills).filter(s=>{if(s.utilityAction||s.support!==true||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(ally,s))return false;const r=s.range||{min:1,max:1},d=distance(ally,target);return d>=r.min&&d<=r.max})}
   function supportAnchorDistance(ally){let value=1;for(const passive of SkillDatabase.passiveList(ally?.character?.passives)){const n=Number(passive?.supportRules?.allyDistance);if(Number.isFinite(n))value=Math.max(value,n)}return value}
   function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;const anchor=Math.max(Math.abs(ally.x-initiator.x),Math.abs(ally.y-initiator.y));if(anchor>supportAnchorDistance(ally))continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
   function createSupportAction(ally,target,skill,index=0){return{id:`support-${ally.id}-${index}`,role:"SUPPORT",actor:ally,target,skill}}
-  function counterSkills({defender,attacker,canUseSkill}){if(!defender?.alive||!attacker?.alive)return[];return SkillDatabase.list(defender.character.skills).filter(s=>{if(s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(defender,s))return false;const r=s.range||{min:1,max:1},d=distance(defender,attacker);return d>=r.min&&d<=r.max})}
+  function counterSkills({defender,attacker,canUseSkill}){if(!defender?.alive||!attacker?.alive)return[];return SkillDatabase.list(defender.character.skills).filter(s=>{if(s.utilityAction||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(defender,s))return false;const r=s.range||{min:1,max:1},d=distance(defender,attacker);return d>=r.min&&d<=r.max})}
   function createCounterAction(defender,attacker,skill){return{id:`counter-${defender.id}`,role:"COUNTER",actor:defender,target:attacker,skill}}
   function createReaction(type,options={}){if(!["COUNTER","DEFENSE","EVADE"].includes(type))throw new Error(`Unknown reaction type: ${type}`);return{type,...options}}
   function prepareSingleTargetReaction({defender,attacker,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE","EVADE"]}}
@@ -82,7 +82,7 @@ export const BattleResolution=(()=>{
   function execute(c,hooks={}){
     const queue=buildQueue(c),results=[];
     for(const a of queue){
-      if(!a.actor.alive||!a.target.alive)continue;
+      if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
       if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       const resolved=resolveAction(c,a),baseResult=resolved.result;
       globalThis.UnitAnimationEngine?.emitAction?.(a.actor,a.target,a.skill,{role:a.role});

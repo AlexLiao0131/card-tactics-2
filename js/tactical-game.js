@@ -391,6 +391,30 @@
     return variant?{...skill,...variant,id:skill.id,name:variant.name||skill.name,baseSkillId:skill.id,variantId:variant.id,variants:undefined}:skill;
   }
   function skillVariants(skill){return Array.isArray(skill?.variants)?skill.variants:[];}
+  function directVerticalActions(unit){
+    if(!unit?.alive||unit.acted||!globalThis.VerticalMobilityEngine)return[];
+    const tile=TacticalEngine.tile(map,unit.x,unit.y);if(!tile)return[];
+    const current=VerticalMobilityEngine.describe(unit,tile)?.mode||unit.verticalState?.mode||null;
+    const ids=window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills,out=[];
+    for(const parent of SkillDatabase.list(ids||[])){
+      for(const variant of skillVariants(parent)){
+        const skill=resolvedSkill(parent,variant),action=skill?.utilityAction;
+        if(skill.target!=="SELF"||action?.type!=="SET_VERTICAL_MODE"||!canUseSkill(unit,skill))continue;
+        const preview=VerticalMobilityEngine.describe(unit,tile,{mode:action.mode,...(action.options||{})});
+        if(!preview||preview.mode===current)continue;
+        out.push({parent,variant,skill,mode:preview.mode});
+      }
+    }
+    return out;
+  }
+  function executeSelfUtilityVariant(unit,parent,variant){
+    const skill=resolvedSkill(parent,variant);
+    if(skill.target!=="SELF"||!skill.utilityAction)return false;
+    selectedSkillVariant=variant;selectedSkill=skill;
+    commitPendingMove(unit);
+    prepareAttack(unit,unit,skill);
+    return true;
+  }
   function effectiveSkill(attacker,skill){
     let out=skill;
     const passives=SkillDatabase.passiveList(attacker?.character?.passives);
@@ -729,6 +753,9 @@
         const point=capturePointForUnit(selected);
         addActionButton(`佔領｜${point.name}`,()=>executeCapture(selected));
       }
+      directVerticalActions(selected).forEach(({parent,variant})=>{
+        addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant));
+      });
       addActionButton("攻擊",()=>{
         selectedSkill=null;
         mode="attack-menu";
@@ -774,8 +801,10 @@
       addCommandPanelClose();
       skillVariants(selectedSkill).forEach(variant=>{
         addActionButton(variant.name||variant.id,()=>{
+          const parent=selectedSkill;
+          if(executeSelfUtilityVariant(selected,parent,variant))return;
           selectedSkillVariant=variant;
-          selectedSkill=resolvedSkill(selectedSkill,variant);
+          selectedSkill=resolvedSkill(parent,variant);
           mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";
           render();
         });

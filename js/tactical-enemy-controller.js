@@ -21,7 +21,7 @@
       const actorLabel=unit=>isNeutral(unit)?"野怪":"AI";
 
       const singleSkills=actor=>ctx.skillList(actor).filter(skill=>
-        skill.target==="ENEMY"&&ctx.targetType(skill)==="SINGLE"&&ctx.canUseSkill(actor,skill)
+        !skill.utilityAction&&skill.target==="ENEMY"&&ctx.targetType(skill)==="SINGLE"&&ctx.canUseSkill(actor,skill)
       );
 
       const targetEntities=actor=>{
