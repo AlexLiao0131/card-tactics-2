@@ -32,6 +32,7 @@ export const UnitRuntimeEngine=(()=>{
     const sourceCharacter=CHARACTERS[characterId];
     if(!sourceCharacter)return null;
     const character=JSON.parse(JSON.stringify(sourceCharacter));
+    globalThis.StatFormulaEngine?.initializeCharacter?.(character);
     const unit={id,team,character,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
       hp:character.combat.hp,alive:true,moved:false,acted:false,waited:false,
       skillResources:createSkillResources(character),effects:[],grantedSkills:[]};

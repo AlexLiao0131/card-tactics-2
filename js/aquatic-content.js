@@ -4,11 +4,11 @@
   Object.assign(EQUIPMENT,{
     nereia_royal_trident:{
       id:"nereia_royal_trident",name:"王海三叉戟",kind:"WEAPON",weaponKind:"TRIDENT",
-      attackType:"PIERCE",element:"NONE",affixes:[]
+      attackType:"PIERCE",element:"NONE",affixes:[],combatModifiers:{atk:6,matk:10}
     },
     nereia_scale_battle_suit:{
       id:"nereia_scale_battle_suit",name:"深海鱗甲戰衣",kind:"ARMOR",
-      type:"MEDIUM",types:["MEDIUM"],element:"NONE",affixes:[]
+      type:"MEDIUM",types:["MEDIUM"],element:"NONE",affixes:[],combatModifiers:{hp:90,def:27,mdef:6}
     }
   });
 
@@ -46,9 +46,9 @@
 
   const raw={
     id:"nereia",name:"涅瑞雅",title:"深海女王",race:"AQUATIC",faction:F,
-    visualId:"nereia_default",archetype:"AQUATIC_DEFENDER",genetics:{grade:"4V"},
+    visualId:"nereia_default",archetype:"AQUATIC_DEFENDER",genetics:{grade:"4V"},statModel:"FORMULA",
     attributes:{str:20,agi:14,int:20,wil:20,vit:20,luk:12},
-    combat:{hp:300,atk:100,matk:100,def:82,mdef:96,move:4},
+    combat:{move:4},
     armorId:"nereia_scale_battle_suit",weaponIds:{trident:"nereia_royal_trident"},equipmentIds:[],
     terrainTraits:["AQUATIC","AMPHIBIOUS","DIVING"],
     movementProfile:{waterCost:2/3},

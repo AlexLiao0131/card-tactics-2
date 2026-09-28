@@ -25,24 +25,34 @@ export const EffectEngine=(()=>{
   }
   function syncModifiers(unit){
     if(!unit?.character)return;
+    if(!unit.character.statProfile)globalThis.StatFormulaEngine?.initializeCharacter?.(unit.character);
     if(!unit._effectBaseCombat)unit._effectBaseCombat=clone(unit.character.combat||{});
     if(!unit._effectBaseAttributes)unit._effectBaseAttributes=clone(unit.character.attributes||{});
     if(!unit._effectBaseModifiers)unit._effectBaseModifiers=clone(unit.character.modifiers||{});
-    unit.character.combat=clone(unit._effectBaseCombat);
+
     unit.character.attributes=clone(unit._effectBaseAttributes);
     unit.character.modifiers=clone(unit._effectBaseModifiers);
-    let damageTakenMultiplier=1,guardMultiplier=1;
+
     for(const e of state(unit)){
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(unit.character.attributes,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))unit.character.attributes[k]=Number(unit.character.attributes[k]||0)+Number(v||0);
+    }
+
+    unit.character.combat=globalThis.StatFormulaEngine?.derive
+      ?StatFormulaEngine.derive(unit.character,unit.character.attributes,unit.character.statProfile)
+      :clone(unit._effectBaseCombat);
+
+    let damageTakenMultiplier=1,guardMultiplier=1;
+    for(const e of state(unit)){
       const m=e.modifiers||{};
-      for(const key of ["atk","matk","def","mdef","move"])if(m[key]!=null)unit.character.combat[key]=Number(unit.character.combat[key]||0)+Number(m[key]);
+      for(const key of ["hp","atk","matk","def","mdef","move"])if(m[key]!=null)unit.character.combat[key]=Number(unit.character.combat[key]||0)+Number(m[key]);
       for(const key of ["accuracy","evasion","crit","speed"])if(m[key]!=null)unit.character.modifiers[key]=Number(unit.character.modifiers[key]||0)+Number(m[key]);
       if(m.damageTakenMultiplier!=null)damageTakenMultiplier*=Number(m.damageTakenMultiplier);
       if(m.guardMultiplier!=null)guardMultiplier*=Number(m.guardMultiplier);
     }
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
+    unit.hp=Math.min(Number(unit.hp||0),maxHp(unit));
     window.UnitRuntimeEngine?.syncMana?.(unit);
   }
   function addEffect(target,effect,source){
@@ -51,7 +61,7 @@ export const EffectEngine=(()=>{
     state(target).push(entry);syncModifiers(target);return entry;
   }
   function attributeView(unit){
-    const base={...(unit?.character?.attributes||{})};
+    const base={...(unit?._effectBaseAttributes||unit?.character?.statProfile?.baseAttributes||unit?.character?.attributes||{})};
     for(const e of state(unit)){
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(base,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))base[k]=Number(base[k]||0)+Number(v||0);

@@ -21,7 +21,17 @@ export const PACK_PRODUCTS={
   SERAPHINA_FIXED:{id:"SERAPHINA_FIXED",name:"Seraphina 補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄 Seraphina HERO，其餘固定內容待後續設計。",cards:["seraphina_card"]},
   SEA_WORLD_FIXED:{id:"SEA_WORLD_FIXED",name:"海世界補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄深海女王・涅瑞雅 HERO，第二張擴充 HERO 待設計完成後加入。",cards:["nereia_card"]}
 };
-export const PackDatabase=(()=>({get:id=>CARD_GROUPS[id]||null,list:()=>Object.values(CARD_GROUPS),cards:id=>(CARD_GROUPS[id]?.cards||[]).map(cardId=>CardDatabase.get(cardId)).filter(Boolean),product:id=>PACK_PRODUCTS[id]||null,products:({season}={})=>Object.values(PACK_PRODUCTS).filter(p=>!season||p.season===season||p.season==="PERMANENT")}))();
+export const PackDatabase=(()=>{
+  const resolveCard=id=>globalThis.CardDatabase?.get?.(id)||globalThis.CARDS?.[id]||null;
+  const resolveIds=ids=>(ids||[]).map(resolveCard).filter(Boolean);
+  function get(id){return CARD_GROUPS[id]||null}
+  function list(){return Object.values(CARD_GROUPS)}
+  function cards(id){return resolveIds(CARD_GROUPS[id]?.cards||[])}
+  function product(id){return PACK_PRODUCTS[id]||null}
+  function productCards(id){const pack=product(id);return pack?.cards?resolveIds(pack.cards):[]}
+  function products({season}={}){return Object.values(PACK_PRODUCTS).filter(p=>!season||p.season===season||p.season==="PERMANENT")}
+  return Object.freeze({get,list,cards,product,productCards,products});
+})();
 globalThis.CARD_GROUPS=CARD_GROUPS;
 globalThis.PACK_PRODUCTS=PACK_PRODUCTS;
 globalThis.PackDatabase=PackDatabase;
