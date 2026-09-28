@@ -10,6 +10,7 @@ export const COMPANIONS={
     occupiesCardSlot:false,
     occupiesTile:true,
     participatesInTurn:true,
+    readyOnDeploy:true,
     canAttack:false,
     canCapture:false,
     countsForObjectives:false,
@@ -49,10 +50,14 @@ export const CompanionDatabase=(()=>{
     unit.countsForObjectives=companion.countsForObjectives===true;
     unit.canCapture=companion.canCapture===true;
     unit.canAttack=companion.canAttack===true;
+    const tile=unit?._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;
+    if(tile&&globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);
     if(!owner){unit.ownerUnitId=null;return null;}
     owner.companionRuntime??={};
+    const firstBinding=owner.companionRuntime[companion.id]!==unit;
     owner.companionRuntime[companion.id]=unit;
     unit.ownerUnitId=owner.id;
+    if(firstBinding&&companion.readyOnDeploy===true){unit.moved=false;unit.acted=false;unit.waited=false;}
     return owner;
   }
   function reconcileUnits(units=[]){

@@ -58,16 +58,13 @@
   }
 
   function grantInitialGeneratedCards(){
-    if(!cardState?.zones?.hand)return[];
-    const granted=[];
+    if(!cardState?.zones?.hand||!globalThis.CardPhaseEngine?.grantGeneratedCards)return[];
+    const ids=[];
     for(const unit of units||[]){
       if(!unit?.alive||unit.team!==TEAM.PLAYER)continue;
-      for(const cardId of unit.character?.generatedCardsOnDeploy||[]){
-        const card=CardDatabase.get(cardId);if(!card)continue;
-        cardState.zones.hand.push(card.id);granted.push(card);
-      }
+      ids.push(...(unit.character?.generatedCardsOnDeploy||[]));
     }
-    return granted;
+    return CardPhaseEngine.grantGeneratedCards(cardState,ids);
   }
 
   function createUnit(id,team,characterId,x,y){

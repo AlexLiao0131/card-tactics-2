@@ -181,24 +181,37 @@ export class UnitRenderer{
       {diameter:.78,thickness:.045,tessellation:28},
       this.scene
     );
-    ring.isPickable=false;
-    ring.setEnabled(false);
-    return ring;
+    const stem=BABYLON.MeshBuilder.CreateCylinder(
+      `unit-vertical-stem-${unit.id}`,
+      {height:1,diameter:.045,tessellation:10},
+      this.scene
+    );
+    ring.isPickable=false;stem.isPickable=false;
+    ring.setEnabled(false);stem.setEnabled(false);
+    return{
+      ring,stem,
+      dispose:()=>{ring.dispose();stem.dispose();}
+    };
   }
 
   updateVerticalCue(entry,unit){
     const cue=entry?.verticalCue;if(!cue)return;
     const mode=String(unit?.verticalMode||"");
     const visible=mode==="DIVING"||mode==="FLYING";
-    cue.setEnabled(visible);
+    cue.ring.setEnabled(visible);cue.stem.setEnabled(false);
     if(!visible)return;
-    cue.material=mode==="DIVING"?this.materials.submerged:this.materials.airborne;
-    cue.position.set(
-      Number(unit.x||0)*TILE_SIZE,
-      Number(unit.verticalSurfaceZ??unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+.055,
-      Number(unit.y||0)*TILE_SIZE
-    );
-    cue.scaling.setAll(mode==="DIVING"?1.06:.88);
+    const material=mode==="DIVING"?this.materials.submerged:this.materials.airborne;
+    const surfaceWorld=Number(unit.verticalSurfaceZ??unit.renderZ??unit.z??0)*ELEVATION_HEIGHT;
+    const unitWorld=Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT;
+    cue.ring.material=material;cue.stem.material=material;
+    cue.ring.position.set(Number(unit.x||0)*TILE_SIZE,surfaceWorld+.055,Number(unit.y||0)*TILE_SIZE);
+    cue.ring.scaling.setAll(mode==="DIVING"?1.06:.88);
+    const span=unitWorld-surfaceWorld;
+    if(Math.abs(span)>.08){
+      cue.stem.setEnabled(true);
+      cue.stem.position.set(Number(unit.x||0)*TILE_SIZE,surfaceWorld+span/2,Number(unit.y||0)*TILE_SIZE);
+      cue.stem.scaling.set(1,Math.abs(span),1);
+    }
   }
 
   createBillboard(unit,definition){
