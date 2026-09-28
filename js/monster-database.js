@@ -1,3 +1,16 @@
+export const MONSTERS={
+ water_lurker:{
+  id:"water_lurker",
+  characterId:"water_lurker",
+  family:"AQUATIC",
+  aiProfile:"WILD_WATER",
+  habitat:["WATER"],
+  traits:["AQUATIC","PULL_PREDATOR"],
+  spawnRule:{terrain:"WATER",minWaterDepth:1,preferDeepest:true,count:1},
+  encounterRewards:[{type:"BATTLE_CARD",cardId:"flood_card",count:1,chance:1}]
+ }
+};
+
 export const MonsterDatabase=(()=>{
  const monsters=new Map();
  function normalize(d){if(!d?.id||!d?.characterId)throw new Error("MonsterDatabase.register requires id and characterId.");return Object.freeze({id:String(d.id),characterId:String(d.characterId),family:String(d.family||"MONSTER"),habitat:Object.freeze([...(d.habitat||[])]),traits:Object.freeze([...(d.traits||[])]),aiProfile:String(d.aiProfile||"WILD"),spawnRule:d.spawnRule?Object.freeze(JSON.parse(JSON.stringify(d.spawnRule))):null,encounterRewards:Object.freeze([...(d.encounterRewards||[])].map(r=>Object.freeze({...r})))})}
@@ -5,6 +18,7 @@ export const MonsterDatabase=(()=>{
  function get(id){return monsters.get(String(id))||null}
  function forCharacter(id){return [...monsters.values()].find(m=>m.characterId===id)||null}
  function list(){return [...monsters.values()]}
+ Object.values(MONSTERS).forEach(register);
  return Object.freeze({register,get,forCharacter,list});
 })();
 export const EncounterEngine=(()=>{
@@ -25,5 +39,6 @@ export const EncounterEngine=(()=>{
  function habitatAllows(u,t){if(!u||!t)return false;const m=MonsterDatabase.get(u.monsterId)||MonsterDatabase.forCharacter(u.character?.id);return!m||!(m.habitat||[]).length?true:habitatMatches(t,m,{})}
  return Object.freeze({TEAM_NEUTRAL,TRIGGER,create,bindRuntime,trigger,spawnInitial,habitatAllows});
 })();
+globalThis.MONSTERS=MONSTERS;
 globalThis.MonsterDatabase=MonsterDatabase;
 globalThis.EncounterEngine=EncounterEngine;

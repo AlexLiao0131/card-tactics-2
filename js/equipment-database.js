@@ -14,6 +14,21 @@ export const EQUIPMENT={
   beast_dual_daggers:{id:"beast_dual_daggers",name:"雙匕首",kind:"WEAPON",weaponKind:"KNIFE",attackType:"SLASH",element:"NONE",affixes:[]},
   beast_poison_throwing_knife:{id:"beast_poison_throwing_knife",name:"淬毒投擲刀",kind:"WEAPON",weaponKind:"KNIFE",attackType:"PIERCE",element:"NONE",affixes:[]},
   angel_longbow:{id:"angel_longbow",name:"天使長弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
+
+  ophi_elven_bow:{id:"ophi_elven_bow",name:"奧菲的精靈長弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
+  ophi_ranger_sword:{id:"ophi_ranger_sword",name:"精靈遊俠劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"ophi_sword_parry",method:"PARRY",name:"遊俠劍招架",vs:{SLASH:{chance:70},PIERCE:{chance:65},SHOT:{chance:15},STRIKE:{chance:0},MAGIC:{chance:0}}}]},
+  colin_war_hammer:{id:"colin_war_hammer",name:"寇林的戰錘",kind:"WEAPON",weaponKind:"HAMMER",attackType:"STRIKE",element:"NONE",affixes:[]},
+  colin_full_body_shield:{id:"colin_full_body_shield",name:"寇林的全身大盾",kind:"ACCESSORY",affixes:[],defenseProfiles:[{id:"colin_full_body_guard",method:"GUARD",name:"全身大盾格擋",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.35},PIERCE:{damageMultiplier:.40},SHOT:{damageMultiplier:.25},STRIKE:{damageMultiplier:.55},MAGIC:{damageMultiplier:.80}}}]},
+
+  church_training_sword:{id:"church_training_sword",name:"教團訓練劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"church_sword_parry",method:"PARRY",name:"長劍招架",vs:{SLASH:{chance:65},PIERCE:{chance:60},SHOT:{chance:10},STRIKE:{chance:0},MAGIC:{chance:0}}}]},
+  church_greatsword:{id:"church_greatsword",name:"聖殿雙手劍",kind:"WEAPON",weaponKind:"GREATSWORD",attackType:"SLASH",element:"HOLY",affixes:[],defenseProfiles:[{id:"church_greatsword_parry",method:"PARRY",name:"雙手劍招架",vs:{SLASH:{chance:75},PIERCE:{chance:70},SHOT:{chance:15},STRIKE:{chance:10},MAGIC:{chance:0}}}]},
+  church_saint_greatsword:{id:"church_saint_greatsword",name:"常駐神聖附魔雙手劍",kind:"WEAPON",weaponKind:"GREATSWORD",attackType:"SLASH",element:"HOLY",affixes:[],defenseProfiles:[{id:"saint_greatsword_parry",method:"PARRY",name:"聖劍招架",vs:{SLASH:{chance:85},PIERCE:{chance:80},SHOT:{chance:25},STRIKE:{chance:15},MAGIC:{chance:0}}}]},
+  church_heavy_plate:{id:"church_heavy_plate",name:"教團重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"NONE",affixes:[]},
+  church_templar_plate:{id:"church_templar_plate",name:"聖殿騎士重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"HOLY",affixes:[]},
+  church_bishop_robe:{id:"church_bishop_robe",name:"主教法衣",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"HOLY",affixes:[]},
+
+  seraphina_claws:{id:"seraphina_claws",name:"血族利爪",kind:"WEAPON",weaponKind:"CLAW",attackType:"SLASH",element:"DARK",affixes:[]},
+
   forest_claw:{id:"forest_claw",name:"利爪",kind:"WEAPON",attackType:"SLASH",element:"NONE",affixes:[]},training_club:{id:"training_club",name:"訓練木棒",kind:"WEAPON",attackType:"STRIKE",element:"NONE",affixes:[]},standard_sword:{id:"standard_sword",name:"制式長劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"standard_sword_parry",method:"PARRY",name:"長劍招架",vs:{SLASH:{chance:70},PIERCE:{chance:65},SHOT:{chance:15},STRIKE:{chance:0},MAGIC:{chance:0}}}]},blessed_sword:{id:"blessed_sword",name:"精靈祝福長劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"blessed_sword_parry",method:"PARRY",name:"祝福長劍招架",vs:{SLASH:{chance:80},PIERCE:{chance:75},SHOT:{chance:30},STRIKE:{chance:10},MAGIC:{chance:0}}}]},
   livia_light_armor:{id:"livia_light_armor",name:"輕型防具",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"NONE",affixes:[]},
   nereia_scale_battle_suit:{id:"nereia_scale_battle_suit",name:"深海鱗甲戰衣",kind:"ARMOR",type:"MEDIUM",types:["MEDIUM"],element:"NONE",affixes:[]},

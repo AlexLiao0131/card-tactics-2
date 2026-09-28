@@ -59,7 +59,32 @@ export const SKILLS={
   angel_wing_control:{id:"angel_wing_control",name:"翼行控制",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"UNLIMITED"},variants:[
     {id:"ANGEL_LAND",name:"降落",utilityAction:{type:"SET_VERTICAL_MODE",mode:"GROUND",consumeTurn:false}},
     {id:"ANGEL_TAKEOFF",name:"起飛",utilityAction:{type:"SET_VERTICAL_MODE",mode:"FLYING",consumeTurn:false}}
-  ]}
+  ]},
+
+  ophi_elven_shot:{id:"ophi_elven_shot",name:"精靈弓射",category:"ATTACK",weapon:"elven_bow",power:1.1,range:{min:2,max:5},attackType:"SHOT",element:"INHERIT",speed:5,target:"ENEMY",support:true,resource:{type:"UNLIMITED"},affixes:[]},
+  ophi_eagle_arc_shot:{id:"ophi_eagle_arc_shot",name:"鷹眼曲射",category:"ATTACK",weapon:"elven_bow",power:1.25,range:{min:3,max:8},attackType:"SHOT",element:"INHERIT",speed:-10,target:"ENEMY",support:false,resource:{type:"USES",max:2},trajectory:"ARC",requiresCompanionVision:"ophi_eagle",affixes:["ARC_SHOT"]},
+  ophi_healing_song:{id:"ophi_healing_song",name:"治癒歌聲",category:"MAGIC",power:0,range:{min:0,max:3},target:"ALLY",targetType:"AOE",radius:2,speed:-5,support:false,resource:{type:"USES",max:2},healingOverTime:{amount:20,duration:3,interval:"ROUND_START"},soundMagic:true,affixes:["HEAL_OVER_TIME"]},
+  ophi_listen_to_forest:{id:"ophi_listen_to_forest",name:"聆聽森語",category:"SPECIAL",power:0,range:{min:0,max:4},target:"SELF",support:false,resource:{type:"UNLIMITED"},informationSkill:true,affixes:["FOREST_SENSE"]},
+  colin_full_shield_defense:{id:"colin_full_shield_defense",name:"大盾防禦",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",speed:-5,support:false,resource:{type:"UNLIMITED"},requiresEquipment:"colin_full_body_shield",stance:{type:"FULL_SHIELD_DEFENSE",protectsBehind:true,blocksEnemyRoute:true,enhancedGuard:true},affixes:["FULL_SHIELD_DEFENSE"]},
+  colin_armor_breaking_strike:{id:"colin_armor_breaking_strike",name:"破甲打擊",category:"ATTACK",weapon:"colin_hammer",power:1.15,range:{min:1,max:1},attackType:"STRIKE",element:"INHERIT",speed:-10,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:["ARMOR_BREAK"],statusEffects:[{type:"DEF_DOWN",value:20,duration:2}],postEffects:[{type:"KNOCKBACK",distance:2}]},
+
+  church_slash:{id:"church_slash",name:"騎士斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"}},
+  church_heavy_slash:{id:"church_heavy_slash",name:"重劍斬擊",category:"ATTACK",weapon:"greatsword",power:1.1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:-5,target:"ENEMY",support:false,resource:{type:"UNLIMITED"}},
+  church_holy_bolt:{id:"church_holy_bolt",name:"聖光術",category:"MAGIC",weapon:"staff",power:1,range:{min:1,max:4},attackType:"MAGIC",element:"HOLY",speed:0,target:"ENEMY",support:true,resource:{type:"UNLIMITED"}},
+  templar_holy_slash:{id:"templar_holy_slash",name:"聖光斬",category:"ATTACK",weapon:"greatsword",power:1.2,range:{min:1,max:1},attackType:"SLASH",element:"HOLY",defenseStat:"MDEF",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"}},
+  templar_charge:{id:"templar_charge",name:"衝鋒",category:"ATTACK",weapon:"greatsword",power:1.15,range:{min:2,max:4},attackType:"SLASH",element:"INHERIT",speed:5,target:"ENEMY",support:false,resource:{type:"USES",max:3},approach:{type:"CHARGE",stopDistance:1}},
+  templar_holy_shield:{id:"templar_holy_shield",name:"聖盾",category:"MAGIC",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"USES",max:2},effects:[{type:"BUFF",id:"HOLY_SHIELD",classification:"POSITIVE",duration:2,modifiers:{damageTakenMultiplier:.65,guardMultiplier:.75},collision:{kind:"SHIELD",solid:true,height:3,hardness:4,response:"STOP",impactMultiplier:1.35,priority:100}}]},
+  templar_healing:{id:"templar_healing",name:"治療術",category:"MAGIC",power:0,range:{min:1,max:3},target:"ALLY_OR_ENEMY",support:false,resource:{type:"USES",max:3},relationEffects:[{relation:"ALLY",type:"HEAL",amount:65},{relation:"SELF",type:"HEAL",amount:65},{relation:"ENEMY",type:"MAGIC_DAMAGE",power:.8,element:"HOLY",traitMultipliers:{UNDEAD:2}}]},
+  saint_heal:{id:"saint_heal",name:"治癒祈禱",category:"MAGIC",power:0,range:{min:1,max:4},target:"ALLY",support:false,resource:{type:"USES",max:4},effects:[{type:"HEAL",amount:95}]},
+  saint_dispel:{id:"saint_dispel",name:"淨化祈禱",category:"MAGIC",power:0,range:{min:1,max:4},target:"ALLY",support:false,resource:{type:"USES",max:3},effects:[{type:"DISPEL",classification:"NEGATIVE"}]},
+  saint_blessing:{id:"saint_blessing",name:"祝福",category:"MAGIC",power:0,range:{min:1,max:4},target:"ALLY",support:false,resource:{type:"USES",max:3},effects:[{type:"BUFF",id:"SAINT_BLESSING",classification:"POSITIVE",duration:2,modifiers:{atk:10,matk:10,def:10,mdef:10}}]},
+
+  seraphina_rending_claw:{id:"seraphina_rending_claw",name:"裂血爪",category:"ATTACK",weapon:"claw",power:1.15,range:{min:1,max:1},attackType:"SLASH",element:"DARK",speed:10,target:"ENEMY",support:false,resource:{type:"UNLIMITED"}},
+  seraphina_blood_drain:{id:"seraphina_blood_drain",name:"吸血",category:"SPECIAL",power:0,range:{min:1,max:1},target:"ALLY_OR_ENEMY",support:false,resource:{type:"USES",max:3},bloodAction:{damage:45,healRatio:1,manaRatio:.5,restoresGenome:{str:20,agi:20,int:20,wil:20,vit:20,luk:20},duration:3,copySkill:true,copyDuration:3}},
+  seraphina_blood_burst:{id:"seraphina_blood_burst",name:"血爆",category:"ATTACK",weapon:"claw",power:1.4,range:{min:1,max:1},attackType:"SLASH",element:"DARK",speed:5,target:"ENEMY",support:false,resource:{type:"USES",max:2}},
+  seraphina_regeneration:{id:"seraphina_regeneration",name:"血之再生",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,resource:{type:"USES",max:2},effects:[{type:"HEAL",amount:80}]},
+
+  water_tentacle:{id:"water_tentacle",name:"觸手拖曳",category:"ATTACK",weapon:"claw",power:.95,range:{min:1,max:2},attackType:"STRIKE",element:"WATER",speed:0,target:"ENEMY",support:false,resource:{type:"UNLIMITED"},affixes:[],postEffects:[{type:"PULL",distance:2}]}
 };
 export const PASSIVES={
   GUARDIAN_INSTINCT:{id:"GUARDIAN_INSTINCT",name:"守護本能",category:"PASSIVE",defenseProfiles:[{id:"guardian_instinct_guard",method:"GUARD",name:"守護本能",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.70},PIERCE:{damageMultiplier:.75},SHOT:{damageMultiplier:.70},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.90}}}]},
@@ -80,7 +105,13 @@ export const PASSIVES={
   DEEP_SEA_PHYSIQUE:{id:"DEEP_SEA_PHYSIQUE",name:"深海體魄",category:"PASSIVE",description:"能承受深海水壓的異常強韌體魄。受到近戰傷害降低 30%。",damageTakenRules:[{attackClass:"MELEE",multiplier:.70}]},
   SEA_SOVEREIGN:{id:"SEA_SOVEREIGN",name:"王者",category:"PASSIVE",description:"海世界女王的支配權。可直接控制深潭巨章，並在不擊敗牠的情況下取得其洪水卡牌。",encounterDominion:{monsterIds:["water_lurker"],fromTeams:["N"],grantEncounterRewards:true}},
   FELINE_BODY:{id:"FELINE_BODY",name:"貓族體態",category:"PASSIVE",description:"靈活的貓族身體能直接攀上兩層高差，並大幅減輕墜落傷害。",movementRules:{maxClimb:2},fallRules:{safeDrop:2,damageMultiplier:.5}},
-  CAT_OPENING_STEALTH:{id:"CAT_OPENING_STEALTH",name:"夜行潛伏",category:"PASSIVE",description:"戰鬥開始時進入潛行。潛行無法阻止範圍攻擊，主動出手或被近距離發現時解除。",openingEffects:[{id:"STEALTH",type:"STEALTH",classification:"POSITIVE",detectionRange:1}]}
+  CAT_OPENING_STEALTH:{id:"CAT_OPENING_STEALTH",name:"夜行潛伏",category:"PASSIVE",description:"戰鬥開始時進入潛行。潛行無法阻止範圍攻擊，主動出手或被近距離發現時解除。",openingEffects:[{id:"STEALTH",type:"STEALTH",classification:"POSITIVE",detectionRange:1}]},
+
+  ELVEN_PATHFINDER:{id:"ELVEN_PATHFINDER",name:"山林之民",category:"PASSIVE",description:"精靈在森林與山地如履平地。",terrainTraits:["FOREST_WALK","MOUNTAIN_WALK"]},
+  FOREST_LANGUAGE:{id:"FOREST_LANGUAGE",name:"森語",category:"PASSIVE",description:"以聽覺感知魔力，並能聽見植物的語言。"},
+  EAGLE_SHARED_VISION:{id:"EAGLE_SHARED_VISION",name:"鷹眼共享",category:"PASSIVE",description:"與老鷹夥伴共享視覺，作為超遠距離曲射的觀測來源。"},
+  STRONG_PHYSIQUE:{id:"STRONG_PHYSIQUE",name:"強健體魄",category:"PASSIVE",description:"異常強韌的體格使寇林不會被敵方擊退。",immunities:["KNOCKBACK"]},
+  CHURCH_GUARDIAN:{id:"CHURCH_GUARDIAN",name:"聖殿援護",category:"PASSIVE",defenseProfiles:[{id:"church_guard_ally",method:"GUARD",name:"聖殿援護",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.55},PIERCE:{damageMultiplier:.60},SHOT:{damageMultiplier:.55},STRIKE:{damageMultiplier:.70},MAGIC:{damageMultiplier:.80}}}]}
 };
 export const SkillDatabase=(()=>{
   function get(id){const skill=SKILLS[id];if(!skill)throw new Error("Unknown skill: "+id);return skill}
