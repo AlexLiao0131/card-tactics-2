@@ -28,6 +28,11 @@ export const DeathLifecycleEngine=(()=>{
         EncounterRewardEngine.resolveDefeat(unit,source,cause,{pushLog:ctx.pushLog});
       }
 
+      if(window.RewardEngine?.resolveDefeat){
+        const reward=RewardEngine.resolveDefeat(unit,source,cause);
+        if(reward?.ok)ctx.pushLog(`擊破獎勵｜${unit.character.name}｜Gold +${reward.amount}｜目前 ${reward.total} G。`,"SYSTEM");
+      }
+
       const companions=globalThis.UnitRuntimeEngine?.despawnCompanionsForOwner?.(unit)||[];
       for(const companion of companions){
         ctx.pushLog(`${companion.character?.name||"伴隨單位"} 因 ${unit.character.name} 離場而撤出戰場。`,"SYSTEM");

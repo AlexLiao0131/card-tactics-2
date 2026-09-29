@@ -4,29 +4,18 @@ export class ShellUI{
     this.runtime=runtime;this.renderer=renderer;this.screens=[...document.querySelectorAll(".game-screen")];
     this.deck=[...globalThis.DeckEngine.getActive()];this.activeGroup=globalThis.PackDatabase.list()[0]?.id||null;
     this.deckReturn="menuScreen";this.deckCanDeploy=false;this.activeShopPack=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})?.[0]?.id||null;
+    this.shopMode="PACK";this.prepSelectedKey=null;
   }
-  show(id){
-    this.screens.forEach(s=>s.classList.toggle("active",s.id===id));
-    if(id==="battleScreen")requestAnimationFrame(()=>{this.renderer.resize();this.renderer.resetView();window.dispatchEvent(new CustomEvent("cardtactics:battle-screen-enter"))});
-  }
+  show(id){this.screens.forEach(s=>s.classList.toggle("active",s.id===id));if(id==="battleScreen")requestAnimationFrame(()=>{this.renderer.resize();this.renderer.resetView();window.dispatchEvent(new CustomEvent("cardtactics:battle-screen-enter"))});}
   bind(){
-    $("pressStart").onclick=()=>this.show("menuScreen");
-    $("menuCampaign").onclick=()=>this.show("campaignScreen");
-    $("menuVersus").onclick=()=>{this.updateVersusMeta();this.show("versusScreen")};
-    $("menuCards").onclick=()=>this.openDeck({from:"menuScreen",deploy:false});
-    $("menuShop").onclick=()=>{this.renderShop();this.show("shopScreen")};
-    $("menuSave").onclick=()=>this.show("saveScreen");$("menuSettings").onclick=()=>this.show("settingsScreen");
+    $("pressStart").onclick=()=>this.show("menuScreen");$("menuCampaign").onclick=()=>this.show("campaignScreen");$("menuVersus").onclick=()=>{this.updateVersusMeta();this.show("versusScreen")};$("menuCards").onclick=()=>this.openDeck({from:"menuScreen",deploy:false});$("menuShop").onclick=()=>{this.renderShop();this.show("shopScreen")};$("menuSave").onclick=()=>this.show("saveScreen");$("menuSettings").onclick=()=>this.show("settingsScreen");
     document.querySelectorAll("[data-back]").forEach(b=>b.onclick=()=>this.show(b.dataset.back));
-    $("campaignPrototype").onclick=()=>this.openDeck({from:"campaignScreen",deploy:true});
-    $("versusAi").onclick=()=>this.openDeck({from:"versusScreen",deploy:true});
-    $("versusMapSize").onchange=()=>this.updateVersusMeta();
-    $("deckBack").onclick=()=>this.show(this.deckReturn);
-    $("autoDeck").onclick=()=>this.replaceDeck(globalThis.DeckEngine.autoBuild(this.activeGroup,{size:15}));
-    $("applyDeck").onclick=()=>{globalThis.DeckEngine.setActive(this.deck);this.renderDeck()};
+    $("campaignPrototype").onclick=()=>this.openDeck({from:"campaignScreen",deploy:true});$("versusAi").onclick=()=>this.openDeck({from:"versusScreen",deploy:true});$("versusMapSize").onchange=()=>this.updateVersusMeta();
+    $("deckBack").onclick=()=>this.show(this.deckReturn);$("autoDeck").onclick=()=>this.replaceDeck(globalThis.DeckEngine.autoBuild(this.activeGroup,{size:15}));$("applyDeck").onclick=()=>{globalThis.DeckEngine.setActive(this.deck);this.renderDeck()};
     $("saveDeck").onclick=()=>{const n=prompt("牌組名稱",globalThis.PackDatabase.get(this.activeGroup)?.name||"我的牌組");if(n)globalThis.DeckEngine.save(n,this.deck)};
     $("loadDeck").onclick=()=>{const names=Object.keys(globalThis.DeckEngine.saved());if(!names.length){alert("目前沒有已儲存牌組。");return}const n=prompt(`輸入牌組名稱：\n${names.join("\n")}`,names[0]);if(n)this.replaceDeck(globalThis.DeckEngine.load(n))};
-    $("deployDeck").onclick=()=>this.deploy();
-    $("battleBack").onclick=()=>this.show("menuScreen");
+    $("deployDeck").onclick=()=>this.openPreparation();$("prepBack").onclick=()=>this.show("deckScreen");$("startPreparedBattle").onclick=()=>this.startBattle();$("battleBack").onclick=()=>this.show("menuScreen");
+    document.querySelectorAll("[data-shop-mode]").forEach(b=>b.onclick=()=>{this.shopMode=b.dataset.shopMode;this.renderShop()});
     this.updateVersusMeta();this.show("titleScreen");
   }
   cardLabel(c){const type=c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL");return`<strong>${c.name}</strong><span>${type}　💎 ${c.cost}</span>`}
@@ -35,19 +24,22 @@ export class ShellUI{
   renderGroup(){const cards=globalThis.PackDatabase.cards(this.activeGroup);$("packCards").innerHTML=cards.map(c=>{const count=this.deck.filter(id=>id===c.id).length,chosen=count>0;return`<button class="collection-card ${chosen?"chosen":""}" data-card="${c.id}">${this.cardLabel(c)}<em>${c.unitType==="HERO"?(chosen?"HERO 已加入":"加入牌組"):(chosen?`牌組 ×${count}｜再加入`:"加入牌組")}</em></button>`}).join("");document.querySelectorAll("[data-card]").forEach(b=>b.onclick=()=>{const c=globalThis.CardDatabase.get(b.dataset.card);if(c?.unitType==="HERO"&&this.deck.includes(c.id))return;this.deck.push(c.id);this.renderDeck();this.renderGroup()})}
   renderDeck(){$("deckCount").textContent=`目前牌組 ${this.deck.length} 張`;$("deckList").innerHTML=this.deck.length?this.deck.map((id,i)=>`<button class="deck-row" data-remove="${i}">${globalThis.CardDatabase.get(id)?.name||id}<span>移除</span></button>`).join(""):`<div class="deck-empty">尚未加入卡牌</div>`;document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{this.deck.splice(Number(b.dataset.remove),1);this.renderDeck();this.renderGroup()});$("deployDeck").hidden=!this.deckCanDeploy;$("deployDeck").disabled=this.deck.length===0}
   replaceDeck(ids){this.deck.splice(0,this.deck.length,...globalThis.DeckEngine.normalize(ids));this.renderDeck();this.renderGroup()}
-  deploy(){
-    globalThis.DeckEngine.setActive(this.deck);
-    const versus=this.deckReturn==="versusScreen";
-    globalThis.CardTacticsBattleSetup={stageId:versus?"versus_core_battle":"prototype_battle",deck:[...this.deck],...(versus?{mapSize:$("versusMapSize").value||"MEDIUM",seed:globalThis.MapGenerator.randomSeed()}: {})};
-    this.runtime.resetBattle();this.show("battleScreen");
+  openPreparation(){globalThis.DeckEngine.setActive(this.deck);ItemInventoryEngine.syncPreparationsForDeck(this.deck);const entries=ItemInventoryEngine.deckEntries(this.deck);this.prepSelectedKey=entries[0]?.key||null;this.renderPreparation();this.show("preparationScreen")}
+  renderPreparation(){
+    const entries=ItemInventoryEngine.deckEntries(this.deck),selected=entries.find(e=>e.key===this.prepSelectedKey)||entries[0]||null;if(selected)this.prepSelectedKey=selected.key;
+    $("prepGold").textContent=`Gold ${ItemInventoryEngine.gold()} G`;$("prepSummary").textContent=`角色卡 ${entries.length} 張｜道具倉庫 ${Object.values(ItemInventoryEngine.stash()).reduce((a,b)=>a+Number(b||0),0)} 件`;
+    $("prepCharacters").innerHTML=entries.length?entries.map(entry=>{const slots=ItemInventoryEngine.slotCountForCard(entry.card),prep=ItemInventoryEngine.preparation(entry.key,slots);return`<article class="prep-character ${entry.key===this.prepSelectedKey?"active":""}" data-prep-character="${entry.key}"><button class="prep-character-select" type="button"><strong>${entry.card.name}${entry.occurrence>1?` #${entry.occurrence}`:""}</strong><span>${entry.card.unitType==="HERO"?"HERO":"UNIT"}</span></button><div class="prep-slots">${prep.slots.map((id,i)=>`<button type="button" data-prep-slot="${entry.key}|${i}" class="prep-slot">${id?(ItemDatabase.get(id)?.name||id):`空欄 ${i+1}`}</button>`).join("")}</div></article>`}).join(""):`<div class="deck-empty">牌組內沒有角色卡。</div>`;
+    document.querySelectorAll("[data-prep-character]").forEach(node=>node.querySelector(".prep-character-select").onclick=()=>{this.prepSelectedKey=node.dataset.prepCharacter;this.renderPreparation()});
+    document.querySelectorAll("[data-prep-slot]").forEach(b=>b.onclick=()=>{const[key,slot]=b.dataset.prepSlot.split("|");const entry=entries.find(e=>e.key===key);if(entry&&ItemInventoryEngine.unequip(key,Number(slot),ItemInventoryEngine.slotCountForCard(entry.card)))this.renderPreparation()});
+    const stash=ItemInventoryEngine.stash();$("prepStash").innerHTML=ItemDatabase.list().map(item=>{const have=Number(stash[item.id]||0),available=ItemInventoryEngine.availableCount(item.id),disabled=!selected||available<=0;return`<button class="prep-stash-row" type="button" data-prep-item="${item.id}" ${disabled?"disabled":""}><strong>${item.name}</strong><span>持有 ${have}｜可配置 ${available}</span><small>${item.description}</small></button>`}).join("");
+    document.querySelectorAll("[data-prep-item]").forEach(b=>b.onclick=()=>{if(!selected)return;const slots=ItemInventoryEngine.slotCountForCard(selected.card),prep=ItemInventoryEngine.preparation(selected.key,slots),slot=prep.slots.findIndex(id=>!id);if(slot<0){alert("這個角色的道具欄已滿。");return}if(ItemInventoryEngine.equip(selected.key,slot,b.dataset.prepItem,slots))this.renderPreparation()});
   }
+  startBattle(){const versus=this.deckReturn==="versusScreen",itemLoadouts=ItemInventoryEngine.loadoutsForDeck(this.deck);globalThis.CardTacticsBattleSetup={stageId:versus?"versus_core_battle":"prototype_battle",deck:[...this.deck],itemLoadouts,...(versus?{mapSize:$("versusMapSize").value||"MEDIUM",seed:globalThis.MapGenerator.randomSeed()}: {})};ItemInventoryEngine.beginBattle(itemLoadouts);this.runtime.resetBattle();this.show("battleScreen")}
   updateVersusMeta(){const p=globalThis.MapGenerator?.preset?.($("versusMapSize").value);$("versusMapMeta").textContent=p?`${p.label}｜${p.width} × ${p.height}｜對戰專用程序生成地圖`:""}
   renderShop(){
-    const products=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})||globalThis.PackDatabase.list?.()||[];
-    $("shopTabs").innerHTML=products.map(p=>`<button class="pack-tab ${p.id===this.activeShopPack?"active":""}" data-shop="${p.id}">${p.name}</button>`).join("");
-    document.querySelectorAll("[data-shop]").forEach(b=>b.onclick=()=>{this.activeShopPack=b.dataset.shop;this.renderShop()});
-    const pack=globalThis.PackDatabase.product?.(this.activeShopPack)||products[0];if(!pack){$("shopPackInfo").innerHTML="<p>目前沒有卡包資料。</p>";return}
-    this.activeShopPack=pack.id;$("shopPackInfo").innerHTML=`<h3>${pack.name}</h3><p>${pack.description||""}</p><button id="testOpenPack" class="deploy-button">測試開包</button>`;
-    $("testOpenPack").onclick=()=>{const opened=globalThis.PackEngine.open(pack.id);$("shopResults").innerHTML=opened.ok?opened.cards.map(id=>`<div class="collection-card">${this.cardLabel(globalThis.CardDatabase.get(id))}</div>`).join(""):`<div class="deck-empty">${opened.reason}</div>`}
+    document.querySelectorAll("[data-shop-mode]").forEach(b=>b.classList.toggle("active",b.dataset.shopMode===this.shopMode));
+    if(this.shopMode==="ITEM"){this.renderItemShop();return}this.renderPackShop();
   }
+  renderPackShop(){const products=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})||globalThis.PackDatabase.list?.()||[];$("shopSubtitle").textContent="卡包測試介面";$("shopResultTitle").textContent="開包結果";$("shopTabs").hidden=false;$("shopTabs").innerHTML=products.map(p=>`<button class="pack-tab ${p.id===this.activeShopPack?"active":""}" data-shop="${p.id}">${p.name}</button>`).join("");document.querySelectorAll("[data-shop]").forEach(b=>b.onclick=()=>{this.activeShopPack=b.dataset.shop;this.renderShop()});const pack=globalThis.PackDatabase.product?.(this.activeShopPack)||products[0];if(!pack){$("shopPackInfo").innerHTML="<p>目前沒有卡包資料。</p>";return}this.activeShopPack=pack.id;$("shopPackInfo").innerHTML=`<h3>${pack.name}</h3><p>${pack.description||""}</p><button id="testOpenPack" class="deploy-button">測試開包</button>`;$("shopResults").innerHTML="";$("testOpenPack").onclick=()=>{const opened=globalThis.PackEngine.open(pack.id);$("shopResults").innerHTML=opened.ok?opened.cards.map(id=>`<div class="collection-card">${this.cardLabel(globalThis.CardDatabase.get(id))}</div>`).join(""):`<div class="deck-empty">${opened.reason}</div>`}}
+  renderItemShop(){$("shopSubtitle").textContent=`道具商店｜Gold ${ItemInventoryEngine.gold()} G`;$("shopResultTitle").textContent="道具倉庫";$("shopTabs").hidden=true;$("shopPackInfo").innerHTML=`<h3>道具商店</h3><div class="item-shop-grid">${ItemDatabase.shopList().map(item=>`<button type="button" class="item-shop-card" data-buy-item="${item.id}"><strong>${item.name}</strong><span>${item.shop.buyPrice} G</span><small>${item.description}</small></button>`).join("")}</div>`;$("shopResults").innerHTML=ItemDatabase.list().map(item=>`<div class="shop-stash-row"><span>${item.name}</span><strong>×${ItemInventoryEngine.stashCount(item.id)}</strong></div>`).join("");document.querySelectorAll("[data-buy-item]").forEach(b=>b.onclick=()=>{const result=ItemInventoryEngine.buy(b.dataset.buyItem,1);if(!result.ok){alert(result.reason==="NOT_ENOUGH_GOLD"?"Gold 不足。":"購買失敗。");return}this.renderItemShop()})}
 }

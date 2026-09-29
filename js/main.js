@@ -12,8 +12,9 @@ const CORE_LOAD_ORDER=[
   "terrain-database.js","environment-object-engine.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
   "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js","unit-animation-engine.js",
   "skill-database.js","equipment-database.js","companion-database.js","character-database.js","card-database.js","loadout-database.js","monster-database.js",
+  "item-database.js","reward-database.js","item-inventory-engine.js",
   "pack-database.js","pack-engine.js",
-  "deck-engine.js","deployment-engine.js","card-phase-engine.js","battle-log.js","battle-engine.js","effect-engine.js",
+  "deck-engine.js","deployment-engine.js","card-phase-engine.js","battle-log.js","battle-engine.js","effect-engine.js","item-runtime-engine.js","reward-engine.js",
   "tactical-engine.js","vertical-mobility-engine.js","environment-contact-engine.js","unit-runtime-engine.js","battle-setup-engine.js","battle-presentation-controller.js",
   "tile-inspection-presentation.js","displacement-engine.js","collision-engine.js","fall-engine.js","trajectory-engine.js",
   "post-engagement-engine.js","battle-resolution.js","stage-engine.js","objective-engine.js",
@@ -42,6 +43,8 @@ try{
 
   loadingStep="loadout-validation";
   LoadoutDatabase.validate();
+  loadingStep="item-validation";
+  ItemDatabase.validate();
 
   loadingStep="tactical-game.js";
   bootStatus.textContent="啟動 Card Tactics Runtime...";

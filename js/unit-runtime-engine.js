@@ -34,7 +34,7 @@ export const UnitRuntimeEngine=(()=>{
       countsForObjectives:runtimeCharacter.countsForObjectives!==false,
       companionId:runtimeCharacter.companionId||null,
       ownerCharacterId:runtimeCharacter.ownerCharacterId||null,
-      cargo:[],
+      cargo:[],inventory:[],itemInteractionUsed:0,
       skillResources:createSkillResources(),effects:[],grantedSkills:[],_runtimeMap:map};
     for(const passive of SkillDatabase.passiveList(runtimeCharacter?.passives||[])){
       for(const effect of passive.openingEffects||[])unit.effects.push(JSON.parse(JSON.stringify(effect)));
@@ -53,9 +53,11 @@ export const UnitRuntimeEngine=(()=>{
     if(!character)return null;
     return createFromResolvedCharacter({id,team,character,x,y,map});
   }
-  function createFromCard({id,team,card,x,y,map}){
+  function createFromCard({id,team,card,x,y,map,itemIds=[]}){
     if(!CardDatabase.isCharacter(card))return null;
-    return create({id,team,characterId:card.characterId,loadoutId:card.loadoutId,x,y,map});
+    const unit=create({id,team,characterId:card.characterId,loadoutId:card.loadoutId,x,y,map});
+    if(unit&&globalThis.ItemRuntimeEngine)ItemRuntimeEngine.initializeUnitInventory(unit,itemIds,{owned:true,source:"PREPARATION"});
+    return unit;
   }
   function syncLiveRoster(units=[]){
     const roster=units||[],ids=new Set(roster.map(unit=>unit?.id).filter(Boolean));
@@ -74,7 +76,7 @@ export const UnitRuntimeEngine=(()=>{
   }
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
-  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
+  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;syncMana(u);})}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){return{type:"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0))}}
   function canUseSkill(unit,skill){
