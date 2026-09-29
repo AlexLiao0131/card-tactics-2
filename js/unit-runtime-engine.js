@@ -1,5 +1,6 @@
 export const UnitRuntimeEngine=(()=>{
   const MANA_BASE=40,MANA_INT_FACTOR=2,MANA_WIL_FACTOR=2;
+  const liveUnits=new Map();
   function maxManaFromAttributes(attributes={}){
     return Math.max(0,Math.round(MANA_BASE+Number(attributes.int||0)*MANA_INT_FACTOR+Number(attributes.wil||0)*MANA_WIL_FACTOR));
   }
@@ -39,6 +40,8 @@ export const UnitRuntimeEngine=(()=>{
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
     syncMana(unit,{initialize:true});
+    TacticalEngine.ensureFacing(unit);
+    liveUnits.set(unit.id,unit);
     return unit;
   }
   function resolveCharacter(characterId,loadoutId=null){
@@ -74,6 +77,9 @@ export const UnitRuntimeEngine=(()=>{
   function consumeSkill(unit,skill){if(!canUseSkill(unit,skill))return null;const cost=manaCost(skill);unit.mana=Math.max(0,unit.mana-cost);return{type:"MANA",cost,remaining:unit.mana}}
   function resourceLabel(unit,skill){syncMana(unit);const cost=manaCost(skill);return cost>0?`MP ${cost}`:"無消耗"}
   function targetType(skill){return skill?.targetType||"SINGLE"}
-  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType});
+  function getLiveUnit(id){return liveUnits.get(id)||null}
+  function rotateFacing(id,steps=1){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.rotateFacing(unit,steps)}
+  function setFacing(id,facing){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.setFacing(unit,facing)}
+  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType,getLiveUnit,rotateFacing,setFacing});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

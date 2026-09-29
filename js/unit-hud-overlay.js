@@ -168,7 +168,7 @@ export class UnitHudOverlay{
   }
 
   diagnostics(){
-    return{count:this.nodes.size,expandedUnitId:this.hudUnitId;
+    return{count:this.nodes.size,expandedUnitId:this.hudUnitId};
   }
 
   dispose(){

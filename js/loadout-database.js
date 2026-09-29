@@ -21,7 +21,7 @@ export const LOADOUTS={
   elf_guard_default:{id:"elf_guard_default",characterId:"elf_guard",armorId:"imperial_heavy_armor",weaponIds:{blessed_sword:"blessed_sword"},equipmentIds:["imperial_large_shield"],skillIds:["blessed_slash"]},
   elf_priest_default:{id:"elf_priest_default",characterId:"elf_priest",armorId:"elf_light_armor",weaponIds:{staff:"imperial_staff"},skillIds:["magic_bolt"]},
 
-  ophi_default:{id:"ophi_default",characterId:"ophi",armorId:"elf_light_armor",weaponIds:{elven_bow:"ophi_elven_bow"},equipmentIds:[],skillIds:[],companionIds:["ophi_eagle"],generatedCardsOnDeploy:["ophi_eagle_card"]},
+  ophi_default:{id:"ophi_default",characterId:"ophi",armorId:"elf_light_armor",weaponIds:{elven_bow:"ophi_elven_bow"},equipmentIds:[],skillIds:["ophi_eagle_arc_shot"],companionIds:["ophi_eagle"],generatedCardsOnDeploy:["ophi_eagle_card"]},
   ophi_eagle_default:{id:"ophi_eagle_default",characterId:"ophi_eagle",armorId:"natural_hide",weaponIds:{},skillIds:[]},
   colin_default:{id:"colin_default",characterId:"colin",armorId:"chainmail",weaponIds:{colin_hammer:"colin_war_hammer"},equipmentIds:["colin_full_body_shield"],skillIds:["colin_full_shield_defense","colin_armor_breaking_strike"]},
 

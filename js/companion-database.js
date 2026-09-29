@@ -17,7 +17,7 @@ export const COMPANIONS={
     sharedVision:true,
     targetingMode:"SCOUT_SHARED_VISION",
     requiresOwnerCompanionRule:"sharedVision",
-    providesTargetingFor:[]
+    providesTargetingFor:["ophi_eagle_arc_shot"]
   }
 };
 

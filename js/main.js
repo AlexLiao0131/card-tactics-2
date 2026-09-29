@@ -25,11 +25,12 @@ const CORE_LOAD_ORDER=[
 let loadingStep="啟動器";
 try{
   loadingStep="畫面模組";
-  const [{BabylonRenderer},{BattleUI},{CardHandUI},{ShellUI}]=await Promise.all([
+  const [{BabylonRenderer},{BattleUI},{CardHandUI},{ShellUI},{FacingControlUI}]=await Promise.all([
     load("./babylon-renderer.js"),
     load("./battle-ui.js"),
     load("./card-hand-ui.js"),
-    load("./shell-ui.js")
+    load("./shell-ui.js"),
+    load("./facing-control-ui.js")
   ]);
 
   for(let i=0;i<CORE_LOAD_ORDER.length;i++){
@@ -56,6 +57,7 @@ try{
   const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
   const cardUI=new CardHandUI();cardUI.bind(runtime);
   const shell=new ShellUI(runtime,renderer);shell.bind();
+  const facingUI=new FacingControlUI();facingUI.bind(runtime);
 
   loadingStep="diagnostics.js";
   await load("./diagnostics.js");
