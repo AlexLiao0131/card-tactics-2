@@ -5,6 +5,9 @@ export const HydrologyEngine=(()=>{
   const RAIN_FILL_PER_EVENT=.06,HEAVY_RAIN_FILL_PER_EVENT=.12,STORM_RAIN_FILL_PER_EVENT=.16,NATURAL_WATER_DEPTH=1;
   const SOIL_SATURATION_CAPACITY=.45,SAND_SOIL_CAPACITY=.22,DRYING_PER_CLEAR_TURN=.10,SAND_DRYING_PER_CLEAR_TURN=.16,EVAPORATION_PER_CLEAR_TURN=.06;
   const EPSILON=.0001,FLOW_EPSILON=.0005,MAX_FLOW_ITERATIONS=256,MAX_DRAIN_CYCLES=64;
+  // discharge is a river flow rate. This scale converts one discharge unit
+  // into tile-volume per environment turn for budget/diagnostic accounting.
+  const DISCHARGE_VOLUME_PER_TURN=.06,DEFAULT_SOURCE_DISCHARGE=1,MAX_BASE_FLOW_SPEED=3.2;
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],FLOW_DIRS=[[1,0],[0,1]],key=(x,y)=>`${x},${y}`;
 
   const elevation=t=>Number(t?.elevation||0);
@@ -182,26 +185,186 @@ export const HydrologyEngine=(()=>{
         tile.flowY=downstream?Math.sign(downstream.y-tile.y):0;
       }
 
-      const baseSpeed=tile.ford===true?.45:.62;
-      tile.baseFlowSpeed=baseSpeed;
-      tile.flowSpeed=baseSpeed;
-      tile.baseDischarge=tile.ford===true?.8:1;
-      tile.discharge=tile.baseDischarge;
     }
+
+    // ----- Discharge conservation ------------------------------------------------
+    // Each source contributes a real inflow rate. Rates are accumulated downstream;
+    // therefore a confluence carries the sum of its tributaries.
+    const sourceRates=new Map();
+    for(const source of sources){
+      const explicit=Number(
+        source.hydrologySourceInflow ??
+        source.sourceInflow ??
+        source.baseDischarge ??
+        source.discharge ??
+        DEFAULT_SOURCE_DISCHARGE
+      );
+      const rate=Math.max(.05,Number.isFinite(explicit)?explicit:DEFAULT_SOURCE_DISCHARGE);
+      sourceRates.set(key(source.x,source.y),rate);
+      source.hydrologySourceInflow=clean(rate);
+    }
+
+    const accumulated=new Map(component.map(tile=>[key(tile.x,tile.y),0]));
+    const ordered=[...component].sort((a,b)=>
+      Number(distance.get(key(b.x,b.y))||0)-Number(distance.get(key(a.x,a.y))||0)||
+      a.y-b.y||a.x-b.x
+    );
+
+    for(const tile of ordered){
+      const k=key(tile.x,tile.y);
+      let rate=Number(accumulated.get(k)||0)+Number(sourceRates.get(k)||0);
+      rate=Math.max(0,rate);
+
+      tile.baseDischarge=clean(rate);
+      tile.discharge=tile.baseDischarge;
+      tile.hydrologyInflowRate=tile.baseDischarge;
+
+      if(tile.hydrologyDrain===true){
+        tile.hydrologyOutflowRate=tile.baseDischarge;
+      }else{
+        const here=Number(distance.get(k)||0);
+        const downstream=riverNeighbors(tile,by)
+          .filter(n=>Number(distance.get(key(n.x,n.y)))<here)
+          .sort((a,b)=>
+            Number(distance.get(key(a.x,a.y)))-Number(distance.get(key(b.x,b.y)))||
+            project(b)-project(a)
+          )[0]||null;
+
+        tile.hydrologyOutflowRate=tile.baseDischarge;
+        if(downstream){
+          const dk=key(downstream.x,downstream.y);
+          accumulated.set(dk,Number(accumulated.get(dk)||0)+tile.baseDischarge);
+          tile.flowX=Math.sign(downstream.x-tile.x);
+          tile.flowY=Math.sign(downstream.y-tile.y);
+        }
+      }
+
+      // Q = A * v (width is one tile here). A shallower ford keeps the same Q,
+      // so its velocity increases instead of losing 20% of its water.
+      const hydraulicDepth=Math.max(.20,waterDepth(tile));
+      const baseSpeed=.62*(tile.baseDischarge||0)/hydraulicDepth;
+      tile.baseFlowSpeed=clean(clamp(baseSpeed,.18,MAX_BASE_FLOW_SPEED));
+      tile.flowSpeed=tile.baseFlowSpeed;
+    }
+
+    const sourceBaseInflow=clean([...sourceRates.values()].reduce((sum,value)=>sum+value,0));
+    const outletBaseOutflow=clean(drains.reduce((sum,tile)=>sum+Number(tile.baseDischarge||0),0));
 
     return{
       tiles:component.length,
-      sources:sources.map(tile=>({x:tile.x,y:tile.y})),
-      drains:drains.map(tile=>({x:tile.x,y:tile.y})),
+      sources:sources.map(tile=>({x:tile.x,y:tile.y,inflow:Number(tile.hydrologySourceInflow||0)})),
+      drains:drains.map(tile=>({x:tile.x,y:tile.y,outflow:Number(tile.baseDischarge||0)})),
       maxDistance,
       outletSurface,
-      sourceRise:totalRise
+      sourceRise:totalRise,
+      sourceBaseInflow,
+      outletBaseOutflow,
+      conservationDelta:clean(sourceBaseInflow-outletBaseOutflow)
     };
   }
 
   function normalizeRiverNetwork(map){
     if(!map?.tiles?.length||map?.hydrology?.preserveRiverProfile===true)return[];
     return riverComponents(map).map(normalizeRiverComponent).filter(Boolean);
+  }
+
+  function riverFlowBudget(map,{volumeScale=DISCHARGE_VOLUME_PER_TURN}={}){
+    const rivers=(map?.tiles||[]).filter(tile=>tile?.river===true);
+    const sources=rivers.filter(tile=>tile?.hydrologySource===true);
+    const drains=rivers.filter(tile=>tile?.hydrologyDrain===true);
+
+    const sourceInflowRate=clean(sources.reduce((sum,tile)=>sum+Math.max(0,Number(tile.discharge??tile.baseDischarge??0)),0));
+    const outletOutflowRate=clean(drains.reduce((sum,tile)=>sum+Math.max(0,Number(tile.discharge??tile.baseDischarge??0)),0));
+    const scale=Math.max(0,Number(volumeScale||0));
+
+    return{
+      sourceInflowRate,
+      outletOutflowRate,
+      netRate:Math.round((sourceInflowRate-outletOutflowRate)*10000)/10000,
+      sourceInflowVolume:clean(sourceInflowRate*scale),
+      outletOutflowVolume:clean(outletOutflowRate*scale),
+      netVolume:Math.round((sourceInflowRate-outletOutflowRate)*scale*10000)/10000,
+      sourceCount:sources.length,
+      outletCount:drains.length
+    };
+  }
+
+  function reconcileRiverDischarge(map){
+    const components=riverComponents(map),reports=[];
+
+    for(const component of components){
+      const by=new Map(component.map(tile=>[key(tile.x,tile.y),tile]));
+      const drains=component.filter(tile=>tile?.hydrologyDrain===true);
+      if(!drains.length)continue;
+
+      const distance=new Map(),q=[];
+      for(const drain of drains){
+        const k=key(drain.x,drain.y);
+        if(distance.has(k))continue;
+        distance.set(k,0);q.push(drain);
+      }
+      while(q.length){
+        const tile=q.shift(),d=Number(distance.get(key(tile.x,tile.y))||0);
+        for(const neighbor of riverNeighbors(tile,by)){
+          const k=key(neighbor.x,neighbor.y);
+          if(distance.has(k))continue;
+          distance.set(k,d+1);q.push(neighbor);
+        }
+      }
+
+      const sourceRates=new Map();
+      for(const tile of component){
+        if(tile?.hydrologySource!==true)continue;
+        // ClimateEngine updates source discharge from baseDischarge + weather.
+        // That current source rate is the external inflow for this pulse.
+        const rate=Math.max(0,Number(tile.discharge??tile.baseDischarge??tile.hydrologySourceInflow??DEFAULT_SOURCE_DISCHARGE));
+        sourceRates.set(key(tile.x,tile.y),rate);
+      }
+
+      const incoming=new Map(component.map(tile=>[key(tile.x,tile.y),0]));
+      const ordered=[...component].sort((a,b)=>
+        Number(distance.get(key(b.x,b.y))||0)-Number(distance.get(key(a.x,a.y))||0)||
+        a.y-b.y||a.x-b.x
+      );
+
+      for(const tile of ordered){
+        const k=key(tile.x,tile.y);
+        const rate=clean(Number(incoming.get(k)||0)+Number(sourceRates.get(k)||0));
+        tile.discharge=rate;
+        tile.hydrologyInflowRate=rate;
+        tile.hydrologyOutflowRate=rate;
+
+        if(tile.hydrologyDrain===true)continue;
+
+        const here=Number(distance.get(k)||0);
+        const downstream=riverNeighbors(tile,by)
+          .filter(n=>Number(distance.get(key(n.x,n.y)))<here)
+          .sort((a,b)=>Number(distance.get(key(a.x,a.y)))-Number(distance.get(key(b.x,b.y)))||a.y-b.y||a.x-b.x)[0]||null;
+        if(!downstream)continue;
+
+        tile.flowX=Math.sign(downstream.x-tile.x);
+        tile.flowY=Math.sign(downstream.y-tile.y);
+        const dk=key(downstream.x,downstream.y);
+        incoming.set(dk,Number(incoming.get(dk)||0)+rate);
+
+        // Preserve climate's global multiplier but make speed obey Q = A*v.
+        const baseQ=Math.max(.05,Number(tile.baseDischarge||DEFAULT_SOURCE_DISCHARGE));
+        const climateFactor=Math.max(.1,rate/baseQ);
+        const hydraulicDepth=Math.max(.20,waterDepth(tile));
+        const referenceDepth=Math.max(.20,baselineDepth(tile)||hydraulicDepth);
+        const depthFactor=referenceDepth/hydraulicDepth;
+        tile.flowSpeed=clean(clamp(Number(tile.baseFlowSpeed||.62)*climateFactor*depthFactor,.05,MAX_BASE_FLOW_SPEED));
+      }
+
+      reports.push({
+        tiles:component.length,
+        sourceRate:clean([...sourceRates.values()].reduce((sum,value)=>sum+value,0)),
+        outletRate:clean(drains.reduce((sum,tile)=>sum+Number(tile.discharge||0),0))
+      });
+    }
+
+    map.hydrologyFlowBudget=riverFlowBudget(map);
+    return reports;
   }
 
   const baselineDepth=t=>Math.max(0,Number(t?.hydrologyBaseWaterDepth||0));
@@ -229,6 +392,8 @@ export const HydrologyEngine=(()=>{
     }
     map.hydrologyRiverProfiles=normalizeRiverNetwork(map);
     captureSourceBaselines(map);
+    reconcileRiverDischarge(map);
+    map.hydrologyFlowBudget=riverFlowBudget(map);
     return map;
   }
 
@@ -330,6 +495,7 @@ export const HydrologyEngine=(()=>{
 
   function redistribute(map,{source="FLOW",events=[]}={}){
     if(!map?.tiles?.length)return events;
+    reconcileRiverDischarge(map);
     const beforeDepth=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),waterDepth(tile)])),beforeVolume=totalWater(map),by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const fed=sourceFedWaterKeys(map);
     let iterations=0,maxDelta=0,totalDrained=0,totalAbsorbed=0;
@@ -361,6 +527,10 @@ export const HydrologyEngine=(()=>{
     }
     const afterVolume=totalWater(map);
     if(changed||totalDrained>EPSILON){events.push({type:"HYDROLOGY_REBALANCED",source,changedTiles:changed,iterations:iterations+1,beforeVolume,afterVolume,surfaceWater:surfaceWaterVolume(map),soilWater:soilWaterVolume(map),drained:clean(totalDrained),absorbed:clean(totalAbsorbed),maxDelta});}
+    reconcileRiverDischarge(map);
+    const flowBudget=riverFlowBudget(map);
+    map.hydrologyFlowBudget=flowBudget;
+    if(flowBudget.sourceCount||flowBudget.outletCount)events.push({type:"RIVER_FLOW_BUDGET",source,...flowBudget});
     return events;
   }
 
@@ -406,8 +576,8 @@ export const HydrologyEngine=(()=>{
   return Object.freeze({
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
-    EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,
-    initializeMap,normalizeRiverNetwork,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,
+    initializeMap,normalizeRiverNetwork,reconcileRiverDischarge,riverFlowBudget,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
