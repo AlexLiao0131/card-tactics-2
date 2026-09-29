@@ -68,6 +68,10 @@ export const UnitRuntimeEngine=(()=>{
     if(!globalThis.CompanionDatabase?.reconcileUnits)return[];
     return CompanionDatabase.reconcileUnits(roster);
   }
+  function despawnCompanionsForOwner(owner){
+    if(!owner?.id||!globalThis.CompanionDatabase?.despawnForOwner)return[];
+    return CompanionDatabase.despawnForOwner(owner,[...liveUnits.values()]);
+  }
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
   function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;syncMana(u);})}
@@ -117,6 +121,6 @@ export const UnitRuntimeEngine=(()=>{
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

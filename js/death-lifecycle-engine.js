@@ -28,6 +28,11 @@ export const DeathLifecycleEngine=(()=>{
         EncounterRewardEngine.resolveDefeat(unit,source,cause,{pushLog:ctx.pushLog});
       }
 
+      const companions=globalThis.UnitRuntimeEngine?.despawnCompanionsForOwner?.(unit)||[];
+      for(const companion of companions){
+        ctx.pushLog(`${companion.character?.name||"伴隨單位"} 因 ${unit.character.name} 離場而撤出戰場。`,"SYSTEM");
+      }
+
       ctx.onDefeated?.(unit,source,cause);
       ctx.onFinalized?.(unit,source,cause);
       return true;

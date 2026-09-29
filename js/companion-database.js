@@ -17,7 +17,8 @@ export const COMPANIONS={
     sharedVision:true,
     targetingMode:"SCOUT_SHARED_VISION",
     requiresOwnerCompanionRule:"sharedVision",
-    providesTargetingFor:["ophi_eagle_arc_shot"]
+    providesTargetingFor:["ophi_eagle_arc_shot"],
+    lifecycle:{despawnWithOwner:true}
   }
 };
 
@@ -52,13 +53,42 @@ export const CompanionDatabase=(()=>{
     unit.canAttack=companion.canAttack===true;
     const tile=unit?._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;
     if(tile&&globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);
-    if(!owner){unit.ownerUnitId=null;return null;}
+    if(!owner){return null;}
     owner.companionRuntime??={};
     const firstBinding=owner.companionRuntime[companion.id]!==unit;
     owner.companionRuntime[companion.id]=unit;
     unit.ownerUnitId=owner.id;
     if(firstBinding&&companion.readyOnDeploy===true){unit.moved=false;unit.acted=false;unit.waited=false;}
     return owner;
+  }
+  function markDespawned(unit,owner,companion){
+    if(!unit?.alive)return false;
+    unit.hp=0;
+    unit.alive=false;
+    unit.despawned=true;
+    unit.despawnReason="OWNER_EXIT";
+    unit.participatesInTurn=false;
+    unit.occupiesTile=false;
+    unit.canAttack=false;
+    unit.canCapture=false;
+    unit.countsForObjectives=false;
+    unit.ownerUnitId=null;
+    if(owner?.companionRuntime?.[companion.id]===unit)delete owner.companionRuntime[companion.id];
+    return true;
+  }
+  function despawnForOwner(owner,units=[]){
+    if(!owner?.id)return[];
+    const roster=units||[],removed=[],queue=[owner.id],ownersById=new Map(roster.map(unit=>[unit?.id,unit]));
+    while(queue.length){
+      const ownerId=queue.shift(),currentOwner=ownersById.get(ownerId)||owner;
+      for(const unit of roster){
+        if(!unit?.alive||unit.ownerUnitId!==ownerId)continue;
+        const companion=companionForUnit(unit);
+        if(!companion?.lifecycle?.despawnWithOwner)continue;
+        if(markDespawned(unit,currentOwner,companion)){removed.push(unit);queue.push(unit.id);}
+      }
+    }
+    return removed;
   }
   function reconcileUnits(units=[]){
     const roster=units||[];
@@ -67,6 +97,13 @@ export const CompanionDatabase=(()=>{
       for(const[id,unit]of Object.entries(owner.companionRuntime)){
         if(!unit?.alive||!roster.includes(unit))delete owner.companionRuntime[id];
       }
+    }
+    for(const unit of roster){
+      if(!unit?.alive||!unit.ownerUnitId)continue;
+      const companion=companionForUnit(unit);
+      if(!companion?.lifecycle?.despawnWithOwner)continue;
+      const owner=roster.find(candidate=>candidate?.id===unit.ownerUnitId);
+      if(!owner?.alive)markDespawned(unit,owner,companion);
     }
     const bound=[];
     for(const unit of roster){const owner=bindUnit(unit,roster);if(owner)bound.push({owner,unit});}
@@ -84,7 +121,7 @@ export const CompanionDatabase=(()=>{
     return null;
   }
   function providesTargeting(owner,skillId,companionId=null){return !!targetingUnit(owner,skillId,companionId)}
-  return Object.freeze({get,list,forOwner,deploymentCardsForOwner,ownerHasCompanionRule,companionForUnit,bindUnit,reconcileUnits,targetingUnit,providesTargeting});
+  return Object.freeze({get,list,forOwner,deploymentCardsForOwner,ownerHasCompanionRule,companionForUnit,bindUnit,despawnForOwner,reconcileUnits,targetingUnit,providesTargeting});
 })();
 
 globalThis.COMPANIONS=COMPANIONS;
