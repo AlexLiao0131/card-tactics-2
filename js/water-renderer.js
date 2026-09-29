@@ -10,6 +10,7 @@ const logicalSurface=tile=>tile?.waterSurfaceZ==null
 
 const SURFACE_OFFSET=.016;
 const EPSILON=.001;
+const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const LEVEL_STEP=.10;
 
@@ -19,6 +20,9 @@ const DIRS=Object.freeze([
 
 function visualSurface(tile){
   return Math.round(logicalSurface(tile)/LEVEL_STEP)*LEVEL_STEP;
+}
+function hasVisibleWater(tile){
+  return waterDepth(tile)>MIN_WATER_DEPTH;
 }
 
 export class WaterRenderer{
@@ -136,7 +140,7 @@ export class WaterRenderer{
     return value>=.6?this.muddySide:value>=.18?this.murkySide:this.clearSide;
   }
 
-  waterTiles(state){return tilesOf(state).filter(tile=>waterDepth(tile)>EPSILON);}
+  waterTiles(state){return tilesOf(state).filter(hasVisibleWater);}
   byKey(tiles){return new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));}
   allByKey(state){return new Map(tilesOf(state).map(tile=>[keyOf(tile.x,tile.y),tile]));}
 
@@ -221,7 +225,7 @@ export class WaterRenderer{
     for(const dir of DIRS){
       const n=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
       if(!n)continue;
-      const target=waterDepth(n)>EPSILON?visualSurface(n):Number(n.elevation||0);
+      const target=hasVisibleWater(n)?visualSurface(n):Number(n.elevation||0);
       const drop=top-target;
       if(drop>WATERFALL_MIN_DROP&&(!best||drop>best.drop))best={...dir,drop};
     }
@@ -236,7 +240,7 @@ export class WaterRenderer{
       const receiver=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
       if(!receiver)continue;
       const top=visualSurface(tile);
-      const bottom=waterDepth(receiver)>EPSILON?visualSurface(receiver):Number(receiver.elevation||0);
+      const bottom=hasVisibleWater(receiver)?visualSurface(receiver):Number(receiver.elevation||0);
       const drop=top-bottom;
       if(drop<WATERFALL_MIN_DROP)continue;
       out.push({
@@ -326,12 +330,13 @@ export class WaterRenderer{
     for(const tile of waterTiles){
       for(const dir of DIRS){
         const neighbor=map.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-        const edgeId=neighbor?`${tile.x},${tile.y}->${neighbor.x},${neighbor.y}`:null;
-        if(edgeId&&cascadeIds.has(edgeId))continue;
+        if(!neighbor)continue; // Shoreline is cut naturally by the polygon terrain.
+        const edgeId=`${tile.x},${tile.y}->${neighbor.x},${neighbor.y}`;
+        if(cascadeIds.has(edgeId))continue;
 
         const top=visualSurface(tile);
-        const lower=neighbor?visualSurface(neighbor):Number(tile.elevation||0);
-        if(neighbor&&lower>=top-EPSILON)continue;
+        const lower=visualSurface(neighbor);
+        if(lower>=top-EPSILON)continue;
         if(top-lower<=EPSILON)continue;
 
         const material=this.sideMaterial(tile);
@@ -344,7 +349,7 @@ export class WaterRenderer{
         else if(dir.dx===-1){p1=[cx-h,cz+h];p2=[cx-h,cz-h];}
         else if(dir.dy===1){p1=[cx+h,cz+h];p2=[cx-h,cz+h];}
         else{p1=[cx-h,cz-h];p2=[cx+h,cz-h];}
-        groups.get(materialKey).quads.push({p1,p2,top,bottom:Math.max(Number(tile.elevation||0),lower)});
+        groups.get(materialKey).quads.push({p1,p2,top,bottom:lower});
       }
     }
 
@@ -440,7 +445,9 @@ export class WaterRenderer{
       cascades:this.cascades.size,
       separatedWaterLevels:true,
       thinCascadeRibbon:true,
-      perTileWaterBoxes:false
+      perTileWaterBoxes:false,
+      minVisibleWaterDepth:MIN_WATER_DEPTH,
+      shorelineSkirts:false
     };
   }
 }

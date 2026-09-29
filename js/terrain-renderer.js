@@ -25,8 +25,11 @@ const TERRAIN_COLORS=Object.freeze({
 });
 
 function baseColor(tile){
-  if(tile?.material==="ROCK")return TERRAIN_COLORS.HIGH_GROUND;
-  return TERRAIN_COLORS[String(tile?.terrain||"DEFAULT")]||TERRAIN_COLORS.DEFAULT;
+  const color=tile?.material==="ROCK"
+    ?TERRAIN_COLORS.HIGH_GROUND
+    :(TERRAIN_COLORS[String(tile?.terrain||"DEFAULT")]||TERRAIN_COLORS.DEFAULT);
+  const wet=Math.min(1,Math.max(0,Number(tile?.waterDepth||0))/.3);
+  return wet>0?color.map(value=>value*(1-.35*wet)):color;
 }
 function avg(values){return values.reduce((sum,value)=>sum+value,0)/Math.max(1,values.length);}
 function mixColors(tiles){
@@ -121,6 +124,7 @@ export class TerrainRenderer{
       String(tile.terrain||""),
       String(tile.material||""),
       elevationOf(tile).toFixed(4),
+      Math.round(Math.min(1,Math.max(0,Number(tile.waterDepth||0))/.3)*8),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
   }
