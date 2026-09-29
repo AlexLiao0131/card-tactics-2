@@ -321,6 +321,18 @@ export class TerrainRenderer{
     const out={positions:[],indices:[],normals:[],colors:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(elevationOf)):0;
     const boundaryBase=minElevation-.75;
+    const EH=ELEVATION_HEIGHT;
+
+    // The surface mesh samples every tile edge as:
+    // corner -> edge midpoint -> corner.
+    // Cliff walls must reuse the exact same sampled heights or a crack appears
+    // between the surface and the vertical wall.
+    const EDGE={
+      N:{own:[[-1,-1],[1,-1]],nb:[[-1,1],[1,1]]},
+      E:{own:[[1,-1],[1,1]],nb:[[-1,-1],[-1,1]]},
+      S:{own:[[1,1],[-1,1]],nb:[[1,-1],[-1,-1]]},
+      W:{own:[[-1,1],[-1,-1]],nb:[[1,1],[1,-1]]}
+    };
 
     for(const tile of tiles){
       const top=elevationOf(tile);
@@ -333,15 +345,49 @@ export class TerrainRenderer{
         if(top-lower<=MAX_VISUAL_SLOPE_DELTA)continue;
 
         const [[x1,z1],[x2,z2]]=this.cliffEdgePoints(tile,dir);
-        const yTop=top*ELEVATION_HEIGHT;
-        const yBottom=lower*ELEVATION_HEIGHT;
+        const xm=(x1+x2)/2;
+        const zm=(z1+z2)/2;
+        const edge=EDGE[dir.id];
 
+        // High-side surface: reuse the same two corner samples used by ringSamples().
+        const topA=this.cornerSample(tile,byKey,...edge.own[0]).height*EH;
+        const topB=this.cornerSample(tile,byKey,...edge.own[1]).height*EH;
+
+        // Low-side surface: sample the corresponding corners from the neighbour.
+        // At the map boundary there is no neighbour surface, so fall back to the
+        // boundary base used by the existing cliff system.
+        let botA=neighbor
+          ?this.cornerSample(neighbor,byKey,...edge.nb[0]).height*EH
+          :lower*EH;
+        let botB=neighbor
+          ?this.cornerSample(neighbor,byKey,...edge.nb[1]).height*EH
+          :lower*EH;
+
+        // Never allow numerical/averaging edge cases to invert a wall segment.
+        botA=Math.min(botA,topA);
+        botB=Math.min(botB,topB);
+
+        // For a discontinuity, edgeSample() on each side returns that tile's own
+        // raw elevation, so these midpoint heights exactly match both surfaces.
+        const topM=top*EH;
+        const botM=lower*EH;
+
+        // Split the wall at the midpoint because the surface edge is also two
+        // independent segments: corner -> midpoint -> corner.
         this.pushCliffQuad(
           out,
-          {x:x1,y:yBottom,z:z1},
-          {x:x2,y:yBottom,z:z2},
-          {x:x2,y:yTop,z:z2},
-          {x:x1,y:yTop,z:z1},
+          {x:x1,y:botA,z:z1},
+          {x:xm,y:botM,z:zm},
+          {x:xm,y:topM,z:zm},
+          {x:x1,y:topA,z:z1},
+          color
+        );
+        this.pushCliffQuad(
+          out,
+          {x:xm,y:botM,z:zm},
+          {x:x2,y:botB,z:z2},
+          {x:x2,y:topB,z:z2},
+          {x:xm,y:topM,z:zm},
           color
         );
       }
@@ -360,7 +406,13 @@ export class TerrainRenderer{
     mesh.useVertexColors=true;
     mesh.isPickable=false;
     mesh.receiveShadows=true;
-    mesh.metadata={kind:"terrain-cliffs",polygonal:true,explicitFaceNormals:true};
+    mesh.metadata={
+      kind:"terrain-cliffs",
+      polygonal:true,
+      explicitFaceNormals:true,
+      surfaceMatchedEdges:true,
+      midpointSplit:true
+    };
     return mesh;
   }
 
