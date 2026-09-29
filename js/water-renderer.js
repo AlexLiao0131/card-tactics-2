@@ -13,6 +13,7 @@ const EPSILON=.001;
 const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const LEVEL_STEP=.10;
+const SHORE_EPSILON=.002;
 
 const DIRS=Object.freeze([
   {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
@@ -26,8 +27,9 @@ function hasVisibleWater(tile){
 }
 
 export class WaterRenderer{
-  constructor(scene){
+  constructor(scene,terrainRenderer=null){
     this.scene=scene;
+    this.terrainRenderer=terrainRenderer;
     this.surfaceMeshes=new Map();
     this.skirtMeshes=new Map();
     this.cascades=new Map();
@@ -186,62 +188,139 @@ export class WaterRenderer{
     return out;
   }
 
-  buildSurface(component){
-    const positions=[],indices=[],normals=[],uvs=[];
-    const half=TILE_SIZE*.5;
-    const y=component.level*ELEVATION_HEIGHT+SURFACE_OFFSET;
+  surfaceCandidates(component,allMap){
+    const wetKeys=new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y)));
+    const candidateKeys=new Set(wetKeys);
 
+    // One surrounding ring is enough: the shared polygon terrain edge/corner
+    // samples define where a horizontal water plane intersects the bank slope.
     for(const tile of component.tiles){
-      const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-      const base=positions.length/3;
-      const corners=[
-        [cx-half,y,cz-half],[cx+half,y,cz-half],
-        [cx+half,y,cz+half],[cx-half,y,cz+half]
-      ];
-      for(const [x,py,z] of corners){
-        positions.push(x,py,z);normals.push(0,1,0);uvs.push(x/(TILE_SIZE*3.25),z/(TILE_SIZE*3.25));
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        if(!dx&&!dy)continue;
+        const k=keyOf(tile.x+dx,tile.y+dy),candidate=allMap.get(k);
+        if(!candidate)continue;
+        // A different visible water body owns its own plane; never bridge bodies
+        // just because their bounding tiles touch diagonally.
+        if(hasVisibleWater(candidate)&&!wetKeys.has(k))continue;
+        candidateKeys.add(k);
       }
-      indices.push(base,base+2,base+1,base,base+3,base+2);
+    }
+    return[...candidateKeys].map(k=>allMap.get(k)).filter(Boolean);
+  }
+
+  terrainRing(tile,allMap){
+    if(this.terrainRenderer?.ringSamples){
+      return this.terrainRenderer.ringSamples(tile,allMap);
+    }
+    // Safe fallback if WaterRenderer is used outside BabylonRenderer.
+    const h=Number(tile?.elevation||0);
+    return[
+      {ox:-.5,oz:-.5,height:h},{ox:0,oz:-.5,height:h},
+      {ox:.5,oz:-.5,height:h},{ox:.5,oz:0,height:h},
+      {ox:.5,oz:.5,height:h},{ox:0,oz:.5,height:h},
+      {ox:-.5,oz:.5,height:h},{ox:-.5,oz:0,height:h}
+    ];
+  }
+
+  clipTriangleBelowWater(a,b,c,level){
+    const input=[a,b,c],out=[];
+    for(let i=0;i<input.length;i++){
+      const current=input[i],previous=input[(i+input.length-1)%input.length];
+      const currentInside=current.height<level-SHORE_EPSILON;
+      const previousInside=previous.height<level-SHORE_EPSILON;
+
+      if(currentInside!==previousInside){
+        const denom=current.height-previous.height;
+        const t=Math.abs(denom)<=EPSILON?0:clamp((level-previous.height)/denom,0,1);
+        out.push({
+          x:previous.x+(current.x-previous.x)*t,
+          z:previous.z+(current.z-previous.z)*t,
+          height:level
+        });
+      }
+      if(currentInside)out.push({x:current.x,z:current.z,height:current.height});
+    }
+    return out;
+  }
+
+  pushWaterTriangle(out,a,b,c,y){
+    const abx=b.x-a.x,abz=b.z-a.z,acx=c.x-a.x,acz=c.z-a.z;
+    const geometricY=abz*acx-abx*acz;
+    if(Math.abs(geometricY)<=EPSILON)return;
+    // Babylon's default scene is left-handed. Match the terrain renderer's
+    // upward front-face winding (geometric cross-product Y < 0).
+    if(geometricY>0){const tmp=b;b=c;c=tmp;}
+    const base=out.positions.length/3;
+    for(const point of [a,b,c]){
+      out.positions.push(point.x,y,point.z);
+      out.normals.push(0,1,0);
+      out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
+    }
+    out.indices.push(base,base+1,base+2);
+  }
+
+  buildSurface(component,state){
+    const out={positions:[],indices:[],normals:[],uvs:[]};
+    const allMap=this.allByKey(state);
+    const y=component.level*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const candidates=this.surfaceCandidates(component,allMap);
+
+    for(const tile of candidates){
+      const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+      const center={x:cx,z:cz,height:Number(tile.elevation||0)};
+      const ring=this.terrainRing(tile,allMap).map(sample=>({
+        x:cx+sample.ox*TILE_SIZE,
+        z:cz+sample.oz*TILE_SIZE,
+        height:Number(sample.height||0)
+      }));
+
+      for(let i=0;i<ring.length;i++){
+        const polygon=this.clipTriangleBelowWater(center,ring[i],ring[(i+1)%ring.length],component.level);
+        if(polygon.length<3)continue;
+        for(let n=1;n<polygon.length-1;n++){
+          this.pushWaterTriangle(out,polygon[0],polygon[n],polygon[n+1],y);
+        }
+      }
     }
 
+    if(!out.positions.length)return null;
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
     const data=new BABYLON.VertexData();
-    data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;
+    data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;
     data.applyToMesh(mesh,false);
     mesh.material=this.surfaceMaterial;
     mesh.isPickable=false;
     mesh.visibility=component.tiles.some(tile=>!tile.fogged)?1:.22;
-    mesh.metadata={kind:"water-surface",level:component.level,tileCount:component.tiles.length};
+    mesh.metadata={
+      kind:"water-surface",
+      level:component.level,
+      tileCount:component.tiles.length,
+      terrainClippedShoreline:true,
+      candidateTiles:candidates.length
+    };
     mesh.freezeWorldMatrix();
     return mesh;
   }
 
-  flowDirection(tile,allMap){
+  flowDirection(tile){
+    // Renderer must never invent water flow from a visual height difference.
+    // Cascades are allowed only when Hydrology/river data supplied a direction.
     const fx=Number(tile?.flowX||0),fy=Number(tile?.flowY||0);
-    if(Math.abs(fx)>.001||Math.abs(fy)>.001){
-      return Math.abs(fx)>=Math.abs(fy)?{dx:Math.sign(fx),dy:0}:{dx:0,dy:Math.sign(fy)};
-    }
-    let best=null,top=visualSurface(tile);
-    for(const dir of DIRS){
-      const n=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-      if(!n)continue;
-      const target=hasVisibleWater(n)?visualSurface(n):Number(n.elevation||0);
-      const drop=top-target;
-      if(drop>WATERFALL_MIN_DROP&&(!best||drop>best.drop))best={...dir,drop};
-    }
-    return best&&{dx:best.dx,dy:best.dy};
+    if(Math.abs(fx)<=.001&&Math.abs(fy)<=.001)return null;
+    return Math.abs(fx)>=Math.abs(fy)
+      ?{dx:Math.sign(fx),dy:0}
+      :{dx:0,dy:Math.sign(fy)};
   }
 
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[];
     for(const tile of waterTiles){
-      const dir=this.flowDirection(tile,allMap);
+      const dir=this.flowDirection(tile);
       if(!dir?.dx&&!dir?.dy)continue;
       const receiver=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-      if(!receiver)continue;
-      const top=visualSurface(tile);
-      const bottom=hasVisibleWater(receiver)?visualSurface(receiver):Number(receiver.elevation||0);
-      const drop=top-bottom;
+      if(!receiver||!hasVisibleWater(receiver))continue;
+
+      const top=visualSurface(tile),bottom=visualSurface(receiver),drop=top-bottom;
       if(drop<WATERFALL_MIN_DROP)continue;
       out.push({
         id:`${tile.x},${tile.y}->${receiver.x},${receiver.y}`,
@@ -378,9 +457,16 @@ export class WaterRenderer{
     return result;
   }
 
-  surfaceSignatureFor(components){
-    return components.map(c=>`${c.id}:${c.level.toFixed(2)}:${c.tiles.map(t=>keyOf(t.x,t.y)).sort().join(",")}`).sort().join("|");
+  surfaceSignatureFor(components,state){
+    const allMap=this.allByKey(state);
+    return components.map(component=>{
+      const geometry=this.surfaceCandidates(component,allMap)
+        .map(tile=>`${keyOf(tile.x,tile.y)}:${Number(tile.elevation||0).toFixed(3)}`)
+        .sort().join(",");
+      return`${component.id}:${component.level.toFixed(2)}:${component.tiles.map(t=>keyOf(t.x,t.y)).sort().join(",")}:${geometry}`;
+    }).sort().join("|");
   }
+
   cascadeSignatureFor(edges){
     return edges.map(e=>`${e.id}:${e.top.toFixed(2)}:${e.bottom.toFixed(2)}:${e.speed.toFixed(2)}`).sort().join("|");
   }
@@ -410,10 +496,13 @@ export class WaterRenderer{
     const cascades=this.cascadeEdges(state,waterTiles);
     this.syncSurfaceDynamics(waterTiles);
 
-    const surfaceSignature=this.surfaceSignatureFor(components);
+    const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
       this.disposeMap(this.surfaceMeshes);
-      for(const component of components)this.surfaceMeshes.set(component.id,this.buildSurface(component));
+      for(const component of components){
+        const mesh=this.buildSurface(component,state);
+        if(mesh)this.surfaceMeshes.set(component.id,mesh);
+      }
       this.surfaceSignature=surfaceSignature;
     }
 
@@ -447,7 +536,10 @@ export class WaterRenderer{
       thinCascadeRibbon:true,
       perTileWaterBoxes:false,
       minVisibleWaterDepth:MIN_WATER_DEPTH,
-      shorelineSkirts:false
+      shorelineSkirts:false,
+      terrainClippedShoreline:true,
+      cascadesRequireHydrologyDirection:true,
+      cascadesRequireDownstreamWater:true
     };
   }
 }

@@ -13,15 +13,20 @@ function create(ctx){
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function visibilityModel(){
-    const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));if(!s.environmentState||!window.EnvironmentEngine?.visionModifier)return{active:false,visible:allVisible};
+    const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`)),observers=viewerObservers(s);
+    // Card/deployment phase may legitimately begin with zero player units on the map.
+    // That temporary state must not become an empty visibility mask.
+    if(!observers.length)return{active:false,visible:allVisible,observerless:true};
+    if(!s.environmentState||!window.EnvironmentEngine?.visionModifier)return{active:false,visible:allVisible,observerless:false};
     const blockers=(s.map.tiles||[]).filter(tile=>EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked),limit=Number(EnvironmentEngine.visionRange?.(s.environmentState)),globalLimited=Number.isFinite(limit);
-    if(!blockers.length&&!globalLimited)return{active:false,visible:allVisible};
-    const observers=viewerObservers(s),visible=new Set();for(const tile of s.map.tiles||[])if(observers.some(observer=>(observer.x===tile.x&&observer.y===tile.y)||TacticalEngine.canSee(s.map,observer,tile,s.environmentState)))visible.add(`${tile.x},${tile.y}`);return{active:true,visible};
+    if(!blockers.length&&!globalLimited)return{active:false,visible:allVisible,observerless:false};
+    const visible=new Set();for(const tile of s.map.tiles||[])if(observers.some(observer=>(observer.x===tile.x&&observer.y===tile.y)||TacticalEngine.canSee(s.map,observer,tile,s.environmentState)))visible.add(`${tile.x},${tile.y}`);return{active:true,visible,observerless:false};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
   function unitVisibleToPlayer(unit,visibility=visibilityModel()){
     if(!unit?.alive)return false;
     if(unit.team===viewerTeam)return true;
+    if(visibility.observerless)return true;
     const s=ctx.state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y);
     if(!tileVisible(tile,visibility))return false;
     return viewerObservers(s).some(observer=>TacticalEngine.canSee(s.map,observer,unit,s.environmentState));

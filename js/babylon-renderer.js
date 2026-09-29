@@ -32,7 +32,9 @@ export class BabylonRenderer{
 
     this.camera=new BattleCamera(this.scene,canvas,state);
     this.terrain=new TerrainRenderer(this.scene);
-    this.water=new WaterRenderer(this.scene);
+    // Water shoreline clipping reuses the exact terrain ring samples. Renderer
+    // layers stay visual-only, but they now agree on one geometric surface.
+    this.water=new WaterRenderer(this.scene,this.terrain);
     this.mapObjects=new MapObjectRenderer(this.scene);
     this.environment=new EnvironmentRenderer(this.scene);
     this.objectives=new ObjectiveRenderer(this.scene);
