@@ -39,6 +39,15 @@ function mixColors(tiles){
 function shade(color,factor){
   return color.map(value=>Math.max(0,Math.min(1,value*factor)));
 }
+function forceUpwardNormals(normals){
+  for(let i=0;i<normals.length;i+=3){
+    if(Number(normals[i+1]||0)>=0)continue;
+    normals[i]*=-1;
+    normals[i+1]*=-1;
+    normals[i+2]*=-1;
+  }
+  return normals;
+}
 
 export class TerrainRenderer{
   constructor(scene){
@@ -55,8 +64,8 @@ export class TerrainRenderer{
     material.ambientColor=new BABYLON.Color3(.30,.30,.30);
     material.specularColor=new BABYLON.Color3(.025,.025,.025);
     material.specularPower=8;
-    // Visual terrain must never disappear because a triangle winding differs.
     material.backFaceCulling=false;
+    material.twoSidedLighting=true;
     return material;
   }
 
@@ -150,7 +159,6 @@ export class TerrainRenderer{
     const key=this.vertexKey(point);
     if(cache.has(key)){
       const index=cache.get(key);
-      // Blend shared-vertex colour instead of making visible tile seams.
       const offset=index*4;
       out.colors[offset]=(out.colors[offset]+color[0])*.5;
       out.colors[offset+1]=(out.colors[offset+1]+color[1])*.5;
@@ -210,6 +218,7 @@ export class TerrainRenderer{
     }
 
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
+    forceUpwardNormals(out.normals);
 
     const mesh=new BABYLON.Mesh("terrain-surface",this.scene);
     const data=new BABYLON.VertexData();
@@ -227,7 +236,8 @@ export class TerrainRenderer{
       kind:"terrain-surface",
       tileCount:tiles.length,
       polygonal:true,
-      sharedVertices:true
+      sharedVertices:true,
+      upwardNormals:true
     };
     return mesh;
   }
@@ -324,7 +334,8 @@ export class TerrainRenderer{
       sharedVertices:true,
       tileBoxes:false,
       permanentGridLines:false,
-      backfaceSafe:true
+      backfaceSafe:true,
+      upwardNormals:true
     };
   }
 }
