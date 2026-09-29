@@ -17,6 +17,7 @@ export class BabylonRenderer{
     this.engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true});
     this.scene=new BABYLON.Scene(this.engine);
     this.scene.clearColor=new BABYLON.Color4(.035,.055,.08,1);
+    this.subsystemErrors=new Map();
 
     const hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
     hemi.intensity=.75;
@@ -45,19 +46,40 @@ export class BabylonRenderer{
     window.addEventListener("resize",()=>this.resize());
   }
 
+  syncSubsystem(name,fn){
+    try{
+      fn();
+      this.subsystemErrors.delete(name);
+      return true;
+    }catch(error){
+      const message=String(error?.stack||error?.message||error);
+      if(this.subsystemErrors.get(name)!==message){
+        this.subsystemErrors.set(name,message);
+        console.error(`[BabylonRenderer:${name}]`,error);
+      }
+      return false;
+    }
+  }
+
   sync(state,presentationEvents=[]){
     this.lastState=state;
-    this.camera.sync(state);
-    this.terrain.sync(state);
-    this.water.sync(state);
-    this.mapObjects.sync(state);
-    this.environment.sync(state);
-    this.objectives.sync(state);
-    this.highlights.sync(state);
-    this.units.sync(state,presentationEvents);
-    this.unitHud.sync(state);
-    this.picker.sync(state);
-    this.syncActionAnchor(state);
+
+    // Critical interaction/state surfaces go first. A visual subsystem failure must
+    // never make the battlefield impossible to click or hide objectives.
+    this.syncSubsystem("camera",()=>this.camera.sync(state));
+    this.syncSubsystem("picker",()=>this.picker.sync(state));
+    this.syncSubsystem("objectives",()=>this.objectives.sync(state));
+    this.syncSubsystem("highlights",()=>this.highlights.sync(state));
+
+    // Visual subsystems are independent render clients of the same GridState.
+    this.syncSubsystem("terrain",()=>this.terrain.sync(state));
+    this.syncSubsystem("water",()=>this.water.sync(state));
+    this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
+    this.syncSubsystem("environment",()=>this.environment.sync(state));
+    this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
+    this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
+
+    this.syncSubsystem("actionAnchor",()=>this.syncActionAnchor(state));
   }
 
   syncActionAnchor(state){
@@ -92,9 +114,9 @@ export class BabylonRenderer{
   resize(){
     this.engine.resize();
     if(this.lastState){
-      this.camera.sync(this.lastState);
-      this.unitHud.updateFrame();
-      this.syncActionAnchor(this.lastState);
+      this.syncSubsystem("camera",()=>this.camera.sync(this.lastState));
+      this.syncSubsystem("unitHudFrame",()=>this.unitHud.updateFrame());
+      this.syncSubsystem("actionAnchor",()=>this.syncActionAnchor(this.lastState));
     }
   }
 
@@ -108,6 +130,7 @@ export class BabylonRenderer{
       projection:this.camera.getViewState().projection,
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,
+      rendererErrors:Object.fromEntries(this.subsystemErrors),
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
       units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},
