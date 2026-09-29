@@ -11,7 +11,7 @@ globalThis.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"MEDIUM"
 const CORE_LOAD_ORDER=[
   "terrain-database.js","environment-object-engine.js","map-database.js","hydrology-engine.js","mass-flow-engine.js","climate-engine.js","environment-resolver.js",
   "map-generator.js","conductivity-engine.js","environment-engine.js","stage-database.js","visual-database.js","unit-animation-engine.js",
-  "skill-database.js","equipment-database.js","companion-database.js","character-database.js","card-database.js","monster-database.js",
+  "skill-database.js","equipment-database.js","companion-database.js","character-database.js","card-database.js","loadout-database.js","monster-database.js",
   "pack-database.js","pack-engine.js",
   "deck-engine.js","deployment-engine.js","card-phase-engine.js","battle-log.js","battle-engine.js","effect-engine.js",
   "tactical-engine.js","vertical-mobility-engine.js","environment-contact-engine.js","unit-runtime-engine.js","battle-setup-engine.js","battle-presentation-controller.js",
@@ -38,6 +38,9 @@ try{
     bootStatus.textContent=`載入戰鬥核心 ${i+1}/${CORE_LOAD_ORDER.length}｜${file}`;
     await load(`./${file}`);
   }
+
+  loadingStep="loadout-validation";
+  LoadoutDatabase.validate();
 
   loadingStep="tactical-game.js";
   bootStatus.textContent="啟動 Card Tactics Runtime...";
