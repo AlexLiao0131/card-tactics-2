@@ -1,5 +1,6 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 
+const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
 const keyOf=(tile,type)=>`${tile.x},${tile.y}:${type}`;
 const surfaceOf=tile=>tile.waterSurfaceZ==null
   ?Number(tile.elevation||0)
