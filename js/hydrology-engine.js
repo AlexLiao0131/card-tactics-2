@@ -28,18 +28,180 @@ export const HydrologyEngine=(()=>{
 
   function sourceFedWaterKeys(map){
     const tiles=map?.tiles||[],by=new Map(tiles.map(t=>[key(t.x,t.y),t])),seen=new Set(),q=[];
-    for(const tile of tiles)if(tile?.hydrologySource===true||tile?.river===true)q.push(tile);
+    // Only real hydrology sources seed a permanent water network.
+    // `river:true` describes channel topology; it is not itself an infinite source.
+    for(const tile of tiles)if(tile?.hydrologySource===true)q.push(tile);
     while(q.length){
       const t=q.shift(),k=key(t.x,t.y);if(seen.has(k))continue;
-      const source=t?.hydrologySource===true||t?.river===true;
+      const source=t?.hydrologySource===true;
       if(!source&&!isWater(t))continue;
       seen.add(k);
       for(const[dx,dy]of DIRS){
         const n=by.get(key(t.x+dx,t.y+dy));if(!n||seen.has(key(n.x,n.y)))continue;
-        if(isWater(n)||n.hydrologySource===true||n.river===true)q.push(n);
+        if(isWater(n)||n.hydrologySource===true)q.push(n);
       }
     }
     return seen;
+  }
+
+  function riverComponents(map){
+    const rivers=(map?.tiles||[]).filter(tile=>tile?.river===true);
+    const by=new Map(rivers.map(tile=>[key(tile.x,tile.y),tile])),remaining=new Set(by.keys()),out=[];
+    while(remaining.size){
+      const first=remaining.values().next().value;
+      remaining.delete(first);
+      const q=[by.get(first)],component=[];
+      while(q.length){
+        const tile=q.shift();
+        if(!tile)continue;
+        component.push(tile);
+        for(const[dx,dy]of DIRS){
+          const k=key(tile.x+dx,tile.y+dy);
+          if(!remaining.has(k))continue;
+          remaining.delete(k);
+          q.push(by.get(k));
+        }
+      }
+      if(component.length)out.push(component);
+    }
+    return out;
+  }
+
+  function riverPrincipalVector(component){
+    let sx=0,sy=0;
+    for(const tile of component){
+      sx+=Number(tile?.flowX||0);
+      sy+=Number(tile?.flowY||0);
+    }
+    const length=Math.hypot(sx,sy);
+    if(length>EPSILON)return{x:sx/length,y:sy/length};
+
+    const xs=component.map(tile=>Number(tile.x||0)),ys=component.map(tile=>Number(tile.y||0));
+    const spanX=Math.max(...xs)-Math.min(...xs),spanY=Math.max(...ys)-Math.min(...ys);
+    return spanY>=spanX?{x:0,y:1}:{x:1,y:0};
+  }
+
+  function riverNeighbors(tile,by){
+    const out=[];
+    for(const[dx,dy]of DIRS){
+      const neighbor=by.get(key(tile.x+dx,tile.y+dy));
+      if(neighbor)out.push(neighbor);
+    }
+    return out;
+  }
+
+  function normalizeRiverComponent(component){
+    if(!component.length)return null;
+    const by=new Map(component.map(tile=>[key(tile.x,tile.y),tile]));
+    const vector=riverPrincipalVector(component);
+    const project=tile=>Number(tile.x||0)*vector.x+Number(tile.y||0)*vector.y;
+    const leaves=component.filter(tile=>riverNeighbors(tile,by).length<=1);
+
+    let drains=component.filter(tile=>tile?.hydrologyDrain===true);
+    if(!drains.length){
+      const pool=leaves.length?leaves:component;
+      const maxProjection=Math.max(...pool.map(project));
+      drains=pool.filter(tile=>Math.abs(project(tile)-maxProjection)<=EPSILON);
+    }
+
+    const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
+    let sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
+    if(!sources.length){
+      // Every upstream dead-end is a tributary/source. This makes branches physically
+      // valid instead of creating an unexplained local water-surface hump.
+      sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
+      if(!sources.length){
+        const minProjection=Math.min(...component.map(project));
+        sources=component.filter(tile=>Math.abs(project(tile)-minProjection)<=EPSILON&&!drainKeys.has(key(tile.x,tile.y)));
+      }
+    }
+
+    // Rebuild inferred source/drain markers deterministically.
+    for(const tile of component){
+      tile.hydrologySource=false;
+      tile.hydrologyDrain=false;
+    }
+    for(const tile of sources)tile.hydrologySource=true;
+    for(const tile of drains)tile.hydrologyDrain=true;
+
+    // Graph distance to the nearest outlet defines downstream topology.
+    const distance=new Map(),q=[];
+    for(const tile of drains){
+      const k=key(tile.x,tile.y);
+      if(distance.has(k))continue;
+      distance.set(k,0);
+      q.push(tile);
+    }
+    while(q.length){
+      const tile=q.shift(),d=distance.get(key(tile.x,tile.y))||0;
+      for(const neighbor of riverNeighbors(tile,by)){
+        const k=key(neighbor.x,neighbor.y);
+        if(distance.has(k))continue;
+        distance.set(k,d+1);
+        q.push(neighbor);
+      }
+    }
+
+    const maxDistance=Math.max(1,...distance.values());
+    // Gentle river grade: enough to establish one-way flow, but not an artificial
+    // waterfall every tile. The whole river rises only ~0.2–0.45 elevation units.
+    const totalRise=clamp(maxDistance*.025,.20,.45);
+    const step=totalRise/maxDistance;
+
+    const currentOutletSurfaces=drains
+      .map(tile=>waterSurfaceZ(tile))
+      .filter(value=>value!=null&&Number.isFinite(value));
+    const outletSurface=currentOutletSurfaces.length?Math.min(...currentOutletSurfaces):WATERLINE;
+
+    for(const tile of component){
+      const d=Number(distance.get(key(tile.x,tile.y))||0);
+      const surface=clean(outletSurface+d*step);
+
+      // A ford is shallow because its river bed rises toward the water surface.
+      // The water surface itself never gets lifted above the upstream/downstream profile.
+      const depth=tile.ford===true?.35:Math.max(.75,Math.min(2,waterDepth(tile)||NATURAL_WATER_DEPTH));
+      tile.waterDepth=clean(depth);
+      tile.elevation=clean(surface-depth);
+      tile.waterSurfaceZ=surface;
+      tile.terrain="WATER";
+      tile.dryTerrain??="PLAIN";
+      tile.soilMoisture=soilCapacity(tile);
+      tile.river=true;
+
+      if(tile.hydrologyDrain===true){
+        tile.flowX=0;tile.flowY=0;
+      }else{
+        const here=d;
+        const downstream=riverNeighbors(tile,by)
+          .filter(n=>Number(distance.get(key(n.x,n.y)))<here)
+          .sort((a,b)=>
+            Number(distance.get(key(a.x,a.y)))-Number(distance.get(key(b.x,b.y)))||
+            project(b)-project(a)
+          )[0]||null;
+        tile.flowX=downstream?Math.sign(downstream.x-tile.x):0;
+        tile.flowY=downstream?Math.sign(downstream.y-tile.y):0;
+      }
+
+      const baseSpeed=tile.ford===true?.45:.62;
+      tile.baseFlowSpeed=baseSpeed;
+      tile.flowSpeed=baseSpeed;
+      tile.baseDischarge=tile.ford===true?.8:1;
+      tile.discharge=tile.baseDischarge;
+    }
+
+    return{
+      tiles:component.length,
+      sources:sources.map(tile=>({x:tile.x,y:tile.y})),
+      drains:drains.map(tile=>({x:tile.x,y:tile.y})),
+      maxDistance,
+      outletSurface,
+      sourceRise:totalRise
+    };
+  }
+
+  function normalizeRiverNetwork(map){
+    if(!map?.tiles?.length||map?.hydrology?.preserveRiverProfile===true)return[];
+    return riverComponents(map).map(normalizeRiverComponent).filter(Boolean);
   }
 
   const baselineDepth=t=>Math.max(0,Number(t?.hydrologyBaseWaterDepth||0));
@@ -65,6 +227,7 @@ export const HydrologyEngine=(()=>{
       tile.dryTerrain??="PLAIN";
       if(terrainHasSoil(tile.dryTerrain))tile.soilMoisture=soilCapacity(tile);
     }
+    map.hydrologyRiverProfiles=normalizeRiverNetwork(map);
     captureSourceBaselines(map);
     return map;
   }
@@ -244,7 +407,7 @@ export const HydrologyEngine=(()=>{
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,
-    initializeMap,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
