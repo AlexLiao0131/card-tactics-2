@@ -122,12 +122,22 @@ export const VerticalMobilityEngine=(()=>{
     return Number(profile.burrowDepth??unit?.character?.collision?.height??2);
   }
 
+  function flightAltitudeRange(unit){
+    const profile=profileOf(unit),caps=capabilities(unit);
+    if(!caps.canFly)return null;
+    const min=Math.max(0,Number(profile.minFlightAltitude??0));
+    const fallback=Math.max(min,Number(profile.flightAltitude??2));
+    const max=Math.max(min,Number(profile.maxFlightAltitude??fallback));
+    const step=Math.max(.25,Number(profile.flightAltitudeStep??1));
+    return Object.freeze({min,max,step});
+  }
+
   function describe(unit,tile,{mode=null,altitude=null,depth=null}={}){
     const profile=profileOf(unit),ground=groundZ(tile),waterDepthValue=waterDepth(tile),waterSurface=waterSurfaceZ(tile),surface=surfaceZ(tile);
     const effective=effectiveMode(unit,tile,{mode});
     const requestedAltitude=rememberedFlightAltitude(unit,altitude);
-    const maxAltitude=Math.max(0,Number(profile.maxFlightAltitude??requestedAltitude??2));
-    const flightAltitude=clamp(requestedAltitude,0,maxAltitude||Number(requestedAltitude||0));
+    const flight=flightAltitudeRange(unit)||{min:0,max:Math.max(0,Number(requestedAltitude||0)),step:1};
+    const flightAltitude=clamp(requestedAltitude,flight.min,flight.max);
     const requestedDepth=depth==null?Math.max(rememberedDiveDepth(unit),bodyHeight(unit)):Number(depth);
     const maxDive=Math.max(0,Math.min(waterDepthValue,Number(profile.maxDiveDepth??waterDepthValue)));
     const diveDepth=clamp(requestedDepth,0,maxDive);
@@ -225,6 +235,21 @@ export const VerticalMobilityEngine=(()=>{
     return{ok:true,state:syncUnit(unit,tile,{mode:normalized,altitude,depth})};
   }
 
+  function setFlightAltitude(unit,tile,altitude){
+    if(!unit||!tile)return{ok:false,reason:"INVALID_TARGET"};
+    const range=flightAltitudeRange(unit);
+    if(!range)return{ok:false,reason:"MODE_NOT_AVAILABLE"};
+    const value=clamp(altitude,range.min,range.max);
+    return setMode(unit,tile,MODE.FLYING,{altitude:value});
+  }
+
+  function adjustFlightAltitude(unit,tile,steps=1){
+    const range=flightAltitudeRange(unit);
+    if(!range)return{ok:false,reason:"MODE_NOT_AVAILABLE"};
+    const current=describe(unit,tile).flightAltitude;
+    return setFlightAltitude(unit,tile,current+Number(steps||0)*range.step);
+  }
+
   function isMode(unit,...modes){return modes.includes(String(unit?.verticalState?.mode||""));}
   function isAirborne(unit){return isMode(unit,MODE.FLYING);}
   function isBurrowed(unit){return isMode(unit,MODE.BURROWED);}
@@ -272,6 +297,7 @@ export const VerticalMobilityEngine=(()=>{
 
   return Object.freeze({
     MODE,LAYER,capabilities,defaultMode,effectiveMode,layerForMode,describe,verticalSpan,syncUnit,initialize,setMode,
+    flightAltitudeRange,setFlightAltitude,adjustFlightAltitude,
     isAirborne,isBurrowed,isSubmerged,ignoresWaterInteraction,ignoresCurrent,contactsWater,contactsGround,
     ignoresFall,ignoresElevation,movementIgnoresTerrainCost,canOccupyTerrain,objectBlocks,traversalZ,eyeZ,
     groundZ,waterDepth,waterSurfaceZ,surfaceZ,bodyHeight,wadingLimit

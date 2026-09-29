@@ -15,7 +15,7 @@ export const EQUIPMENT={
   beast_poison_throwing_knife:{id:"beast_poison_throwing_knife",name:"淬毒投擲刀",kind:"WEAPON",weaponKind:"KNIFE",attackType:"PIERCE",element:"NONE",affixes:[]},
   angel_longbow:{id:"angel_longbow",name:"天使長弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
 
-  ophi_elven_bow:{id:"ophi_elven_bow",name:"奧菲的精靈長弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
+  ophi_elven_bow:{id:"ophi_elven_bow",name:"奧菲的精靈長弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[],basicSkillId:"ophi_elven_shot"},
   colin_war_hammer:{id:"colin_war_hammer",name:"寇林的戰錘",kind:"WEAPON",weaponKind:"HAMMER",attackType:"STRIKE",element:"NONE",affixes:[]},
   colin_full_body_shield:{id:"colin_full_body_shield",name:"寇林的全身大盾",kind:"ACCESSORY",affixes:[],defenseProfiles:[{id:"colin_full_body_guard",method:"GUARD",name:"全身大盾格擋",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.35},PIERCE:{damageMultiplier:.40},SHOT:{damageMultiplier:.25},STRIKE:{damageMultiplier:.55},MAGIC:{damageMultiplier:.80}}}]},
 
@@ -41,6 +41,14 @@ export const EQUIPMENT={
   buckler:{id:"buckler",name:"小圓盾",kind:"ACCESSORY",affixes:[],defenseProfiles:[{id:"buckler_guard",method:"GUARD",name:"小圓盾格擋",vs:{SLASH:{damageMultiplier:.65},PIERCE:{damageMultiplier:.70},SHOT:{damageMultiplier:.60},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.95}}}]},
   elf_blessed_guard:{id:"elf_blessed_guard",name:"精靈祝福武器",kind:"GUARD",affixes:["ARTIFACT_PARRY"],defenseProfiles:[{id:"artifact_parry",method:"PARRY",name:"神器招架",artifact:true,vs:{SLASH:{chance:90},PIERCE:{chance:85},SHOT:{chance:60},STRIKE:{chance:40},MAGIC:{chance:55}}}]}
 };
-export const EquipmentDatabase=(()=>{function get(id){return EQUIPMENT[id]||null}function list(ids=[]){return ids.map(get).filter(Boolean)}function equippedItems(character){return[...Object.values(character?.weapons||{}),character?.armor,...(character?.equipment||[]),character?.guard].filter(Boolean)}function defenseProfiles(character){const profiles=[];for(const item of equippedItems(character))for(const profile of item.defenseProfiles||[])profiles.push({...profile,sourceId:item.id,sourceName:item.name});return profiles}function resolveLoadout(loadout={}){const weapons={};Object.entries(loadout.weaponIds||{}).forEach(([slot,id])=>{const item=get(id);if(item)weapons[slot]=item});return{armor:get(loadout.armorId)||{name:"無甲",type:"NONE",types:["NONE"],element:"NONE",affixes:[]},weapons,equipment:list(loadout.equipmentIds),guard:loadout.guardId?get(loadout.guardId):undefined}}return{get,list,equippedItems,defenseProfiles,resolveLoadout}})();
+export const EquipmentDatabase=(()=>{
+  function get(id){return EQUIPMENT[id]||null}
+  function list(ids=[]){return ids.map(get).filter(Boolean)}
+  function equippedItems(character){return[...Object.values(character?.weapons||{}),character?.armor,...(character?.equipment||[]),character?.guard].filter(Boolean)}
+  function defenseProfiles(character){const profiles=[];for(const item of equippedItems(character))for(const profile of item.defenseProfiles||[])profiles.push({...profile,sourceId:item.id,sourceName:item.name});return profiles}
+  function resolveLoadout(loadout={}){const weapons={};Object.entries(loadout.weaponIds||{}).forEach(([slot,id])=>{const item=get(id);if(item)weapons[slot]=item});return{armor:get(loadout.armorId)||{name:"無甲",type:"NONE",types:["NONE"],element:"NONE",affixes:[]},weapons,equipment:list(loadout.equipmentIds),guard:loadout.guardId?get(loadout.guardId):undefined}}
+  function grantedSkillIds(character){const out=[];for(const item of equippedItems(character)){if(item?.basicSkillId)out.push(item.basicSkillId);for(const id of item?.grantedSkillIds||[])out.push(id)}return[...new Set(out)]}
+  return{get,list,equippedItems,defenseProfiles,resolveLoadout,grantedSkillIds}
+})();
 globalThis.EQUIPMENT=EQUIPMENT;
 globalThis.EquipmentDatabase=EquipmentDatabase;

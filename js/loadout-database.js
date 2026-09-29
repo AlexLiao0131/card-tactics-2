@@ -57,6 +57,7 @@ export const LoadoutDatabase=(()=>{
     const character=CharacterDatabase.get(characterId);if(!character)return null;
     const loadout=resolveLoadout(characterId,loadoutId);
     const equipment=EquipmentDatabase.resolveLoadout(loadout);
+    const skillIds=[...new Set([...(loadout.skillIds||[]),...EquipmentDatabase.grantedSkillIds(equipment)])];
     return {
       ...character,
       loadoutId:loadout.id,
@@ -64,8 +65,8 @@ export const LoadoutDatabase=(()=>{
       guardId:loadout.guardId||null,
       weaponIds:{...(loadout.weaponIds||{})},
       equipmentIds:[...(loadout.equipmentIds||[])],
-      skillIds:[...(loadout.skillIds||[])],
-      skills:[...(loadout.skillIds||[])],
+      skillIds,
+      skills:[...skillIds],
       companionIds:[...(loadout.companionIds||[])],
       generatedCardsOnDeploy:[...(loadout.generatedCardsOnDeploy||[])],
       ...equipment
@@ -91,7 +92,9 @@ export const LoadoutDatabase=(()=>{
       if(!hasEquipment(loadout.guardId))errors.push(`${loadout.id}: missing guard ${loadout.guardId}`);
       for(const id of loadout.equipmentIds||[])if(!hasEquipment(id))errors.push(`${loadout.id}: missing equipment ${id}`);
       for(const id of loadout.companionIds||[])if(!CompanionDatabase.get(id))errors.push(`${loadout.id}: missing companion ${id}`);
-      for(const id of loadout.skillIds||[]){
+      const resolvedEquipment=EquipmentDatabase.resolveLoadout(loadout);
+      const resolvedSkillIds=[...new Set([...(loadout.skillIds||[]),...EquipmentDatabase.grantedSkillIds(resolvedEquipment)])];
+      for(const id of resolvedSkillIds){
         const skill=globalThis.SKILLS?.[id];
         if(!skill){errors.push(`${loadout.id}: missing skill ${id}`);continue;}
         for(const weaponRef of skillWeaponRefs(skill))if(!knownWeaponRefs.has(weaponRef)&&!EquipmentDatabase.get(weaponRef))errors.push(`${loadout.id}: skill ${id} references unknown weapon ${weaponRef}`);

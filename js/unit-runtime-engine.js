@@ -34,6 +34,7 @@ export const UnitRuntimeEngine=(()=>{
       countsForObjectives:runtimeCharacter.countsForObjectives!==false,
       companionId:runtimeCharacter.companionId||null,
       ownerCharacterId:runtimeCharacter.ownerCharacterId||null,
+      cargo:[],
       skillResources:createSkillResources(),effects:[],grantedSkills:[],_runtimeMap:map};
     for(const passive of SkillDatabase.passiveList(runtimeCharacter?.passives||[])){
       for(const effect of passive.openingEffects||[])unit.effects.push(JSON.parse(JSON.stringify(effect)));
@@ -56,9 +57,16 @@ export const UnitRuntimeEngine=(()=>{
     if(!CardDatabase.isCharacter(card))return null;
     return create({id,team,characterId:card.characterId,loadoutId:card.loadoutId,x,y,map});
   }
+  function syncLiveRoster(units=[]){
+    const roster=units||[],ids=new Set(roster.map(unit=>unit?.id).filter(Boolean));
+    for(const id of [...liveUnits.keys()])if(!ids.has(id))liveUnits.delete(id);
+    for(const unit of roster)if(unit?.id)liveUnits.set(unit.id,unit);
+    return roster;
+  }
   function reconcileCompanions(units){
+    const roster=syncLiveRoster(units||[]);
     if(!globalThis.CompanionDatabase?.reconcileUnits)return[];
-    return CompanionDatabase.reconcileUnits(units||[]);
+    return CompanionDatabase.reconcileUnits(roster);
   }
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
@@ -80,6 +88,35 @@ export const UnitRuntimeEngine=(()=>{
   function getLiveUnit(id){return liveUnits.get(id)||null}
   function rotateFacing(id,steps=1){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.rotateFacing(unit,steps)}
   function setFacing(id,facing){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.setFacing(unit,facing)}
-  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType,getLiveUnit,rotateFacing,setFacing});
+  function flightControl(id){
+    const unit=getLiveUnit(id);if(!unit?.alive||!globalThis.VerticalMobilityEngine?.flightAltitudeRange)return null;
+    const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null,range=VerticalMobilityEngine.flightAltitudeRange(unit);
+    if(!tile||!range)return null;const state=VerticalMobilityEngine.describe(unit,tile);
+    return{...range,altitude:Number(state.flightAltitude||0),mode:state.mode};
+  }
+  function adjustFlightAltitude(id,steps=1){
+    const unit=getLiveUnit(id);if(!unit?.alive||!globalThis.VerticalMobilityEngine?.adjustFlightAltitude)return null;
+    const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;if(!tile)return null;
+    const result=VerticalMobilityEngine.adjustFlightAltitude(unit,tile,steps);return result?.ok?result.state:null;
+  }
+  function cargoProfile(unit){return unit?.character?.cargo||null}
+  function cargoList(unit){return[...(unit?.cargo||[])]}
+  function canLoadCargo(unit,payload){
+    const profile=cargoProfile(unit);if(!profile||!payload)return false;
+    const capacity=Math.max(0,Number(profile.capacity||0));if((unit.cargo||[]).length>=capacity)return false;
+    const type=String(payload.type||payload.kind||"").toUpperCase(),allowed=(profile.payloadTypes||[]).map(value=>String(value).toUpperCase());
+    return !allowed.length||allowed.includes(type);
+  }
+  function loadCargo(unit,payload){if(!canLoadCargo(unit,payload))return false;unit.cargo??=[];unit.cargo.push(payload);return true}
+  function unloadCargo(unit,payloadId=null){
+    if(!unit?.cargo?.length)return null;const index=payloadId==null?0:unit.cargo.findIndex(payload=>payload?.id===payloadId);
+    if(index<0)return null;return unit.cargo.splice(index,1)[0]||null;
+  }
+  function transferCargo(from,to,payloadId=null){
+    if(!from?.alive||!to?.alive)return false;const index=payloadId==null?0:(from.cargo||[]).findIndex(payload=>payload?.id===payloadId);
+    if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
+    const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
+  }
+  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;
