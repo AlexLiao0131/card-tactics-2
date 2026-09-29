@@ -13,6 +13,11 @@ const EPSILON=.001;
 const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const SHORE_EPSILON=.002;
+const SHORE_CONVEX_INSET=.20;
+const SHORE_PAIR_INSET=.08;
+const SHORE_CONCAVE_OUTSET=.10;
+const SHORE_EDGE_RELAX=.38;
+const SHORE_SEARCH_STEPS=12;
 
 const DIRS=Object.freeze([
   {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
@@ -22,6 +27,9 @@ const EDGE_DIR_BY_RING=Object.freeze({
 });
 const CORNER_DIR_BY_RING=Object.freeze({
   0:{dx:-1,dy:-1},2:{dx:1,dy:-1},4:{dx:1,dy:1},6:{dx:-1,dy:1}
+});
+const EDGE_CORNERS=Object.freeze({
+  1:[0,2],3:[2,4],5:[4,6],7:[6,0]
 });
 
 function visualSurface(tile){
@@ -224,34 +232,71 @@ export class WaterRenderer{
     ];
   }
 
-  cornerMembers(tile,index,allMap){
+  cornerContext(tile,index,allMap){
     const dir=CORNER_DIR_BY_RING[index];
-    if(!dir)return[tile];
+    if(!dir)return null;
 
-    const xNeighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y));
-    const yNeighbor=allMap.get(keyOf(tile.x,tile.y+dir.dy));
-    const diagonal=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-    const members=[tile];
+    const gx=Number(tile.x)+dir.dx*.5;
+    const gy=Number(tile.y)+dir.dy*.5;
+    const xs=[Math.floor(gx),Math.ceil(gx)];
+    const ys=[Math.floor(gy),Math.ceil(gy)];
+    const slots=[];
+    for(const y of ys)for(const x of xs){
+      slots.push({x,y,tile:allMap.get(keyOf(x,y))||null});
+    }
 
-    const xConnected=this.continuousWaterEdge(tile,xNeighbor);
-    const yConnected=this.continuousWaterEdge(tile,yNeighbor);
-    if(xConnected)members.push(xNeighbor);
-    if(yConnected)members.push(yNeighbor);
-    if(diagonal&&(
-      (xConnected&&this.continuousWaterEdge(xNeighbor,diagonal))||
-      (yConnected&&this.continuousWaterEdge(yNeighbor,diagonal))
-    ))members.push(diagonal);
+    const slotTiles=new Map(slots.filter(slot=>slot.tile).map(slot=>[keyOf(slot.x,slot.y),slot.tile]));
+    const start=slotTiles.get(keyOf(tile.x,tile.y));
+    const members=[];
+    const seen=new Set();
+    const queue=start&&hasVisibleWater(start)?[start]:[];
 
-    return[...new Map(members.map(member=>[keyOf(member.x,member.y),member])).values()];
+    while(queue.length){
+      const current=queue.shift();
+      const currentKey=keyOf(current.x,current.y);
+      if(seen.has(currentKey))continue;
+      seen.add(currentKey);
+      members.push(current);
+
+      for(const dir of DIRS){
+        const next=slotTiles.get(keyOf(current.x+dir.dx,current.y+dir.dy));
+        if(!next||seen.has(keyOf(next.x,next.y)))continue;
+        if(this.continuousWaterEdge(current,next))queue.push(next);
+      }
+    }
+
+    const memberKeys=new Set(members.map(member=>keyOf(member.x,member.y)));
+    const drySlots=slots.filter(slot=>!memberKeys.has(keyOf(slot.x,slot.y)));
+    let cascade=false;
+    for(const member of members){
+      for(const dir of DIRS){
+        const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
+        if(!next||memberKeys.has(keyOf(next.x,next.y))||!hasAnyWater(next))continue;
+        if(this.isCascadeBoundary(member,next)){cascade=true;break;}
+      }
+      if(cascade)break;
+    }
+
+    return{gx,gy,slots,members,drySlots,memberKeys,cascade};
   }
 
-  ringIsInternal(tile,index,allMap){
+  cornerMembers(tile,index,allMap){
+    return this.cornerContext(tile,index,allMap)?.members||[tile];
+  }
+
+  ringMode(tile,index,allMap){
     const edgeDir=EDGE_DIR_BY_RING[index];
     if(edgeDir){
       const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
-      return this.continuousWaterEdge(tile,neighbor);
+      if(this.continuousWaterEdge(tile,neighbor))return"INTERNAL";
+      if(neighbor&&hasAnyWater(neighbor)&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
+      return"SHORE";
     }
-    return this.cornerMembers(tile,index,allMap).length>1;
+
+    const context=this.cornerContext(tile,index,allMap);
+    if(!context)return"SHORE";
+    if(context.cascade)return"CASCADE";
+    return context.members.length===4?"INTERNAL":"SHORE";
   }
 
   ringWaterLevel(tile,index,allMap){
@@ -263,36 +308,190 @@ export class WaterRenderer{
       }
       return visualSurface(tile);
     }
-    return average(this.cornerMembers(tile,index,allMap).map(visualSurface));
+
+    const members=this.cornerMembers(tile,index,allMap);
+    return members.length?average(members.map(visualSurface)):visualSurface(tile);
+  }
+
+  terrainCanRelax(a,b){
+    if(!a||!b)return true;
+    if(this.terrainRenderer?.canSlope)return this.terrainRenderer.canSlope(a,b);
+    return Math.abs(Number(a.elevation||0)-Number(b.elevation||0))<=1.0001;
+  }
+
+  cornerCanRelax(context){
+    if(!context||context.cascade)return false;
+    const members=context.members||[];
+    const memberKeys=context.memberKeys||new Set();
+    const slotTiles=new Map(context.slots.filter(slot=>slot.tile).map(slot=>[keyOf(slot.x,slot.y),slot.tile]));
+
+    for(const member of members){
+      for(const dir of DIRS){
+        const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
+        if(!next||memberKeys.has(keyOf(next.x,next.y)))continue;
+        if(!this.terrainCanRelax(member,next))return false;
+      }
+    }
+    return true;
+  }
+
+  centroidOfTiles(tiles){
+    if(!tiles?.length)return null;
+    return{
+      x:average(tiles.map(tile=>Number(tile.x)))*TILE_SIZE,
+      z:average(tiles.map(tile=>Number(tile.y)))*TILE_SIZE,
+      level:average(tiles.map(visualSurface))
+    };
+  }
+
+  cornerNaturalTarget(tile,index,allMap){
+    const context=this.cornerContext(tile,index,allMap);
+    const sampleX=(Number(tile.x)+(CORNER_DIR_BY_RING[index]?.dx||0)*.5)*TILE_SIZE;
+    const sampleZ=(Number(tile.y)+(CORNER_DIR_BY_RING[index]?.dy||0)*.5)*TILE_SIZE;
+    const base={x:sampleX,z:sampleZ};
+    if(!context||!this.cornerCanRelax(context))return base;
+
+    const wet=context.members||[];
+    const count=wet.length;
+    if(!count||count===4)return base;
+
+    let targetCentroid=null;
+    let amount=0;
+    if(count===1){
+      targetCentroid=this.centroidOfTiles(wet);
+      amount=SHORE_CONVEX_INSET;
+    }else if(count===2){
+      targetCentroid=this.centroidOfTiles(wet);
+      amount=SHORE_PAIR_INSET;
+    }else if(count===3){
+      const existingDry=context.drySlots.filter(slot=>slot.tile).map(slot=>slot.tile);
+      if(!existingDry.length)return base;
+      targetCentroid=this.centroidOfTiles(existingDry);
+      amount=SHORE_CONCAVE_OUTSET;
+    }
+    if(!targetCentroid||amount<=0)return base;
+
+    const dx=targetCentroid.x-base.x,dz=targetCentroid.z-base.z;
+    const length=Math.hypot(dx,dz);
+    if(length<=EPSILON)return base;
+    return{
+      x:base.x+dx/length*TILE_SIZE*amount,
+      z:base.z+dz/length*TILE_SIZE*amount
+    };
+  }
+
+  edgeNaturalTarget(tile,index,sample,allMap){
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const base={
+      x:cx+Number(sample.ox||0)*TILE_SIZE,
+      z:cz+Number(sample.oz||0)*TILE_SIZE
+    };
+    const edgeDir=EDGE_DIR_BY_RING[index];
+    const neighbor=edgeDir?allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy)):null;
+    if(neighbor&&!this.terrainCanRelax(tile,neighbor))return base;
+
+    const cornerIndices=EDGE_CORNERS[index];
+    if(!cornerIndices)return base;
+    const a=this.cornerNaturalTarget(tile,cornerIndices[0],allMap);
+    const b=this.cornerNaturalTarget(tile,cornerIndices[1],allMap);
+    const smoothed={x:(a.x+b.x)/2,z:(a.z+b.z)/2};
+    return{
+      x:base.x+(smoothed.x-base.x)*SHORE_EDGE_RELAX,
+      z:base.z+(smoothed.z-base.z)*SHORE_EDGE_RELAX
+    };
+  }
+
+  naturalShoreTarget(tile,index,sample,allMap){
+    return CORNER_DIR_BY_RING[index]
+      ?this.cornerNaturalTarget(tile,index,allMap)
+      :this.edgeNaturalTarget(tile,index,sample,allMap);
+  }
+
+  terrainHeightAt(worldX,worldZ,allMap){
+    const tx=Math.round(worldX/TILE_SIZE),ty=Math.round(worldZ/TILE_SIZE);
+    const tile=allMap.get(keyOf(tx,ty));
+    if(!tile)return null;
+
+    const cx=tx*TILE_SIZE,cz=ty*TILE_SIZE;
+    const px=(worldX-cx)/TILE_SIZE,pz=(worldZ-cz)/TILE_SIZE;
+    const centerHeight=Number(tile.elevation||0);
+    const ring=this.terrainRing(tile,allMap);
+    const a={x:0,z:0,height:centerHeight};
+
+    for(let i=0;i<ring.length;i++){
+      const b={x:Number(ring[i].ox||0),z:Number(ring[i].oz||0),height:Number(ring[i].height||0)};
+      const next=ring[(i+1)%ring.length];
+      const c={x:Number(next.ox||0),z:Number(next.oz||0),height:Number(next.height||0)};
+      const denom=(b.z-c.z)*(a.x-c.x)+(c.x-b.x)*(a.z-c.z);
+      if(Math.abs(denom)<=EPSILON)continue;
+      const wa=((b.z-c.z)*(px-c.x)+(c.x-b.x)*(pz-c.z))/denom;
+      const wb=((c.z-a.z)*(px-c.x)+(a.x-c.x)*(pz-c.z))/denom;
+      const wc=1-wa-wb;
+      if(wa>=-1e-5&&wb>=-1e-5&&wc>=-1e-5){
+        return wa*a.height+wb*b.height+wc*c.height;
+      }
+    }
+    return centerHeight;
+  }
+
+  projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
+    const clearance=t=>{
+      const x=anchor.x+(target.x-anchor.x)*t;
+      const z=anchor.z+(target.z-anchor.z)*t;
+      const level=anchorLevel+(targetLevel-anchorLevel)*t;
+      const terrain=this.terrainHeightAt(x,z,allMap);
+      const resolved=terrain==null?fallbackTerrain:terrain;
+      return{value:level-Number(resolved||0),x,z,level};
+    };
+
+    const end=clearance(1);
+    if(end.value>=-SHORE_EPSILON)return{x:end.x,z:end.z,level:end.level,clipped:false};
+
+    const start=clearance(0);
+    if(start.value<=SHORE_EPSILON)return{x:start.x,z:start.z,level:start.level,clipped:true};
+
+    let low=0,high=1;
+    for(let i=0;i<SHORE_SEARCH_STEPS;i++){
+      const mid=(low+high)/2;
+      if(clearance(mid).value>=0)low=mid;else high=mid;
+    }
+    const hit=clearance((low+high)/2);
+    return{x:hit.x,z:hit.z,level:hit.level,clipped:true};
   }
 
   shorelinePoint(tile,index,sample,allMap){
     const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
     const fullX=cx+Number(sample.ox||0)*TILE_SIZE;
     const fullZ=cz+Number(sample.oz||0)*TILE_SIZE;
-    const centerWater=visualSurface(tile);
+    const mode=this.ringMode(tile,index,allMap);
     const ringWater=this.ringWaterLevel(tile,index,allMap);
 
-    if(this.ringIsInternal(tile,index,allMap)){
-      return{x:fullX,z:fullZ,level:ringWater,clipped:false};
+    if(mode!=="SHORE"){
+      return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,mode};
     }
 
-    const centerTerrain=Number(tile.elevation||0);
-    const boundaryTerrain=Number(sample.height||0);
-    const centerClearance=centerWater-centerTerrain;
-    const boundaryClearance=ringWater-boundaryTerrain;
-    let t=1;
+    const target=this.naturalShoreTarget(tile,index,sample,allMap);
+    let anchor={x:cx,z:cz};
+    let anchorLevel=visualSurface(tile);
 
-    if(boundaryClearance<-SHORE_EPSILON){
-      const denom=centerClearance-boundaryClearance;
-      t=Math.abs(denom)<=EPSILON?0:clamp(centerClearance/denom,0,1);
+    if(CORNER_DIR_BY_RING[index]){
+      const context=this.cornerContext(tile,index,allMap);
+      const centroid=this.centroidOfTiles(context?.members||[]);
+      if(centroid){anchor={x:centroid.x,z:centroid.z};anchorLevel=centroid.level;}
     }
 
+    const projected=this.projectShoreline(
+      anchor,
+      target,
+      anchorLevel,
+      ringWater,
+      allMap,
+      Number(sample.height||0)
+    );
     return{
-      x:cx+(fullX-cx)*t,
-      z:cz+(fullZ-cz)*t,
-      level:centerWater+(ringWater-centerWater)*t,
-      clipped:t<1-EPSILON
+      ...projected,
+      relaxed:Math.hypot(target.x-fullX,target.z-fullZ)>EPSILON,
+      mode
     };
   }
 
@@ -360,6 +559,9 @@ export class WaterRenderer{
       hydrologySurface:true,
       quantizedLevels:false,
       clippedShorePoints:clippedPoints,
+      naturalShoreline:true,
+      topologyAwareShoreRelaxation:true,
+      cliffBanksPreserved:true,
       vertexCount:out.positions.length/3,
       triangleCount:out.indices.length/3
     };
@@ -532,6 +734,9 @@ export class WaterRenderer{
       minVisibleWaterDepth:MIN_WATER_DEPTH,
       shorelineSkirts:false,
       terrainClippedShoreline:true,
+      naturalShoreline:true,
+      topologyAwareShoreRelaxation:true,
+      cliffBanksPreserved:true,
       cascadesRequireHydrologyDirection:true,
       cascadesRequireDownstreamWater:true
     };
