@@ -11,6 +11,8 @@ export class EnvironmentRenderer{
     this.nodes=new Map();
     this.animated=new Map();
 
+    this.currentTexture=this.makeCurrentTexture();
+
     this.materials={
       fire:this.mat("env-fire",new BABYLON.Color3(1,.28,.04),.76,new BABYLON.Color3(.9,.12,.01)),
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
@@ -20,15 +22,57 @@ export class EnvironmentRenderer{
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.mat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.mat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
-      current:this.mat("env-current",new BABYLON.Color3(.22,.72,1),.50,new BABYLON.Color3(.08,.25,.4)),
+      current:this.currentMaterial(),
       fragments:this.mat("env-fragments",new BABYLON.Color3(.48,.46,.43),.9),
       boiling:this.mat("env-boiling",new BABYLON.Color3(.72,.90,1),.48,new BABYLON.Color3(.16,.36,.5))
     };
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
-      for(const {node,speed=0} of this.animated.values())node.rotation.y+=speed*dt;
+      this.currentTexture.vOffset=(this.currentTexture.vOffset-dt*.24)%1;
+      for(const {node,speed=0,spin=true} of this.animated.values())if(spin)node.rotation.y+=speed*dt;
     });
+  }
+
+  makeCurrentTexture(){
+    const texture=new BABYLON.DynamicTexture("current-wave-texture",{width:256,height:256},this.scene,false);
+    texture.hasAlpha=true;
+    const ctx=texture.getContext();
+    ctx.clearRect(0,0,256,256);
+    ctx.lineCap="round";
+    for(let row=0;row<4;row++){
+      const y=28+row*58;
+      ctx.strokeStyle=`rgba(170,230,255,${.22+row*.045})`;
+      ctx.lineWidth=5;
+      ctx.beginPath();
+      ctx.moveTo(16,y);
+      ctx.bezierCurveTo(72,y-12,116,y+14,168,y);
+      ctx.bezierCurveTo(198,y-8,222,y+5,240,y-2);
+      ctx.stroke();
+      ctx.strokeStyle="rgba(230,250,255,.28)";
+      ctx.lineWidth=2;
+      ctx.beginPath();
+      ctx.moveTo(24,y+9);
+      ctx.bezierCurveTo(92,y+2,145,y+16,226,y+6);
+      ctx.stroke();
+    }
+    texture.update();
+    texture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
+    texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
+    return texture;
+  }
+
+  currentMaterial(){
+    const material=new BABYLON.StandardMaterial("env-current-wave",this.scene);
+    material.diffuseTexture=this.currentTexture;
+    material.opacityTexture=this.currentTexture;
+    material.emissiveTexture=this.currentTexture;
+    material.diffuseColor=new BABYLON.Color3(.38,.78,1);
+    material.emissiveColor=new BABYLON.Color3(.12,.32,.44);
+    material.alpha=.62;
+    material.disableLighting=true;
+    material.backFaceCulling=false;
+    return material;
   }
 
   mat(name,color,alpha=1,emissive=null){
@@ -58,19 +102,24 @@ export class EnvironmentRenderer{
     }else if(type==="FRAGMENTS"){
       for(let i=0;i<4;i++){const chip=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`fragment-${key}-${i}`,{type:2,size:.12},this.scene),this.materials.fragments),a=i*Math.PI/2+.35;chip.position.set(Math.cos(a)*.34,.10+(i%2)*.12,Math.sin(a)*.34);}
     }else if(type==="SNOW"){
-      // Height is scaled from snowDepth in sync(). A unit caught beneath an avalanche
-      // stays at its prior support height, so this actual volume can visibly bury it.
-      const plate=this.addMesh(root,BABYLON.MeshBuilder.CreateBox(`snow-${key}`,{width:TILE_SIZE*.88,depth:TILE_SIZE*.88,height:1},this.scene),this.materials.snow);plate.metadata={dynamicLayer:"SNOW"};
+      const plate=this.addMesh(root,BABYLON.MeshBuilder.CreateBox(`snow-${key}`,{width:TILE_SIZE*1.01,depth:TILE_SIZE*1.01,height:1},this.scene),this.materials.snow);plate.metadata={dynamicLayer:"SNOW"};
     }else if(type==="ICE"){
-      const plate=this.addMesh(root,BABYLON.MeshBuilder.CreateBox(`ice-${key}`,{width:TILE_SIZE*.88,depth:TILE_SIZE*.88,height:.035},this.scene),this.materials.ice);plate.position.y=.034;
+      const plate=this.addMesh(root,BABYLON.MeshBuilder.CreateGround(`ice-${key}`,{width:TILE_SIZE*1.01,height:TILE_SIZE*1.01,subdivisions:1},this.scene),this.materials.ice);plate.position.y=.034;
     }else if(type==="CURRENT"){
-      for(let i=-1;i<=1;i++){const stripe=this.addMesh(root,BABYLON.MeshBuilder.CreateBox(`current-${key}-${i}`,{width:.55,depth:.06,height:.025},this.scene),this.materials.current);stripe.position.set(i*.42,.055,0);}this.animated.set(key,{node:root,speed:.7});
+      const wave=this.addMesh(root,BABYLON.MeshBuilder.CreateGround(`current-${key}`,{width:TILE_SIZE*.88,height:TILE_SIZE*.88,subdivisions:1},this.scene),this.materials.current);
+      wave.position.y=.046;
+      root.metadata.currentWave=true;
+      this.animated.set(key,{node:root,speed:0,spin:false});
     }else{root.dispose();return null;}
-    root.metadata={effectType:type,tileX:tile.x,tileY:tile.y};return root;
+    root.metadata={...(root.metadata||{}),effectType:type,tileX:tile.x,tileY:tile.y};return root;
   }
 
   desiredTypes(tile){
-    const types=new Set(tile.effects||[]);if(Number(tile.snowDepth||0)>0)types.add("SNOW");if(Number(tile.iceThickness||0)>0)types.add("ICE");if(Number(tile.flowSpeed||0)>.01)types.add("CURRENT");return types;
+    const types=new Set(tile.effects||[]);
+    if(Number(tile.snowDepth||0)>0)types.add("SNOW");
+    if(Number(tile.iceThickness||0)>0)types.add("ICE");
+    if(Number(tile.flowSpeed||0)>.01)types.add("CURRENT");
+    return types;
   }
 
   syncAtmosphere(state){
@@ -90,15 +139,30 @@ export class EnvironmentRenderer{
         const key=keyOf(tile,type);alive.add(key);let node=this.nodes.get(key);
         if(!node){node=this.create(type,key,tile);if(!node)continue;this.nodes.set(key,node);}
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
+
         if(type==="SNOW"){
           const depth=Math.max(.015,Number(tile.snowDepth||0)*ELEVATION_HEIGHT);
           for(const mesh of node.getChildMeshes())if(mesh.metadata?.dynamicLayer==="SNOW"){mesh.scaling.y=depth;mesh.position.y=depth/2+.006;}
+        }else if(type==="CURRENT"){
+          const fx=Number(tile.flowX||0),fy=Number(tile.flowY||0);
+          if(Math.abs(fx)>.001||Math.abs(fy)>.001)node.rotation.y=Math.atan2(fx,fy);
+          const speed=Math.max(.1,Number(tile.flowSpeed||0));
+          node.scaling.z=clamp(1+speed*.08,1,1.28);
         }
-        const visible=tile.fogged?0:1;node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
+
+        const visible=tile.fogged?0:1;
+        node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }
-    for(const[key,node]of this.nodes){if(alive.has(key))continue;this.animated.delete(key);node.dispose();this.nodes.delete(key);}
+    for(const[key,node]of this.nodes){
+      if(alive.has(key))continue;
+      this.animated.delete(key);node.dispose();this.nodes.delete(key);
+    }
   }
 
-  diagnostics(){const byType={};for(const node of this.nodes.values()){const type=node.metadata?.effectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}return{total:this.nodes.size,byType};}
+  diagnostics(){
+    const byType={};
+    for(const node of this.nodes.values()){const type=node.metadata?.effectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
+    return{total:this.nodes.size,byType,currentWaveTexture:true};
+  }
 }
