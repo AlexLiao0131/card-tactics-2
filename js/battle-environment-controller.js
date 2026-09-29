@@ -100,7 +100,10 @@ function create(ctx){
  }
  function enterTile(unit){const s=state();if(!unit?.alive)return;ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const revealed=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];revealed.forEach(target=>ctx.pushLog(`${target.character.name} 因敵人接近而解除潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
  function traverseUnitPath(unit,path,{kind="UNIT"}={}){
-  const s=state();let previous={x:unit.x,y:unit.y};
+  const s=state();
+  if((path||[]).length&&globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(unit)){ctx.pushLog(`${unit.character.name} 被堆積物困住，無法移動。`,"BATTLE");return{completed:false,reason:"BURIED"};}
+  if((path||[]).length&&globalThis.BurialEngine?.state?.(unit)){ctx.pushLog(`${unit.character.name} 從堆積物中掙脫並開始移動。`,"DETAIL");BurialEngine.clear(unit);}
+  let previous={x:unit.x,y:unit.y};
   for(const tile of path||[]){
     const incoming={dx:Math.sign(tile.x-previous.x),dy:Math.sign(tile.y-previous.y)};
     unit.x=tile.x;unit.y=tile.y;unit.z=Number(tile.elevation||0);enterTile(unit);
@@ -134,7 +137,10 @@ function create(ctx){
   if(hydrologyChanged)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水位／冰面／地形變化",waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(hasElectric)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHECK",includeElectric:true,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
-  for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});if(list.some(event=>event.type==="RIVER_SURGE")){for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(tile?.river&&applyCurrentToUnit(unit,{reason:"暴漲溪流"}))affected++;}}return affected;
+  for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
+  const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
+  for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.BurialEngine?.state?.(unit)))BurialEngine.syncRenderPose(unit,s.map);
+  if(list.some(event=>event.type==="RIVER_SURGE")){for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(tile?.river&&applyCurrentToUnit(unit,{reason:"暴漲溪流"}))affected++;}}return affected;
  }
  function resolveWeatherEvents(){
   const s=state();if(!s.environmentState)return;
@@ -170,6 +176,9 @@ function create(ctx){
   else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="ICE_THAW")ctx.pushLog(`解凍｜${event.changedTiles||0} 格冰面變薄。`,"DETAIL");
+  else if(event.type==="MASS_FLOW_WARNING"){const label=event.material==="SNOW"?"雪崩":event.material==="SOIL"?"土石流":"山崩";ctx.pushLog(`⚠️ (${event.x},${event.y}) 坡面出現${label}失穩徵兆｜若條件持續，下一個環境回合可能崩落。`,"SYSTEM");}
+  else if(event.type==="WATER_TURBIDITY_CHANGED")ctx.pushLog(`(${event.x},${event.y}) 水體受到${event.material==="SOIL"?"泥砂":"碎石"}混入，水色變混濁。`,"DETAIL");
+  else if(event.type==="UNIT_BURIED"){const stage=event.fullyBuried?"完全滅頂":event.immobilized?"陷入堆積物":"部分掩埋";ctx.pushLog(`${event.name} 被${stage}｜埋深 ${Number(event.depth||0).toFixed(2)} / 身高 ${Number(event.bodyHeight||0).toFixed(2)}。`,event.immobilized?"BATTLE":"DETAIL");}
   else if(event.type==="MASS_FLOW_TERRAIN_CHANGED")ctx.pushLog(`地貌變化｜${event.material==="SOIL"?"土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"山崩／落石":"質量流"}影響 ${event.tiles||0} 格｜高程改變 ${event.elevationChanges||0} 格｜地形類型改變 ${event.terrainChanges||0} 格。`,"DETAIL");
   else if(event.type==="MASS_FLOW"){const label=event.material==="SOIL"?"⛰️ 土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"🪨 山崩／落石":"❄️ 雪崩";ctx.pushLog(`${label}由 (${event.x},${event.y}) 發生｜路徑 ${event.path?.length||0} 格｜質量 ${Number(event.mass||0).toFixed(2)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
   else if(event.type==="SOIL_FROZEN")ctx.pushLog(`🧊 (${event.x},${event.y}) 含水土壤凍結｜形成凍土。`,"DETAIL");
