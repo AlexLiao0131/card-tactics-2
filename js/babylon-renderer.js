@@ -22,6 +22,12 @@ export class BabylonRenderer{
     this.hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
     this.sun=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.6,-1,-.35),this.scene);
     this.sun.position=new BABYLON.Vector3(10,18,10);
+
+    // Scene-wide fill light: opposite horizontal direction, still angled downward.
+    // This is a real lighting layer, not a terrain/tile special case.
+    this.fill=new BABYLON.DirectionalLight("fill",new BABYLON.Vector3(.55,-.72,.42),this.scene);
+    this.fill.position=new BABYLON.Vector3(-10,14,-10);
+
     this.syncLighting(state);
 
     this.camera=new BattleCamera(this.scene,canvas,state);
@@ -57,7 +63,9 @@ export class BabylonRenderer{
           hemiDiffuse:new BABYLON.Color3(.46,.56,.78),
           ground:new BABYLON.Color3(.055,.070,.105),
           sunIntensity:.11,
-          sunDiffuse:new BABYLON.Color3(.48,.56,.76)
+          sunDiffuse:new BABYLON.Color3(.48,.56,.76),
+          fillIntensity:.075,
+          fillDiffuse:new BABYLON.Color3(.28,.38,.62)
         }
       :{
           ambient:new BABYLON.Color3(.18,.20,.15),
@@ -65,17 +73,19 @@ export class BabylonRenderer{
           hemiDiffuse:new BABYLON.Color3(.96,.98,1.00),
           ground:new BABYLON.Color3(.22,.27,.18),
           sunIntensity:.78,
-          sunDiffuse:new BABYLON.Color3(1.00,.95,.84)
+          sunDiffuse:new BABYLON.Color3(1.00,.95,.84),
+          fillIntensity:.30,
+          fillDiffuse:new BABYLON.Color3(.66,.78,.94)
         };
 
     const WEATHER_LIGHT=Object.freeze({
-      CLEAR:{sun:1,hemi:1,ambient:1},
-      FOG:{sun:.42,hemi:.88,ambient:1.08},
-      RAIN:{sun:.72,hemi:.92,ambient:.96},
-      HEAVY_RAIN:{sun:.52,hemi:.82,ambient:.90},
-      THUNDERSTORM:{sun:.40,hemi:.74,ambient:.84},
-      SNOW:{sun:.80,hemi:1.02,ambient:1.02},
-      BLIZZARD:{sun:.56,hemi:.92,ambient:1.00}
+      CLEAR:{sun:1,fill:1,hemi:1,ambient:1},
+      FOG:{sun:.42,fill:.82,hemi:.88,ambient:1.08},
+      RAIN:{sun:.72,fill:.90,hemi:.92,ambient:.96},
+      HEAVY_RAIN:{sun:.52,fill:.82,hemi:.82,ambient:.90},
+      THUNDERSTORM:{sun:.40,fill:.74,hemi:.74,ambient:.84},
+      SNOW:{sun:.80,fill:1.02,hemi:1.02,ambient:1.02},
+      BLIZZARD:{sun:.56,fill:.92,hemi:.92,ambient:1.00}
     });
     const modifier=WEATHER_LIGHT[weather]||WEATHER_LIGHT.CLEAR;
 
@@ -88,12 +98,16 @@ export class BabylonRenderer{
     this.sun.intensity=base.sunIntensity*modifier.sun;
     this.sun.diffuse=base.sunDiffuse;
 
+    this.fill.intensity=base.fillIntensity*modifier.fill;
+    this.fill.diffuse=base.fillDiffuse;
+
     this.lightingState={
       timeOfDay:night?"NIGHT":"DAY",
       weather,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
       hemiIntensity:this.hemi.intensity,
-      sunIntensity:this.sun.intensity
+      sunIntensity:this.sun.intensity,
+      fillIntensity:this.fill.intensity
     };
   }
 
