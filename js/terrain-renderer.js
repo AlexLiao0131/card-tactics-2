@@ -54,11 +54,20 @@ function faceNormal(a,b,c){
 function orientUp(a,b,c){
   let normal=faceNormal(a,b,c);
   if(!normal)return null;
-  if(normal.y<0){
+
+  // Babylon uses a left-handed scene by default. For an upward-facing XZ
+  // surface, the front-face winding produces a geometric cross-product with
+  // negative Y. Keep that winding for culling, while supplying an outward
+  // (+Y) lighting normal.
+  if(normal.y>0){
     const tmp=b;b=c;c=tmp;
     normal={x:-normal.x,y:-normal.y,z:-normal.z};
   }
-  return{a,b,c,normal};
+
+  return{
+    a,b,c,
+    normal:{x:-normal.x,y:-normal.y,z:-normal.z}
+  };
 }
 function mix3(a,b,c){
   return[
@@ -282,8 +291,17 @@ export class TerrainRenderer{
   }
 
   pushCliffTriangle(out,a,b,c,color){
-    const normal=faceNormal(a,b,c);
-    if(!normal)return false;
+    const geometric=faceNormal(a,b,c);
+    if(!geometric)return false;
+
+    // Match Babylon's front-face winding: the lighting normal is opposite the
+    // right-handed cross-product used by faceNormal().
+    const normal={
+      x:-geometric.x,
+      y:-geometric.y,
+      z:-geometric.z
+    };
+
     const base=out.positions.length/3;
     for(const point of [a,b,c]){
       out.positions.push(point.x,point.y,point.z);
