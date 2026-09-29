@@ -19,11 +19,10 @@ export class BabylonRenderer{
     this.scene.clearColor=new BABYLON.Color4(.035,.055,.08,1);
     this.subsystemErrors=new Map();
 
-    const hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
-    hemi.intensity=.75;
-    const dir=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.6,-1,-.35),this.scene);
-    dir.position=new BABYLON.Vector3(10,18,10);
-    dir.intensity=.78;
+    this.hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
+    this.sun=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.6,-1,-.35),this.scene);
+    this.sun.position=new BABYLON.Vector3(10,18,10);
+    this.syncLighting(state);
 
     this.camera=new BattleCamera(this.scene,canvas,state);
     this.terrain=new TerrainRenderer(this.scene);
@@ -46,6 +45,58 @@ export class BabylonRenderer{
     window.addEventListener("resize",()=>this.resize());
   }
 
+  syncLighting(state){
+    const environment=state?.presentation?.environment||{};
+    const weather=String(environment.weather||"CLEAR").toUpperCase();
+    const night=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT";
+
+    const base=night
+      ?{
+          ambient:new BABYLON.Color3(.045,.060,.095),
+          hemiIntensity:.27,
+          hemiDiffuse:new BABYLON.Color3(.46,.56,.78),
+          ground:new BABYLON.Color3(.055,.070,.105),
+          sunIntensity:.11,
+          sunDiffuse:new BABYLON.Color3(.48,.56,.76)
+        }
+      :{
+          ambient:new BABYLON.Color3(.18,.20,.15),
+          hemiIntensity:.72,
+          hemiDiffuse:new BABYLON.Color3(.96,.98,1.00),
+          ground:new BABYLON.Color3(.22,.27,.18),
+          sunIntensity:.78,
+          sunDiffuse:new BABYLON.Color3(1.00,.95,.84)
+        };
+
+    const WEATHER_LIGHT=Object.freeze({
+      CLEAR:{sun:1,hemi:1,ambient:1},
+      FOG:{sun:.42,hemi:.88,ambient:1.08},
+      RAIN:{sun:.72,hemi:.92,ambient:.96},
+      HEAVY_RAIN:{sun:.52,hemi:.82,ambient:.90},
+      THUNDERSTORM:{sun:.40,hemi:.74,ambient:.84},
+      SNOW:{sun:.80,hemi:1.02,ambient:1.02},
+      BLIZZARD:{sun:.56,hemi:.92,ambient:1.00}
+    });
+    const modifier=WEATHER_LIGHT[weather]||WEATHER_LIGHT.CLEAR;
+
+    this.scene.ambientColor=base.ambient.scale(modifier.ambient);
+
+    this.hemi.intensity=base.hemiIntensity*modifier.hemi;
+    this.hemi.diffuse=base.hemiDiffuse;
+    this.hemi.groundColor=base.ground;
+
+    this.sun.intensity=base.sunIntensity*modifier.sun;
+    this.sun.diffuse=base.sunDiffuse;
+
+    this.lightingState={
+      timeOfDay:night?"NIGHT":"DAY",
+      weather,
+      ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
+      hemiIntensity:this.hemi.intensity,
+      sunIntensity:this.sun.intensity
+    };
+  }
+
   syncSubsystem(name,fn){
     try{
       fn();
@@ -63,6 +114,7 @@ export class BabylonRenderer{
 
   sync(state,presentationEvents=[]){
     this.lastState=state;
+    this.syncSubsystem("lighting",()=>this.syncLighting(state));
 
     // Critical interaction/state surfaces go first. A visual subsystem failure must
     // never make the battlefield impossible to click or hide objectives.
@@ -130,6 +182,7 @@ export class BabylonRenderer{
       projection:this.camera.getViewState().projection,
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,
+      lighting:this.lightingState||null,
       rendererErrors:Object.fromEntries(this.subsystemErrors),
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),

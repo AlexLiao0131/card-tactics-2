@@ -80,6 +80,7 @@ export class TerrainRenderer{
   makeSurfaceMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-surface",this.scene);
     material.diffuseColor=BABYLON.Color3.White();
+    material.ambientColor=BABYLON.Color3.White();
     material.specularColor=new BABYLON.Color3(.025,.025,.025);
     material.specularPower=8;
     // Geometry has deterministic winding and face normals now.
@@ -91,6 +92,7 @@ export class TerrainRenderer{
   makeCliffMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-cliffs",this.scene);
     material.diffuseColor=BABYLON.Color3.White();
+    material.ambientColor=BABYLON.Color3.White();
     material.specularColor=new BABYLON.Color3(.02,.02,.02);
     material.specularPower=6;
     // Cliff quads may face any cardinal direction.
