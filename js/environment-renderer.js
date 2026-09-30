@@ -14,9 +14,9 @@ const isSolidIce=tile=>waterDepth(tile)>0&&iceThickness(tile)>=.45;
 const SURFACE_TYPES=new Set(["SNOW","ICE","CURRENT"]);
 const SURFACE_EPSILON=.001;
 const CURRENT_BANDS=Object.freeze([
-  Object.freeze({id:"SLOW",min:0,max:1.15,scroll:.055,alpha:.42}),
-  Object.freeze({id:"MEDIUM",min:1.15,max:1.85,scroll:.095,alpha:.48}),
-  Object.freeze({id:"FAST",min:1.85,max:Infinity,scroll:.155,alpha:.54})
+  Object.freeze({id:"SLOW",min:0,max:1.15,scroll:.18,alpha:.76}),
+  Object.freeze({id:"MEDIUM",min:1.15,max:1.85,scroll:.31,alpha:.82}),
+  Object.freeze({id:"FAST",min:1.85,max:Infinity,scroll:.48,alpha:.88})
 ]);
 
 export class EnvironmentRenderer{
@@ -63,7 +63,7 @@ export class EnvironmentRenderer{
     // slide along those lanes, so the eye reads translation instead of on/off flashing.
     const lanes=[30,72,116,160,204,238];
     lanes.forEach((x,index)=>{
-      ctx.strokeStyle="rgba(200,238,248,0.055)";
+      ctx.strokeStyle="rgba(190,230,242,0.20)";
       ctx.lineWidth=2;
       ctx.beginPath();
       ctx.moveTo(x,0);
@@ -72,7 +72,7 @@ export class EnvironmentRenderer{
 
       const offset=((index*47+phase*83)%132)-132;
       for(let y=offset;y<300;y+=132){
-        ctx.strokeStyle=`rgba(220,248,255,${.115+(index%3)*.018})`;
+        ctx.strokeStyle=`rgba(225,250,255,${.54+(index%3)*.055})`;
         ctx.lineWidth=index%2?4:3;
         ctx.beginPath();
         ctx.moveTo(x,y);
@@ -90,8 +90,10 @@ export class EnvironmentRenderer{
   makeCurrentMaterial(name,texture,alpha){
     const material=new BABYLON.StandardMaterial(name,this.scene);
     material.diffuseTexture=texture;
-    material.opacityTexture=texture;
-    material.diffuseColor=new BABYLON.Color3(.72,.90,.96);
+    // One alpha path only. Using the same translucent texture again as opacityTexture
+    // multiplied alpha twice and made Safari/mobile currents effectively invisible.
+    material.useAlphaFromDiffuseTexture=true;
+    material.diffuseColor=new BABYLON.Color3(.74,.91,.96);
     material.ambientColor=new BABYLON.Color3(.20,.28,.31);
     material.emissiveColor=BABYLON.Color3.Black();
     material.specularColor=new BABYLON.Color3(.06,.10,.12);
@@ -206,7 +208,7 @@ export class EnvironmentRenderer{
       if(this.waterClearance(tile,sample)<=SURFACE_EPSILON)return 0;
       // Keep a stable directional trace at low flow and strengthen it gradually.
       // Alpha no longer pulses; only the texture coordinates move each frame.
-      return clamp(.18+amount*.15,.18,.52);
+      return clamp(.42+amount*.10,.42,.72);
     }
     return 0;
   }
@@ -385,6 +387,7 @@ export class EnvironmentRenderer{
       currentWaveTexture:true,
       currentDirectionalUV:true,
       currentEmissive:false,
+      currentSingleAlphaPath:true,
       currentSpeedBands:CURRENT_BANDS.map(band=>band.id),
       currentAnimation:"texture-offset-only",
       currentMeshRebuildPerFrame:false,
