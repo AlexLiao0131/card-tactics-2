@@ -23,13 +23,38 @@ const TERRAIN_COLORS=Object.freeze({
   WALL:[.27,.28,.31],
   DEFAULT:[.35,.49,.27]
 });
+const WATERBED_SHALLOW=Object.freeze([.39,.44,.29]);
+const WATERBED_DEEP=Object.freeze([.13,.24,.25]);
+const WATERBED_DEPTH_RANGE=1.5;
 
+function clamp01(value){return Math.max(0,Math.min(1,Number(value||0)));}
+function smooth01(value){const t=clamp01(value);return t*t*(3-2*t);}
+function mixColor(a,b,t){
+  const q=clamp01(t);
+  return[
+    a[0]+(b[0]-a[0])*q,
+    a[1]+(b[1]-a[1])*q,
+    a[2]+(b[2]-a[2])*q
+  ];
+}
+function dryTerrainColor(tile){
+  if(tile?.material==="ROCK")return TERRAIN_COLORS.HIGH_GROUND;
+  const terrain=tile?.terrain==="WATER"&&tile?.dryTerrain
+    ?String(tile.dryTerrain)
+    :String(tile?.terrain||"DEFAULT");
+  return TERRAIN_COLORS[terrain]||TERRAIN_COLORS.DEFAULT;
+}
 function baseColor(tile){
-  const color=tile?.material==="ROCK"
-    ?TERRAIN_COLORS.HIGH_GROUND
-    :(TERRAIN_COLORS[String(tile?.terrain||"DEFAULT")]||TERRAIN_COLORS.DEFAULT);
-  const wet=Math.min(1,Math.max(0,Number(tile?.waterDepth||0))/.3);
-  return wet>0?color.map(value=>value*(1-.35*wet)):color;
+  const color=dryTerrainColor(tile);
+  const depth=Math.max(0,Number(tile?.waterDepth||0));
+  if(depth<=0)return color;
+
+  // The terrain remains the terrain. This is only a visual underwater tint,
+  // derived from hydrology depth and never written back into GridState.
+  const wet=smooth01(depth/.28);
+  const deep=smooth01(depth/WATERBED_DEPTH_RANGE);
+  const shallow=mixColor(color,WATERBED_SHALLOW,.32*wet);
+  return mixColor(shallow,WATERBED_DEEP,.72*deep);
 }
 function avg(values){return values.reduce((sum,value)=>sum+value,0)/Math.max(1,values.length);}
 function mixColors(tiles){
@@ -124,7 +149,7 @@ export class TerrainRenderer{
       String(tile.terrain||""),
       String(tile.material||""),
       elevationOf(tile).toFixed(4),
-      Math.round(Math.min(1,Math.max(0,Number(tile.waterDepth||0))/.3)*8),
+      Math.max(0,Number(tile.waterDepth||0)).toFixed(3),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
   }
@@ -278,6 +303,7 @@ export class TerrainRenderer{
       polygonal:true,
       flatShaded:true,
       explicitFaceNormals:true,
+      waterbedDepthTint:true,
       skippedDegenerate,
       minNormalY
     };
@@ -446,6 +472,7 @@ export class TerrainRenderer{
       permanentGridLines:false,
       flatShaded:true,
       explicitFaceNormals:true,
+      waterbedDepthTint:true,
       skippedDegenerate:surface?.metadata?.skippedDegenerate??null,
       minNormalY:surface?.metadata?.minNormalY??null
     };

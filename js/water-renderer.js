@@ -18,6 +18,12 @@ const SHORE_PAIR_INSET=.08;
 const SHORE_CONCAVE_OUTSET=.10;
 const SHORE_EDGE_RELAX=.38;
 const SHORE_SEARCH_STEPS=12;
+const WATER_DEPTH_RANGE=1.5;
+const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
+const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
+const WATER_MURKY_COLOR=Object.freeze([.29,.31,.18]);
+const WATER_SHALLOW_ALPHA=.34;
+const WATER_DEEP_ALPHA=.82;
 
 const DIRS=Object.freeze([
   {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
@@ -44,6 +50,18 @@ function hasVisibleWater(tile){
 }
 function average(values){
   return values.length?values.reduce((sum,value)=>sum+Number(value||0),0)/values.length:0;
+}
+function smooth01(value){
+  const t=clamp(value,0,1);
+  return t*t*(3-2*t);
+}
+function mixColor(a,b,t){
+  const q=clamp(t,0,1);
+  return[
+    a[0]+(b[0]-a[0])*q,
+    a[1]+(b[1]-a[1])*q,
+    a[2]+(b[2]-a[2])*q
+  ];
 }
 
 export class WaterRenderer{
@@ -74,30 +92,21 @@ export class WaterRenderer{
   }
 
   makeSurfaceMaterial(){
-    if(typeof BABYLON.WaterMaterial==="function"){
-      const m=new BABYLON.WaterMaterial("water-surface",this.scene,new BABYLON.Vector2(256,256));
-      m.bumpTexture=new BABYLON.Texture("https://assets.babylonjs.com/textures/waterbump.png",this.scene);
-      m.bumpTexture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
-      m.bumpTexture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
-      m.bumpTexture.uScale=.40;
-      m.bumpTexture.vScale=.40;
-      m.windForce=1.85;
-      m.waveHeight=.026;
-      m.bumpHeight=.042;
-      m.waveLength=1.18;
-      m.windDirection=new BABYLON.Vector2(1,.24);
-      m.waterColor=new BABYLON.Color3(.045,.27,.46);
-      m.colorBlendFactor=.34;
-      m.alpha=.78;
-      m.backFaceCulling=false;
-      return m;
-    }
-    const m=new BABYLON.StandardMaterial("water-surface-fallback",this.scene);
-    m.diffuseColor=new BABYLON.Color3(.065,.33,.55);
-    m.alpha=.68;
-    m.specularColor=new BABYLON.Color3(.46,.67,.82);
-    m.specularPower=64;
+    // Stylized water belongs to the same low-poly visual language as the terrain.
+    // Depth, transparency and colour come from shared mesh vertex colours instead
+    // of a reflective WaterMaterial that fights the hand-painted presentation.
+    const m=new BABYLON.StandardMaterial("water-surface-stylized",this.scene);
+    m.diffuseColor=BABYLON.Color3.White();
+    m.ambientColor=BABYLON.Color3.White();
+    m.emissiveColor=new BABYLON.Color3(.025,.055,.065);
+    m.specularColor=new BABYLON.Color3(.16,.23,.27);
+    m.specularPower=28;
+    m.alpha=1;
     m.backFaceCulling=false;
+    m.needDepthPrePass=true;
+    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null){
+      m.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
+    }
     return m;
   }
 
@@ -495,15 +504,32 @@ export class WaterRenderer{
     };
   }
 
-  addVertex(out,cache,point){
+  waterVertexVisual(point,allMap,turbidity=0){
+    const terrain=this.terrainHeightAt(point.x,point.z,allMap);
+    const depth=Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
+    const t=smooth01(depth/WATER_DEPTH_RANGE);
+    let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
+    const murky=clamp(Number(turbidity||0),0,1);
+    if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
+    const alpha=clamp(
+      WATER_SHALLOW_ALPHA+(WATER_DEEP_ALPHA-WATER_SHALLOW_ALPHA)*t+murky*.06,
+      WATER_SHALLOW_ALPHA,
+      .88
+    );
+    return{depth,color,alpha};
+  }
+
+  addVertex(out,cache,point,allMap,turbidity){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const cacheKey=`${point.x.toFixed(5)}:${y.toFixed(5)}:${point.z.toFixed(5)}`;
     const existing=cache.get(cacheKey);
     if(existing!=null)return existing;
 
+    const visual=this.waterVertexVisual(point,allMap,turbidity);
     const index=out.positions.length/3;
     out.positions.push(point.x,y,point.z);
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
+    out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
     cache.set(cacheKey,index);
     return index;
   }
@@ -521,21 +547,22 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state){
-    const out={positions:[],indices:[],normals:[],uvs:[]};
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[]};
     const cache=new Map();
     const allMap=this.allByKey(state);
+    const componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));
     let clippedPoints=0;
 
     for(const tile of component.tiles){
       const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-      const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)});
+      const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)},allMap,componentTurbidity);
       const terrainRing=this.terrainRing(tile,allMap);
       const ringPoints=terrainRing.map((sample,index)=>{
         const point=this.shorelinePoint(tile,index,sample,allMap);
         if(point.clipped)clippedPoints++;
         return point;
       });
-      const ringIndices=ringPoints.map(point=>this.addVertex(out,cache,point));
+      const ringIndices=ringPoints.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity));
 
       for(let i=0;i<ringIndices.length;i++){
         this.pushTriangle(out,centerIndex,ringIndices[i],ringIndices[(i+1)%ringIndices.length]);
@@ -547,9 +574,11 @@ export class WaterRenderer{
 
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
     const data=new BABYLON.VertexData();
-    data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;
+    data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
     data.applyToMesh(mesh,false);
     mesh.material=this.surfaceMaterial;
+    mesh.useVertexColors=true;
+    mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
     mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={
@@ -562,6 +591,10 @@ export class WaterRenderer{
       naturalShoreline:true,
       topologyAwareShoreRelaxation:true,
       cliffBanksPreserved:true,
+      stylizedWater:true,
+      depthGradient:true,
+      vertexAlpha:true,
+      componentTurbidity,
       vertexCount:out.positions.length/3,
       triangleCount:out.indices.length/3
     };
@@ -678,24 +711,11 @@ export class WaterRenderer{
     return edges.map(e=>`${e.id}:${e.top.toFixed(4)}:${e.bottom.toFixed(4)}:${e.speed.toFixed(2)}`).sort().join("|");
   }
 
-  syncSurfaceDynamics(waterTiles){
-    if(typeof BABYLON.WaterMaterial!=="function"||
-       !(this.surfaceMaterial instanceof BABYLON.WaterMaterial)||
-       !waterTiles.length)return;
-    const maxFlow=waterTiles.reduce((m,t)=>Math.max(m,Number(t.flowSpeed||0)),0);
-    const averageTurbidity=waterTiles.reduce((s,t)=>s+this.turbidity(t),0)/waterTiles.length;
-    this.surfaceMaterial.windForce=clamp(1.8+maxFlow*.38,1.8,3.8);
-    this.surfaceMaterial.waveHeight=clamp(.024+maxFlow*.006,.024,.055);
-    this.surfaceMaterial.bumpHeight=clamp(.040+maxFlow*.005,.040,.075);
-    this.surfaceMaterial.waveLength=clamp(1.20-maxFlow*.03,.84,1.20);
-    this.surfaceMaterial.colorBlendFactor=clamp(.33+averageTurbidity*.09,.33,.42);
-  }
 
   sync(state){
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
-    this.syncSurfaceDynamics(waterTiles);
 
     const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
@@ -737,6 +757,10 @@ export class WaterRenderer{
       naturalShoreline:true,
       topologyAwareShoreRelaxation:true,
       cliffBanksPreserved:true,
+      stylizedWater:true,
+      reflectiveWaterMaterial:false,
+      depthGradient:true,
+      vertexAlpha:true,
       cascadesRequireHydrologyDirection:true,
       cascadesRequireDownstreamWater:true
     };
