@@ -3,8 +3,15 @@ import { TILE_SIZE } from "./coordinate-system.js";
 const EPSILON=1e-8;
 const MAX_VISUAL_SLOPE_DELTA=1.0001;
 const WATERBED_DEPTH_RANGE=1.5;
-const WATERBED_SHALLOW=Object.freeze([.39,.44,.29]);
 const WATERBED_DEEP=Object.freeze([.13,.24,.25]);
+const WET_GRASS=Object.freeze([.29,.43,.24]);
+const WET_FOREST=Object.freeze([.14,.28,.18]);
+const WET_SAND=Object.freeze([.48,.42,.29]);
+const SILT_BANK=Object.freeze([.34,.34,.24]);
+const FOREST_SOIL=Object.freeze([.24,.31,.20]);
+const GRAVEL=Object.freeze([.43,.42,.37]);
+const WET_ROCK=Object.freeze([.24,.30,.29]);
+const PATCH_OFFSETS=Object.freeze([-.5,-1/6,1/6,.5]);
 
 export const VISUAL_TERRAIN_COLORS=Object.freeze({
   PLAIN:[.39,.55,.28],
@@ -43,6 +50,15 @@ const mixColor=(a,b,t)=>{
     a[2]+(b[2]-a[2])*q
   ];
 };
+const averageColors=colors=>{
+  const valid=(colors||[]).filter(Boolean);
+  if(!valid.length)return VISUAL_TERRAIN_COLORS.DEFAULT;
+  return[
+    average(valid.map(color=>color[0])),
+    average(valid.map(color=>color[1])),
+    average(valid.map(color=>color[2]))
+  ];
+};
 
 function baseTerrainOf(tile){
   if(tile?.material==="ROCK")return"HIGH_GROUND";
@@ -53,6 +69,7 @@ function baseTerrainOf(tile){
 function influenceSnapshot(tile,weight,direction){
   if(!tile)return null;
   return{
+    tile,
     direction,
     weight,
     terrain:baseTerrainOf(tile),
@@ -88,24 +105,49 @@ export class VisualSurfaceResolver{
     return VISUAL_TERRAIN_COLORS[baseTerrainOf(tile)]||VISUAL_TERRAIN_COLORS.DEFAULT;
   }
 
+  moistureAmount(tile){
+    const terrain=baseTerrainOf(tile);
+    const cap=terrain==="SAND"?.22:.45;
+    return clamp01(Math.max(0,Number(tile?.soilMoisture||0))/cap);
+  }
+
+  wetDryColor(tile,amount=this.moistureAmount(tile)){
+    const terrain=baseTerrainOf(tile);
+    const base=this.dryColor(tile);
+    const wet=clamp01(amount);
+    if(wet<=0)return base;
+    if(terrain==="SAND")return mixColor(base,WET_SAND,.72*wet);
+    if(terrain==="FOREST")return mixColor(base,WET_FOREST,.58*wet);
+    if(terrain==="HIGH_GROUND"||tile?.material==="ROCK")return mixColor(base,WET_ROCK,.48*wet);
+    if(terrain==="MUD")return mixColor(base,SILT_BANK,.50*wet);
+    return mixColor(base,WET_GRASS,.62*wet);
+  }
+
+  submergedBedColor(tile,depth=waterDepthOf(tile)){
+    const terrain=baseTerrainOf(tile);
+    const base=this.dryColor(tile);
+    const d=Math.max(0,Number(depth||0));
+    let shallowTarget=SILT_BANK;
+    if(terrain==="SAND")shallowTarget=WET_SAND;
+    else if(terrain==="FOREST")shallowTarget=FOREST_SOIL;
+    else if(terrain==="HIGH_GROUND"||tile?.material==="ROCK")shallowTarget=WET_ROCK;
+    else if(terrain==="MUD")shallowTarget=SILT_BANK;
+
+    // Underwater material is derived from the bed itself, never from a dry
+    // neighbour. This keeps grass colour from bleeding into submerged slopes.
+    const shallow=smooth01(d/.30);
+    const deep=smooth01(d/WATERBED_DEPTH_RANGE);
+    const bed=mixColor(base,shallowTarget,.78*shallow);
+    return mixColor(bed,WATERBED_DEEP,.70*deep);
+  }
+
   colorOf(tile){
-    const color=this.dryColor(tile);
     const depth=waterDepthOf(tile);
-    if(depth<=0)return color;
-    const wet=smooth01(depth/.28);
-    const deep=smooth01(depth/WATERBED_DEPTH_RANGE);
-    const shallow=mixColor(color,WATERBED_SHALLOW,.32*wet);
-    return mixColor(shallow,WATERBED_DEEP,.72*deep);
+    return depth>0?this.submergedBedColor(tile,depth):this.wetDryColor(tile);
   }
 
   mixTileColors(tiles){
-    const valid=(tiles||[]).filter(Boolean);
-    if(!valid.length)return VISUAL_TERRAIN_COLORS.DEFAULT;
-    return[
-      average(valid.map(tile=>this.colorOf(tile)[0])),
-      average(valid.map(tile=>this.colorOf(tile)[1])),
-      average(valid.map(tile=>this.colorOf(tile)[2]))
-    ];
+    return averageColors((tiles||[]).filter(Boolean).map(tile=>this.colorOf(tile)));
   }
 
   slopeConnectedCornerTiles(tile,byKey,dx,dy){
@@ -196,6 +238,106 @@ export class VisualSurfaceResolver{
     return this.sampleHeight(tile,byKey,ox,oz);
   }
 
+  edgeInfluence(value){
+    return smooth01((Math.abs(Number(value||0))-1/6)/(1/3));
+  }
+
+  localInfluences(tile,byKey,ox,oz){
+    const wx=this.edgeInfluence(ox),wz=this.edgeInfluence(oz);
+    const sx=Math.sign(Number(ox||0)),sz=Math.sign(Number(oz||0));
+    const out=[];
+    const add=(dx,dy,weight,label)=>{
+      if(weight<=EPSILON)return;
+      const neighbor=this.tileAt(byKey,tile.x+dx,tile.y+dy);
+      if(!neighbor)return;
+      const snapshot=influenceSnapshot(neighbor,weight,label);
+      if(snapshot)out.push(snapshot);
+    };
+    if(sx)add(sx,0,wx,`${sx},0`);
+    if(sz)add(0,sz,wz,`0,${sz}`);
+    if(sx&&sz)add(sx,sz,wx*wz*.55,`${sx},${sz}`);
+    return out;
+  }
+
+  transitionColorAt(tile,byKey,ox=0,oz=0){
+    if(!tile)return VISUAL_TERRAIN_COLORS.DEFAULT;
+    const localDepth=waterDepthOf(tile);
+    if(localDepth>0)return this.submergedBedColor(tile,localDepth);
+
+    const terrain=baseTerrainOf(tile);
+    let color=this.wetDryColor(tile);
+    const influences=this.localInfluences(tile,byKey,ox,oz);
+
+    let waterInfluence=0,forestInfluence=0,rockInfluence=0;
+    for(const item of influences){
+      const w=clamp01(item.weight);
+      if(item.waterDepth>0)waterInfluence=Math.max(waterInfluence,w*smooth01(item.waterDepth/.35));
+      if(item.terrain==="FOREST")forestInfluence=Math.max(forestInfluence,w);
+      if(item.terrain==="HIGH_GROUND"||item.material==="ROCK")rockInfluence=Math.max(rockInfluence,w);
+    }
+
+    // Non-water biome contact is deliberately subtle; it softens the tile mask
+    // without replacing the owning tile's material identity.
+    if(terrain!=="FOREST"&&forestInfluence>0){
+      color=mixColor(color,FOREST_SOIL,.24*forestInfluence);
+    }
+    if(terrain!=="HIGH_GROUND"&&tile?.material!=="ROCK"&&rockInfluence>0){
+      color=mixColor(color,GRAVEL,.26*rockInfluence);
+    }
+
+    if(waterInfluence>0){
+      const wet=clamp01(waterInfluence*1.20);
+      if(terrain==="SAND"){
+        color=mixColor(color,WET_SAND,.82*wet);
+      }else if(terrain==="FOREST"){
+        color=mixColor(color,WET_FOREST,.72*wet);
+        color=mixColor(color,FOREST_SOIL,.34*smooth01((wet-.42)/.58));
+      }else if(terrain==="HIGH_GROUND"||tile?.material==="ROCK"){
+        color=mixColor(color,WET_ROCK,.70*wet);
+      }else{
+        color=mixColor(color,WET_GRASS,.70*wet);
+        color=mixColor(color,SILT_BANK,.56*smooth01((wet-.38)/.62));
+      }
+    }
+    return color;
+  }
+
+  surfaceColorAt(tile,byKey,ox=0,oz=0){
+    const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
+    const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
+    const colors=[this.transitionColorAt(tile,byKey,px,pz)];
+    const edgeX=Math.abs(Math.abs(px)-.5)<=1e-6?Math.sign(px):0;
+    const edgeZ=Math.abs(Math.abs(pz)-.5)<=1e-6?Math.sign(pz):0;
+
+    if(edgeX){
+      const neighbor=this.tileAt(byKey,tile.x+edgeX,tile.y);
+      if(neighbor&&this.canSlope(tile,neighbor))colors.push(this.transitionColorAt(neighbor,byKey,-edgeX*.5,pz));
+    }
+    if(edgeZ){
+      const neighbor=this.tileAt(byKey,tile.x,tile.y+edgeZ);
+      if(neighbor&&this.canSlope(tile,neighbor))colors.push(this.transitionColorAt(neighbor,byKey,px,-edgeZ*.5));
+    }
+    if(edgeX&&edgeZ){
+      const diagonal=this.tileAt(byKey,tile.x+edgeX,tile.y+edgeZ);
+      const sideX=this.tileAt(byKey,tile.x+edgeX,tile.y);
+      const sideZ=this.tileAt(byKey,tile.x,tile.y+edgeZ);
+      if(diagonal&&((sideX&&this.canSlope(sideX,diagonal))||(sideZ&&this.canSlope(sideZ,diagonal)))){
+        colors.push(this.transitionColorAt(diagonal,byKey,-edgeX*.5,-edgeZ*.5));
+      }
+    }
+    return averageColors(colors);
+  }
+
+  sampleColorAtWorld(worldX,worldZ,byKey){
+    const tx=Math.round(Number(worldX||0)/TILE_SIZE);
+    const ty=Math.round(Number(worldZ||0)/TILE_SIZE);
+    const tile=this.tileAt(byKey,tx,ty);
+    if(!tile)return VISUAL_TERRAIN_COLORS.DEFAULT;
+    const ox=(Number(worldX||0)-tx*TILE_SIZE)/TILE_SIZE;
+    const oz=(Number(worldZ||0)-ty*TILE_SIZE)/TILE_SIZE;
+    return this.surfaceColorAt(tile,byKey,ox,oz);
+  }
+
   microRegion(tile,byKey,layout,ring=null){
     const influences=[];
     for(const [dx,dy] of layout.dirs){
@@ -206,12 +348,13 @@ export class VisualSurfaceResolver{
       if(snapshot)influences.push(snapshot);
     }
     const localWater=waterDepthOf(tile);
-    const neighborWater=influences.reduce((sum,item)=>sum+item.waterDepth*item.weight,0)/Math.max(1,influences.reduce((sum,item)=>sum+item.weight,0));
+    const totalWeight=influences.reduce((sum,item)=>sum+item.weight,0);
+    const neighborWater=influences.reduce((sum,item)=>sum+item.waterDepth*item.weight,0)/Math.max(1,totalWeight);
     const waterInfluence=clamp01(Math.max(localWater,neighborWater)/.75);
     const soilMoisture=Math.max(0,Number(tile?.soilMoisture||0));
-    const neighborMoisture=influences.reduce((sum,item)=>sum+item.soilMoisture*item.weight,0)/Math.max(1,influences.reduce((sum,item)=>sum+item.weight,0));
+    const neighborMoisture=influences.reduce((sum,item)=>sum+item.soilMoisture*item.weight,0)/Math.max(1,totalWeight);
     const wetness=clamp01(Math.max(localWater/.3,soilMoisture/.45,neighborMoisture/.45,waterInfluence*.8));
-    const rockInfluence=clamp01(influences.reduce((sum,item)=>sum+(item.material==="ROCK"||item.terrain==="HIGH_GROUND"?item.weight:0),0)/Math.max(1,influences.reduce((sum,item)=>sum+item.weight,0)));
+    const rockInfluence=clamp01(influences.reduce((sum,item)=>sum+(item.material==="ROCK"||item.terrain==="HIGH_GROUND"?item.weight:0),0)/Math.max(1,totalWeight));
     const snowInfluence=clamp01(Math.max(Number(tile?.snowDepth||0),...influences.map(item=>item.snowDepth))/.5);
     const iceInfluence=clamp01(Math.max(Number(tile?.iceThickness||0),...influences.map(item=>item.iceThickness))/.5);
     return{
@@ -220,6 +363,7 @@ export class VisualSurfaceResolver{
       terrain:baseTerrainOf(tile),
       material:String(tile?.material||""),
       baseColor:this.colorOf(tile),
+      visualColor:this.surfaceColorAt(tile,byKey,layout.ox,layout.oz),
       waterDepth:localWater,
       waterInfluence,
       soilMoisture,
@@ -242,6 +386,26 @@ export class VisualSurfaceResolver{
     return MICRO_REGION_LAYOUT.map(layout=>this.microRegion(tile,byKey,layout,resolvedRing));
   }
 
+  patchGrid(tile,byKey,ring=null){
+    const resolvedRing=ring||this.ringSamples(tile,byKey);
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const rows=[];
+    for(const oz of PATCH_OFFSETS){
+      const row=[];
+      for(const ox of PATCH_OFFSETS){
+        row.push({
+          ox,oz,
+          x:cx+ox*TILE_SIZE,
+          z:cz+oz*TILE_SIZE,
+          height:this.sampleHeightFromRing(elevationOf(tile),resolvedRing,ox,oz),
+          color:this.surfaceColorAt(tile,byKey,ox,oz)
+        });
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
   resolveTile(tile,byKey){
     const ring=this.ringSamples(tile,byKey);
     return{
@@ -250,7 +414,8 @@ export class VisualSurfaceResolver{
       centerHeight:elevationOf(tile),
       color:this.colorOf(tile),
       ring,
-      microRegions:this.microGrid(tile,byKey,ring)
+      microRegions:this.microGrid(tile,byKey,ring),
+      patchGrid:this.patchGrid(tile,byKey,ring)
     };
   }
 
@@ -258,8 +423,11 @@ export class VisualSurfaceResolver{
     return{
       microGrid:"3x3",
       microRegionsPerTile:9,
+      patchVerticesPerTile:16,
       sharedHeightSampling:true,
       sharedTerrainState:true,
+      naturalMaterialTransitions:true,
+      submergedBedIsolation:true,
       gameplayGridSubdivision:false
     };
   }

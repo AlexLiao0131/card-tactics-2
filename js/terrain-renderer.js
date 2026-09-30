@@ -121,9 +121,11 @@ export class TerrainRenderer{
     return tiles.map(tile=>[
       tile.x,tile.y,
       String(tile.terrain||""),
+      String(tile.dryTerrain||""),
       String(tile.material||""),
       this.surfaceResolver.elevationOf(tile).toFixed(4),
       Math.max(0,Number(tile.waterDepth||0)).toFixed(3),
+      Math.max(0,Number(tile.soilMoisture||0)).toFixed(3),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
   }
@@ -137,21 +139,20 @@ export class TerrainRenderer{
     const sourceColors=oriented.b===b
       ?colors
       :[colors[0],colors[2],colors[1]];
-    const mixed=mix3(sourceColors[0],sourceColors[1],sourceColors[2]);
-    // A small baked relief term complements Babylon lighting. It is geometric, not
-    // gameplay state: upward / sun-facing facets read lighter while opposing slopes
-    // retain enough contrast to make elevation visible on a phone screen.
+    // Flat normals keep the low-poly geometry readable, while vertex colours are
+    // allowed to interpolate across the face. That gives material transitions room
+    // to blend without turning every 3x3 micro-region into another hard tile.
     const n=oriented.normal;
     const sunDot=Math.max(0,n.x*.49+n.y*.82+n.z*.29);
-    const faceColor=shade(mixed,.78+sunDot*.24);
+    const lightFactor=.78+sunDot*.24;
     const base=out.positions.length/3;
 
-    for(const point of points){
+    points.forEach((point,index)=>{
+      const color=shade(sourceColors[index],lightFactor);
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(n.x,n.y,n.z);
-      // One colour per face gives a deliberate low-poly surface instead of grid seams.
-      out.colors.push(faceColor[0],faceColor[1],faceColor[2],1);
-    }
+      out.colors.push(color[0],color[1],color[2],1);
+    });
     out.indices.push(base,base+1,base+2);
     return true;
   }
@@ -161,41 +162,39 @@ export class TerrainRenderer{
     let skippedDegenerate=0;
     let minNormalY=1;
 
+    const addFace=(a,b,c,colors)=>{
+      const before=out.normals.length;
+      const ok=this.pushFace(out,a,b,c,colors);
+      if(!ok){skippedDegenerate++;return;}
+      for(let n=before+1;n<out.normals.length;n+=3){
+        minNormalY=Math.min(minNormalY,out.normals[n]);
+      }
+    };
+
     for(const tile of tiles){
-      const cx=Number(tile.x)*TILE_SIZE;
-      const cz=Number(tile.y)*TILE_SIZE;
       const fog=tile.fogged?.62:1;
-
       const visual=this.surfaceResolver.resolveTile(tile,byKey);
-      const center={
-        x:cx,
-        y:visual.centerHeight*ELEVATION_HEIGHT,
-        z:cz
-      };
-      const centerColor=shade(visual.color,fog*elevationShade(visual.centerHeight));
-
-      const ring=visual.ring.map(sample=>({
+      const grid=visual.patchGrid.map(row=>row.map(sample=>({
         point:{
-          x:cx+sample.ox*TILE_SIZE,
+          x:sample.x,
           y:sample.height*ELEVATION_HEIGHT,
-          z:cz+sample.oz*TILE_SIZE
+          z:sample.z
         },
         color:shade(sample.color,fog*elevationShade(sample.height))
-      }));
+      })));
 
-      for(let i=0;i<ring.length;i++){
-        const next=(i+1)%ring.length;
-        const before=out.normals.length;
-        const ok=this.pushFace(
-          out,
-          center,
-          ring[i].point,
-          ring[next].point,
-          [centerColor,ring[i].color,ring[next].color]
-        );
-        if(!ok){skippedDegenerate++;continue;}
-        for(let n=before+1;n<out.normals.length;n+=3){
-          minNormalY=Math.min(minNormalY,out.normals[n]);
+      // 4x4 shared samples describe nine visual micro-regions. They are still one
+      // gameplay tile and all triangles are appended to the same terrain mesh.
+      for(let row=0;row<3;row++)for(let col=0;col<3;col++){
+        const nw=grid[row][col],ne=grid[row][col+1];
+        const sw=grid[row+1][col],se=grid[row+1][col+1];
+        const alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
+        if(alternate===0){
+          addFace(nw.point,ne.point,se.point,[nw.color,ne.color,se.color]);
+          addFace(nw.point,se.point,sw.point,[nw.color,se.color,sw.color]);
+        }else{
+          addFace(nw.point,ne.point,sw.point,[nw.color,ne.color,sw.color]);
+          addFace(ne.point,se.point,sw.point,[ne.color,se.color,sw.color]);
         }
       }
     }
@@ -221,6 +220,10 @@ export class TerrainRenderer{
       waterbedDepthTint:true,
       visualSurfaceResolver:true,
       microRegionsPerTile:9,
+      microRegionGeometry:true,
+      vertexColorTransitions:true,
+      submergedBedIsolation:true,
+      trianglesPerTile:18,
       skippedDegenerate,
       minNormalY
     };
@@ -330,10 +333,20 @@ export class TerrainRenderer{
         const rough=this.cliffRoughPolyline(tile,dir);
         const nominal=this.cliffEdgePoints(tile,dir);
         const [[x1,z1],[x2,z2]]=nominal;
-        const exposedRock=mixColor(this.surfaceResolver.colorOf(tile),[.34,.32,.27],.38);
+        const edgeColor=this.surfaceResolver.transitionColorAt(tile,byKey,dir.dx*.46,dir.dy*.46);
+        const lowerColor=neighbor
+          ?this.surfaceResolver.transitionColorAt(neighbor,byKey,-dir.dx*.46,-dir.dy*.46)
+          :this.surfaceResolver.colorOf(tile);
+        const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
         const wallColor=shade(exposedRock,Math.max(.62,.72-Math.min(.08,drop*.015))*fog);
-        const rimColor=shade(this.surfaceResolver.colorOf(tile),.94*fog*elevationShade(top));
-        const apronColor=shade(neighbor?this.surfaceResolver.colorOf(neighbor):this.surfaceResolver.colorOf(tile),.76*fog);
+        const bankWaterDepth=Math.max(
+          this.surfaceResolver.waterDepthOf(tile),
+          this.surfaceResolver.waterDepthOf(neighbor)
+        );
+        const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
+        const wetWallColor=mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor);
+        const rimColor=shade(edgeColor,.94*fog*elevationShade(top));
+        const apronColor=shade(lowerColor,.76*fog);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
@@ -343,15 +356,38 @@ export class TerrainRenderer{
           const aBot=this.profileHeight(botA,botM,botB,ta);
           const bBot=this.profileHeight(botA,botM,botB,tb);
 
-          // Main irregular rock wall.
-          this.pushCliffQuad(
-            out,
-            {x:a.x,y:aBot,z:a.z},
-            {x:b.x,y:bBot,z:b.z},
-            {x:b.x,y:bTop,z:b.z},
-            {x:a.x,y:aTop,z:a.z},
-            wallColor
-          );
+          // Water-contact cliffs use the same geometry, but the lower rock band
+          // becomes damp instead of keeping a grass-derived wall colour all the way
+          // down to the waterline.
+          if(wetWallFactor>0){
+            const aMid=aBot+(aTop-aBot)*.46;
+            const bMid=bBot+(bTop-bBot)*.46;
+            this.pushCliffQuad(
+              out,
+              {x:a.x,y:aBot,z:a.z},
+              {x:b.x,y:bBot,z:b.z},
+              {x:b.x,y:bMid,z:b.z},
+              {x:a.x,y:aMid,z:a.z},
+              wetWallColor
+            );
+            this.pushCliffQuad(
+              out,
+              {x:a.x,y:aMid,z:a.z},
+              {x:b.x,y:bMid,z:b.z},
+              {x:b.x,y:bTop,z:b.z},
+              {x:a.x,y:aTop,z:a.z},
+              wallColor
+            );
+          }else{
+            this.pushCliffQuad(
+              out,
+              {x:a.x,y:aBot,z:a.z},
+              {x:b.x,y:bBot,z:b.z},
+              {x:b.x,y:bTop,z:b.z},
+              {x:a.x,y:aTop,z:a.z},
+              wallColor
+            );
+          }
 
           // Original grid edge points at the same parameters. These narrow strips
           // make the new rim part of the cliff geometry rather than an overlay patch.
@@ -430,6 +466,11 @@ export class TerrainRenderer{
       flatShaded:true,
       explicitFaceNormals:true,
       waterbedDepthTint:true,
+      submergedBedIsolation:true,
+      naturalMaterialTransitions:true,
+      microRegionGeometry:true,
+      vertexColorTransitions:true,
+      wetCliffBands:true,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
