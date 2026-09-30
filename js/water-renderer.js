@@ -567,6 +567,10 @@ export class WaterRenderer{
     data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
     data.applyToMesh(mesh,false);
     mesh.material=this.surfaceMaterial;
+    // Keep transparent layer order deterministic: base water first, directional
+    // CURRENT strokes later. Relying on default transparent sorting made the
+    // overlay disappear behind the water surface on some Safari/WebGL views.
+    mesh.alphaIndex=10;
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
@@ -587,6 +591,7 @@ export class WaterRenderer{
       stylizedWater:true,
       depthGradient:true,
       vertexAlpha:true,
+      alphaIndex:10,
       componentTurbidity,
       vertexCount:out.positions.length/3,
       triangleCount:out.indices.length/3

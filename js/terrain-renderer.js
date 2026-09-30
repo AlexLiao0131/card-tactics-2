@@ -13,7 +13,7 @@ const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
 const NORMAL_EPSILON=1e-8;
 
 const CLIFF_RUGGEDNESS=.13;
-const CLIFF_EDGE_SEGMENTS=4;
+const CLIFF_EDGE_SEGMENTS=3;
 const RELIEF_ELEVATION_STEP=.035;
 
 function hash01(value){
@@ -240,6 +240,25 @@ export class TerrainRenderer{
     return[[cx-h,cz+h],[cx-h,cz-h]];
   }
 
+  cliffSurfaceEdgeSamples(tile,dir,byKey){
+    const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+    if(dir.id==="N")return patch[0].map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    if(dir.id==="E")return patch.map(row=>row[3]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    if(dir.id==="S")return [...patch[3]].reverse().map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    return [...patch].reverse().map(row=>row[0]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+  }
+
+  cliffLowerEdgeSamples(neighbor,dir,byKey){
+    if(!neighbor)return null;
+    const patch=this.surfaceResolver.resolveTile(neighbor,byKey).patchGrid;
+    // Return the neighbouring surface along the exact same world-space edge and
+    // in the same point order as the higher tile's edge.
+    if(dir.id==="N")return patch[3].map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    if(dir.id==="E")return patch.map(row=>row[0]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    if(dir.id==="S")return [...patch[0]].reverse().map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    return [...patch].reverse().map(row=>row[3]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+  }
+
   cliffRoughPolyline(tile,dir,segments=CLIFF_EDGE_SEGMENTS){
     const [[x1,z1],[x2,z2]]=this.cliffEdgePoints(tile,dir);
     const points=[];
@@ -257,11 +276,6 @@ export class TerrainRenderer{
     return points;
   }
 
-  profileHeight(a,mid,b,t){
-    return t<=.5
-      ?a+(mid-a)*(t*2)
-      :mid+(b-mid)*((t-.5)*2);
-  }
 
   pushCliffTriangle(out,a,b,c,color){
     const geometric=faceNormal(a,b,c);
@@ -297,14 +311,8 @@ export class TerrainRenderer{
     const EH=ELEVATION_HEIGHT;
 
     // The underlying grid edge stays the rule boundary. The visible cliff rim is
-    // an outward eroded polyline with a narrow cap/apron connecting it back to the
-    // terrain surfaces, so the silhouette is rugged without introducing cracks.
-    const EDGE={
-      N:{own:[[-1,-1],[1,-1]],nb:[[-1,1],[1,1]]},
-      E:{own:[[1,-1],[1,1]],nb:[[-1,-1],[-1,1]]},
-      S:{own:[[1,1],[-1,1]],nb:[[1,-1],[-1,-1]]},
-      W:{own:[[-1,1],[-1,-1]],nb:[[1,1],[1,-1]]}
-    };
+    // an outward eroded polyline, but its inner cap edge now reuses the exact
+    // VisualSurface patch vertices so the rugged silhouette cannot open cracks.
 
     let ruggedEdges=0;
     for(const tile of tiles){
@@ -317,18 +325,11 @@ export class TerrainRenderer{
         const drop=top-lower;
         if(drop<=this.surfaceResolver.maxVisualSlopeDelta)continue;
 
-        const edge=EDGE[dir.id];
-        const topA=this.surfaceResolver.cornerSample(tile,byKey,...edge.own[0]).height*EH;
-        const topB=this.surfaceResolver.cornerSample(tile,byKey,...edge.own[1]).height*EH;
-        const topM=top*EH;
-        let botA=neighbor
-          ?this.surfaceResolver.cornerSample(neighbor,byKey,...edge.nb[0]).height*EH
-          :lower*EH;
-        let botB=neighbor
-          ?this.surfaceResolver.cornerSample(neighbor,byKey,...edge.nb[1]).height*EH
-          :lower*EH;
-        botA=Math.min(botA,topA);botB=Math.min(botB,topB);
-        const botM=lower*EH;
+        // The cap/apron must share the exact 4x4 VisualSurface edge vertices.
+        // Estimating a separate corner→midpoint→corner profile created tiny gaps
+        // after Stage 6 subdivided the terrain at 1/3 and 2/3 positions.
+        const topEdge=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
+        const lowerEdge=this.cliffLowerEdgeSamples(neighbor,dir,byKey);
 
         const rough=this.cliffRoughPolyline(tile,dir);
         const nominal=this.cliffEdgePoints(tile,dir);
@@ -351,10 +352,10 @@ export class TerrainRenderer{
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
           const ta=a.t,tb=b.t;
-          const aTop=this.profileHeight(topA,topM,topB,ta);
-          const bTop=this.profileHeight(topA,topM,topB,tb);
-          const aBot=this.profileHeight(botA,botM,botB,ta);
-          const bBot=this.profileHeight(botA,botM,botB,tb);
+          const aTop=topEdge[i].y;
+          const bTop=topEdge[i+1].y;
+          const aBot=Math.min(lowerEdge?lowerEdge[i].y:lower*EH,aTop);
+          const bBot=Math.min(lowerEdge?lowerEdge[i+1].y:lower*EH,bTop);
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
@@ -434,7 +435,9 @@ export class TerrainRenderer{
       surfaceMatchedEdges:true,
       ruggedNaturalRims:true,
       erosionCap:true,
-      ruggedEdges
+      ruggedEdges,
+      sharedVisualSurfaceEdgeVertices:true,
+      cliffEdgeSegments:CLIFF_EDGE_SEGMENTS
     };
     return mesh;
   }
@@ -473,6 +476,7 @@ export class TerrainRenderer{
       wetCliffBands:true,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
+      cliffSurfaceEdgeMatched:true,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       skippedDegenerate:surface?.metadata?.skippedDegenerate??null,
       minNormalY:surface?.metadata?.minNormalY??null
