@@ -390,24 +390,25 @@ export class TerrainRenderer{
             );
           }
 
-          // Original grid edge points at the same parameters. These narrow strips
-          // make the new rim part of the cliff geometry rather than an overlay patch.
+          // Original grid-edge samples and the rugged rim now meet at the exact
+          // same heights as VisualSurface. No epsilon lift is needed because these
+          // strips extend outside the terrain surface instead of overlapping it.
           const na={x:x1+(x2-x1)*ta,z:z1+(z2-z1)*ta};
           const nb={x:x1+(x2-x1)*tb,z:z1+(z2-z1)*tb};
           this.pushCliffQuad(
             out,
-            {x:na.x,y:aTop+.003,z:na.z},
-            {x:nb.x,y:bTop+.003,z:nb.z},
-            {x:b.x,y:bTop+.003,z:b.z},
-            {x:a.x,y:aTop+.003,z:a.z},
+            {x:na.x,y:aTop,z:na.z},
+            {x:nb.x,y:bTop,z:nb.z},
+            {x:b.x,y:bTop,z:b.z},
+            {x:a.x,y:aTop,z:a.z},
             rimColor
           );
           this.pushCliffQuad(
             out,
-            {x:a.x,y:aBot+.002,z:a.z},
-            {x:b.x,y:bBot+.002,z:b.z},
-            {x:nb.x,y:bBot+.002,z:nb.z},
-            {x:na.x,y:aBot+.002,z:na.z},
+            {x:a.x,y:aBot,z:a.z},
+            {x:b.x,y:bBot,z:b.z},
+            {x:nb.x,y:bBot,z:nb.z},
+            {x:na.x,y:aBot,z:na.z},
             apronColor
           );
         }
