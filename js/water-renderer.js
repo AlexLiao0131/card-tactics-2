@@ -109,7 +109,10 @@ export class WaterRenderer{
     m.specularPower=28;
     m.alpha=1;
     m.backFaceCulling=false;
-    m.needDepthPrePass=true;
+    // Vertex-alpha water must not write an opaque depth pre-pass. Safari/WebGL can
+    // otherwise reveal dark hairline seams where adjacent transparent triangles
+    // meet or where a shallow shoreline overlays the terrain below.
+    m.needDepthPrePass=false;
     if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null){
       m.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
     }
@@ -795,6 +798,7 @@ export class WaterRenderer{
       reflectiveWaterMaterial:false,
       depthGradient:true,
       vertexAlpha:true,
+      transparentDepthPrePass:false,
       cascadesRequireHydrologyDirection:true,
       cascadesRequireDownstreamWater:true
     };

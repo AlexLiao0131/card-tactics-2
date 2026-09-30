@@ -87,8 +87,8 @@ export const MapGenerator=(()=>{
     for(let x=startX;x<=endX;x++){
       let nextY=y;
       if(map.height>=14&&x>2&&x<endX-2&&rand()<.18){const toward=Math.sign(targetY-y),drift=rand()<.65?toward:(rand()<.5?-1:1);nextY=clamp(y+drift,targetY-2,targetY+2);}
-      carve(x,y); // horizontal step first
-      if(nextY!==y){carve(x,nextY);y=nextY;} // then an orthogonal vertical step at the same x
+      carve(x,y);
+      if(nextY!==y){carve(x,nextY);y=nextY;}
       if(map.width>=26){
         const sideY=clamp(y+(index===1?1:(index===0?1:-1)),1,map.height-2),side=tileAt(map,x,sideY);
         if(side&&rand()<.72){setDry(side,clamp(previousElevation+(rand()<.5?0:1),0,1),"PLAIN");side.routeId=`route_${index}`;protectedKeys.add(key(x,sideY));}
@@ -115,41 +115,167 @@ export const MapGenerator=(()=>{
   }
 
   function createRiver(map,routes,protectedKeys,rand){
-    const xBase=clamp(Math.round(map.width*(.42+rand()*.16)),4,map.width-5),river=[],routeCrossings=new Map();
-    let x=xBase;
-    function placeRiverTile(tx,ty){
-      let tile=tileAt(map,tx,ty);if(!tile)return null;
-      if(tile.captureZone){
-        for(const shift of [-1,1,-2,2]){const candidate=tileAt(map,clamp(tx+shift,2,map.width-3),ty);if(candidate&&!candidate.captureZone){tile=candidate;break;}}
-      }
-      const routeIndex=typeof tile.routeId==="string"?Number(tile.routeId.split("_")[1]):null;
-      const isRoute=Number.isInteger(routeIndex),routeSurface=isRoute?(tile.ford?Number(tile.waterSurfaceZ??(Number(tile.elevation||0)+Number(tile.waterDepth||0))):clamp(Number(tile.elevation||0),0,1)):0;
-      setWater(tile,{bed:isRoute?routeSurface-.35:-1,depth:isRoute?.35:1,river:true,ford:isRoute,flowX:0,flowY:1,flowSpeed:isRoute?.45:.62,discharge:isRoute?.8:1});
-      if(isRoute&&!routeCrossings.has(routeIndex))routeCrossings.set(routeIndex,{x:tile.x,y:tile.y});
-      river.push({x:tile.x,y:tile.y});
-      return tile;
-    }
-    for(let y=0;y<map.height;y++){
-      if(y>0&&rand()<.28)x=clamp(x+(rand()<.5?-1:1),3,map.width-4);
-      const last=river[river.length-1];
-      if(last&&last.x!==x){let bx=last.x;while(bx!==x){bx+=Math.sign(x-bx);placeRiverTile(bx,y);}}
-      placeRiverTile(x,y);
+    const xBase=clamp(Math.round(map.width*(.42+rand()*.16)),4,map.width-5);
+    const river=[],riverKeys=new Set(),routeCrossings=new Map();
+    const tileMap=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const getTile=(x,y)=>tileMap.get(key(x,y))||null;
+
+    function riverTileAllowed(x,y,{allowGoal=false,goal=null}={}){
+      const tile=getTile(x,y);
+      if(!tile)return false;
+      if(allowGoal&&goal&&x===goal.x&&y===goal.y)return true;
+      return tile.captureZone!==true;
     }
 
-    // If meander did not naturally touch a strategic route, extend a short branch to the nearest route point.
+    function nearestOpenX(targetX,y,fromX=targetX){
+      const minX=2,maxX=map.width-3;
+      const candidates=[];
+      for(let x=minX;x<=maxX;x++){
+        const tile=getTile(x,y);
+        if(!tile||tile.captureZone===true)continue;
+        candidates.push({x,score:Math.abs(x-targetX)*4+Math.abs(x-fromX)});
+      }
+      candidates.sort((a,b)=>a.score-b.score||a.x-b.x);
+      return candidates[0]?.x??clamp(targetX,minX,maxX);
+    }
+
+    function cardinalPath(start,goal){
+      if(!start||!goal)return[];
+      const startKey=key(start.x,start.y),goalKey=key(goal.x,goal.y);
+      const queue=[{x:start.x,y:start.y}],seen=new Set([startKey]),parent=new Map();
+      let head=0;
+
+      while(head<queue.length){
+        const current=queue[head++],currentKey=key(current.x,current.y);
+        if(currentKey===goalKey)break;
+
+        const steps=DIRS.map(([dx,dy])=>({x:current.x+dx,y:current.y+dy}))
+          .filter(point=>inBounds(map.width,map.height,point.x,point.y))
+          .filter(point=>point.x>=2&&point.x<=map.width-3)
+          .filter(point=>riverTileAllowed(point.x,point.y,{allowGoal:true,goal}))
+          .sort((a,b)=>
+            (Math.abs(a.x-goal.x)+Math.abs(a.y-goal.y))-
+            (Math.abs(b.x-goal.x)+Math.abs(b.y-goal.y))||
+            Math.abs(a.x-start.x)-Math.abs(b.x-start.x)
+          );
+
+        for(const next of steps){
+          const nextKey=key(next.x,next.y);
+          if(seen.has(nextKey))continue;
+          seen.add(nextKey);parent.set(nextKey,current);queue.push(next);
+        }
+      }
+
+      if(!seen.has(goalKey))return[];
+      const path=[];let cursor={x:goal.x,y:goal.y};
+      while(true){
+        path.push(cursor);
+        const cursorKey=key(cursor.x,cursor.y);
+        if(cursorKey===startKey)break;
+        cursor=parent.get(cursorKey);
+        if(!cursor)return[];
+      }
+      path.reverse();
+      return path;
+    }
+
+    function placeRiverTile(tx,ty){
+      const tile=getTile(tx,ty);
+      if(!tile||tile.captureZone===true)return null;
+
+      const routeIndex=typeof tile.routeId==="string"?Number(tile.routeId.split("_")[1]):null;
+      const isRoute=Number.isInteger(routeIndex);
+      const routeSurface=isRoute
+        ?(tile.ford
+          ?Number(tile.waterSurfaceZ??(Number(tile.elevation||0)+Number(tile.waterDepth||0)))
+          :clamp(Number(tile.elevation||0),0,1))
+        :0;
+
+      setWater(tile,{
+        bed:isRoute?routeSurface-.35:-1,
+        depth:isRoute?.35:1,
+        river:true,
+        ford:isRoute,
+        flowX:0,
+        flowY:1,
+        flowSpeed:isRoute?.45:.62,
+        discharge:isRoute?.8:1
+      });
+
+      const tileKey=key(tile.x,tile.y);
+      if(!riverKeys.has(tileKey)){
+        riverKeys.add(tileKey);
+        river.push({x:tile.x,y:tile.y});
+      }
+      if(isRoute&&!routeCrossings.has(routeIndex)){
+        routeCrossings.set(routeIndex,{x:tile.x,y:tile.y});
+        protectedKeys.add(tileKey);
+      }
+      return tile;
+    }
+
+    function layPath(path){
+      for(const point of path)placeRiverTile(point.x,point.y);
+      return path.length?path[path.length-1]:null;
+    }
+
+    // Main river: every turn is carved as a cardinal path. The old generator
+    // jumped diagonally when x changed between rows, which visually touched at a
+    // corner but split Hydrology's 4-neighbour river graph into separate components.
+    let targetX=xBase;
+    let last=null;
+    for(let y=0;y<map.height;y++){
+      if(y>0&&rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
+      const resolvedX=nearestOpenX(targetX,y,last?.x??targetX);
+      const target={x:resolvedX,y};
+      if(!last){
+        placeRiverTile(target.x,target.y);
+        last=target;
+        continue;
+      }
+      const path=cardinalPath(last,target);
+      if(!path.length)throw new Error(`River routing failed at ${last.x},${last.y} -> ${target.x},${target.y}`);
+      last=layPath(path.slice(1))||last;
+    }
+
+    // Every strategic route receives a real ford connected to the existing river
+    // through the same cardinal routing rule. Capture zones are obstacles rather
+    // than silently shifting an individual river tile away from its neighbours.
     routes.forEach((route,index)=>{
       if(routeCrossings.has(index))return;
       let best=null;
-      for(const rp of route)for(const rv of river){
-        const d=Math.abs(rp.x-rv.x)+Math.abs(rp.y-rv.y);
-        if(!best||d<best.d)best={rp,rv,d};
+      for(const rp of route){
+        const rpTile=getTile(rp.x,rp.y);
+        if(!rpTile||rpTile.captureZone===true)continue;
+        for(const rv of river){
+          const d=Math.abs(rp.x-rv.x)+Math.abs(rp.y-rv.y);
+          if(!best||d<best.d)best={rp,rv,d};
+        }
       }
       if(!best)return;
-      let x=best.rv.x,y=best.rv.y;
-      while(y!==best.rp.y){y+=Math.sign(best.rp.y-y);placeRiverTile(x,y);}
-      while(x!==best.rp.x){x+=Math.sign(best.rp.x-x);const t=tileAt(map,x,y);if(!t)break;t.routeId=`route_${index}`;placeRiverTile(x,y);}
-      const ford=tileAt(map,best.rp.x,best.rp.y);if(ford){ford.routeId=`route_${index}`;if(!ford.ford){const surface=clamp(Number(ford.elevation||0),0,1);setWater(ford,{bed:surface-.35,depth:.35,river:true,ford:true,flowX:0,flowY:1,flowSpeed:.45,discharge:.8});}ford.ford=true;ford.baseFlowSpeed=.45;ford.flowSpeed=.45;ford.baseDischarge=.8;ford.discharge=.8;routeCrossings.set(index,{x:ford.x,y:ford.y});protectedKeys.add(key(ford.x,ford.y));}
+
+      const crossing=getTile(best.rp.x,best.rp.y);
+      if(!crossing)return;
+      crossing.routeId=`route_${index}`;
+      const path=cardinalPath(best.rv,best.rp);
+      if(!path.length)throw new Error(`River ford routing failed for route ${index}`);
+      layPath(path.slice(1));
+
+      const ford=getTile(best.rp.x,best.rp.y);
+      if(ford){
+        ford.routeId=`route_${index}`;
+        if(!ford.ford){
+          const surface=clamp(Number(ford.elevation||0)+Number(ford.waterDepth||0),0,1);
+          setWater(ford,{bed:surface-.35,depth:.35,river:true,ford:true,flowX:0,flowY:1,flowSpeed:.45,discharge:.8});
+        }
+        ford.ford=true;
+        ford.baseFlowSpeed=.45;ford.flowSpeed=.45;
+        ford.baseDischarge=.8;ford.discharge=.8;
+        routeCrossings.set(index,{x:ford.x,y:ford.y});
+        protectedKeys.add(key(ford.x,ford.y));
+      }
     });
+
     return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p}))};
   }
 
@@ -179,7 +305,6 @@ export const MapGenerator=(()=>{
     const candidates=map.tiles.filter(t=>!protectedKeys.has(key(t.x,t.y))&&!t.river&&t.waterDepth<=0&&t.elevation>=0);
     for(const t of candidates){if(count>=target)break;if(rand()<.32){t.terrain="FOREST";count++;}}
   }
-
 
   function reachableTiles(map,objects,start){
     const seen=new Set(),q=[{x:start.x,y:start.y}];seen.add(key(start.x,start.y));
@@ -292,8 +417,35 @@ export const MapGenerator=(()=>{
     while(q.length){const p=q.shift();if(p.x===goal.x&&p.y===goal.y)return true;const from=tileAt(map,p.x,p.y);for(const[dx,dy]of DIRS){const x=p.x+dx,y=p.y+dy,k=key(x,y);if(seen.has(k))continue;const to=tileAt(map,x,y);if(!normalPassable(map,objects,from,to))continue;seen.add(k);q.push({x,y});}}
     return false;
   }
+
+  function riverComponentCount(map){
+    const riverTiles=(map?.tiles||[]).filter(tile=>tile?.river===true);
+    if(!riverTiles.length)return 0;
+    const byKey=new Map(riverTiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const remaining=new Set(byKey.keys());
+    let components=0;
+    while(remaining.size){
+      components++;
+      const first=remaining.values().next().value;
+      remaining.delete(first);
+      const queue=[byKey.get(first)];
+      while(queue.length){
+        const tile=queue.shift();
+        if(!tile)continue;
+        for(const[dx,dy]of DIRS){
+          const neighborKey=key(tile.x+dx,tile.y+dy);
+          if(!remaining.has(neighborKey))continue;
+          remaining.delete(neighborKey);
+          queue.push(byKey.get(neighborKey));
+        }
+      }
+    }
+    return components;
+  }
+
   function validateBattlefield(map,objects,cores,points,routes,river){
     const p=cores.find(c=>c.owner==="PLAYER"),e=cores.find(c=>c.owner==="ENEMY"),errors=[];
+    const riverComponents=riverComponentCount(map);if(riverComponents!==1)errors.push(`RIVER_DISCONNECTED_${riverComponents}`);
     if(!hasPath(map,objects,p,e))errors.push("CORE_TO_CORE");
     for(const point of points){const goal=point.captureTiles?.[0];if(goal&&!hasPath(map,objects,p,goal))errors.push(`PLAYER_TO_${point.id}`);if(goal&&!hasPath(map,objects,e,goal))errors.push(`ENEMY_TO_${point.id}`);}
     routes.forEach((route,i)=>{

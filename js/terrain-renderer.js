@@ -144,7 +144,9 @@ export class TerrainRenderer{
   makeCliffMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-cliffs",this.scene);
     material.diffuseColor=BABYLON.Color3.White();
-    material.ambientColor=new BABYLON.Color3(.32,.32,.32);
+    // Vertical rock faces keep stronger ambient colour so they read as exposed
+    // earth/stone rather than a black outline along water and high-ground rims.
+    material.ambientColor=new BABYLON.Color3(.44,.44,.44);
     material.specularColor=new BABYLON.Color3(.012,.012,.012);
     material.specularPower=5;
     // Cliff quads may face any cardinal direction.
@@ -434,9 +436,10 @@ export class TerrainRenderer{
         const rough=this.cliffRoughPolyline(tile,dir);
         const nominal=this.cliffEdgePoints(tile,dir);
         const [[x1,z1],[x2,z2]]=nominal;
-        const wallColor=shade(baseColor(tile),Math.max(.42,.60-Math.min(.12,drop*.025))*fog);
-        const rimColor=shade(baseColor(tile),.90*fog*elevationShade(top));
-        const apronColor=shade(neighbor?baseColor(neighbor):baseColor(tile),.66*fog);
+        const exposedRock=mixColor(baseColor(tile),[.34,.32,.27],.38);
+        const wallColor=shade(exposedRock,Math.max(.62,.72-Math.min(.08,drop*.015))*fog);
+        const rimColor=shade(baseColor(tile),.94*fog*elevationShade(top));
+        const apronColor=shade(neighbor?baseColor(neighbor):baseColor(tile),.76*fog);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
