@@ -1,12 +1,12 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 
-function tileAt(state,x,y){return state?.map?.tiles?.find(tile=>tile.x===x&&tile.y===y)||null;}
+const tileKey=(x,y)=>`${x},${y}`;
 function canonicalType(object){return globalThis.EnvironmentObjectEngine?.normalizeType?.(object?.type)||String(object?.type||"").toUpperCase();}
-function groundY(state,x,y){const tile=tileAt(state,x,y);return Number(tile?.elevation||0)*ELEVATION_HEIGHT;}
-function objectY(state,object){
-  const tile=tileAt(state,object.x,object.y);if(!tile)return 0;
+function groundY(tile){return Number(tile?.elevation||0)*ELEVATION_HEIGHT;}
+function objectY(tile,object){
+  if(!tile)return 0;
   if(object.floatOnWater===true&&tile.waterSurfaceZ!=null)return Number(tile.waterSurfaceZ)*ELEVATION_HEIGHT;
-  return groundY(state,object.x,object.y);
+  return groundY(tile);
 }
 function hash01(value){
   const text=String(value||"");let h=2166136261;
@@ -18,6 +18,7 @@ export class MapObjectRenderer{
   constructor(scene){
     this.scene=scene;
     this.nodes=new Map();
+    this.signatureValue=null;
     this.materials={
       trunk:this.mat("prop-trunk",new BABYLON.Color3(.28,.17,.09)),
       deadTrunk:this.mat("prop-dead-trunk",new BABYLON.Color3(.25,.23,.20)),
@@ -90,22 +91,42 @@ export class MapObjectRenderer{
     }
   }
 
-  signature(object){return[canonicalType(object),object.destroyed?1:0,object.x,object.y,object.floatOnWater?1:0,object.durability??""].join("|");}
+  // Only geometry/placement fields belong here. Durability changes gameplay state
+  // but does not change this renderer's mesh, so it must not recreate the object.
+  signature(object){return[canonicalType(object),object.x,object.y,object.floatOnWater?1:0].join("|");}
+
+  visualSignature(objects,byKey){
+    return objects.map(object=>{
+      const tile=byKey.get(tileKey(object.x,object.y));
+      return[
+        object.id,this.signature(object),
+        Number(tile?.elevation||0).toFixed(3),
+        tile?.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3),
+        tile?.fogged?1:0
+      ].join(":");
+    }).sort().join(";");
+  }
 
   sync(state){
+    const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
+    const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&object.type!=="CORE");
+    const stateSignature=this.visualSignature(objects,byKey);
+    if(stateSignature===this.signatureValue)return;
+    this.signatureValue=stateSignature;
+
     const alive=new Set();
-    for(const object of state?.map?.objects||[]){
-      if(object.destroyed||object.type==="CORE")continue;
+    for(const object of objects){
       const key=`OBJECT:${object.id}`,signature=this.signature(object);alive.add(key);
       let entry=this.nodes.get(key);
       if(!entry||entry.signature!==signature){entry?.node?.dispose();entry={node:this.createObject(object),signature};this.nodes.set(key,entry);}
-      const node=entry.node;node.position.set(Number(object.x||0)*TILE_SIZE,objectY(state,object),Number(object.y||0)*TILE_SIZE);
-      const tile=tileAt(state,object.x,object.y);this.setNodeVisibility(node,tile?.fogged?.24:1);
+      const tile=byKey.get(tileKey(object.x,object.y)),node=entry.node;
+      node.position.set(Number(object.x||0)*TILE_SIZE,objectY(tile,object),Number(object.y||0)*TILE_SIZE);
+      this.setNodeVisibility(node,tile?.fogged?.24:1);
     }
     for(const[key,entry]of this.nodes){if(alive.has(key))continue;entry.node.dispose();this.nodes.delete(key);}
   }
 
   diagnostics(){
-    const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}return{total:this.nodes.size,byType};
+    const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}return{total:this.nodes.size,byType,stateSignatureCached:true,durabilityRebuild:false};
   }
 }

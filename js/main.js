@@ -67,11 +67,44 @@ try{
   loadingStep="battle-test-console.js";
   await load("./battle-test-console.js");
 
-  function sync(){const snap=runtime.getBattleSnapshot(),prev=renderer.lastState;if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();globalThis.UnitAnimationEngine?.observe?.(snap);const events=globalThis.UnitAnimationEngine?.drain?.()||[];renderer.sync(snap,events);battleUI.render()}
-  window.addEventListener("cardtactics:battle-render",sync);
-  window.addEventListener("cardtactics:state",sync);
-  window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();sync()});
-  sync();
+  // Runtime currently emits both battle-render and generic state notifications for
+  // many actions. Observe every snapshot so animation deltas are not lost, but
+  // collapse the expensive Babylon/UI synchronization to one pass per browser frame.
+  const requestFrame=window.requestAnimationFrame
+    ?window.requestAnimationFrame.bind(window)
+    :callback=>setTimeout(callback,16);
+  let pendingFrame=0,pendingSnapshot=null,pendingAnimationEvents=[],lastObservedSnapshot=renderer.lastState;
+
+  function observeSnapshot(){
+    const snap=runtime.getBattleSnapshot(),prev=lastObservedSnapshot;
+    if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();
+    globalThis.UnitAnimationEngine?.observe?.(snap);
+    const events=globalThis.UnitAnimationEngine?.drain?.()||[];
+    if(events.length)pendingAnimationEvents.push(...events);
+    pendingSnapshot=snap;
+    lastObservedSnapshot=snap;
+    return snap;
+  }
+
+  function flushSync(){
+    pendingFrame=0;
+    const snap=pendingSnapshot||runtime.getBattleSnapshot(),events=pendingAnimationEvents;
+    pendingSnapshot=null;pendingAnimationEvents=[];
+    renderer.sync(snap,events);
+    battleUI.render();
+  }
+
+  function scheduleSync(){
+    observeSnapshot();
+    if(pendingFrame)return;
+    pendingFrame=requestFrame(flushSync);
+  }
+
+  window.addEventListener("cardtactics:battle-render",scheduleSync);
+  window.addEventListener("cardtactics:state",scheduleSync);
+  window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();scheduleSync()});
+  observeSnapshot();
+  flushSync();
 }catch(error){
   const name=error?.name||"Error",message=error?.message||String(error);
   if(bootStatus){

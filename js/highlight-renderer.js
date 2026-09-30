@@ -1,9 +1,10 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
-const keyOf=t=>`${t.x},${t.y}`;
-const surfaceOf=t=>t.waterSurfaceZ==null?Number(t.elevation||0):Math.max(Number(t.elevation||0),Number(t.waterSurfaceZ));
+const keyOf=tile=>`${tile.x},${tile.y}`;
+const surfaceOf=tile=>tile.waterSurfaceZ==null?Number(tile.elevation||0):Math.max(Number(tile.elevation||0),Number(tile.waterSurfaceZ));
+const highlightKind=tile=>tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
 export class HighlightRenderer{
   constructor(scene){
-    this.scene=scene;this.dynamic=new Map();this.areas=new Map();
+    this.scene=scene;this.dynamic=new Map();this.areas=new Map();this.signatureValue=null;
     this.materials={
       reachable:this.mat("reachable",new BABYLON.Color3(.18,.55,1),.35),
       targetRange:this.mat("target-range",new BABYLON.Color3(1,.28,.22),.18),
@@ -15,28 +16,41 @@ export class HighlightRenderer{
       NEUTRAL:this.mat("deploy-area-neutral",new BABYLON.Color3(.78,.62,.22),.16)
     };
   }
-  mat(name,color,alpha){const m=new BABYLON.StandardMaterial(name,this.scene);m.diffuseColor=color;m.emissiveColor=color;m.alpha=alpha;m.disableLighting=true;return m}
-  tileMesh(name,tile,height=.026,scale=.94){
+  mat(name,color,alpha){const m=new BABYLON.StandardMaterial(name,this.scene);m.diffuseColor=color;m.emissiveColor=color;m.alpha=alpha;m.disableLighting=true;return m;}
+  tileMesh(name,height=.026,scale=.94){
     const mesh=BABYLON.MeshBuilder.CreateBox(name,{width:TILE_SIZE*scale,depth:TILE_SIZE*scale,height},this.scene);mesh.isPickable=false;return mesh;
   }
+  signature(tiles){
+    const active=[];
+    for(const tile of tiles){
+      const areaOwner=tile.deploymentAreaOwner||"",kind=highlightKind(tile)||"";
+      if(!areaOwner&&!kind)continue;
+      active.push([tile.x,tile.y,surfaceOf(tile).toFixed(3),areaOwner,kind].join(":"));
+    }
+    return active.sort().join(";");
+  }
   sync(state){
+    const tiles=state?.map?.tiles||[],signature=this.signature(tiles);
+    if(signature===this.signatureValue)return;
+    this.signatureValue=signature;
+
     const dynAlive=new Set(),areaAlive=new Set();
-    for(const tile of state?.map?.tiles||[]){
+    for(const tile of tiles){
       const key=keyOf(tile),surface=surfaceOf(tile),areaOwner=tile.deploymentAreaOwner;
       if(areaOwner){
         areaAlive.add(key);let area=this.areas.get(key);
-        if(!area){area=this.tileMesh(`deploy-area-${key}`,tile,.022,.94);this.areas.set(key,area)}
+        if(!area){area=this.tileMesh(`deploy-area-${key}`,.022,.94);this.areas.set(key,area);}
         area.position.set(tile.x*TILE_SIZE,surface*ELEVATION_HEIGHT+.032,tile.y*TILE_SIZE);
         area.material=this.materials[areaOwner]||this.materials.NEUTRAL;
       }
-      const kind=tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
+      const kind=highlightKind(tile);
       if(kind){
         dynAlive.add(key);let mesh=this.dynamic.get(key);
-        if(!mesh){mesh=this.tileMesh(`hl-${key}`,tile,.035,.985);this.dynamic.set(key,mesh)}
+        if(!mesh){mesh=this.tileMesh(`hl-${key}`,.035,.985);this.dynamic.set(key,mesh);}
         mesh.position.set(tile.x*TILE_SIZE,surface*ELEVATION_HEIGHT+.058,tile.y*TILE_SIZE);mesh.material=this.materials[kind];
       }
     }
-    for(const[k,m]of this.areas)if(!areaAlive.has(k)){m.dispose();this.areas.delete(k)}
-    for(const[k,m]of this.dynamic)if(!dynAlive.has(k)){m.dispose();this.dynamic.delete(k)}
+    for(const[key,mesh]of this.areas)if(!areaAlive.has(key)){mesh.dispose();this.areas.delete(key);}
+    for(const[key,mesh]of this.dynamic)if(!dynAlive.has(key)){mesh.dispose();this.dynamic.delete(key);}
   }
 }
