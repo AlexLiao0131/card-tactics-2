@@ -1,4 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
+import { VisualSurfaceResolver } from "./visual-surface-resolver.js";
 
 const DIRS=Object.freeze([
   {id:"N",dx:0,dy:-1},
@@ -9,23 +10,8 @@ const DIRS=Object.freeze([
 
 const keyOf=(x,y)=>`${x},${y}`;
 const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
-const elevationOf=tile=>Number(tile?.elevation||0);
-const MAX_VISUAL_SLOPE_DELTA=1.0001;
 const NORMAL_EPSILON=1e-8;
 
-const TERRAIN_COLORS=Object.freeze({
-  PLAIN:[.39,.55,.28],
-  FOREST:[.17,.37,.21],
-  HIGH_GROUND:[.40,.43,.39],
-  WATER:[.29,.37,.31],
-  MUD:[.36,.28,.18],
-  SAND:[.68,.60,.40],
-  WALL:[.27,.28,.31],
-  DEFAULT:[.35,.49,.27]
-});
-const WATERBED_SHALLOW=Object.freeze([.39,.44,.29]);
-const WATERBED_DEEP=Object.freeze([.13,.24,.25]);
-const WATERBED_DEPTH_RANGE=1.5;
 const CLIFF_RUGGEDNESS=.13;
 const CLIFF_EDGE_SEGMENTS=4;
 const RELIEF_ELEVATION_STEP=.035;
@@ -36,42 +22,12 @@ function hash01(value){
   return(h>>>0)/4294967295;
 }
 
-function clamp01(value){return Math.max(0,Math.min(1,Number(value||0)));}
-function smooth01(value){const t=clamp01(value);return t*t*(3-2*t);}
 function mixColor(a,b,t){
-  const q=clamp01(t);
+  const q=Math.max(0,Math.min(1,Number(t||0)));
   return[
     a[0]+(b[0]-a[0])*q,
     a[1]+(b[1]-a[1])*q,
     a[2]+(b[2]-a[2])*q
-  ];
-}
-function dryTerrainColor(tile){
-  if(tile?.material==="ROCK")return TERRAIN_COLORS.HIGH_GROUND;
-  const terrain=tile?.terrain==="WATER"&&tile?.dryTerrain
-    ?String(tile.dryTerrain)
-    :String(tile?.terrain||"DEFAULT");
-  return TERRAIN_COLORS[terrain]||TERRAIN_COLORS.DEFAULT;
-}
-function baseColor(tile){
-  const color=dryTerrainColor(tile);
-  const depth=Math.max(0,Number(tile?.waterDepth||0));
-  if(depth<=0)return color;
-
-  // The terrain remains the terrain. This is only a visual underwater tint,
-  // derived from hydrology depth and never written back into GridState.
-  const wet=smooth01(depth/.28);
-  const deep=smooth01(depth/WATERBED_DEPTH_RANGE);
-  const shallow=mixColor(color,WATERBED_SHALLOW,.32*wet);
-  return mixColor(shallow,WATERBED_DEEP,.72*deep);
-}
-function avg(values){return values.reduce((sum,value)=>sum+value,0)/Math.max(1,values.length);}
-function mixColors(tiles){
-  if(!tiles.length)return TERRAIN_COLORS.DEFAULT;
-  return[
-    avg(tiles.map(tile=>baseColor(tile)[0])),
-    avg(tiles.map(tile=>baseColor(tile)[1])),
-    avg(tiles.map(tile=>baseColor(tile)[2]))
   ];
 }
 function shade(color,factor){
@@ -122,6 +78,7 @@ export class TerrainRenderer{
     this.scene=scene;
     this.meshes=new Map();
     this.signatureValue="";
+    this.surfaceResolver=new VisualSurfaceResolver();
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
   }
@@ -165,78 +122,12 @@ export class TerrainRenderer{
       tile.x,tile.y,
       String(tile.terrain||""),
       String(tile.material||""),
-      elevationOf(tile).toFixed(4),
+      this.surfaceResolver.elevationOf(tile).toFixed(4),
       Math.max(0,Number(tile.waterDepth||0)).toFixed(3),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
   }
 
-  tileAt(byKey,x,y){return byKey.get(keyOf(x,y))||null;}
-
-  canSlope(a,b){
-    return !!a&&!!b&&Math.abs(elevationOf(a)-elevationOf(b))<=MAX_VISUAL_SLOPE_DELTA;
-  }
-
-  slopeConnectedCornerTiles(tile,byKey,dx,dy){
-    const candidates=[
-      tile,
-      this.tileAt(byKey,tile.x+dx,tile.y),
-      this.tileAt(byKey,tile.x,tile.y+dy),
-      this.tileAt(byKey,tile.x+dx,tile.y+dy)
-    ].filter(Boolean);
-
-    const result=[tile];
-    const included=new Set([keyOf(tile.x,tile.y)]);
-    let changed=true;
-
-    while(changed){
-      changed=false;
-      for(const candidate of candidates){
-        const candidateKey=keyOf(candidate.x,candidate.y);
-        if(included.has(candidateKey))continue;
-        const joins=result.some(member=>{
-          const cardinal=Math.abs(member.x-candidate.x)+Math.abs(member.y-candidate.y)===1;
-          return cardinal&&this.canSlope(member,candidate);
-        });
-        if(!joins)continue;
-        included.add(candidateKey);
-        result.push(candidate);
-        changed=true;
-      }
-    }
-    return result;
-  }
-
-  cornerSample(tile,byKey,dx,dy){
-    const members=this.slopeConnectedCornerTiles(tile,byKey,dx,dy);
-    return{
-      height:avg(members.map(elevationOf)),
-      color:mixColors(members)
-    };
-  }
-
-  edgeSample(tile,neighbor){
-    if(!neighbor||!this.canSlope(tile,neighbor)){
-      return{height:elevationOf(tile),color:baseColor(tile)};
-    }
-    return{
-      height:(elevationOf(tile)+elevationOf(neighbor))/2,
-      color:mixColors([tile,neighbor])
-    };
-  }
-
-  ringSamples(tile,byKey){
-    return[
-      {ox:-.5,oz:-.5,...this.cornerSample(tile,byKey,-1,-1)},
-      {ox:0,oz:-.5,...this.edgeSample(tile,this.tileAt(byKey,tile.x,tile.y-1))},
-      {ox:.5,oz:-.5,...this.cornerSample(tile,byKey,1,-1)},
-      {ox:.5,oz:0,...this.edgeSample(tile,this.tileAt(byKey,tile.x+1,tile.y))},
-      {ox:.5,oz:.5,...this.cornerSample(tile,byKey,1,1)},
-      {ox:0,oz:.5,...this.edgeSample(tile,this.tileAt(byKey,tile.x,tile.y+1))},
-      {ox:-.5,oz:.5,...this.cornerSample(tile,byKey,-1,1)},
-      {ox:-.5,oz:0,...this.edgeSample(tile,this.tileAt(byKey,tile.x-1,tile.y))}
-    ];
-  }
 
   pushFace(out,a,b,c,colors){
     const oriented=orientUp(a,b,c);
@@ -275,14 +166,15 @@ export class TerrainRenderer{
       const cz=Number(tile.y)*TILE_SIZE;
       const fog=tile.fogged?.62:1;
 
+      const visual=this.surfaceResolver.resolveTile(tile,byKey);
       const center={
         x:cx,
-        y:elevationOf(tile)*ELEVATION_HEIGHT,
+        y:visual.centerHeight*ELEVATION_HEIGHT,
         z:cz
       };
-      const centerColor=shade(baseColor(tile),fog*elevationShade(elevationOf(tile)));
+      const centerColor=shade(visual.color,fog*elevationShade(visual.centerHeight));
 
-      const ring=this.ringSamples(tile,byKey).map(sample=>({
+      const ring=visual.ring.map(sample=>({
         point:{
           x:cx+sample.ox*TILE_SIZE,
           y:sample.height*ELEVATION_HEIGHT,
@@ -327,6 +219,8 @@ export class TerrainRenderer{
       flatShaded:true,
       explicitFaceNormals:true,
       waterbedDepthTint:true,
+      visualSurfaceResolver:true,
+      microRegionsPerTile:9,
       skippedDegenerate,
       minNormalY
     };
@@ -395,7 +289,7 @@ export class TerrainRenderer{
 
   buildCliffs(tiles,byKey){
     const out={positions:[],indices:[],normals:[],colors:[]};
-    const minElevation=tiles.length?Math.min(...tiles.map(elevationOf)):0;
+    const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
 
@@ -411,24 +305,24 @@ export class TerrainRenderer{
 
     let ruggedEdges=0;
     for(const tile of tiles){
-      const top=elevationOf(tile);
+      const top=this.surfaceResolver.elevationOf(tile);
       const fog=tile.fogged?.62:1;
 
       for(const dir of DIRS){
-        const neighbor=this.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
-        const lower=neighbor?elevationOf(neighbor):boundaryBase;
+        const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
+        const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):boundaryBase;
         const drop=top-lower;
-        if(drop<=MAX_VISUAL_SLOPE_DELTA)continue;
+        if(drop<=this.surfaceResolver.maxVisualSlopeDelta)continue;
 
         const edge=EDGE[dir.id];
-        const topA=this.cornerSample(tile,byKey,...edge.own[0]).height*EH;
-        const topB=this.cornerSample(tile,byKey,...edge.own[1]).height*EH;
+        const topA=this.surfaceResolver.cornerSample(tile,byKey,...edge.own[0]).height*EH;
+        const topB=this.surfaceResolver.cornerSample(tile,byKey,...edge.own[1]).height*EH;
         const topM=top*EH;
         let botA=neighbor
-          ?this.cornerSample(neighbor,byKey,...edge.nb[0]).height*EH
+          ?this.surfaceResolver.cornerSample(neighbor,byKey,...edge.nb[0]).height*EH
           :lower*EH;
         let botB=neighbor
-          ?this.cornerSample(neighbor,byKey,...edge.nb[1]).height*EH
+          ?this.surfaceResolver.cornerSample(neighbor,byKey,...edge.nb[1]).height*EH
           :lower*EH;
         botA=Math.min(botA,topA);botB=Math.min(botB,topB);
         const botM=lower*EH;
@@ -436,10 +330,10 @@ export class TerrainRenderer{
         const rough=this.cliffRoughPolyline(tile,dir);
         const nominal=this.cliffEdgePoints(tile,dir);
         const [[x1,z1],[x2,z2]]=nominal;
-        const exposedRock=mixColor(baseColor(tile),[.34,.32,.27],.38);
+        const exposedRock=mixColor(this.surfaceResolver.colorOf(tile),[.34,.32,.27],.38);
         const wallColor=shade(exposedRock,Math.max(.62,.72-Math.min(.08,drop*.015))*fog);
-        const rimColor=shade(baseColor(tile),.94*fog*elevationShade(top));
-        const apronColor=shade(neighbor?baseColor(neighbor):baseColor(tile),.76*fog);
+        const rimColor=shade(this.surfaceResolver.colorOf(tile),.94*fog*elevationShade(top));
+        const apronColor=shade(neighbor?this.surfaceResolver.colorOf(neighbor):this.surfaceResolver.colorOf(tile),.76*fog);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
@@ -538,6 +432,7 @@ export class TerrainRenderer{
       waterbedDepthTint:true,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
+      visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       skippedDegenerate:surface?.metadata?.skippedDegenerate??null,
       minNormalY:surface?.metadata?.minNormalY??null
     };

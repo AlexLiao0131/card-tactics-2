@@ -1,4 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
+import { VisualSurfaceResolver } from "./visual-surface-resolver.js";
 
 const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
@@ -73,7 +74,7 @@ function mixColor(a,b,t){
 export class WaterRenderer{
   constructor(scene,terrainRenderer=null){
     this.scene=scene;
-    this.terrainRenderer=terrainRenderer;
+    this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.surfaceMeshes=new Map();
     this.cascades=new Map();
     this.surfaceSignature="";
@@ -237,19 +238,6 @@ export class WaterRenderer{
     return out;
   }
 
-  terrainRing(tile,allMap){
-    if(this.terrainRenderer?.ringSamples){
-      return this.terrainRenderer.ringSamples(tile,allMap);
-    }
-    const h=Number(tile?.elevation||0);
-    return[
-      {ox:-.5,oz:-.5,height:h},{ox:0,oz:-.5,height:h},
-      {ox:.5,oz:-.5,height:h},{ox:.5,oz:0,height:h},
-      {ox:.5,oz:.5,height:h},{ox:0,oz:.5,height:h},
-      {ox:-.5,oz:.5,height:h},{ox:-.5,oz:0,height:h}
-    ];
-  }
-
   cornerContext(tile,index,allMap){
     const dir=CORNER_DIR_BY_RING[index];
     if(!dir)return null;
@@ -331,12 +319,6 @@ export class WaterRenderer{
     return members.length?average(members.map(visualSurface)):visualSurface(tile);
   }
 
-  terrainCanRelax(a,b){
-    if(!a||!b)return true;
-    if(this.terrainRenderer?.canSlope)return this.terrainRenderer.canSlope(a,b);
-    return Math.abs(Number(a.elevation||0)-Number(b.elevation||0))<=1.0001;
-  }
-
   cornerCanRelax(context){
     if(!context||context.cascade)return false;
     const members=context.members||[];
@@ -347,7 +329,7 @@ export class WaterRenderer{
       for(const dir of DIRS){
         const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
         if(!next||memberKeys.has(keyOf(next.x,next.y)))continue;
-        if(!this.terrainCanRelax(member,next))return false;
+        if(!this.surfaceResolver.canSlope(member,next))return false;
       }
     }
     return true;
@@ -431,7 +413,7 @@ export class WaterRenderer{
 
     // On ordinary erodible banks use the topology-smoothed midpoint. On rock/cliff
     // banks keep the positional anchor but still apply the same natural roughness.
-    if(cornerIndices&&(!neighbor||this.terrainCanRelax(tile,neighbor))){
+    if(cornerIndices&&(!neighbor||this.surfaceResolver.canSlope(tile,neighbor))){
       const a=this.cornerNaturalTarget(tile,cornerIndices[0],allMap);
       const b=this.cornerNaturalTarget(tile,cornerIndices[1],allMap);
       const smoothed={x:(a.x+b.x)/2,z:(a.z+b.z)/2};
@@ -451,39 +433,12 @@ export class WaterRenderer{
       :this.edgeNaturalTarget(tile,index,sample,allMap);
   }
 
-  terrainHeightAt(worldX,worldZ,allMap){
-    const tx=Math.round(worldX/TILE_SIZE),ty=Math.round(worldZ/TILE_SIZE);
-    const tile=allMap.get(keyOf(tx,ty));
-    if(!tile)return null;
-
-    const cx=tx*TILE_SIZE,cz=ty*TILE_SIZE;
-    const px=(worldX-cx)/TILE_SIZE,pz=(worldZ-cz)/TILE_SIZE;
-    const centerHeight=Number(tile.elevation||0);
-    const ring=this.terrainRing(tile,allMap);
-    const a={x:0,z:0,height:centerHeight};
-
-    for(let i=0;i<ring.length;i++){
-      const b={x:Number(ring[i].ox||0),z:Number(ring[i].oz||0),height:Number(ring[i].height||0)};
-      const next=ring[(i+1)%ring.length];
-      const c={x:Number(next.ox||0),z:Number(next.oz||0),height:Number(next.height||0)};
-      const denom=(b.z-c.z)*(a.x-c.x)+(c.x-b.x)*(a.z-c.z);
-      if(Math.abs(denom)<=EPSILON)continue;
-      const wa=((b.z-c.z)*(px-c.x)+(c.x-b.x)*(pz-c.z))/denom;
-      const wb=((c.z-a.z)*(px-c.x)+(a.x-c.x)*(pz-c.z))/denom;
-      const wc=1-wa-wb;
-      if(wa>=-1e-5&&wb>=-1e-5&&wc>=-1e-5){
-        return wa*a.height+wb*b.height+wc*c.height;
-      }
-    }
-    return centerHeight;
-  }
-
   projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
     const clearance=t=>{
       const x=anchor.x+(target.x-anchor.x)*t;
       const z=anchor.z+(target.z-anchor.z)*t;
       const level=anchorLevel+(targetLevel-anchorLevel)*t;
-      const terrain=this.terrainHeightAt(x,z,allMap);
+      const terrain=this.surfaceResolver.sampleHeightAtWorld(x,z,allMap);
       const resolved=terrain==null?fallbackTerrain:terrain;
       return{value:level-Number(resolved||0),x,z,level};
     };
@@ -540,7 +495,7 @@ export class WaterRenderer{
   }
 
   waterVertexVisual(point,allMap,turbidity=0){
-    const terrain=this.terrainHeightAt(point.x,point.z,allMap);
+    const terrain=this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
     const depth=Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
     const t=smooth01(depth/WATER_DEPTH_RANGE);
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
@@ -591,7 +546,7 @@ export class WaterRenderer{
     for(const tile of component.tiles){
       const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
       const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)},allMap,componentTurbidity);
-      const terrainRing=this.terrainRing(tile,allMap);
+      const terrainRing=this.surfaceResolver.ringSamples(tile,allMap);
       const ringPoints=terrainRing.map((sample,index)=>{
         const point=this.shorelinePoint(tile,index,sample,allMap);
         if(point.clipped)clippedPoints++;
@@ -627,6 +582,8 @@ export class WaterRenderer{
       topologyAwareShoreRelaxation:true,
       ruggedNaturalShoreline:true,
       ruggedRockBanks:true,
+      visualSurfaceResolver:true,
+      microRegionsPerTile:9,
       stylizedWater:true,
       depthGradient:true,
       vertexAlpha:true,
@@ -794,11 +751,14 @@ export class WaterRenderer{
       topologyAwareShoreRelaxation:true,
       ruggedNaturalShoreline:true,
       ruggedRockBanks:true,
+      sharedVisualSurfaceResolver:true,
+      microRegionsPerTile:9,
       stylizedWater:true,
       reflectiveWaterMaterial:false,
       depthGradient:true,
       vertexAlpha:true,
       transparentDepthPrePass:false,
+      visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       cascadesRequireHydrologyDirection:true,
       cascadesRequireDownstreamWater:true
     };
