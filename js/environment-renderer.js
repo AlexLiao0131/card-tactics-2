@@ -13,6 +13,11 @@ const flowSpeed=tile=>Math.max(0,Number(tile?.flowSpeed||0));
 const isSolidIce=tile=>waterDepth(tile)>0&&iceThickness(tile)>=.45;
 const SURFACE_TYPES=new Set(["SNOW","ICE","CURRENT"]);
 const SURFACE_EPSILON=.001;
+const CURRENT_BANDS=Object.freeze([
+  Object.freeze({id:"SLOW",min:0,max:1.15,scroll:.055,alpha:.42}),
+  Object.freeze({id:"MEDIUM",min:1.15,max:1.85,scroll:.095,alpha:.48}),
+  Object.freeze({id:"FAST",min:1.85,max:Infinity,scroll:.155,alpha:.54})
+]);
 
 export class EnvironmentRenderer{
   constructor(scene,surfaceResolver=null){
@@ -23,7 +28,7 @@ export class EnvironmentRenderer{
     this.surfaceMeshes=new Map();
     this.surfaceSignature="";
 
-    this.currentTexture=this.makeCurrentTexture();
+    this.currentResources=this.makeCurrentResources();
 
     this.materials={
       fire:this.mat("env-fire",new BABYLON.Color3(1,.28,.04),.76,new BABYLON.Color3(.9,.12,.01)),
@@ -34,59 +39,83 @@ export class EnvironmentRenderer{
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.surfaceMat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
-      current:this.currentMaterial(),
       fragments:this.mat("env-fragments",new BABYLON.Color3(.48,.46,.43),.9),
       boiling:this.mat("env-boiling",new BABYLON.Color3(.72,.90,1),.48,new BABYLON.Color3(.16,.36,.5))
     };
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
-      this.currentTexture.vOffset=(this.currentTexture.vOffset-dt*.24)%1;
+      for(const resource of this.currentResources.values()){
+        resource.texture.vOffset=(resource.texture.vOffset-dt*resource.band.scroll)%1;
+      }
       for(const {node,speed=0,spin=true} of this.animated.values())if(spin)node.rotation.y+=speed*dt;
     });
   }
 
-  makeCurrentTexture(){
-    const texture=new BABYLON.DynamicTexture("current-wave-texture",{width:256,height:256},this.scene,false);
+  makeCurrentTexture(name,phase=0){
+    const texture=new BABYLON.DynamicTexture(name,{width:256,height:256},this.scene,false);
     texture.hasAlpha=true;
     const ctx=texture.getContext();
     ctx.clearRect(0,0,256,256);
     ctx.lineCap="round";
-    for(let row=0;row<4;row++){
-      const y=28+row*58;
-      ctx.strokeStyle=`rgba(170,230,255,${.22+row*.045})`;
-      ctx.lineWidth=5;
-      ctx.beginPath();
-      ctx.moveTo(16,y);
-      ctx.bezierCurveTo(72,y-12,116,y+14,168,y);
-      ctx.bezierCurveTo(198,y-8,222,y+5,240,y-2);
-      ctx.stroke();
-      ctx.strokeStyle="rgba(230,250,255,.28)";
+
+    // Continuous low-alpha lanes establish direction. Long staggered highlights
+    // slide along those lanes, so the eye reads translation instead of on/off flashing.
+    const lanes=[30,72,116,160,204,238];
+    lanes.forEach((x,index)=>{
+      ctx.strokeStyle="rgba(200,238,248,0.055)";
       ctx.lineWidth=2;
       ctx.beginPath();
-      ctx.moveTo(24,y+9);
-      ctx.bezierCurveTo(92,y+2,145,y+16,226,y+6);
+      ctx.moveTo(x,0);
+      ctx.bezierCurveTo(x+7,72,x-6,150,x+4,256);
       ctx.stroke();
-    }
+
+      const offset=((index*47+phase*83)%132)-132;
+      for(let y=offset;y<300;y+=132){
+        ctx.strokeStyle=`rgba(220,248,255,${.115+(index%3)*.018})`;
+        ctx.lineWidth=index%2?4:3;
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        ctx.bezierCurveTo(x+5,y+24,x-4,y+58,x+2,y+92);
+        ctx.stroke();
+      }
+    });
+
     texture.update();
     texture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
     texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
     return texture;
   }
 
-  currentMaterial(){
-    const material=new BABYLON.StandardMaterial("env-current-wave",this.scene);
-    material.diffuseTexture=this.currentTexture;
-    material.opacityTexture=this.currentTexture;
-    material.emissiveTexture=this.currentTexture;
-    material.diffuseColor=new BABYLON.Color3(.38,.78,1);
-    material.emissiveColor=new BABYLON.Color3(.12,.32,.44);
-    material.alpha=.62;
-    material.disableLighting=true;
+  makeCurrentMaterial(name,texture,alpha){
+    const material=new BABYLON.StandardMaterial(name,this.scene);
+    material.diffuseTexture=texture;
+    material.opacityTexture=texture;
+    material.diffuseColor=new BABYLON.Color3(.72,.90,.96);
+    material.ambientColor=new BABYLON.Color3(.20,.28,.31);
+    material.emissiveColor=BABYLON.Color3.Black();
+    material.specularColor=new BABYLON.Color3(.06,.10,.12);
+    material.specularPower=12;
+    material.alpha=alpha;
     material.backFaceCulling=false;
     material.needDepthPrePass=false;
     if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
     return material;
+  }
+
+  makeCurrentResources(){
+    const resources=new Map();
+    CURRENT_BANDS.forEach((band,index)=>{
+      const texture=this.makeCurrentTexture(`current-flow-${band.id.toLowerCase()}`,index/3);
+      const material=this.makeCurrentMaterial(`env-current-${band.id.toLowerCase()}`,texture,band.alpha);
+      resources.set(band.id,{band,texture,material});
+    });
+    return resources;
+  }
+
+  currentBand(tile){
+    const speed=flowSpeed(tile);
+    return CURRENT_BANDS.find(band=>speed>=band.min&&speed<band.max)||CURRENT_BANDS[CURRENT_BANDS.length-1];
   }
 
   mat(name,color,alpha=1,emissive=null){
@@ -175,7 +204,9 @@ export class EnvironmentRenderer{
     }
     if(type==="CURRENT"){
       if(this.waterClearance(tile,sample)<=SURFACE_EPSILON)return 0;
-      return clamp((amount-.05)/1.25,0,1);
+      // Keep a stable directional trace at low flow and strengthen it gradually.
+      // Alpha no longer pulses; only the texture coordinates move each frame.
+      return clamp(.18+amount*.15,.18,.52);
     }
     return 0;
   }
@@ -197,21 +228,26 @@ export class EnvironmentRenderer{
     const length=Math.hypot(fx,fz)||1;fx/=length;fz/=length;
     const px=-fz,pz=fx;
     const lx=Number(sample.ox||0)*TILE_SIZE,lz=Number(sample.oz||0)*TILE_SIZE;
-    const phase=(Number(tile.x)*.173+Number(tile.y)*.097)%1;
+    // UV V always follows hydrology flow direction. A stable tile phase prevents
+    // repeated streaks from lining up into a flashing cross-map band.
+    const phase=((Number(tile.x)*37+Number(tile.y)*19)%97)/97;
     return{
-      u:(lx*px+lz*pz)/(TILE_SIZE*.72)+.5,
-      v:(lx*fx+lz*fz)/(TILE_SIZE*.62)+phase
+      u:(lx*px+lz*pz)/(TILE_SIZE*.78)+.5,
+      v:(lx*fx+lz*fz)/(TILE_SIZE*.76)+phase
     };
   }
 
-  buildSurfaceLayer(type,tiles,byKey){
+  buildSurfaceLayer(type,tiles,byKey,{currentBand=null}={}){
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
+    let speedSum=0;
 
     for(const tile of tiles){
       const localAmount=this.surfaceLayerAmount(type,tile);
       if(localAmount<=SURFACE_EPSILON)continue;
+      if(type==="CURRENT"&&currentBand&&this.currentBand(tile).id!==currentBand.id)continue;
       activeTiles++;
+      if(type==="CURRENT")speedSum+=flowSpeed(tile);
       const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
       const baseIndex=positions.length/3;
       const alpha=[];
@@ -240,11 +276,14 @@ export class EnvironmentRenderer{
 
     if(!indices.length)return null;
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
-    const mesh=new BABYLON.Mesh(`environment-surface-${type.toLowerCase()}`,this.scene);
+    const suffix=type==="CURRENT"&&currentBand?`-${currentBand.id.toLowerCase()}`:"";
+    const mesh=new BABYLON.Mesh(`environment-surface-${type.toLowerCase()}${suffix}`,this.scene);
     const data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.colors=colors;data.uvs=uvs;
     data.applyToMesh(mesh,false);
-    mesh.material=this.materials[type.toLowerCase()];
+    mesh.material=type==="CURRENT"&&currentBand
+      ?this.currentResources.get(currentBand.id).material
+      :this.materials[type.toLowerCase()];
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
@@ -256,7 +295,10 @@ export class EnvironmentRenderer{
       visualSurfaceResolver:true,
       microRegionsPerTile:9,
       mergedMesh:true,
-      perTilePlate:false
+      perTilePlate:false,
+      currentBand:currentBand?.id||null,
+      averageFlowSpeed:type==="CURRENT"&&activeTiles?speedSum/activeTiles:0,
+      meshRebuildPerFrame:false
     };
     return mesh;
   }
@@ -286,9 +328,14 @@ export class EnvironmentRenderer{
     if(signature===this.surfaceSignature)return;
     this.disposeSurfaceLayers();
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
-    for(const type of SURFACE_TYPES){
+
+    for(const type of ["SNOW","ICE"]){
       const mesh=this.buildSurfaceLayer(type,tiles,byKey);
       if(mesh)this.surfaceMeshes.set(type,mesh);
+    }
+    for(const band of CURRENT_BANDS){
+      const mesh=this.buildSurfaceLayer("CURRENT",tiles,byKey,{currentBand:band});
+      if(mesh)this.surfaceMeshes.set(`CURRENT_${band.id}`,mesh);
     }
     this.surfaceSignature=signature;
   }
@@ -328,12 +375,19 @@ export class EnvironmentRenderer{
     const surfaceLayers={};
     for(const[type,mesh]of this.surfaceMeshes)surfaceLayers[type]={
       activeTiles:Number(mesh.metadata?.activeTiles||0),
-      mergedMesh:mesh.metadata?.mergedMesh===true
+      mergedMesh:mesh.metadata?.mergedMesh===true,
+      currentBand:mesh.metadata?.currentBand||null,
+      averageFlowSpeed:Number(mesh.metadata?.averageFlowSpeed||0)
     };
     return{
       total:this.nodes.size,
       byType,
       currentWaveTexture:true,
+      currentDirectionalUV:true,
+      currentEmissive:false,
+      currentSpeedBands:CURRENT_BANDS.map(band=>band.id),
+      currentAnimation:"texture-offset-only",
+      currentMeshRebuildPerFrame:false,
       surfaceLayers,
       visualSurfaceResolver:true,
       microRegionSurfaceLayers:true,
