@@ -13,6 +13,11 @@ export const EnvironmentEngine=(()=>{
   const WIND_LABEL=Object.freeze({CALM:"無風",N:"北向",NE:"東北向",E:"東向",SE:"東南向",S:"南向",SW:"西南向",W:"西向",NW:"西北向"});
   const METAL_EQUIPMENT_IDS=new Set(["black_sword","imperial_sword","standard_sword","blessed_sword","imperial_spear","imperial_hammer","imperial_medium_armor","imperial_heavy_shield_armor","water_medium_armor","imperial_heavy_armor","imperial_heavy_plate","imperial_large_shield","nereia_royal_trident","beast_dual_daggers","beast_poison_throwing_knife"]);
   const HAZARD={BURNING_DAMAGE:20,BOILING_DAMAGE:30,FIRE_TORNADO_DAMAGE:45,ELECTRIC_DAMAGE:35};
+  // Water conducts thunder, but a strike is not an infinite-area switch. Energy
+  // decays on every cardinal step through actual water and shallow water loses
+  // additional energy. Rain and mud remain non-conductive unless they contain
+  // real Hydrology water.
+  const ELECTRIC_CONDUCTION=Object.freeze({BASE_POWER:1,MAX_DISTANCE:4,MIN_POWER:.22,STEP_LOSS:.19,SHALLOW_EXTRA_LOSS:.07});
   const HYDROLOGY=Object.freeze({WATERLINE:HydrologyEngine.WATERLINE,RAIN_FILL_PER_EVENT:HydrologyEngine.RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT:HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT:HydrologyEngine.STORM_RAIN_FILL_PER_EVENT});
   function key(x,y){return `${x},${y}`;}
   function tileAt(map,x,y){return map?.tiles?.find(t=>t.x===x&&t.y===y)||null;}
@@ -266,7 +271,23 @@ export const EnvironmentEngine=(()=>{
   function isBurning(state,x,y){return effectAt(state,x,y).some(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO);}
   function isBoiling(state,x,y){return effectAt(state,x,y).some(e=>e.type===EFFECT.BOILING);}
   function isConductive(map,state,x,y){return HydrologyEngine.isWater(tileAt(map,x,y));}
-  function conductiveRegion(map,state,x,y){return HydrologyEngine.connectedWaterBody(map,x,y);}
+  function conductivePropagation(map,state,x,y,{power=ELECTRIC_CONDUCTION.BASE_POWER,maxDistance=ELECTRIC_CONDUCTION.MAX_DISTANCE}={}){
+    const origin=tileAt(map,x,y);if(!HydrologyEngine.isWater(origin))return[];
+    const startPower=Math.max(0,Number(power||0));if(startPower<ELECTRIC_CONDUCTION.MIN_POWER)return[];
+    const limit=Math.max(0,Math.floor(Number(maxDistance||0))),queue=[{tile:origin,distance:0,power:startPower}],best=new Map([[key(x,y),startPower]]),out=[];
+    while(queue.length){
+      const current=queue.shift();out.push(current);if(current.distance>=limit)continue;
+      for(const[dx,dy]of DIRS){
+        const next=tileAt(map,current.tile.x+dx,current.tile.y+dy);if(!next||!HydrologyEngine.isWater(next))continue;
+        const depth=waterDepth(next),shallowLoss=depth<.25?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS:depth<.55?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS*.5:0;
+        const nextPower=Math.max(0,current.power-ELECTRIC_CONDUCTION.STEP_LOSS-shallowLoss),nextDistance=current.distance+1,nk=key(next.x,next.y);
+        if(nextPower<ELECTRIC_CONDUCTION.MIN_POWER||nextDistance>limit||nextPower<=Number(best.get(nk)||0)+1e-6)continue;
+        best.set(nk,nextPower);queue.push({tile:next,distance:nextDistance,power:nextPower});
+      }
+    }
+    return out.sort((a,b)=>a.distance-b.distance||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+  }
+  function conductiveRegion(map,state,x,y,options={}){return conductivePropagation(map,state,x,y,options).map(entry=>entry.tile);}
 
   function addSteam(state,x,y,events,{duration=2,reason="HEAT"}={}){const existed=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM);addEffect(state,x,y,{type:EFFECT.STEAM,duration,visionBlock:true});if(!existed)events.push({type:"STEAM_CREATED",x,y,effect:EFFECT.STEAM,reason});}
   function heatWater(map,state,x,y,events=[]){
@@ -277,7 +298,15 @@ export const EnvironmentEngine=(()=>{
     const removed=removeWater(tile,1,events);events.push({type:"WATER_EVAPORATION",x,y,amount:removed,heat,waterDepth:waterDepth(tile)});HydrologyEngine.redistribute(map,{source:"EVAPORATION",events});
     if(!HydrologyEngine.isWater(tile)){removeEffect(state,x,y,EFFECT.BOILING);events.push({type:"WATER_BOILED_DRY",x,y});}return true;
   }
-  function conductThunder(map,state,x,y,events=[],{damagedUnitIds=[]}={}){const region=conductiveRegion(map,state,x,y),hitRegistry=[...new Set(damagedUnitIds.map(String))];for(const tile of region)addEffect(state,tile.x,tile.y,{type:EFFECT.ELECTRIFIED,duration:1,damage:HAZARD.ELECTRIC_DAMAGE,damageType:"THUNDER",damagedUnitIds:hitRegistry,origin:{x,y}});if(region.length)events.push({type:"ELECTRIC_CONDUCTION",x,y,effect:EFFECT.ELECTRIFIED,origin:{x,y},regionSize:region.length,tiles:region.map(tile=>({x:tile.x,y:tile.y}))});return region;}
+  function conductThunder(map,state,x,y,events=[],{damagedUnitIds=[],power=ELECTRIC_CONDUCTION.BASE_POWER,maxDistance=ELECTRIC_CONDUCTION.MAX_DISTANCE}={}){
+    const propagation=conductivePropagation(map,state,x,y,{power,maxDistance}),hitRegistry=[...new Set(damagedUnitIds.map(String))];
+    for(const entry of propagation){
+      const damage=Math.max(8,Math.round(HAZARD.ELECTRIC_DAMAGE*entry.power)),tile=entry.tile;
+      addEffect(state,tile.x,tile.y,{type:EFFECT.ELECTRIFIED,duration:1,damage,damageType:"THUNDER",damagedUnitIds:hitRegistry,origin:{x,y},conductionPower:entry.power,conductionDistance:entry.distance});
+    }
+    if(propagation.length)events.push({type:"ELECTRIC_CONDUCTION",x,y,effect:EFFECT.ELECTRIFIED,origin:{x,y},regionSize:propagation.length,maxDistance:Math.max(...propagation.map(entry=>entry.distance)),tiles:propagation.map(entry=>({x:entry.tile.x,y:entry.tile.y,distance:entry.distance,power:Number(entry.power.toFixed(3)),damage:Math.max(8,Math.round(HAZARD.ELECTRIC_DAMAGE*entry.power))}))});
+    return propagation.map(entry=>entry.tile);
+  }
 
   function apply({map,state,x,y,forces=[]}){
     const forceSet=new Set(forces),events=[],raining=isRain(state),burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM),smokeBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.SMOKE),stoneObjectBefore=objectAt(map,x,y);
@@ -315,6 +344,6 @@ export const EnvironmentEngine=(()=>{
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
   function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);return range;}
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windLabel,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windLabel,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;
