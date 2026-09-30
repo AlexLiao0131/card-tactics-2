@@ -82,6 +82,7 @@ export class WaterRenderer{
     this.cascadeSignature="";
     this.waveTime=0;
     this.waveAccumulator=0;
+    this.wind={x:0,z:0,strength:0};
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
 
@@ -197,6 +198,31 @@ export class WaterRenderer{
     this.surfaceAnimations.clear();
   }
 
+  setWind(value){
+    const strength=clamp(value?.strength||0,0,3);
+    let x=Number(value?.x||0),z=Number(value?.y??value?.z??0);
+    const length=Math.hypot(x,z);
+    if(strength<=EPSILON||length<=EPSILON){this.wind={x:0,z:0,strength:0};return this.wind;}
+    x/=length;z/=length;
+    this.wind={x,z,strength};
+    return this.wind;
+  }
+
+  tileMotion(tile){
+    let x=Number(tile?.flowX||0),z=Number(tile?.flowY||0);
+    const speed=clamp(tile?.flowSpeed||0,0,3.2),length=Math.hypot(x,z);
+    if(speed<=EPSILON||length<=EPSILON)return{x:0,z:0,speed:0};
+    return{x:x/length,z:z/length,speed};
+  }
+
+  accumulateVertexMotion(out,index,tile){
+    const motion=this.tileMotion(tile);
+    out.flowXSum[index]=(out.flowXSum[index]||0)+motion.x*motion.speed;
+    out.flowZSum[index]=(out.flowZSum[index]||0)+motion.z*motion.speed;
+    out.flowSpeedSum[index]=(out.flowSpeedSum[index]||0)+motion.speed;
+    out.flowSampleCount[index]=(out.flowSampleCount[index]||0)+1;
+  }
+
   componentFlow(component){
     let vx=0,vz=0,speedSum=0,count=0;
     for(const tile of component?.tiles||[]){
@@ -214,22 +240,55 @@ export class WaterRenderer{
   animateSurface(entry,time){
     const mesh=entry?.mesh;if(!mesh||mesh.isDisposed?.())return;
     const base=entry.basePositions,positions=entry.positions,normals=entry.normals,weights=entry.waveWeights;
-    const flow=entry.flow||{x:.8,z:.6,speed:.16,flowing:false};
-    const dx=Number(flow.x||0),dz=Number(flow.z||0),px=-dz,pz=dx;
-    const speed=flow.flowing?(.62+clamp(flow.speed,0,3.2)*.34):.18;
-    const amp=ELEVATION_HEIGHT*(flow.flowing?.024:.011);
-    const k1=3.8/TILE_SIZE,k2=5.1/TILE_SIZE;
+    const flowX=entry.flowX||[],flowZ=entry.flowZ||[],flowSpeeds=entry.flowSpeeds||[];
+    const wind=this.wind||{x:0,z:0,strength:0};
+    const windStrength=clamp(wind.strength||0,0,3),windUnit=windStrength/3;
+    const wx=Number(wind.x||0),wz=Number(wind.z||0),wpx=-wz,wpz=wx;
+    const windAmp=ELEVATION_HEIGHT*(.010*windUnit+.045*windUnit*windUnit);
+    const windK=(2.15+windStrength*.72)/TILE_SIZE;
+    const windRate=.75+windStrength*.82;
+    const calmAmp=ELEVATION_HEIGHT*.007;
 
     for(let i=0;i<base.length/3;i++){
       const o=i*3,x=base[o],z=base[o+2],w=Number(weights[i]||0);
-      const along=x*dx+z*dz,cross=x*px+z*pz;
-      const p1=along*k1-time*speed*2.7;
-      const p2=cross*k2+time*speed*.95;
-      const wave=w*amp*(Math.sin(p1)+.34*Math.sin(p2));
-      positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;
+      let wave=0,dydx=0,dydz=0;
 
-      const dydx=w*amp*(Math.cos(p1)*k1*dx+.34*Math.cos(p2)*k2*px);
-      const dydz=w*amp*(Math.cos(p1)*k1*dz+.34*Math.cos(p2)*k2*pz);
+      const fs=clamp(flowSpeeds[i]||0,0,3.2);
+      let fx=Number(flowX[i]||0),fz=Number(flowZ[i]||0),flen=Math.hypot(fx,fz);
+      if(fs>EPSILON&&flen>EPSILON){
+        fx/=flen;fz/=flen;
+        const fpx=-fz,fpz=fx;
+        const flowUnit=smooth01(fs/3.2);
+        const flowAmp=ELEVATION_HEIGHT*(.014+.026*flowUnit);
+        const flowK=(3.0+fs*1.25)/TILE_SIZE;
+        const crossK=(4.3+fs*.85)/TILE_SIZE;
+        const rate=.82+fs*.96;
+        const along=x*fx+z*fz,cross=x*fpx+z*fpz;
+        const p1=along*flowK-time*rate*2.8;
+        const p2=cross*crossK-time*rate*1.12;
+        wave+=flowAmp*(Math.sin(p1)+.28*Math.sin(p2));
+        dydx+=flowAmp*(Math.cos(p1)*flowK*fx+.28*Math.cos(p2)*crossK*fpx);
+        dydz+=flowAmp*(Math.cos(p1)*flowK*fz+.28*Math.cos(p2)*crossK*fpz);
+      }else if(windStrength<=EPSILON){
+        // Still water is not perfectly frozen, but calm motion stays subtle.
+        const p1=(x*.78+z*.42)*(2.0/TILE_SIZE)-time*.46;
+        const p2=(x*.31-z*.86)*(2.6/TILE_SIZE)+time*.31;
+        wave+=calmAmp*(Math.sin(p1)+.42*Math.sin(p2));
+        dydx+=calmAmp*(Math.cos(p1)*(2.0/TILE_SIZE)*.78+.42*Math.cos(p2)*(2.6/TILE_SIZE)*.31);
+        dydz+=calmAmp*(Math.cos(p1)*(2.0/TILE_SIZE)*.42-.42*Math.cos(p2)*(2.6/TILE_SIZE)*.86);
+      }
+
+      if(windStrength>EPSILON){
+        const along=x*wx+z*wz,cross=x*wpx+z*wpz;
+        const p1=along*windK-time*windRate*2.35;
+        const p2=cross*(windK*1.42)+time*windRate*.72;
+        wave+=windAmp*(Math.sin(p1)+.36*Math.sin(p2));
+        dydx+=windAmp*(Math.cos(p1)*windK*wx+.36*Math.cos(p2)*windK*1.42*wpx);
+        dydz+=windAmp*(Math.cos(p1)*windK*wz+.36*Math.cos(p2)*windK*1.42*wpz);
+      }
+
+      wave*=w;dydx*=w;dydz*=w;
+      positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;
       const inv=1/Math.hypot(dydx,1,dydz);
       normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
     }
@@ -573,11 +632,11 @@ export class WaterRenderer{
     return{depth,color,alpha};
   }
 
-  addVertex(out,cache,point,allMap,turbidity){
+  addVertex(out,cache,point,allMap,turbidity,tile){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const cacheKey=`${point.x.toFixed(5)}:${y.toFixed(5)}:${point.z.toFixed(5)}`;
     const existing=cache.get(cacheKey);
-    if(existing!=null)return existing;
+    if(existing!=null){this.accumulateVertexMotion(out,existing,tile);return existing;}
 
     const visual=this.waterVertexVisual(point,allMap,turbidity);
     const index=out.positions.length/3;
@@ -585,6 +644,8 @@ export class WaterRenderer{
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
     out.waveWeights.push(smooth01(visual.depth/.34));
+    out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
+    this.accumulateVertexMotion(out,index,tile);
     cache.set(cacheKey,index);
     return index;
   }
@@ -602,7 +663,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[]};
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
     const cache=new Map();
     const allMap=this.allByKey(state);
     const componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));
@@ -610,14 +671,14 @@ export class WaterRenderer{
 
     for(const tile of component.tiles){
       const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-      const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)},allMap,componentTurbidity);
+      const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)},allMap,componentTurbidity,tile);
       const terrainRing=this.surfaceResolver.ringSamples(tile,allMap);
       const ringPoints=terrainRing.map((sample,index)=>{
         const point=this.shorelinePoint(tile,index,sample,allMap);
         if(point.clipped)clippedPoints++;
         return point;
       });
-      const ringIndices=ringPoints.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity));
+      const ringIndices=ringPoints.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile));
 
       for(let i=0;i<ringIndices.length;i++){
         this.pushTriangle(out,centerIndex,ringIndices[i],ringIndices[(i+1)%ringIndices.length]);
@@ -659,16 +720,28 @@ export class WaterRenderer{
       triangleCount:out.indices.length/3
     };
     const flow=this.componentFlow(component);
+    const vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[];
+    for(let i=0;i<out.positions.length/3;i++){
+      const count=Math.max(1,Number(out.flowSampleCount[i]||0));
+      let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;
+      const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);
+      if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}
+      vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);
+    }
     this.surfaceAnimations.set(component.id,{
-      mesh,flow,
+      mesh,
       basePositions:Float32Array.from(out.positions),
       positions:Float32Array.from(out.positions),
       normals:Float32Array.from(out.normals),
-      waveWeights:Float32Array.from(out.waveWeights)
+      waveWeights:Float32Array.from(out.waveWeights),
+      flowX:Float32Array.from(vertexFlowX),
+      flowZ:Float32Array.from(vertexFlowZ),
+      flowSpeeds:Float32Array.from(vertexFlowSpeeds)
     });
     mesh.metadata.waterSurfaceWave=true;
     mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;
     mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;
+    mesh.metadata.localFlowSpeedWaves=true;
     mesh.freezeWorldMatrix();
     return mesh;
   }
@@ -786,6 +859,7 @@ export class WaterRenderer{
 
 
   sync(state){
+    this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
@@ -798,6 +872,11 @@ export class WaterRenderer{
         if(mesh)this.surfaceMeshes.set(component.id,mesh);
       }
       this.surfaceSignature=surfaceSignature;
+    }
+    for(const entry of this.surfaceAnimations.values()){
+      if(!entry?.mesh?.metadata)continue;
+      entry.mesh.metadata.windWaveStrength=this.wind.strength;
+      entry.mesh.metadata.windWaveDirection=this.wind.strength>EPSILON?{x:this.wind.x,z:this.wind.z}:null;
     }
 
     const cascadeSignature=this.cascadeSignatureFor(cascades);
@@ -836,6 +915,9 @@ export class WaterRenderer{
       stylizedWater:true,
       animatedWaterSurface:true,
       waterWaveAnimation:"vertex-displacement-30hz",
+      localFlowSpeedWaves:true,
+      windDrivenWaves:true,
+      windWaveStrength:Number(this.wind?.strength||0),
       currentOverlay:false,
       reflectiveWaterMaterial:false,
       depthGradient:true,
