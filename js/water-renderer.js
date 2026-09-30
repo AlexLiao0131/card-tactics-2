@@ -76,9 +76,12 @@ export class WaterRenderer{
     this.scene=scene;
     this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.surfaceMeshes=new Map();
+    this.surfaceAnimations=new Map();
     this.cascades=new Map();
     this.surfaceSignature="";
     this.cascadeSignature="";
+    this.waveTime=0;
+    this.waveAccumulator=0;
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
 
@@ -89,6 +92,12 @@ export class WaterRenderer{
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
+      this.waveTime+=dt;
+      this.waveAccumulator+=dt;
+      if(this.waveAccumulator>=1/30){
+        this.waveAccumulator=0;
+        for(const entry of this.surfaceAnimations.values())this.animateSurface(entry,this.waveTime);
+      }
       this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
       for(const entry of this.cascades.values()){
         entry.foam.rotation.y+=dt*.7;
@@ -183,6 +192,63 @@ export class WaterRenderer{
     map.clear();
   }
 
+  disposeSurfaceMeshes(){
+    this.disposeMap(this.surfaceMeshes);
+    this.surfaceAnimations.clear();
+  }
+
+  componentFlow(component){
+    let vx=0,vz=0,speedSum=0,count=0;
+    for(const tile of component?.tiles||[]){
+      const fx=Number(tile?.flowX||0),fz=Number(tile?.flowY||0),speed=Math.max(0,Number(tile?.flowSpeed||0));
+      const length=Math.hypot(fx,fz);
+      if(length<=EPSILON||speed<=EPSILON)continue;
+      vx+=fx/length*speed;vz+=fz/length*speed;speedSum+=speed;count++;
+    }
+    const length=Math.hypot(vx,vz);
+    if(length>EPSILON)return{x:vx/length,z:vz/length,speed:speedSum/Math.max(1,count),flowing:true};
+    // Standing water still has a very slow crossed ripple, but no fake downstream flow.
+    return{x:.8,z:.6,speed:.16,flowing:false};
+  }
+
+  animateSurface(entry,time){
+    const mesh=entry?.mesh;if(!mesh||mesh.isDisposed?.())return;
+    const base=entry.basePositions,positions=entry.positions,normals=entry.normals,weights=entry.waveWeights;
+    const flow=entry.flow||{x:.8,z:.6,speed:.16,flowing:false};
+    const dx=Number(flow.x||0),dz=Number(flow.z||0),px=-dz,pz=dx;
+    const speed=flow.flowing?(.62+clamp(flow.speed,0,3.2)*.34):.18;
+    const amp=ELEVATION_HEIGHT*(flow.flowing?.024:.011);
+    const k1=3.8/TILE_SIZE,k2=5.1/TILE_SIZE;
+
+    for(let i=0;i<base.length/3;i++){
+      const o=i*3,x=base[o],z=base[o+2],w=Number(weights[i]||0);
+      const along=x*dx+z*dz,cross=x*px+z*pz;
+      const p1=along*k1-time*speed*2.7;
+      const p2=cross*k2+time*speed*.95;
+      const wave=w*amp*(Math.sin(p1)+.34*Math.sin(p2));
+      positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;
+
+      const dydx=w*amp*(Math.cos(p1)*k1*dx+.34*Math.cos(p2)*k2*px);
+      const dydz=w*amp*(Math.cos(p1)*k1*dz+.34*Math.cos(p2)*k2*pz);
+      const inv=1/Math.hypot(dydx,1,dydz);
+      normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
+    }
+    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
+  }
+
+  cascadeTarget(tile){
+    const x=Number(tile?.hydrologyCascadeToX),y=Number(tile?.hydrologyCascadeToY),drop=Number(tile?.hydrologyCascadeDrop||0);
+    if(!Number.isFinite(x)||!Number.isFinite(y)||drop<WATERFALL_MIN_DROP)return null;
+    return{x,y,drop};
+  }
+
+  cascadeMatches(from,to){
+    if(!from||!to)return false;
+    const target=this.cascadeTarget(from);
+    return !!target&&target.x===Number(to.x)&&target.y===Number(to.y)&&this.flowMatches(from,to);
+  }
+
   flowDirection(tile){
     const fx=Number(tile?.flowX||0),fy=Number(tile?.flowY||0);
     if(Math.abs(fx)<=EPSILON&&Math.abs(fy)<=EPSILON)return null;
@@ -199,9 +265,7 @@ export class WaterRenderer{
 
   isCascadeBoundary(a,b){
     if(!hasAnyWater(a)||!hasAnyWater(b))return false;
-    const delta=visualSurface(a)-visualSurface(b);
-    if(Math.abs(delta)<WATERFALL_MIN_DROP)return false;
-    return delta>0?this.flowMatches(a,b):this.flowMatches(b,a);
+    return this.cascadeMatches(a,b)||this.cascadeMatches(b,a);
   }
 
   continuousWaterEdge(a,b){
@@ -520,6 +584,7 @@ export class WaterRenderer{
     out.positions.push(point.x,y,point.z);
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
+    out.waveWeights.push(smooth01(visual.depth/.34));
     cache.set(cacheKey,index);
     return index;
   }
@@ -537,7 +602,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[]};
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[]};
     const cache=new Map();
     const allMap=this.allByKey(state);
     const componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));
@@ -565,11 +630,8 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
     const data=new BABYLON.VertexData();
     data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
-    data.applyToMesh(mesh,false);
+    data.applyToMesh(mesh,true);
     mesh.material=this.surfaceMaterial;
-    // Keep transparent layer order deterministic: base water first, directional
-    // CURRENT strokes later. Relying on default transparent sorting made the
-    // overlay disappear behind the water surface on some Safari/WebGL views.
     mesh.alphaIndex=10;
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
@@ -596,6 +658,17 @@ export class WaterRenderer{
       vertexCount:out.positions.length/3,
       triangleCount:out.indices.length/3
     };
+    const flow=this.componentFlow(component);
+    this.surfaceAnimations.set(component.id,{
+      mesh,flow,
+      basePositions:Float32Array.from(out.positions),
+      positions:Float32Array.from(out.positions),
+      normals:Float32Array.from(out.normals),
+      waveWeights:Float32Array.from(out.waveWeights)
+    });
+    mesh.metadata.waterSurfaceWave=true;
+    mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;
+    mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;
     mesh.freezeWorldMatrix();
     return mesh;
   }
@@ -603,16 +676,17 @@ export class WaterRenderer{
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[];
     for(const tile of waterTiles){
-      const dir=this.flowDirection(tile);
-      if(!dir?.dx&&!dir?.dy)continue;
-      const receiver=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-      if(!receiver||!hasAnyWater(receiver))continue;
+      const target=this.cascadeTarget(tile);
+      if(!target)continue;
+      const receiver=allMap.get(keyOf(target.x,target.y));
+      if(!receiver||!hasAnyWater(receiver)||!this.cascadeMatches(tile,receiver))continue;
 
       const top=visualSurface(tile),bottom=visualSurface(receiver),drop=top-bottom;
-      if(drop<WATERFALL_MIN_DROP)continue;
+      if(drop<=EPSILON)continue;
       out.push({
         id:`${tile.x},${tile.y}->${receiver.x},${receiver.y}`,
-        tile,receiver,dx:dir.dx,dy:dir.dy,top,bottom,drop,
+        tile,receiver,dx:Math.sign(receiver.x-tile.x),dy:Math.sign(receiver.y-tile.y),top,bottom,drop,
+        authoredDrop:target.drop,
         speed:Math.max(.6,Number(tile.flowSpeed||0)+drop*.55)
       });
     }
@@ -696,7 +770,8 @@ export class WaterRenderer{
       Number(tile.elevation||0).toFixed(4),
       waterDepth(tile).toFixed(4),
       hasAnyWater(tile)?visualSurface(tile).toFixed(4):"dry",
-      Number(tile.flowX||0),Number(tile.flowY||0),
+      Number(tile.flowX||0),Number(tile.flowY||0),Number(tile.flowSpeed||0).toFixed(3),
+      tile.hydrologyCascadeToX??"n",tile.hydrologyCascadeToY??"n",Number(tile.hydrologyCascadeDrop||0).toFixed(3),
       tile.fogged?1:0
     ].join(":" )).sort().join(",");
     const groups=components.map(component=>
@@ -717,7 +792,7 @@ export class WaterRenderer{
 
     const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
-      this.disposeMap(this.surfaceMeshes);
+      this.disposeSurfaceMeshes();
       for(const component of components){
         const mesh=this.buildSurface(component,state);
         if(mesh)this.surfaceMeshes.set(component.id,mesh);
@@ -733,7 +808,7 @@ export class WaterRenderer{
     }
 
     if(!waterTiles.length){
-      this.disposeMap(this.surfaceMeshes);this.disposeMap(this.cascades);
+      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);
       this.surfaceSignature=this.cascadeSignature="";
     }
   }
@@ -759,12 +834,16 @@ export class WaterRenderer{
       sharedVisualSurfaceResolver:true,
       microRegionsPerTile:9,
       stylizedWater:true,
+      animatedWaterSurface:true,
+      waterWaveAnimation:"vertex-displacement-30hz",
+      currentOverlay:false,
       reflectiveWaterMaterial:false,
       depthGradient:true,
       vertexAlpha:true,
       transparentDepthPrePass:false,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       cascadesRequireHydrologyDirection:true,
+      cascadesRequireHydrologyMetadata:true,
       cascadesRequireDownstreamWater:true
     };
   }

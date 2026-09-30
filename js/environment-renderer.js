@@ -9,15 +9,10 @@ const surfaceOf=tile=>tile.waterSurfaceZ==null
 const waterDepth=tile=>Math.max(0,Number(tile?.waterDepth||0));
 const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
 const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
-const flowSpeed=tile=>Math.max(0,Number(tile?.flowSpeed||0));
 const isSolidIce=tile=>waterDepth(tile)>0&&iceThickness(tile)>=.45;
 const SURFACE_TYPES=new Set(["SNOW","ICE","CURRENT"]);
 const SURFACE_EPSILON=.001;
-const CURRENT_BANDS=Object.freeze([
-  Object.freeze({id:"SLOW",min:0,max:1.15,scroll:.18}),
-  Object.freeze({id:"MEDIUM",min:1.15,max:1.85,scroll:.31}),
-  Object.freeze({id:"FAST",min:1.85,max:Infinity,scroll:.48})
-]);
+
 
 export class EnvironmentRenderer{
   constructor(scene,surfaceResolver=null){
@@ -28,7 +23,6 @@ export class EnvironmentRenderer{
     this.surfaceMeshes=new Map();
     this.surfaceSignature="";
 
-    this.currentResources=this.makeCurrentResources();
 
     this.materials={
       fire:this.mat("env-fire",new BABYLON.Color3(1,.28,.04),.76,new BABYLON.Color3(.9,.12,.01)),
@@ -45,73 +39,8 @@ export class EnvironmentRenderer{
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
-      for(const resource of this.currentResources.values()){
-        resource.texture.vOffset=(resource.texture.vOffset-dt*resource.band.scroll)%1;
-      }
       for(const {node,speed=0,spin=true} of this.animated.values())if(spin)node.rotation.y+=speed*dt;
     });
-  }
-
-  makeCurrentTexture(name,phase=0){
-    // Mipmaps keep the broad current strokes readable after the battlefield is
-    // downsampled on phones. Thin non-mipmapped lines vanished almost completely.
-    const texture=new BABYLON.DynamicTexture(name,{width:256,height:256},this.scene,true);
-    texture.hasAlpha=true;
-    const ctx=texture.getContext();
-    ctx.clearRect(0,0,256,256);
-    ctx.lineCap="round";
-
-    // Four broad hand-painted strokes. UV V is aligned to Hydrology flow, so
-    // scrolling the texture translates these marks downstream instead of pulsing.
-    [32,96,160,224].forEach((x,index)=>{
-      const offset=((index*61+phase*97)%128)-128;
-      for(let y=offset-128;y<300;y+=128){
-        ctx.strokeStyle="rgba(240,253,255,0.95)";
-        ctx.lineWidth=11;
-        ctx.beginPath();
-        ctx.moveTo(x,y);
-        ctx.bezierCurveTo(x+10,y+22,x-10,y+44,x,y+70);
-        ctx.stroke();
-      }
-    });
-
-    texture.update();
-    texture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
-    texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
-    return texture;
-  }
-
-  makeCurrentMaterial(name,texture){
-    const material=new BABYLON.StandardMaterial(name,this.scene);
-    material.diffuseTexture=texture;
-    // One alpha path only. Using the same translucent texture again as opacityTexture
-    // multiplied alpha twice and made Safari/mobile currents effectively invisible.
-    material.useAlphaFromDiffuseTexture=true;
-    material.diffuseColor=new BABYLON.Color3(.74,.91,.96);
-    material.ambientColor=new BABYLON.Color3(.20,.28,.31);
-    material.emissiveColor=BABYLON.Color3.Black();
-    material.specularColor=new BABYLON.Color3(.06,.10,.12);
-    material.specularPower=12;
-    material.alpha=1;
-    material.backFaceCulling=false;
-    material.needDepthPrePass=false;
-    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
-    return material;
-  }
-
-  makeCurrentResources(){
-    const resources=new Map();
-    CURRENT_BANDS.forEach((band,index)=>{
-      const texture=this.makeCurrentTexture(`current-flow-${band.id.toLowerCase()}`,index/3);
-      const material=this.makeCurrentMaterial(`env-current-${band.id.toLowerCase()}`,texture);
-      resources.set(band.id,{band,texture,material});
-    });
-    return resources;
-  }
-
-  currentBand(tile){
-    const speed=flowSpeed(tile);
-    return CURRENT_BANDS.find(band=>speed>=band.min&&speed<band.max)||CURRENT_BANDS[CURRENT_BANDS.length-1];
   }
 
   mat(name,color,alpha=1,emissive=null){
@@ -160,22 +89,16 @@ export class EnvironmentRenderer{
   surfaceLayerAmount(type,tile){
     if(type==="SNOW")return snowDepth(tile);
     if(type==="ICE")return waterDepth(tile)>0?iceThickness(tile):0;
-    if(type==="CURRENT"){
-      const vector=Math.hypot(Number(tile?.flowX||0),Number(tile?.flowY||0));
-      return waterDepth(tile)>0&&!isSolidIce(tile)&&vector>SURFACE_EPSILON?flowSpeed(tile):0;
-    }
     return 0;
   }
 
   layerConnect(type,a,b){
     if(!a||!b)return false;
     if(type==="SNOW")return this.surfaceResolver.canSlope(a,b);
-    if(type==="ICE"||type==="CURRENT"){
+    if(type==="ICE"){
       if(waterDepth(a)<=0||waterDepth(b)<=0)return false;
       const sa=this.surfaceResolver.waterSurfaceOf(a),sb=this.surfaceResolver.waterSurfaceOf(b);
-      if(sa==null||sb==null||Math.abs(sa-sb)>.18)return false;
-      if(type==="CURRENT"&&(this.surfaceLayerAmount("CURRENT",a)<=SURFACE_EPSILON||this.surfaceLayerAmount("CURRENT",b)<=SURFACE_EPSILON))return false;
-      return true;
+      return sa!=null&&sb!=null&&Math.abs(sa-sb)<=.18;
     }
     return false;
   }
@@ -201,12 +124,6 @@ export class EnvironmentRenderer{
       if(this.waterClearance(tile,sample)<=SURFACE_EPSILON)return 0;
       return clamp(amount/.45,0,1);
     }
-    if(type==="CURRENT"){
-      if(this.waterClearance(tile,sample)<=SURFACE_EPSILON)return 0;
-      // Keep a stable directional trace at low flow and strengthen it gradually.
-      // Alpha no longer pulses; only the texture coordinates move each frame.
-      return clamp(.70+amount*.08,.70,.92);
-    }
     return 0;
   }
 
@@ -219,34 +136,17 @@ export class EnvironmentRenderer{
     }
     const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
     if(type==="ICE")return Number(waterSurface??sample.height)*ELEVATION_HEIGHT+.034;
-    return Number(waterSurface??sample.height)*ELEVATION_HEIGHT+.09;
+    return Number(sample.height||0)*ELEVATION_HEIGHT+.006;
   }
 
-  currentUV(tile,sample){
-    let fx=Number(tile?.flowX||0),fz=Number(tile?.flowY||0);
-    const length=Math.hypot(fx,fz)||1;fx/=length;fz/=length;
-    const px=-fz,pz=fx;
-    const lx=Number(sample.ox||0)*TILE_SIZE,lz=Number(sample.oz||0)*TILE_SIZE;
-    // UV V always follows hydrology flow direction. A stable tile phase prevents
-    // repeated streaks from lining up into a flashing cross-map band.
-    const phase=((Number(tile.x)*37+Number(tile.y)*19)%97)/97;
-    return{
-      u:(lx*px+lz*pz)/(TILE_SIZE*.78)+.5,
-      v:(lx*fx+lz*fz)/(TILE_SIZE*.76)+phase
-    };
-  }
-
-  buildSurfaceLayer(type,tiles,byKey,{currentBand=null}={}){
+  buildSurfaceLayer(type,tiles,byKey){
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
-    let speedSum=0;
 
     for(const tile of tiles){
       const localAmount=this.surfaceLayerAmount(type,tile);
       if(localAmount<=SURFACE_EPSILON)continue;
-      if(type==="CURRENT"&&currentBand&&this.currentBand(tile).id!==currentBand.id)continue;
       activeTiles++;
-      if(type==="CURRENT")speedSum+=flowSpeed(tile);
       const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
       const baseIndex=positions.length/3;
       const alpha=[];
@@ -258,9 +158,7 @@ export class EnvironmentRenderer{
         alpha.push(a);
         positions.push(sample.x,this.layerVertexY(type,tile,sample,amount),sample.z);
         colors.push(1,1,1,a);
-        if(type==="CURRENT"){
-          const uv=this.currentUV(tile,sample);uvs.push(uv.u,uv.v);
-        }else uvs.push(sample.x/TILE_SIZE,sample.z/TILE_SIZE);
+        uvs.push(sample.x/TILE_SIZE,sample.z/TILE_SIZE);
       }
 
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
@@ -275,19 +173,15 @@ export class EnvironmentRenderer{
 
     if(!indices.length)return null;
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
-    const suffix=type==="CURRENT"&&currentBand?`-${currentBand.id.toLowerCase()}`:"";
-    const mesh=new BABYLON.Mesh(`environment-surface-${type.toLowerCase()}${suffix}`,this.scene);
+    const mesh=new BABYLON.Mesh(`environment-surface-${type.toLowerCase()}`,this.scene);
     const data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.colors=colors;data.uvs=uvs;
     data.applyToMesh(mesh,false);
-    mesh.material=type==="CURRENT"&&currentBand
-      ?this.currentResources.get(currentBand.id).material
-      :this.materials[type.toLowerCase()];
+    mesh.material=this.materials[type.toLowerCase()];
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
     mesh.receiveShadows=true;
-    if(type==="CURRENT")mesh.alphaIndex=20;
     mesh.metadata={
       kind:"environment-surface-layer",
       effectType:type,
@@ -296,8 +190,6 @@ export class EnvironmentRenderer{
       microRegionsPerTile:9,
       mergedMesh:true,
       perTilePlate:false,
-      currentBand:currentBand?.id||null,
-      averageFlowSpeed:type==="CURRENT"&&activeTiles?speedSum/activeTiles:0,
       meshRebuildPerFrame:false
     };
     return mesh;
@@ -311,8 +203,6 @@ export class EnvironmentRenderer{
       tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3),
       snowDepth(tile).toFixed(3),
       iceThickness(tile).toFixed(3),
-      flowSpeed(tile).toFixed(3),
-      Number(tile.flowX||0),Number(tile.flowY||0),
       tile.fogged?1:0
     ].join(":")).join("|");
   }
@@ -332,10 +222,6 @@ export class EnvironmentRenderer{
     for(const type of ["SNOW","ICE"]){
       const mesh=this.buildSurfaceLayer(type,tiles,byKey);
       if(mesh)this.surfaceMeshes.set(type,mesh);
-    }
-    for(const band of CURRENT_BANDS){
-      const mesh=this.buildSurfaceLayer("CURRENT",tiles,byKey,{currentBand:band});
-      if(mesh)this.surfaceMeshes.set(`CURRENT_${band.id}`,mesh);
     }
     this.surfaceSignature=signature;
   }
@@ -375,23 +261,14 @@ export class EnvironmentRenderer{
     const surfaceLayers={};
     for(const[type,mesh]of this.surfaceMeshes)surfaceLayers[type]={
       activeTiles:Number(mesh.metadata?.activeTiles||0),
-      mergedMesh:mesh.metadata?.mergedMesh===true,
-      currentBand:mesh.metadata?.currentBand||null,
-      averageFlowSpeed:Number(mesh.metadata?.averageFlowSpeed||0)
+      mergedMesh:mesh.metadata?.mergedMesh===true
     };
     return{
       total:this.nodes.size,
       byType,
-      currentWaveTexture:true,
-      currentDirectionalUV:true,
-      currentEmissive:false,
-      currentSingleAlphaPath:true,
-      currentMipmaps:true,
-      currentAlphaIndex:20,
-      currentSourceOfTruth:"flow-vector-and-speed",
-      currentSpeedBands:CURRENT_BANDS.map(band=>band.id),
-      currentAnimation:"texture-offset-only",
-      currentMeshRebuildPerFrame:false,
+      currentOverlay:false,
+      currentVisualOwner:"WaterRenderer",
+      waterFlowPresentation:"animated-water-surface",
       surfaceLayers,
       visualSurfaceResolver:true,
       microRegionSurfaceLayers:true,
