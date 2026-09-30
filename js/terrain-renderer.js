@@ -26,6 +26,15 @@ const TERRAIN_COLORS=Object.freeze({
 const WATERBED_SHALLOW=Object.freeze([.39,.44,.29]);
 const WATERBED_DEEP=Object.freeze([.13,.24,.25]);
 const WATERBED_DEPTH_RANGE=1.5;
+const CLIFF_RUGGEDNESS=.13;
+const CLIFF_EDGE_SEGMENTS=4;
+const RELIEF_ELEVATION_STEP=.035;
+
+function hash01(value){
+  const text=String(value||"");let h=2166136261;
+  for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}
+  return(h>>>0)/4294967295;
+}
 
 function clamp01(value){return Math.max(0,Math.min(1,Number(value||0)));}
 function smooth01(value){const t=clamp01(value);return t*t*(3-2*t);}
@@ -67,6 +76,9 @@ function mixColors(tiles){
 }
 function shade(color,factor){
   return color.map(value=>Math.max(0,Math.min(1,value*factor)));
+}
+function elevationShade(height){
+  return Math.max(.84,Math.min(1.14,.96+Number(height||0)*RELIEF_ELEVATION_STEP));
 }
 function faceNormal(a,b,c){
   const abx=b.x-a.x,aby=b.y-a.y,abz=b.z-a.z;
@@ -117,9 +129,12 @@ export class TerrainRenderer{
   makeSurfaceMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-surface",this.scene);
     material.diffuseColor=BABYLON.Color3.White();
-    material.ambientColor=BABYLON.Color3.White();
-    material.specularColor=new BABYLON.Color3(.025,.025,.025);
-    material.specularPower=8;
+    // Keep enough ambient fill to read terrain colours, but let the directional
+    // lights and flat face normals carry the elevation. Full-white ambient was
+    // flattening H0/H1/H2 into nearly the same value.
+    material.ambientColor=new BABYLON.Color3(.48,.48,.48);
+    material.specularColor=new BABYLON.Color3(.018,.018,.018);
+    material.specularPower=7;
     // Geometry has deterministic winding and face normals now.
     material.backFaceCulling=true;
     material.twoSidedLighting=false;
@@ -129,9 +144,9 @@ export class TerrainRenderer{
   makeCliffMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-cliffs",this.scene);
     material.diffuseColor=BABYLON.Color3.White();
-    material.ambientColor=BABYLON.Color3.White();
-    material.specularColor=new BABYLON.Color3(.02,.02,.02);
-    material.specularPower=6;
+    material.ambientColor=new BABYLON.Color3(.32,.32,.32);
+    material.specularColor=new BABYLON.Color3(.012,.012,.012);
+    material.specularPower=5;
     // Cliff quads may face any cardinal direction.
     material.backFaceCulling=false;
     material.twoSidedLighting=true;
@@ -229,12 +244,18 @@ export class TerrainRenderer{
     const sourceColors=oriented.b===b
       ?colors
       :[colors[0],colors[2],colors[1]];
-    const faceColor=mix3(sourceColors[0],sourceColors[1],sourceColors[2]);
+    const mixed=mix3(sourceColors[0],sourceColors[1],sourceColors[2]);
+    // A small baked relief term complements Babylon lighting. It is geometric, not
+    // gameplay state: upward / sun-facing facets read lighter while opposing slopes
+    // retain enough contrast to make elevation visible on a phone screen.
+    const n=oriented.normal;
+    const sunDot=Math.max(0,n.x*.49+n.y*.82+n.z*.29);
+    const faceColor=shade(mixed,.78+sunDot*.24);
     const base=out.positions.length/3;
 
     for(const point of points){
       out.positions.push(point.x,point.y,point.z);
-      out.normals.push(oriented.normal.x,oriented.normal.y,oriented.normal.z);
+      out.normals.push(n.x,n.y,n.z);
       // One colour per face gives a deliberate low-poly surface instead of grid seams.
       out.colors.push(faceColor[0],faceColor[1],faceColor[2],1);
     }
@@ -257,7 +278,7 @@ export class TerrainRenderer{
         y:elevationOf(tile)*ELEVATION_HEIGHT,
         z:cz
       };
-      const centerColor=shade(baseColor(tile),fog);
+      const centerColor=shade(baseColor(tile),fog*elevationShade(elevationOf(tile)));
 
       const ring=this.ringSamples(tile,byKey).map(sample=>({
         point:{
@@ -265,7 +286,7 @@ export class TerrainRenderer{
           y:sample.height*ELEVATION_HEIGHT,
           z:cz+sample.oz*TILE_SIZE
         },
-        color:shade(sample.color,fog)
+        color:shade(sample.color,fog*elevationShade(sample.height))
       }));
 
       for(let i=0;i<ring.length;i++){
@@ -320,6 +341,29 @@ export class TerrainRenderer{
     return[[cx-h,cz+h],[cx-h,cz-h]];
   }
 
+  cliffRoughPolyline(tile,dir,segments=CLIFF_EDGE_SEGMENTS){
+    const [[x1,z1],[x2,z2]]=this.cliffEdgePoints(tile,dir);
+    const points=[];
+    const nx=Number(dir.dx||0),nz=Number(dir.dy||0);
+    const edgeKey=`${Math.min(x1,x2).toFixed(3)},${Math.min(z1,z2).toFixed(3)}:${Math.max(x1,x2).toFixed(3)},${Math.max(z1,z2).toFixed(3)}`;
+    for(let i=0;i<=segments;i++){
+      const t=i/segments;
+      const x=x1+(x2-x1)*t,z=z1+(z2-z1)*t;
+      if(i===0||i===segments){points.push({x,z,t});continue;}
+      const envelope=Math.sin(Math.PI*t);
+      const irregular=.28+.72*hash01(`cliff:${edgeKey}:${i}`);
+      const offset=TILE_SIZE*CLIFF_RUGGEDNESS*envelope*irregular;
+      points.push({x:x+nx*offset,z:z+nz*offset,t});
+    }
+    return points;
+  }
+
+  profileHeight(a,mid,b,t){
+    return t<=.5
+      ?a+(mid-a)*(t*2)
+      :mid+(b-mid)*((t-.5)*2);
+  }
+
   pushCliffTriangle(out,a,b,c,color){
     const geometric=faceNormal(a,b,c);
     if(!geometric)return false;
@@ -353,10 +397,9 @@ export class TerrainRenderer{
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
 
-    // The surface mesh samples every tile edge as:
-    // corner -> edge midpoint -> corner.
-    // Cliff walls must reuse the exact same sampled heights or a crack appears
-    // between the surface and the vertical wall.
+    // The underlying grid edge stays the rule boundary. The visible cliff rim is
+    // an outward eroded polyline with a narrow cap/apron connecting it back to the
+    // terrain surfaces, so the silhouette is rugged without introducing cracks.
     const EDGE={
       N:{own:[[-1,-1],[1,-1]],nb:[[-1,1],[1,1]]},
       E:{own:[[1,-1],[1,1]],nb:[[-1,-1],[-1,1]]},
@@ -364,62 +407,77 @@ export class TerrainRenderer{
       W:{own:[[-1,1],[-1,-1]],nb:[[1,1],[1,-1]]}
     };
 
+    let ruggedEdges=0;
     for(const tile of tiles){
       const top=elevationOf(tile);
       const fog=tile.fogged?.62:1;
-      const color=shade(baseColor(tile),.68*fog);
 
       for(const dir of DIRS){
         const neighbor=this.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
         const lower=neighbor?elevationOf(neighbor):boundaryBase;
-        if(top-lower<=MAX_VISUAL_SLOPE_DELTA)continue;
+        const drop=top-lower;
+        if(drop<=MAX_VISUAL_SLOPE_DELTA)continue;
 
-        const [[x1,z1],[x2,z2]]=this.cliffEdgePoints(tile,dir);
-        const xm=(x1+x2)/2;
-        const zm=(z1+z2)/2;
         const edge=EDGE[dir.id];
-
-        // High-side surface: reuse the same two corner samples used by ringSamples().
         const topA=this.cornerSample(tile,byKey,...edge.own[0]).height*EH;
         const topB=this.cornerSample(tile,byKey,...edge.own[1]).height*EH;
-
-        // Low-side surface: sample the corresponding corners from the neighbour.
-        // At the map boundary there is no neighbour surface, so fall back to the
-        // boundary base used by the existing cliff system.
+        const topM=top*EH;
         let botA=neighbor
           ?this.cornerSample(neighbor,byKey,...edge.nb[0]).height*EH
           :lower*EH;
         let botB=neighbor
           ?this.cornerSample(neighbor,byKey,...edge.nb[1]).height*EH
           :lower*EH;
-
-        // Never allow numerical/averaging edge cases to invert a wall segment.
-        botA=Math.min(botA,topA);
-        botB=Math.min(botB,topB);
-
-        // For a discontinuity, edgeSample() on each side returns that tile's own
-        // raw elevation, so these midpoint heights exactly match both surfaces.
-        const topM=top*EH;
+        botA=Math.min(botA,topA);botB=Math.min(botB,topB);
         const botM=lower*EH;
 
-        // Split the wall at the midpoint because the surface edge is also two
-        // independent segments: corner -> midpoint -> corner.
-        this.pushCliffQuad(
-          out,
-          {x:x1,y:botA,z:z1},
-          {x:xm,y:botM,z:zm},
-          {x:xm,y:topM,z:zm},
-          {x:x1,y:topA,z:z1},
-          color
-        );
-        this.pushCliffQuad(
-          out,
-          {x:xm,y:botM,z:zm},
-          {x:x2,y:botB,z:z2},
-          {x:x2,y:topB,z:z2},
-          {x:xm,y:topM,z:zm},
-          color
-        );
+        const rough=this.cliffRoughPolyline(tile,dir);
+        const nominal=this.cliffEdgePoints(tile,dir);
+        const [[x1,z1],[x2,z2]]=nominal;
+        const wallColor=shade(baseColor(tile),Math.max(.42,.60-Math.min(.12,drop*.025))*fog);
+        const rimColor=shade(baseColor(tile),.90*fog*elevationShade(top));
+        const apronColor=shade(neighbor?baseColor(neighbor):baseColor(tile),.66*fog);
+
+        for(let i=0;i<rough.length-1;i++){
+          const a=rough[i],b=rough[i+1];
+          const ta=a.t,tb=b.t;
+          const aTop=this.profileHeight(topA,topM,topB,ta);
+          const bTop=this.profileHeight(topA,topM,topB,tb);
+          const aBot=this.profileHeight(botA,botM,botB,ta);
+          const bBot=this.profileHeight(botA,botM,botB,tb);
+
+          // Main irregular rock wall.
+          this.pushCliffQuad(
+            out,
+            {x:a.x,y:aBot,z:a.z},
+            {x:b.x,y:bBot,z:b.z},
+            {x:b.x,y:bTop,z:b.z},
+            {x:a.x,y:aTop,z:a.z},
+            wallColor
+          );
+
+          // Original grid edge points at the same parameters. These narrow strips
+          // make the new rim part of the cliff geometry rather than an overlay patch.
+          const na={x:x1+(x2-x1)*ta,z:z1+(z2-z1)*ta};
+          const nb={x:x1+(x2-x1)*tb,z:z1+(z2-z1)*tb};
+          this.pushCliffQuad(
+            out,
+            {x:na.x,y:aTop+.003,z:na.z},
+            {x:nb.x,y:bTop+.003,z:nb.z},
+            {x:b.x,y:bTop+.003,z:b.z},
+            {x:a.x,y:aTop+.003,z:a.z},
+            rimColor
+          );
+          this.pushCliffQuad(
+            out,
+            {x:a.x,y:aBot+.002,z:a.z},
+            {x:b.x,y:bBot+.002,z:b.z},
+            {x:nb.x,y:bBot+.002,z:nb.z},
+            {x:na.x,y:aBot+.002,z:na.z},
+            apronColor
+          );
+        }
+        ruggedEdges++;
       }
     }
 
@@ -441,7 +499,9 @@ export class TerrainRenderer{
       polygonal:true,
       explicitFaceNormals:true,
       surfaceMatchedEdges:true,
-      midpointSplit:true
+      ruggedNaturalRims:true,
+      erosionCap:true,
+      ruggedEdges
     };
     return mesh;
   }
@@ -473,6 +533,8 @@ export class TerrainRenderer{
       flatShaded:true,
       explicitFaceNormals:true,
       waterbedDepthTint:true,
+      reliefLighting:true,
+      ruggedNaturalCliffs:true,
       skippedDegenerate:surface?.metadata?.skippedDegenerate??null,
       minNormalY:surface?.metadata?.minNormalY??null
     };

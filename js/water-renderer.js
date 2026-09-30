@@ -18,6 +18,7 @@ const SHORE_PAIR_INSET=.08;
 const SHORE_CONCAVE_OUTSET=.10;
 const SHORE_EDGE_RELAX=.38;
 const SHORE_SEARCH_STEPS=12;
+const SHORE_RUGGEDNESS=.11;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
@@ -50,6 +51,11 @@ function hasVisibleWater(tile){
 }
 function average(values){
   return values.length?values.reduce((sum,value)=>sum+Number(value||0),0)/values.length:0;
+}
+function hash01(value){
+  const text=String(value||"");let h=2166136261;
+  for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}
+  return(h>>>0)/4294967295;
 }
 function smooth01(value){
   const t=clamp(value,0,1);
@@ -353,40 +359,60 @@ export class WaterRenderer{
     };
   }
 
+  ruggedShorePoint(point,key,scale=1){
+    const amount=TILE_SIZE*SHORE_RUGGEDNESS*Math.max(0,Number(scale||0));
+    if(amount<=EPSILON)return point;
+    // Stable coordinate noise: no frame-to-frame shimmer and no dependency on
+    // a particular map/character. The same natural boundary point always resolves
+    // to the same irregular silhouette.
+    const dx=(hash01(`${key}:x`)*2-1)*amount;
+    const dz=(hash01(`${key}:z`)*2-1)*amount;
+    return{x:point.x+dx,z:point.z+dz};
+  }
+
   cornerNaturalTarget(tile,index,allMap){
     const context=this.cornerContext(tile,index,allMap);
-    const sampleX=(Number(tile.x)+(CORNER_DIR_BY_RING[index]?.dx||0)*.5)*TILE_SIZE;
-    const sampleZ=(Number(tile.y)+(CORNER_DIR_BY_RING[index]?.dy||0)*.5)*TILE_SIZE;
+    const dir=CORNER_DIR_BY_RING[index]||{dx:0,dy:0};
+    const sampleX=(Number(tile.x)+dir.dx*.5)*TILE_SIZE;
+    const sampleZ=(Number(tile.y)+dir.dy*.5)*TILE_SIZE;
     const base={x:sampleX,z:sampleZ};
-    if(!context||!this.cornerCanRelax(context))return base;
+    let target=base;
 
-    const wet=context.members||[];
-    const count=wet.length;
-    if(!count||count===4)return base;
-
-    let targetCentroid=null;
-    let amount=0;
-    if(count===1){
-      targetCentroid=this.centroidOfTiles(wet);
-      amount=SHORE_CONVEX_INSET;
-    }else if(count===2){
-      targetCentroid=this.centroidOfTiles(wet);
-      amount=SHORE_PAIR_INSET;
-    }else if(count===3){
-      const existingDry=context.drySlots.filter(slot=>slot.tile).map(slot=>slot.tile);
-      if(!existingDry.length)return base;
-      targetCentroid=this.centroidOfTiles(existingDry);
-      amount=SHORE_CONCAVE_OUTSET;
+    // Topology smoothing remains conservative near a cliff, but ruggedness does
+    // not disappear there: natural rock banks should not suddenly become rulers.
+    if(context&&this.cornerCanRelax(context)){
+      const wet=context.members||[];
+      const count=wet.length;
+      let targetCentroid=null;
+      let amount=0;
+      if(count===1){
+        targetCentroid=this.centroidOfTiles(wet);
+        amount=SHORE_CONVEX_INSET;
+      }else if(count===2){
+        targetCentroid=this.centroidOfTiles(wet);
+        amount=SHORE_PAIR_INSET;
+      }else if(count===3){
+        const existingDry=context.drySlots.filter(slot=>slot.tile).map(slot=>slot.tile);
+        if(existingDry.length){
+          targetCentroid=this.centroidOfTiles(existingDry);
+          amount=SHORE_CONCAVE_OUTSET;
+        }
+      }
+      if(targetCentroid&&amount>0){
+        const dx=targetCentroid.x-base.x,dz=targetCentroid.z-base.z;
+        const length=Math.hypot(dx,dz);
+        if(length>EPSILON){
+          target={
+            x:base.x+dx/length*TILE_SIZE*amount,
+            z:base.z+dz/length*TILE_SIZE*amount
+          };
+        }
+      }
     }
-    if(!targetCentroid||amount<=0)return base;
 
-    const dx=targetCentroid.x-base.x,dz=targetCentroid.z-base.z;
-    const length=Math.hypot(dx,dz);
-    if(length<=EPSILON)return base;
-    return{
-      x:base.x+dx/length*TILE_SIZE*amount,
-      z:base.z+dz/length*TILE_SIZE*amount
-    };
+    const gx=context?.gx??(Number(tile.x)+dir.dx*.5);
+    const gy=context?.gy??(Number(tile.y)+dir.dy*.5);
+    return this.ruggedShorePoint(target,`shore-corner:${gx.toFixed(3)}:${gy.toFixed(3)}`,.72);
   }
 
   edgeNaturalTarget(tile,index,sample,allMap){
@@ -397,17 +423,23 @@ export class WaterRenderer{
     };
     const edgeDir=EDGE_DIR_BY_RING[index];
     const neighbor=edgeDir?allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy)):null;
-    if(neighbor&&!this.terrainCanRelax(tile,neighbor))return base;
-
     const cornerIndices=EDGE_CORNERS[index];
-    if(!cornerIndices)return base;
-    const a=this.cornerNaturalTarget(tile,cornerIndices[0],allMap);
-    const b=this.cornerNaturalTarget(tile,cornerIndices[1],allMap);
-    const smoothed={x:(a.x+b.x)/2,z:(a.z+b.z)/2};
-    return{
-      x:base.x+(smoothed.x-base.x)*SHORE_EDGE_RELAX,
-      z:base.z+(smoothed.z-base.z)*SHORE_EDGE_RELAX
-    };
+    let target=base;
+
+    // On ordinary erodible banks use the topology-smoothed midpoint. On rock/cliff
+    // banks keep the positional anchor but still apply the same natural roughness.
+    if(cornerIndices&&(!neighbor||this.terrainCanRelax(tile,neighbor))){
+      const a=this.cornerNaturalTarget(tile,cornerIndices[0],allMap);
+      const b=this.cornerNaturalTarget(tile,cornerIndices[1],allMap);
+      const smoothed={x:(a.x+b.x)/2,z:(a.z+b.z)/2};
+      target={
+        x:base.x+(smoothed.x-base.x)*SHORE_EDGE_RELAX,
+        z:base.z+(smoothed.z-base.z)*SHORE_EDGE_RELAX
+      };
+    }
+
+    const wx=(base.x/TILE_SIZE).toFixed(3),wz=(base.z/TILE_SIZE).toFixed(3);
+    return this.ruggedShorePoint(target,`shore-edge:${wx}:${wz}`,.95);
   }
 
   naturalShoreTarget(tile,index,sample,allMap){
@@ -590,7 +622,8 @@ export class WaterRenderer{
       clippedShorePoints:clippedPoints,
       naturalShoreline:true,
       topologyAwareShoreRelaxation:true,
-      cliffBanksPreserved:true,
+      ruggedNaturalShoreline:true,
+      ruggedRockBanks:true,
       stylizedWater:true,
       depthGradient:true,
       vertexAlpha:true,
@@ -756,7 +789,8 @@ export class WaterRenderer{
       terrainClippedShoreline:true,
       naturalShoreline:true,
       topologyAwareShoreRelaxation:true,
-      cliffBanksPreserved:true,
+      ruggedNaturalShoreline:true,
+      ruggedRockBanks:true,
       stylizedWater:true,
       reflectiveWaterMaterial:false,
       depthGradient:true,
