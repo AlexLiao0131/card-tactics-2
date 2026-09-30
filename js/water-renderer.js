@@ -83,6 +83,7 @@ export class WaterRenderer{
     this.waveTime=0;
     this.waveAccumulator=0;
     this.wind={x:0,z:0,strength:0};
+    this.renderableWaterKeys=new Set();
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
 
@@ -102,8 +103,15 @@ export class WaterRenderer{
       this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
       for(const entry of this.cascades.values()){
         entry.foam.rotation.y+=dt*.7;
-        const p=1+Math.sin(performance.now()/300+entry.phase)*.055;
-        entry.foam.scaling.set(1.08*p,.38,.45*p);
+        const p=1+Math.sin(this.waveTime*3.2+entry.phase)*.07;
+        entry.foam.scaling.set(1.05*p,.30,.56*p);
+        for(let i=0;i<(entry.ripples||[]).length;i++){
+          const ripple=entry.ripples[i];
+          const q=(this.waveTime*.72+entry.phase*.07+i*.46)%1;
+          const scale=.55+q*.95;
+          ripple.scaling.set(scale,.22,scale*.68);
+          ripple.visibility=entry.baseVisibility*(1-q)*.72;
+        }
       }
     });
   }
@@ -143,7 +151,7 @@ export class WaterRenderer{
   }
 
   makeCascadeMaterial(){
-    const texture=new BABYLON.DynamicTexture("cascade-flow-texture",{width:96,height:256},this.scene,false);
+    const texture=new BABYLON.DynamicTexture("cascade-flow-texture",{width:96,height:256},this.scene,true);
     texture.hasAlpha=true;
     const ctx=texture.getContext();
     ctx.clearRect(0,0,96,256);
@@ -167,21 +175,38 @@ export class WaterRenderer{
 
     const material=new BABYLON.StandardMaterial("cascade-water",this.scene);
     material.diffuseTexture=texture;
-    material.opacityTexture=texture;
-    material.emissiveTexture=texture;
-    material.diffuseColor=new BABYLON.Color3(.42,.76,.94);
-    material.emissiveColor=new BABYLON.Color3(.12,.28,.36);
-    material.alpha=.70;
-    material.specularColor=new BABYLON.Color3(.75,.88,.96);
-    material.specularPower=48;
+    material.diffuseColor=new BABYLON.Color3(.46,.79,.96);
+    material.emissiveColor=new BABYLON.Color3(.025,.075,.095);
+    material.alpha=.78;
+    material.specularColor=new BABYLON.Color3(.58,.76,.90);
+    material.specularPower=34;
     material.backFaceCulling=false;
-    material.needDepthPrePass=true;
+    material.needDepthPrePass=false;
+    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
     return{material,texture};
   }
 
   surfaceGroup(tile){return tile?.fogged?"fogged":"visible";}
   turbidity(tile){return clamp(tile?.waterTurbidity||0,0,1);}
-  waterTiles(state){return tilesOf(state).filter(hasVisibleWater);}
+  waterTiles(state){
+    const tiles=tilesOf(state),by=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    const visible=new Set(tiles.filter(hasVisibleWater).map(tile=>keyOf(tile.x,tile.y)));
+    const selected=tiles.filter(tile=>{
+      if(hasVisibleWater(tile))return true;
+      if(!hasAnyWater(tile))return false;
+      // A thin film surrounded by established water is still part of that water
+      // body. Rendering it prevents a perfect one-tile terrain rectangle from
+      // punching through an otherwise continuous lake/flood surface.
+      let neighbors=0;
+      for(const dir of DIRS){
+        if(visible.has(keyOf(tile.x+dir.dx,tile.y+dir.dy)))neighbors++;
+      }
+      return neighbors>=2;
+    });
+    this.renderableWaterKeys=new Set(selected.map(tile=>keyOf(tile.x,tile.y)));
+    return selected;
+  }
+  isRenderableWater(tile){return !!tile&&this.renderableWaterKeys.has(keyOf(tile.x,tile.y));}
   byKey(tiles){return new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));}
   allByKey(state){return new Map(tilesOf(state).map(tile=>[keyOf(tile.x,tile.y),tile]));}
 
@@ -328,7 +353,7 @@ export class WaterRenderer{
   }
 
   continuousWaterEdge(a,b){
-    return !!a&&!!b&&hasVisibleWater(a)&&hasVisibleWater(b)&&!this.isCascadeBoundary(a,b);
+    return !!a&&!!b&&this.isRenderableWater(a)&&this.isRenderableWater(b)&&!this.isCascadeBoundary(a,b);
   }
 
   surfaceComponents(waterTiles){
@@ -378,7 +403,7 @@ export class WaterRenderer{
     const start=slotTiles.get(keyOf(tile.x,tile.y));
     const members=[];
     const seen=new Set();
-    const queue=start&&hasVisibleWater(start)?[start]:[];
+    const queue=start&&this.isRenderableWater(start)?[start]:[];
 
     while(queue.length){
       const current=queue.shift();
@@ -770,19 +795,22 @@ export class WaterRenderer{
     const dirX=edge.dx,dirZ=edge.dy;
     const perpX=-dirZ,perpZ=dirX;
     const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
-    const edgeX=cx+dirX*TILE_SIZE*.5,edgeZ=cz+dirZ*TILE_SIZE*.5;
-    const topY=edge.top*ELEVATION_HEIGHT+SURFACE_OFFSET*.9;
-    const bottomY=edge.bottom*ELEVATION_HEIGHT+SURFACE_OFFSET*.9;
-    const width=TILE_SIZE*.82;
-    const half=width*.5;
-    const inset=TILE_SIZE*.24;
-    const lip=.035;
+    const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
+    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5;
+    const topY=edge.top*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const bottomY=edge.bottom*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const approach=TILE_SIZE*.075,landing=TILE_SIZE*.20;
+    const topWidth=TILE_SIZE*.64,bottomWidth=TILE_SIZE*.72;
 
+    // The fall now begins and ends on the exact shared gameplay edge. The old
+    // ribbon started deep inside both tiles, which overlapped cliff geometry and
+    // produced the broken black wedges visible at the lip and landing.
     const sections=[
-      {x:cx+dirX*inset,z:cz+dirZ*inset,y:topY},
-      {x:edgeX-dirX*lip,z:edgeZ-dirZ*lip,y:topY},
-      {x:edgeX+dirX*lip,z:edgeZ+dirZ*lip,y:bottomY},
-      {x:edgeX+dirX*inset,z:edgeZ+dirZ*inset,y:bottomY}
+      {x:edgeX-dirX*approach,z:edgeZ-dirZ*approach,y:topY,width:topWidth},
+      {x:edgeX-dirX*.012,z:edgeZ-dirZ*.012,y:topY,width:topWidth},
+      {x:edgeX+dirX*.018,z:edgeZ+dirZ*.018,y:topY-(topY-bottomY)*.34,width:topWidth*.98},
+      {x:edgeX+dirX*.050,z:edgeZ+dirZ*.050,y:bottomY+.025,width:bottomWidth*.94},
+      {x:edgeX+dirX*landing,z:edgeZ+dirZ*landing,y:bottomY,width:bottomWidth}
     ];
 
     const positions=[],indices=[],normals=[],uvs=[];
@@ -792,14 +820,10 @@ export class WaterRenderer{
         const a=sections[i-1],b=sections[i];
         distance+=Math.hypot(b.x-a.x,b.y-a.y,b.z-a.z);
       }
-      const s=sections[i];
+      const sec=sections[i],half=sec.width*.5;
       for(const side of [-1,1]){
-        positions.push(
-          s.x+perpX*half*side,
-          s.y,
-          s.z+perpZ*half*side
-        );
-        uvs.push(side<0?0:1,distance/(TILE_SIZE*.55));
+        positions.push(sec.x+perpX*half*side,sec.y,sec.z+perpZ*half*side);
+        uvs.push(side<0?0:1,distance/(TILE_SIZE*.48));
         normals.push(0,0,0);
       }
       if(i<sections.length-1){
@@ -814,27 +838,37 @@ export class WaterRenderer{
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;
     data.applyToMesh(mesh,false);
     mesh.material=this.cascadeMaterial;
+    mesh.alphaIndex=12;
     mesh.isPickable=false;
     mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed};
+    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,sharedEdgeLanding:true};
 
+    const impactX=edgeX+dirX*TILE_SIZE*.13,impactZ=edgeZ+dirZ*TILE_SIZE*.13;
     const foam=BABYLON.MeshBuilder.CreateTorus(
       `cascade-foam-${edge.id}`,
-      {diameter:TILE_SIZE*.42,thickness:.045,tessellation:20},
+      {diameter:TILE_SIZE*.34,thickness:.038,tessellation:20},
       this.scene
     );
-    foam.material=this.foamMaterial;
-    foam.isPickable=false;
-    foam.position.set(
-      edgeX+dirX*TILE_SIZE*.18,
-      bottomY+.018,
-      edgeZ+dirZ*TILE_SIZE*.18
-    );
+    foam.material=this.foamMaterial;foam.alphaIndex=13;foam.isPickable=false;
+    foam.position.set(impactX,bottomY+.020,impactZ);
     foam.visibility=mesh.visibility;
 
+    const ripples=[];
+    for(let i=0;i<2;i++){
+      const ripple=BABYLON.MeshBuilder.CreateTorus(
+        `cascade-ripple-${i}-${edge.id}`,
+        {diameter:TILE_SIZE*(.32+i*.12),thickness:.024,tessellation:18},
+        this.scene
+      );
+      ripple.material=this.foamMaterial;ripple.alphaIndex=13;ripple.isPickable=false;
+      ripple.position.set(impactX+dirX*TILE_SIZE*.04,bottomY+.012+i*.002,impactZ+dirZ*TILE_SIZE*.04);
+      ripple.visibility=0;
+      ripples.push(ripple);
+    }
+
     const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);
-    mesh.parent=root;foam.parent=root;
-    return{root,mesh,foam,phase:(edge.tile.x*13+edge.tile.y*7)%17};
+    mesh.parent=root;foam.parent=root;for(const ripple of ripples)ripple.parent=root;
+    return{root,mesh,foam,ripples,baseVisibility:mesh.visibility,phase:(edge.tile.x*13+edge.tile.y*7)%17};
   }
 
   surfaceSignatureFor(components,state){
@@ -901,7 +935,9 @@ export class WaterRenderer{
       hydrologyContinuousSurface:true,
       sharedWetEdges:true,
       quantizedLevels:false,
-      thinCascadeRibbon:true,
+      thinCascadeRibbon:false,
+      sharedEdgeCascade:true,
+      cascadeImpactRipples:true,
       perTileWaterBoxes:false,
       minVisibleWaterDepth:MIN_WATER_DEPTH,
       shorelineSkirts:false,

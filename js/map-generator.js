@@ -55,7 +55,7 @@ export const MapGenerator=(()=>{
   function setDry(tile,elevation=0,terrain=null){
     if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||(tile.elevation>=2?"HIGH_GROUND":"PLAIN");tile.waterDepth=0;tile.waterSurfaceZ=null;
     delete tile.dryTerrain;delete tile.soilMoisture;delete tile.river;delete tile.ford;delete tile.flowX;delete tile.flowY;delete tile.baseFlowSpeed;delete tile.flowSpeed;delete tile.discharge;delete tile.baseDischarge;
-    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;
+    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.sourcePool;
   }
   function setWater(tile,{bed=-1,depth=1,river=false,ford=false,flowX=0,flowY=1,flowSpeed=.6,discharge=1}={}){
     if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";tile.soilMoisture=1;
@@ -126,14 +126,21 @@ export const MapGenerator=(()=>{
 
     // Generated rivers are authored top-to-bottom. Keep the downstream boundary as
     // the outlet and let every other dead-end become a tributary/source.
-    const outletPool=leaves.length?leaves:rivers;
-    const maxY=Math.max(...outletPool.map(tile=>Number(tile.y||0)));
-    const drains=outletPool.filter(tile=>Number(tile.y||0)===maxY);
+    // Generated rivers are authored downstream toward increasing Y. Route/ford
+    // connectors can create branches or loops, so leaf-only outlet detection can
+    // accidentally promote the upstream spring to the drain. Always anchor the
+    // outlet at the furthest downstream river row.
+    const maxY=Math.max(...rivers.map(tile=>Number(tile.y||0)));
+    const drains=rivers.filter(tile=>Number(tile.y||0)===maxY);
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
-    let sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
+    // Only the authored upstream basin seeds the generated river. Ford connector
+    // branches are gameplay crossings, not magical tributary springs.
+    let sources=rivers.filter(tile=>tile?.hydrologyAuthoredSource===true&&!drainKeys.has(key(tile.x,tile.y)));
     if(!sources.length){
-      const minY=Math.min(...rivers.map(tile=>Number(tile.y||0)));
-      sources=rivers.filter(tile=>Number(tile.y||0)===minY&&!drainKeys.has(key(tile.x,tile.y)));
+      const naturalLeaves=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y))&&tile?.ford!==true&&!tile?.routeId);
+      const pool=naturalLeaves.length?naturalLeaves:leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
+      const minY=pool.length?Math.min(...pool.map(tile=>Number(tile.y||0))):Math.min(...rivers.map(tile=>Number(tile.y||0)));
+      sources=pool.filter(tile=>Number(tile.y||0)===minY);
     }
 
     for(const tile of rivers){tile.hydrologySource=false;tile.hydrologyDrain=false;}
@@ -301,6 +308,50 @@ export const MapGenerator=(()=>{
       return path;
     }
 
+    function chooseUpstreamSource(){
+      const maxY=clamp(Math.round(map.height*.24),2,map.height-3);
+      const candidates=[];
+      for(let y=1;y<=maxY;y++)for(let x=2;x<=map.width-3;x++){
+        const tile=getTile(x,y);
+        if(!tile||tile.captureZone===true||protectedKeys.has(key(x,y)))continue;
+        // Prefer an actual local depression near the intended river corridor.
+        const local=DIRS.map(([dx,dy])=>getTile(x+dx,y+dy)).filter(Boolean);
+        const localMean=local.length?local.reduce((sum,t)=>sum+Number(t.elevation||0),0)/local.length:Number(tile.elevation||0);
+        const basinBonus=Math.max(0,localMean-Number(tile.elevation||0));
+        const score=Number(tile.elevation||0)*6+Math.abs(x-xBase)*.55+y*.08-basinBonus*2.2;
+        candidates.push({tile,score});
+      }
+      candidates.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+      return candidates[0]?.tile||getTile(xBase,1)||getTile(xBase,0);
+    }
+
+    function buildSourcePool(profile){
+      for(const ref of profile?.sources||[]){
+        const source=getTile(ref.x,ref.y);
+        if(!source)continue;
+        const surface=Number(source.waterSurfaceZ??(Number(source.elevation||0)+Number(source.waterDepth||0)));
+        const candidates=[];
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+          if(!dx&&!dy)continue;
+          const tile=getTile(source.x+dx,source.y+dy);
+          if(!tile||tile.river===true||tile.captureZone===true||protectedKeys.has(key(tile.x,tile.y)))continue;
+          if(tile.terrain==="WALL")continue;
+          candidates.push(tile);
+        }
+        candidates.sort((a,b)=>Number(a.elevation||0)-Number(b.elevation||0)||a.y-b.y||a.x-b.x);
+        // Carve only a few cells so the spring head is an irregular depression,
+        // never a rectangular lake stamp.
+        for(const [index,tile] of candidates.slice(0,3).entries()){
+          const natural=Number(tile.elevation||0);
+          const bed=Math.min(natural,surface-(.20+index*.05));
+          const depth=Math.max(.12,surface-bed);
+          setWater(tile,{bed,depth,river:false});
+          tile.waterSurfaceZ=surface;
+          tile.sourcePool=true;
+        }
+      }
+    }
+
     function placeRiverTile(tx,ty){
       const tile=getTile(tx,ty);
       if(!tile||tile.captureZone===true)return null;
@@ -343,20 +394,20 @@ export const MapGenerator=(()=>{
       return path.length?path[path.length-1]:null;
     }
 
-    // Main river: every turn is carved as a cardinal path. The old generator
-    // jumped diagonally when x changed between rows, which visually touched at a
-    // corner but split Hydrology's 4-neighbour river graph into separate components.
-    let targetX=xBase;
-    let last=null;
-    for(let y=0;y<map.height;y++){
-      if(y>0&&rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
+    // Main river starts in an actual low upstream basin instead of materialising
+    // on the map boundary. The source tile is authored explicitly so later ford
+    // connector branches can never become fake springs.
+    const sourceSeed=chooseUpstreamSource();
+    if(!sourceSeed)throw new Error("River source basin generation failed");
+    let targetX=sourceSeed.x;
+    let last={x:sourceSeed.x,y:sourceSeed.y};
+    const authoredSource=placeRiverTile(last.x,last.y);
+    if(authoredSource)authoredSource.hydrologyAuthoredSource=true;
+
+    for(let y=sourceSeed.y+1;y<map.height;y++){
+      if(rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
       const resolvedX=nearestOpenX(targetX,y,last?.x??targetX);
       const target={x:resolvedX,y};
-      if(!last){
-        placeRiverTile(target.x,target.y);
-        last=target;
-        continue;
-      }
       const path=cardinalPath(last,target);
       if(!path.length)throw new Error(`River routing failed at ${last.x},${last.y} -> ${target.x},${target.y}`);
       last=layPath(path.slice(1))||last;
@@ -401,6 +452,7 @@ export const MapGenerator=(()=>{
     });
 
     const profile=finalizeGeneratedRiverProfile(map);
+    buildSourcePool(profile);
     return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile};
   }
 

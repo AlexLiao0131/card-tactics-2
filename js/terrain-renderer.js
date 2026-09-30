@@ -89,7 +89,7 @@ export class TerrainRenderer{
     // Keep enough ambient fill to read terrain colours, but let the directional
     // lights and flat face normals carry the elevation. Full-white ambient was
     // flattening H0/H1/H2 into nearly the same value.
-    material.ambientColor=new BABYLON.Color3(.48,.48,.48);
+    material.ambientColor=new BABYLON.Color3(.34,.34,.34);
     material.specularColor=new BABYLON.Color3(.018,.018,.018);
     material.specularPower=7;
     // Geometry has deterministic winding and face normals now.
@@ -103,7 +103,7 @@ export class TerrainRenderer{
     material.diffuseColor=BABYLON.Color3.White();
     // Vertical rock faces keep stronger ambient colour so they read as exposed
     // earth/stone rather than a black outline along water and high-ground rims.
-    material.ambientColor=new BABYLON.Color3(.44,.44,.44);
+    material.ambientColor=new BABYLON.Color3(.32,.32,.32);
     material.specularColor=new BABYLON.Color3(.012,.012,.012);
     material.specularPower=5;
     // Cliff quads may face any cardinal direction.
@@ -144,7 +144,7 @@ export class TerrainRenderer{
     // to blend without turning every 3x3 micro-region into another hard tile.
     const n=oriented.normal;
     const sunDot=Math.max(0,n.x*.49+n.y*.82+n.z*.29);
-    const lightFactor=.78+sunDot*.24;
+    const lightFactor=.94+sunDot*.06;
     const base=out.positions.length/3;
 
     points.forEach((point,index)=>{
@@ -339,15 +339,15 @@ export class TerrainRenderer{
           ?this.surfaceResolver.transitionColorAt(neighbor,byKey,-dir.dx*.46,-dir.dy*.46)
           :this.surfaceResolver.colorOf(tile);
         const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
-        const wallColor=shade(exposedRock,Math.max(.62,.72-Math.min(.08,drop*.015))*fog);
+        const wallColor=shade(exposedRock,Math.max(.76,.86-Math.min(.08,drop*.015))*fog);
         const bankWaterDepth=Math.max(
           this.surfaceResolver.waterDepthOf(tile),
           this.surfaceResolver.waterDepthOf(neighbor)
         );
         const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
         const wetWallColor=mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor);
-        const rimColor=shade(edgeColor,.94*fog*elevationShade(top));
-        const apronColor=shade(lowerColor,.76*fog);
+        const rimColor=shade(edgeColor,.98*fog*elevationShade(top));
+        const apronColor=shade(lowerColor,.86*fog);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
@@ -438,6 +438,8 @@ export class TerrainRenderer{
       erosionCap:true,
       ruggedEdges,
       sharedVisualSurfaceEdgeVertices:true,
+      sceneLightingPrimary:true,
+      reducedBakedLighting:true,
       cliffEdgeSegments:CLIFF_EDGE_SEGMENTS
     };
     return mesh;
