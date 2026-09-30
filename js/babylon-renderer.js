@@ -28,6 +28,23 @@ export class BabylonRenderer{
     this.fill=new BABYLON.DirectionalLight("fill",new BABYLON.Vector3(.55,-.72,.42),this.scene);
     this.fill.position=new BABYLON.Vector3(-10,14,-10);
 
+    // One scene-wide directional shadow map follows the primary sun. Keep it at
+    // 1024px and low-cost filtering so iPhone/iPad WebGL stays practical.
+    this.shadowGenerator=new BABYLON.ShadowGenerator(1024,this.sun);
+    this.shadowGenerator.bias=.0008;
+    this.shadowGenerator.normalBias=.025;
+    this.shadowGenerator.transparencyShadow=true;
+    this.sun.autoCalcShadowZBounds=true;
+    this.sun.autoUpdateExtends=true;
+    if(this.engine.webGLVersion>=2){
+      this.shadowGenerator.usePercentageCloserFiltering=true;
+      if(BABYLON.ShadowGenerator.QUALITY_LOW!=null){
+        this.shadowGenerator.filteringQuality=BABYLON.ShadowGenerator.QUALITY_LOW;
+      }
+    }else{
+      this.shadowGenerator.usePoissonSampling=true;
+    }
+
     this.syncLighting(state);
 
     this.camera=new BattleCamera(this.scene,canvas,state);
@@ -103,13 +120,79 @@ export class BabylonRenderer{
     this.fill.intensity=base.fillIntensity*modifier.fill;
     this.fill.diffuse=base.fillDiffuse;
 
+    // Shadows track the same physical sun strength. Overcast weather weakens them
+    // rather than leaving a hard dark stamp while the directional light is dim.
+    const shadowDarkness=Math.max(.10,Math.min(.36,(night?.12:.36)*modifier.sun));
+    if(this.shadowGenerator?.setDarkness)this.shadowGenerator.setDarkness(shadowDarkness);
+    else if(this.shadowGenerator)this.shadowGenerator.darkness=shadowDarkness;
+
     this.lightingState={
       timeOfDay:night?"NIGHT":"DAY",
       weather,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
       hemiIntensity:this.hemi.intensity,
       sunIntensity:this.sun.intensity,
-      fillIntensity:this.fill.intensity
+      fillIntensity:this.fill.intensity,
+      shadowDarkness
+    };
+  }
+
+  shadowMeshVisible(mesh){
+    if(!mesh)return false;
+    if(mesh.isDisposed?.())return false;
+    if(mesh.isEnabled?.()===false)return false;
+    return Number(mesh.visibility??1)>.5;
+  }
+
+  collectShadowCasters(){
+    const casters=[],seen=new Set();
+    const add=mesh=>{
+      if(!this.shadowMeshVisible(mesh)||seen.has(mesh.uniqueId))return;
+      seen.add(mesh.uniqueId);
+      casters.push(mesh);
+    };
+
+    // Interactive environment props are real 3D geometry and should anchor
+    // themselves to the terrain through shadows.
+    for(const entry of this.mapObjects?.nodes?.values?.()||[]){
+      const node=entry?.node||entry;
+      for(const mesh of node?.getChildMeshes?.(false)||[])add(mesh);
+    }
+
+    // Cores are large battlefield structures. Capture-point floor markers stay out
+    // of the shadow map because they are UI-like ground indicators.
+    for(const mesh of this.objectives?.cores?.values?.()||[])add(mesh);
+
+    // Real 3D unit geometry casts. Billboard characters intentionally do not: a
+    // transparent character plane would otherwise cast a rectangular card shadow.
+    for(const entry of this.units?.entries?.values?.()||[]){
+      if(String(entry?.kind||"").toUpperCase()==="BILLBOARD")continue;
+      for(const mesh of entry?.meshes||[])add(mesh);
+    }
+    return casters;
+  }
+
+  syncShadows(){
+    const shadowMap=this.shadowGenerator?.getShadowMap?.();
+    if(!shadowMap)return;
+
+    const casters=this.collectShadowCasters();
+    const renderList=shadowMap.renderList||(shadowMap.renderList=[]);
+    renderList.splice(0,renderList.length,...casters);
+
+    let receivers=0;
+    for(const mesh of this.terrain?.meshes?.values?.()||[]){
+      mesh.receiveShadows=true;
+      receivers++;
+    }
+
+    this.shadowState={
+      enabled:true,
+      mapSize:Number(shadowMap.getSize?.().width||1024),
+      casters:casters.length,
+      receivers,
+      filtering:this.engine.webGLVersion>=2?"PCF_LOW":"POISSON",
+      billboardPolicy:"DO_NOT_CAST_RECTANGLE"
     };
   }
 
@@ -145,6 +228,7 @@ export class BabylonRenderer{
     this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
     this.syncSubsystem("environment",()=>this.environment.sync(state));
     this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
+    this.syncSubsystem("shadows",()=>this.syncShadows());
     this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
 
     this.syncSubsystem("actionAnchor",()=>this.syncActionAnchor(state));
@@ -199,6 +283,7 @@ export class BabylonRenderer{
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,
       lighting:this.lightingState||null,
+      shadows:this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0},
       rendererErrors:Object.fromEntries(this.subsystemErrors),
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
