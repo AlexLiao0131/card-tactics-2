@@ -338,6 +338,49 @@ export class VisualSurfaceResolver{
     return this.surfaceColorAt(tile,byKey,ox,oz);
   }
 
+
+  sharedScalarAt(tile,byKey,ox,oz,getter,{connect=null}={}){
+    if(!tile||typeof getter!=="function")return 0;
+    const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
+    const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
+    const local=Math.max(0,Number(getter(tile)||0));
+    const onEdgeX=Math.abs(Math.abs(px)-.5)<=1e-6?Math.sign(px):0;
+    const onEdgeZ=Math.abs(Math.abs(pz)-.5)<=1e-6?Math.sign(pz):0;
+    const canJoin=(a,b)=>!connect?this.canSlope(a,b):!!connect(a,b);
+
+    if(!onEdgeX&&!onEdgeZ)return local;
+
+    const values=[local];
+    if(onEdgeX){
+      const neighbor=this.tileAt(byKey,tile.x+onEdgeX,tile.y);
+      values.push(neighbor&&canJoin(tile,neighbor)?Math.max(0,Number(getter(neighbor)||0)):0);
+    }
+    if(onEdgeZ){
+      const neighbor=this.tileAt(byKey,tile.x,tile.y+onEdgeZ);
+      values.push(neighbor&&canJoin(tile,neighbor)?Math.max(0,Number(getter(neighbor)||0)):0);
+    }
+    if(onEdgeX&&onEdgeZ){
+      const diagonal=this.tileAt(byKey,tile.x+onEdgeX,tile.y+onEdgeZ);
+      const sideX=this.tileAt(byKey,tile.x+onEdgeX,tile.y);
+      const sideZ=this.tileAt(byKey,tile.x,tile.y+onEdgeZ);
+      const joins=diagonal&&(
+        (sideX&&canJoin(sideX,diagonal))||
+        (sideZ&&canJoin(sideZ,diagonal))
+      );
+      values.push(joins?Math.max(0,Number(getter(diagonal)||0)):0);
+    }
+
+    return Math.min(...values);
+  }
+
+  waterSurfaceOf(tile){
+    const depth=waterDepthOf(tile);
+    if(depth<=0)return null;
+    return tile?.waterSurfaceZ==null
+      ?elevationOf(tile)+depth
+      :Number(tile.waterSurfaceZ);
+  }
+
   microRegion(tile,byKey,layout,ring=null){
     const influences=[];
     for(const [dx,dy] of layout.dirs){
@@ -426,6 +469,7 @@ export class VisualSurfaceResolver{
       patchVerticesPerTile:16,
       sharedHeightSampling:true,
       sharedTerrainState:true,
+      sharedEnvironmentScalarSampling:true,
       naturalMaterialTransitions:true,
       submergedBedIsolation:true,
       gameplayGridSubdivision:false
