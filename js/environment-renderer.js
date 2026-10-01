@@ -22,25 +22,36 @@ const NO_MIST=Object.freeze({
 });
 const WEATHER_MIST_PROFILE=Object.freeze({
   FOG:Object.freeze({
-    emitRate:26,minSize:.90,maxSize:1.75,minLifeTime:1.5,maxLifeTime:2.8,
-    height:.45,boxHeight:.72,drift:.12,rise:.025,
-    color1:Object.freeze([.72,.79,.83,.11]),color2:Object.freeze([.66,.73,.78,.055])
+    emitRate:44,minSize:1.05,maxSize:2.15,minLifeTime:1.7,maxLifeTime:3.2,
+    height:.50,boxHeight:.92,drift:.13,rise:.024,
+    color1:Object.freeze([.72,.79,.83,.15]),color2:Object.freeze([.66,.73,.78,.075])
   }),
   BLIZZARD:Object.freeze({
-    emitRate:20,minSize:.50,maxSize:1.05,minLifeTime:.70,maxLifeTime:1.35,
-    height:1.05,boxHeight:1.45,drift:.42,rise:.015,
-    color1:Object.freeze([.82,.88,.93,.10]),color2:Object.freeze([.74,.82,.88,.045])
+    emitRate:32,minSize:.62,maxSize:1.28,minLifeTime:.72,maxLifeTime:1.45,
+    height:1.08,boxHeight:1.65,drift:.48,rise:.012,
+    color1:Object.freeze([.84,.90,.95,.13]),color2:Object.freeze([.76,.84,.90,.060])
   }),
   HEAVY_RAIN:Object.freeze({
-    emitRate:7,minSize:.62,maxSize:1.18,minLifeTime:.85,maxLifeTime:1.55,
-    height:.58,boxHeight:.82,drift:.20,rise:.02,
-    color1:Object.freeze([.50,.59,.65,.075]),color2:Object.freeze([.42,.51,.58,.032])
+    emitRate:10,minSize:.68,maxSize:1.28,minLifeTime:.90,maxLifeTime:1.70,
+    height:.62,boxHeight:.92,drift:.21,rise:.018,
+    color1:Object.freeze([.50,.59,.65,.085]),color2:Object.freeze([.42,.51,.58,.040])
   }),
   THUNDERSTORM:Object.freeze({
-    emitRate:9,minSize:.60,maxSize:1.15,minLifeTime:.78,maxLifeTime:1.42,
-    height:.60,boxHeight:.88,drift:.24,rise:.018,
-    color1:Object.freeze([.42,.51,.58,.080]),color2:Object.freeze([.34,.43,.50,.035])
+    emitRate:13,minSize:.66,maxSize:1.25,minLifeTime:.82,maxLifeTime:1.55,
+    height:.64,boxHeight:.96,drift:.26,rise:.016,
+    color1:Object.freeze([.42,.51,.58,.095]),color2:Object.freeze([.34,.43,.50,.045])
   })
+});
+const SCENE_FOG_PROFILE=Object.freeze({
+  FOG:Object.freeze({density:.009,color:Object.freeze([.48,.53,.57])}),
+  BLIZZARD:Object.freeze({density:.008,color:Object.freeze([.64,.69,.74])}),
+  RAIN:Object.freeze({density:.0018,color:Object.freeze([.28,.34,.38])}),
+  HEAVY_RAIN:Object.freeze({density:.0042,color:Object.freeze([.20,.26,.31])}),
+  THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.17,.22,.28])})
+});
+const VISIBILITY_HAZE_PROFILE=Object.freeze({
+  FOG:Object.freeze({color:Object.freeze([.48,.53,.57]),alpha:.40,edgeFactor:.24,height:.42}),
+  BLIZZARD:Object.freeze({color:Object.freeze([.68,.73,.78]),alpha:.34,edgeFactor:.28,height:.48})
 });
 
 function hash01(value){
@@ -58,6 +69,8 @@ export class EnvironmentRenderer{
     this.animated=new Map();
     this.surfaceMeshes=new Map();
     this.surfaceSignature="";
+    this.visibilityHazeMesh=null;
+    this.visibilityHazeSignature="";
     this.lastState=null;
     this.weatherTime=0;
     this.impactAccumulator=0;
@@ -76,7 +89,7 @@ export class EnvironmentRenderer{
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
       wind:this.mat("env-wind",new BABYLON.Color3(.68,.82,.90),.23,new BABYLON.Color3(.12,.18,.22)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
-      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.30),
+      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.42),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.surfaceMat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
@@ -90,6 +103,7 @@ export class EnvironmentRenderer{
       shockwave:this.mat("meteor-shockwave",new BABYLON.Color3(1,.72,.34),.62,new BABYLON.Color3(.72,.32,.05)),
       meteorDust:this.mat("meteor-dust",new BABYLON.Color3(.31,.25,.20),.72)
     };
+    this.visibilityHazeMaterial=this.makeVisibilityHazeMaterial();
     this.rainTexture=this.makeRainTexture();
     this.mistTexture=this.makeMistTexture();
     this.rainSystem=this.makeRainSystem();
@@ -393,6 +407,20 @@ export class EnvironmentRenderer{
     if(emissive)material.emissiveColor=emissive;return material;
   }
 
+  makeVisibilityHazeMaterial(){
+    const material=new BABYLON.StandardMaterial("weather-visibility-haze",this.scene);
+    material.diffuseColor=BABYLON.Color3.White();
+    material.emissiveColor=BABYLON.Color3.White();
+    material.specularColor=BABYLON.Color3.Black();
+    material.disableLighting=true;
+    material.backFaceCulling=false;
+    material.fogEnabled=false;
+    material.needDepthPrePass=false;
+    material.disableDepthWrite=true;
+    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
+    return material;
+  }
+
   surfaceMat(name,color,alpha=1,emissive=null){
     const material=this.mat(name,color,alpha,emissive);
     material.backFaceCulling=false;
@@ -580,25 +608,124 @@ export class EnvironmentRenderer{
     this.surfaceSignature=signature;
   }
 
+  visibilityHazeProfile(state){
+    const weather=String(state?.presentation?.environment?.weather||"CLEAR").toUpperCase();
+    return VISIBILITY_HAZE_PROFILE[weather]||null;
+  }
+
+  visibilityHazeStateSignature(state){
+    const profile=this.visibilityHazeProfile(state),weather=String(state?.presentation?.environment?.weather||"CLEAR").toUpperCase();
+    if(!profile)return`${weather}|OFF`;
+    return`${weather}|`+(state?.map?.tiles||[]).map(tile=>[
+      tile.x,tile.y,tile.fogged?1:0,
+      Number(tile.elevation||0).toFixed(3),
+      tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3)
+    ].join(":" )).join("|");
+  }
+
+  disposeVisibilityHaze(){
+    this.visibilityHazeMesh?.dispose();
+    this.visibilityHazeMesh=null;
+  }
+
+  visibilityHazeAlpha(tile,byKey,ox,oz,profile){
+    if(!tile?.fogged)return 0;
+    let factor=1;
+    const edgeX=Math.abs(Math.abs(Number(ox||0))-.5)<=1e-6?Math.sign(Number(ox||0)):0;
+    const edgeZ=Math.abs(Math.abs(Number(oz||0))-.5)<=1e-6?Math.sign(Number(oz||0)):0;
+    const visibleNeighbor=(dx,dy)=>{
+      const neighbor=byKey.get(this.surfaceResolver.keyOf(Number(tile.x)+dx,Number(tile.y)+dy));
+      return !!neighbor&&!neighbor.fogged;
+    };
+    if(edgeX&&visibleNeighbor(edgeX,0))factor*=Number(profile.edgeFactor||.25);
+    if(edgeZ&&visibleNeighbor(0,edgeZ))factor*=Number(profile.edgeFactor||.25);
+    if(edgeX&&edgeZ&&visibleNeighbor(edgeX,edgeZ))factor*=.72;
+    return clamp(Number(profile.alpha||0)*factor,0,1);
+  }
+
+  buildVisibilityHaze(state,profile){
+    const tiles=state?.map?.tiles||[],foggedTiles=tiles.filter(tile=>tile?.fogged);
+    if(!foggedTiles.length)return null;
+    const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
+    const positions=[],indices=[],colors=[];
+    let activeTiles=0;
+
+    for(const tile of foggedTiles){
+      const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+      const baseIndex=positions.length/3;
+      const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
+      activeTiles++;
+      for(let row=0;row<4;row++)for(let col=0;col<4;col++){
+        const sample=patch[row][col],sampleHeight=Number(sample.height||0);
+        const visualHeight=Math.max(sampleHeight,waterSurface==null?sampleHeight:Number(waterSurface));
+        const alpha=this.visibilityHazeAlpha(tile,byKey,sample.ox,sample.oz,profile);
+        positions.push(sample.x,visualHeight*ELEVATION_HEIGHT+Number(profile.height||.4),sample.z);
+        colors.push(profile.color[0],profile.color[1],profile.color[2],alpha);
+      }
+      for(let row=0;row<3;row++)for(let col=0;col<3;col++){
+        const nw=baseIndex+row*4+col,ne=nw+1,sw=baseIndex+(row+1)*4+col,se=sw+1;
+        const alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
+        if(alternate===0)indices.push(nw,ne,se,nw,se,sw);
+        else indices.push(nw,ne,sw,ne,se,sw);
+      }
+    }
+
+    if(!indices.length)return null;
+    const mesh=new BABYLON.Mesh("weather-visibility-haze",this.scene),data=new BABYLON.VertexData();
+    data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,false);
+    mesh.material=this.visibilityHazeMaterial;
+    mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;
+    mesh.metadata={
+      kind:"weather-visibility-haze",
+      activeTiles,
+      fovDriven:true,
+      mergedMesh:true,
+      softBoundary:true,
+      gameplayVisibilityOwner:"TacticalEngine"
+    };
+    return mesh;
+  }
+
+  syncVisibilityHaze(state){
+    const signature=this.visibilityHazeStateSignature(state);
+    if(signature===this.visibilityHazeSignature)return;
+    this.disposeVisibilityHaze();
+    const profile=this.visibilityHazeProfile(state);
+    if(profile)this.visibilityHazeMesh=this.buildVisibilityHaze(state,profile);
+    this.visibilityHazeSignature=signature;
+  }
+
   syncAtmosphere(state){
-    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR"),night=environment.timeOfDay==="NIGHT";
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),night=environment.timeOfDay==="NIGHT";
     this.scene.clearColor=night?new BABYLON.Color4(.018,.027,.055,1):new BABYLON.Color4(.035,.055,.08,1);
 
-    // Visibility is a gameplay/FOV rule (tile.fogged + TacticalEngine.canSee).
-    // Camera-distance Scene Fog made already-visible tiles unreadable, especially
-    // on the isometric camera. Weather atmosphere is therefore rendered with
-    // lighting + low-alpha particles instead of a full-screen EXP2 wash.
-    this.scene.fogMode=BABYLON.Scene.FOGMODE_NONE;
-    this.scene.fogDensity=0;
-    this.scene.fogStart=0;
-    this.scene.fogEnd=0;
-    this.atmosphereState={weather,globalSceneFog:false,visibilityOwner:"FOV"};
+    // Atmosphere is allowed to tint the whole battlefield, but it no longer owns
+    // visibility. TacticalEngine/FOV decides what is visible; fogged tiles receive
+    // an additional soft haze mesh so the old thick-weather mood survives outside
+    // the player's sight without washing out the readable area around observers.
+    const profile=SCENE_FOG_PROFILE[weather]||null;
+    if(profile){
+      this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
+      this.scene.fogDensity=Number(profile.density||0);
+      this.scene.fogColor=new BABYLON.Color3(...profile.color);
+    }else{
+      this.scene.fogMode=BABYLON.Scene.FOGMODE_NONE;
+      this.scene.fogDensity=0;
+    }
+    this.atmosphereState={
+      weather,
+      globalSceneFog:!!profile,
+      sceneFogDensity:profile?Number(profile.density||0):0,
+      visibilityOwner:"FOV",
+      layeredVisibilityHaze:!!this.visibilityHazeProfile(state)
+    };
   }
 
   sync(state,presentationEvents=[]){
     this.lastState=state;
     this.syncAtmosphere(state);
     this.syncSurfaceLayers(state);
+    this.syncVisibilityHaze(state);
     this.syncWeatherParticles(state);
     this.syncPresentationEvents(presentationEvents,state);
     this.syncFriendlyVisibility(state);
@@ -618,11 +745,11 @@ export class EnvironmentRenderer{
         const friendlyRange=friendlyDistance(tile);
         if(type==="SMOKE"){
           const detail=this.effectDetail(tile,type),intensity=clamp(detail?.intensity??.8,0,2.5);
-          const density=clamp(.30+intensity*.22,.30,.78),size=clamp(.82+intensity*.16,.86,1.18);
+          const density=clamp(.48+intensity*.20,.48,.94),size=clamp(.86+intensity*.20,.90,1.36);
           node.scaling.setAll(size);
           visible*=density;
-          if(friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.18:.30);
-        }else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.30);
+          if(friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.38:.56);
+        }else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.38);
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }
@@ -655,6 +782,7 @@ export class EnvironmentRenderer{
       mudIntegratedIntoTerrain:true,
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0,globalSceneFog:false},
       atmosphere:this.atmosphereState||{globalSceneFog:false,visibilityOwner:"FOV"},
+      visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),softBoundary:true}:{active:false,tiles:0,softBoundary:true},
       smokeDensityFromEffectDetails:true,
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
