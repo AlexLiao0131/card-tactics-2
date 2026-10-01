@@ -78,6 +78,13 @@ export class TerrainRenderer{
     this.scene=scene;
     this.meshes=new Map();
     this.signatureValue="";
+    this.surfaceGeometrySignature="";
+    this.cliffGeometrySignature="";
+    this.surfaceColorBindings=[];
+    this.cliffColorBindings=[];
+    this.surfaceColors=null;
+    this.cliffColors=null;
+    this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
@@ -115,6 +122,13 @@ export class TerrainRenderer{
   disposeMeshes(){
     for(const mesh of this.meshes.values())mesh.dispose();
     this.meshes.clear();
+    this.signatureValue="";
+    this.surfaceGeometrySignature="";
+    this.cliffGeometrySignature="";
+    this.surfaceColorBindings=[];
+    this.cliffColorBindings=[];
+    this.surfaceColors=null;
+    this.cliffColors=null;
   }
 
   signature(tiles){
@@ -123,11 +137,79 @@ export class TerrainRenderer{
       String(tile.terrain||""),
       String(tile.dryTerrain||""),
       String(tile.material||""),
-      this.surfaceResolver.elevationOf(tile).toFixed(4),
-      Math.max(0,Number(tile.waterDepth||0)).toFixed(3),
-      Math.max(0,Number(tile.soilMoisture||0)).toFixed(3),
+      Math.max(0,Number(tile.waterDepth||0)),
+      Math.max(0,Number(tile.soilMoisture||0)),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
+  }
+
+
+  geometrySignature(tiles){
+    // Height sampling and cliff silhouettes depend on the grid and elevations,
+    // not terrain colour, moisture or visibility. Sort both data and signatures
+    // so presentation tile reordering cannot misalign cached colour bindings.
+    return `${this.surfaceResolver.maxVisualSlopeDelta}|`+tiles.map(tile=>[
+      tile.x,tile.y,this.surfaceResolver.elevationOf(tile)
+    ].join(":")).join("|");
+  }
+
+  cliffWaterSignature(tiles,byKey){
+    // Existing wet cliffs have two vertical bands; dry cliffs have one. Only a
+    // wet/dry crossing on an actual cliff changes that topology, not water level.
+    const boundaryBase=(tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0)-.75;
+    return tiles.map(tile=>DIRS.map(dir=>{
+      const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
+      const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):boundaryBase;
+      if(this.surfaceResolver.elevationOf(tile)-lower<=this.surfaceResolver.maxVisualSlopeDelta)return "";
+      return Math.max(this.surfaceResolver.waterDepthOf(tile),this.surfaceResolver.waterDepthOf(neighbor))>0?1:0;
+    }).join("")).join("|");
+  }
+
+  updateSurfaceColors(byKey){
+    for(const binding of this.surfaceColorBindings){
+      const tile=byKey.get(binding.key),fog=tile.fogged?.62:1;
+      const colors=binding.samples.map(sample=>shade(
+        this.surfaceResolver.surfaceColorAt(tile,byKey,sample.ox,sample.oz),
+        fog*elevationShade(sample.height)
+      ));
+      for(const vertex of binding.vertices){
+        const color=shade(colors[vertex.sample],vertex.lightFactor);
+        this.surfaceColors.set([...color,1],vertex.offset);
+      }
+    }
+    this.meshes.get("surface").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors);
+  }
+
+  cliffPalette(tile,neighbor,dir,byKey,drop){
+    const fog=tile.fogged?.62:1;
+    const edgeColor=this.surfaceResolver.transitionColorAt(tile,byKey,dir.dx*.46,dir.dy*.46);
+    const lowerColor=neighbor
+      ?this.surfaceResolver.transitionColorAt(neighbor,byKey,-dir.dx*.46,-dir.dy*.46)
+      :this.surfaceResolver.colorOf(tile);
+    const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
+    const wallColor=shade(exposedRock,Math.max(.76,.86-Math.min(.08,drop*.015))*fog);
+    const bankWaterDepth=Math.max(this.surfaceResolver.waterDepthOf(tile),this.surfaceResolver.waterDepthOf(neighbor));
+    const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
+    return{
+      wallColor,wetWallFactor,
+      wetWallColor:mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor),
+      rimColor:shade(edgeColor,.98*fog*elevationShade(this.surfaceResolver.elevationOf(tile))),
+      apronColor:shade(lowerColor,.86*fog)
+    };
+  }
+
+  updateCliffColors(byKey){
+    if(!this.meshes.has("cliffs"))return;
+    for(const binding of this.cliffColorBindings){
+      const tile=byKey.get(binding.key);
+      const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+binding.dir.dx,tile.y+binding.dir.dy);
+      const palette=this.cliffPalette(tile,neighbor,binding.dir,byKey,binding.drop);
+      for(const range of binding.ranges){
+        const color=palette[range.kind];
+        for(let i=range.start;i<range.end;i+=4)this.cliffColors.set([...color,1],i);
+      }
+    }
+    this.meshes.get("cliffs").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors);
   }
 
 
@@ -151,6 +233,7 @@ export class TerrainRenderer{
       const color=shade(sourceColors[index],lightFactor);
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(n.x,n.y,n.z);
+      out.binding.vertices.push({sample:point.sample,offset:out.colors.length,lightFactor});
       out.colors.push(color[0],color[1],color[2],1);
     });
     out.indices.push(base,base+1,base+2);
@@ -158,6 +241,8 @@ export class TerrainRenderer{
   }
 
   buildSurface(tiles,byKey){
+    this.surfaceColorBindings=[];
+    this.updateCounts.surfaceBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[]};
     let skippedDegenerate=0;
     let minNormalY=1;
@@ -174,8 +259,12 @@ export class TerrainRenderer{
     for(const tile of tiles){
       const fog=tile.fogged?.62:1;
       const visual=this.surfaceResolver.resolveTile(tile,byKey);
-      const grid=visual.patchGrid.map(row=>row.map(sample=>({
+      const samples=visual.patchGrid.flat();
+      out.binding={key:keyOf(tile.x,tile.y),samples,vertices:[]};
+      this.surfaceColorBindings.push(out.binding);
+      const grid=visual.patchGrid.map((row,rowIndex)=>row.map((sample,colIndex)=>({
         point:{
+          sample:rowIndex*4+colIndex,
           x:sample.x,
           y:sample.height*ELEVATION_HEIGHT,
           z:sample.z
@@ -204,8 +293,9 @@ export class TerrainRenderer{
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
-    data.colors=out.colors;
     data.applyToMesh(mesh,false);
+    this.surfaceColors=new Float32Array(out.colors);
+    mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,true);
 
     mesh.material=this.surfaceMaterial;
     mesh.useVertexColors=true;
@@ -300,11 +390,17 @@ export class TerrainRenderer{
   }
 
   pushCliffQuad(out,a,b,c,d,color){
+    const start=out.colors.length;
     this.pushCliffTriangle(out,a,b,c,color);
     this.pushCliffTriangle(out,a,c,d,color);
+    const kind=Object.keys(out.palette).find(key=>out.palette[key]===color);
+    out.binding.ranges.push({start,end:out.colors.length,kind});
   }
 
   buildCliffs(tiles,byKey){
+    this.cliffColorBindings=[];
+    this.cliffColors=null;
+    this.updateCounts.cliffBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
@@ -317,8 +413,6 @@ export class TerrainRenderer{
     let ruggedEdges=0;
     for(const tile of tiles){
       const top=this.surfaceResolver.elevationOf(tile);
-      const fog=tile.fogged?.62:1;
-
       for(const dir of DIRS){
         const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
         const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):boundaryBase;
@@ -334,20 +428,10 @@ export class TerrainRenderer{
         const rough=this.cliffRoughPolyline(tile,dir);
         const nominal=this.cliffEdgePoints(tile,dir);
         const [[x1,z1],[x2,z2]]=nominal;
-        const edgeColor=this.surfaceResolver.transitionColorAt(tile,byKey,dir.dx*.46,dir.dy*.46);
-        const lowerColor=neighbor
-          ?this.surfaceResolver.transitionColorAt(neighbor,byKey,-dir.dx*.46,-dir.dy*.46)
-          :this.surfaceResolver.colorOf(tile);
-        const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
-        const wallColor=shade(exposedRock,Math.max(.76,.86-Math.min(.08,drop*.015))*fog);
-        const bankWaterDepth=Math.max(
-          this.surfaceResolver.waterDepthOf(tile),
-          this.surfaceResolver.waterDepthOf(neighbor)
-        );
-        const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
-        const wetWallColor=mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor);
-        const rimColor=shade(edgeColor,.98*fog*elevationShade(top));
-        const apronColor=shade(lowerColor,.86*fog);
+        out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
+        const {wallColor,wetWallColor,wetWallFactor,rimColor,apronColor}=out.palette;
+        out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
+        this.cliffColorBindings.push(out.binding);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
@@ -422,8 +506,9 @@ export class TerrainRenderer{
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
-    data.colors=out.colors;
     data.applyToMesh(mesh,false);
+    this.cliffColors=new Float32Array(out.colors);
+    mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
 
     mesh.material=this.cliffMaterial;
     mesh.useVertexColors=true;
@@ -446,19 +531,31 @@ export class TerrainRenderer{
   }
 
   sync(state){
-    const tiles=tilesOf(state);
+    const tiles=[...tilesOf(state)].sort((a,b)=>Number(a.y)-Number(b.y)||Number(a.x)-Number(b.x));
+    if(!tiles.length){this.disposeMeshes();return;}
     const signature=this.signature(tiles);
-    if(signature===this.signatureValue)return;
+    const geometry=this.geometrySignature(tiles);
+    if(signature===this.signatureValue&&geometry===this.surfaceGeometrySignature)return;
 
-    this.disposeMeshes();
     const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    const cliffGeometry=geometry+"/"+this.cliffWaterSignature(tiles,byKey);
+    const rebuildSurface=geometry!==this.surfaceGeometrySignature;
+    const rebuildCliffs=cliffGeometry!==this.cliffGeometrySignature;
+    if(rebuildSurface){
+      this.meshes.get("surface")?.dispose();
+      this.meshes.set("surface",this.buildSurface(tiles,byKey));
+      this.surfaceGeometrySignature=geometry;
+    }else this.updateSurfaceColors(byKey);
 
-    const surface=this.buildSurface(tiles,byKey);
-    this.meshes.set("surface",surface);
+    if(rebuildCliffs){
+      this.meshes.get("cliffs")?.dispose();
+      this.meshes.delete("cliffs");
+      const cliffs=this.buildCliffs(tiles,byKey);
+      if(cliffs)this.meshes.set("cliffs",cliffs);
+      this.cliffGeometrySignature=cliffGeometry;
+    }else this.updateCliffColors(byKey);
 
-    const cliffs=this.buildCliffs(tiles,byKey);
-    if(cliffs)this.meshes.set("cliffs",cliffs);
-
+    if(!rebuildSurface||!rebuildCliffs)this.updateCounts.colorUpdates++;
     this.signatureValue=signature;
   }
 
@@ -466,6 +563,7 @@ export class TerrainRenderer{
     const surface=this.meshes.get("surface");
     return{
       meshes:this.meshes.size,
+      updates:{...this.updateCounts},
       polygonalSurface:true,
       tileBoxes:false,
       permanentGridLines:false,
