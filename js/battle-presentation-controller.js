@@ -12,15 +12,32 @@ function create(ctx){
   function unitRenderZ(unit,tile){const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile);return Number(vertical?.renderZ??unit?.z??TacticalEngine.elevation(tile)??0);}
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
+  function localEnvironmentLineClear(map,observer,target,environmentState){
+    if(!map||!observer||!target)return false;
+    const blocked=(x,y)=>!!TacticalEngine.visionBlocked?.(environmentState,x,y);
+    if(blocked(observer.x,observer.y)||blocked(target.x,target.y))return false;
+    const dx=Number(target.x)-Number(observer.x),dy=Number(target.y)-Number(observer.y),steps=Math.max(Math.abs(dx),Math.abs(dy));
+    if(steps<=1)return true;
+    const seen=new Set();
+    for(let i=1;i<steps;i++){
+      const x=Math.round(Number(observer.x)+dx*i/steps),y=Math.round(Number(observer.y)+dy*i/steps),key=`${x},${y}`;
+      if((x===observer.x&&y===observer.y)||(x===target.x&&y===target.y)||seen.has(key))continue;
+      seen.add(key);if(blocked(x,y))return false;
+    }
+    return true;
+  }
   function visibilityModel(){
     const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`)),observers=viewerObservers(s);
     // Card/deployment phase may legitimately begin with zero player units on the map.
     // That temporary state must not become an empty visibility mask.
-    if(!observers.length)return{active:false,visible:allVisible,observerless:true};
-    if(!s.environmentState||!window.EnvironmentEngine?.visionModifier)return{active:false,visible:allVisible,observerless:false};
-    const blockers=(s.map.tiles||[]).filter(tile=>EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked),limit=Number(EnvironmentEngine.visionRange?.(s.environmentState)),globalLimited=Number.isFinite(limit);
-    if(!blockers.length&&!globalLimited)return{active:false,visible:allVisible,observerless:false};
-    const visible=new Set();for(const tile of s.map.tiles||[])if(observers.some(observer=>(observer.x===tile.x&&observer.y===tile.y)||TacticalEngine.canSee(s.map,observer,tile,s.environmentState)))visible.add(`${tile.x},${tile.y}`);return{active:true,visible,observerless:false};
+    if(!observers.length)return{active:false,visible:allVisible,observerless:true,localOcclusion:false};
+    if(!s.environmentState||!window.EnvironmentEngine?.visionModifier)return{active:false,visible:allVisible,observerless:false,localOcclusion:false};
+    const blockers=(s.map.tiles||[]).filter(tile=>EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked),limit=Number(EnvironmentEngine.visionRange?.(s.environmentState)),globalLimited=Number.isFinite(limit),localOcclusion=blockers.length>0;
+    // Only global weather that actually limits vision range (FOG / BLIZZARD) may
+    // activate the battlefield fog mask. Local SMOKE / STEAM remain LOS blockers
+    // and must never turn the whole clear-weather map into personal-radius FOV.
+    if(!globalLimited)return{active:false,visible:allVisible,observerless:false,localOcclusion};
+    const visible=new Set();for(const tile of s.map.tiles||[])if(observers.some(observer=>(observer.x===tile.x&&observer.y===tile.y)||TacticalEngine.canSee(s.map,observer,tile,s.environmentState)))visible.add(`${tile.x},${tile.y}`);return{active:true,visible,observerless:false,localOcclusion};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
   function unitVisibleToPlayer(unit,visibility=visibilityModel()){
@@ -32,6 +49,7 @@ function create(ctx){
     // not make distant non-stealthed units disappear from the battlefield view.
     if(!visibility.active){
       if(globalThis.EffectEngine?.isStealthed?.(unit))return observers.some(observer=>TacticalEngine.canSee(s.map,observer,unit,s.environmentState));
+      if(visibility.localOcclusion)return observers.some(observer=>localEnvironmentLineClear(s.map,observer,unit,s.environmentState));
       return true;
     }
     const tile=TacticalEngine.tile(s.map,unit.x,unit.y);
