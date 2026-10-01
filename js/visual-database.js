@@ -6,8 +6,30 @@ export const VISUALS={
       tactical:"assets/characters/livia/tactical.webp",
       expressions:{},
       battle:{
-        kind:"CAPSULE",
+        kind:"FIGURE",
         baseFacing:"E",
+        height:1.68,
+        figure:{
+          style:"HUNTER_SLIM",
+          braid:true,
+          cape:true,
+          bow:true,
+          quiver:true,
+          sideSword:true,
+          colors:{
+            skin:"#e9b99d",
+            hair:"#5a342b",
+            cape:"#294f99",
+            leather:"#4a3025",
+            shirt:"#eee5dc",
+            pants:"#29282c",
+            boots:"#493025",
+            metal:"#9a775b",
+            bow:"#74482c",
+            bowString:"#d8c5a6",
+            eyes:"#4b87df"
+          }
+        },
         animations:{
           IDLE:{duration:1200,loop:true,procedural:"BREATHE"},
           WALK:{duration:180,loop:true,procedural:"STEP"},
@@ -37,7 +59,7 @@ export const VISUALS={
   }
 };
 
-export const VisualDatabase=(()=>{
+export class VisualDatabase=(()=>{
   function group(name){return VISUALS[name]||null;}
   function get(groupName,id){return group(groupName)?.[id]||null;}
   function asset(groupName,id,key){return get(groupName,id)?.[key]??null;}

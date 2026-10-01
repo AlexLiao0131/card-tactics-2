@@ -27,6 +27,7 @@ export class UnitRenderer{
     this.animationQueues=new Map();
     this.activeAnimations=new Map();
     this.animationDebug=true;
+    this.figureMaterials=new Map();
     this.materials={
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -76,7 +77,8 @@ export class UnitRenderer{
       Number(definition?.width||0),
       Number(definition?.height||0),
       Number(definition?.lift||0),
-      Number(unit?.collisionHeight||0)
+      Number(unit?.collisionHeight||0),
+      JSON.stringify(definition?.figure||{})
     ].join("|");
   }
 
@@ -175,6 +177,153 @@ export class UnitRenderer{
     return{root:mesh,meshes:[mesh],kind:"CAPSULE",height,lift:0};
   }
 
+  figureColor(value,fallback="#ffffff"){
+    const raw=String(value||fallback||"#ffffff");
+    try{return BABYLON.Color3.FromHexString(raw);}
+    catch(_error){return BABYLON.Color3.FromHexString(fallback);}
+  }
+
+  figureMaterial(name,color){
+    const key=`${name}:${String(color||"")}`;
+    let material=this.figureMaterials.get(key);
+    if(material)return material;
+    material=new BABYLON.StandardMaterial(`figure-${name}-${this.figureMaterials.size}`,this.scene);
+    material.diffuseColor=this.figureColor(color);
+    material.specularColor=new BABYLON.Color3(.08,.07,.06);
+    material.specularPower=12;
+    material.maxSimultaneousLights=8;
+    this.figureMaterials.set(key,material);
+    return material;
+  }
+
+  createFigure(unit,definition){
+    const figure=definition?.figure||{},colors=figure.colors||{};
+    const height=Math.max(.8,Number(definition?.height||figure.height||UNIT_VISUAL_HEIGHT));
+    const scale=height/1.72;
+    const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
+    root.metadata={kind:"unit",unitId:unit.id,visualKind:"FIGURE"};
+    const meshes=[];
+
+    const material={
+      skin:this.figureMaterial("skin",colors.skin||"#e9b99d"),
+      hair:this.figureMaterial("hair",colors.hair||"#56372d"),
+      cape:this.figureMaterial("cape",colors.cape||"#2d4f94"),
+      leather:this.figureMaterial("leather",colors.leather||"#4b3025"),
+      shirt:this.figureMaterial("shirt",colors.shirt||"#e9e1d7"),
+      pants:this.figureMaterial("pants",colors.pants||"#27272b"),
+      boots:this.figureMaterial("boots",colors.boots||colors.leather||"#40281f"),
+      metal:this.figureMaterial("metal",colors.metal||"#92745b"),
+      bow:this.figureMaterial("bow",colors.bow||"#70472d"),
+      eye:this.figureMaterial("eye",colors.eyes||"#4d87d9"),
+      dark:this.figureMaterial("dark","#1d1c20")
+    };
+    material.cape.backFaceCulling=false;
+
+    const finish=(mesh,mat,pos=null,rotation=null,scaling=null)=>{
+      mesh.parent=root;
+      mesh.material=mat;
+      mesh.isPickable=false;
+      mesh.receiveShadows=true;
+      mesh.metadata={...(mesh.metadata||{}),kind:"unit-part",unitId:unit.id,castShadow:true};
+      if(pos)mesh.position.set(pos[0]*scale,pos[1]*scale,pos[2]*scale);
+      if(rotation)mesh.rotation.set(rotation[0],rotation[1],rotation[2]);
+      if(scaling)mesh.scaling.set(scaling[0],scaling[1],scaling[2]);
+      meshes.push(mesh);
+      return mesh;
+    };
+    const sphere=(name,diameter,mat,pos,scaling=null)=>finish(
+      BABYLON.MeshBuilder.CreateSphere(`${name}-${unit.id}`,{diameter:diameter*scale,segments:8},this.scene),
+      mat,pos,null,scaling
+    );
+    const box=(name,size,mat,pos,rotation=null)=>finish(
+      BABYLON.MeshBuilder.CreateBox(`${name}-${unit.id}`,{width:size[0]*scale,height:size[1]*scale,depth:size[2]*scale},this.scene),
+      mat,pos,rotation
+    );
+    const cylinder=(name,heightValue,diameter,mat,pos,rotation=null,tessellation=7)=>finish(
+      BABYLON.MeshBuilder.CreateCylinder(`${name}-${unit.id}`,{height:heightValue*scale,diameter:diameter*scale,tessellation},this.scene),
+      mat,pos,rotation
+    );
+
+    // Head and simplified hair mass.
+    sphere("figure-head",.34,material.skin,[0,1.52,0], [1,.98,.92]);
+    sphere("figure-hair-cap",.38,material.hair,[0,1.59,-.035],[1.03,.82,.98]);
+    sphere("figure-hair-back",.31,material.hair,[0,1.43,-.12],[1.02,1.55,.72]);
+    if(figure.braid!==false){
+      for(let i=0;i<5;i++){
+        const t=i/4;
+        sphere(`figure-braid-${i}`,.13-i*.01,material.hair,[.16,1.38-t*.55,.10+t*.015],[.82,1.12,.82]);
+      }
+    }
+    // Tiny eye dots are enough to keep the anime read without building a face.
+    sphere("figure-eye-l",.034,material.eye,[-.058,1.535,.153],[1,.65,.45]);
+    sphere("figure-eye-r",.034,material.eye,[.058,1.535,.153],[1,.65,.45]);
+
+    // White blouse under a compact leather hunter vest.
+    box("figure-shirt",[.42,.48,.23],material.shirt,[0,1.13,0]);
+    box("figure-vest",[.36,.39,.25],material.leather,[0,1.12,.025]);
+    box("figure-belt",[.46,.075,.27],material.leather,[0,.91,.01]);
+    box("figure-buckle",[.075,.07,.035],material.metal,[0,.91,.16]);
+
+    // Arms: white sleeves with brown bracers/gloves.
+    cylinder("figure-upper-arm-l",.37,.13,material.shirt,[-.27,1.16,0],[0,0,-.13]);
+    cylinder("figure-upper-arm-r",.37,.13,material.shirt,[.27,1.16,0],[0,0,.13]);
+    cylinder("figure-bracer-l",.29,.115,material.leather,[-.30,.86,.035],[0,0,-.04]);
+    cylinder("figure-bracer-r",.29,.115,material.leather,[.30,.86,.035],[0,0,.04]);
+    sphere("figure-hand-l",.12,material.skin,[-.31,.68,.045],[.72,1,.72]);
+    sphere("figure-hand-r",.12,material.skin,[.31,.68,.045],[.72,1,.72]);
+
+    // Slim dark legs and tall brown boots.
+    cylinder("figure-leg-l",.52,.17,material.pants,[-.12,.60,0],[0,0,.025]);
+    cylinder("figure-leg-r",.52,.17,material.pants,[.12,.60,0],[0,0,-.025]);
+    box("figure-boot-l",[.19,.37,.23],material.boots,[-.12,.23,.045]);
+    box("figure-boot-r",[.19,.37,.23],material.boots,[.12,.23,.045]);
+
+    // Broad blue cloak: one very cheap six-vertex mesh with a centre fold.
+    if(figure.cape!==false){
+      const cloak=new BABYLON.Mesh(`figure-cloak-${unit.id}`,this.scene);
+      const positions=[
+        -.31*scale,1.42*scale,-.15*scale, 0,1.47*scale,-.20*scale, .31*scale,1.42*scale,-.15*scale,
+        -.48*scale,.36*scale,-.18*scale, 0,.27*scale,-.31*scale, .48*scale,.36*scale,-.18*scale
+      ];
+      const indices=[0,3,4,0,4,1,1,4,5,1,5,2],normals=[];
+      BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+      const data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.applyToMesh(cloak);
+      finish(cloak,material.cape);
+    }
+
+    // Quiver and a few visible arrow shafts.
+    if(figure.quiver!==false){
+      cylinder("figure-quiver",.58,.16,material.leather,[.27,1.16,-.22],[0,0,-.18]);
+      for(let i=0;i<3;i++){
+        cylinder(`figure-arrow-${i}`,.55,.018,material.bow,[.22+i*.045,1.42,-.22],[0,0,-.18],5);
+      }
+    }
+
+    // The bow silhouette carries most of Livia's class identity at tactical zoom.
+    if(figure.bow!==false){
+      const path=[];
+      for(let i=0;i<=8;i++){
+        const t=i/8,y=.43+t*1.08,bend=Math.sin(t*Math.PI)*.18;
+        path.push(new BABYLON.Vector3((- .43-bend)*scale,y*scale,.18*scale));
+      }
+      const bow=BABYLON.MeshBuilder.CreateTube(`figure-bow-${unit.id}`,{path,radius:.022*scale,tessellation:6,cap:BABYLON.Mesh.CAP_ALL},this.scene);
+      finish(bow,material.bow);
+      const string=BABYLON.MeshBuilder.CreateLines(`figure-bow-string-${unit.id}`,{
+        points:[path[0],new BABYLON.Vector3(-.43*scale,.97*scale,.18*scale),path[path.length-1]]
+      },this.scene);
+      string.parent=root;string.color=this.figureColor(colors.bowString||"#d9c6a7");string.isPickable=false;
+      string.metadata={kind:"unit-part",unitId:unit.id,castShadow:false};meshes.push(string);
+    }
+
+    // A simple dark side sword/scabbard, not a detailed weapon model.
+    if(figure.sideSword!==false){
+      const sword=box("figure-side-sword",[.075,.70,.065],material.dark,[.34,.61,-.04],[0,0,-.10]);
+      sword.position.y=.62*scale;
+    }
+
+    return{root,meshes,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+  }
+
   createVerticalCue(unit){
     const ring=BABYLON.MeshBuilder.CreateTorus(
       `unit-vertical-cue-${unit.id}`,
@@ -262,7 +411,11 @@ export class UnitRenderer{
 
   createEntry(unit,definition,signature){
     const kind=String(definition?.kind||"CAPSULE").toUpperCase();
-    const visual=kind==="BILLBOARD"?this.createBillboard(unit,definition):this.createCapsule(unit);
+    const visual=kind==="BILLBOARD"
+      ?this.createBillboard(unit,definition)
+      :kind==="FIGURE"
+        ?this.createFigure(unit,definition)
+        :this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);
     const verticalCue=this.createVerticalCue(unit);
