@@ -39,6 +39,8 @@ export class EnvironmentRenderer{
     this.fireLights=[];
     this.fireGlows=new Map();
     this.fireCameraKey="";
+    this.meteorBursts=[];
+    this.seenPresentationSequences=new Set();
 
 
     this.materials={
@@ -53,7 +55,12 @@ export class EnvironmentRenderer{
       fragments:this.mat("env-fragments",new BABYLON.Color3(.48,.46,.43),.9),
       boiling:this.mat("env-boiling",new BABYLON.Color3(.72,.90,1),.48,new BABYLON.Color3(.16,.36,.5)),
       rainRipple:this.mat("weather-rain-ripple",new BABYLON.Color3(.66,.90,1),.72,new BABYLON.Color3(.18,.42,.58)),
-      groundSplash:this.mat("weather-ground-splash",new BABYLON.Color3(.80,.90,.96),.58,new BABYLON.Color3(.12,.20,.24))
+      groundSplash:this.mat("weather-ground-splash",new BABYLON.Color3(.80,.90,.96),.58,new BABYLON.Color3(.12,.20,.24)),
+      meteorRock:this.mat("meteor-rock",new BABYLON.Color3(.20,.16,.14),1,new BABYLON.Color3(.20,.035,.005)),
+      meteorHot:this.mat("meteor-hot",new BABYLON.Color3(1,.28,.035),.82,new BABYLON.Color3(1,.18,.015)),
+      meteorBlast:this.mat("meteor-blast",new BABYLON.Color3(1,.48,.08),.74,new BABYLON.Color3(1,.36,.04)),
+      shockwave:this.mat("meteor-shockwave",new BABYLON.Color3(1,.72,.34),.62,new BABYLON.Color3(.72,.32,.05)),
+      meteorDust:this.mat("meteor-dust",new BABYLON.Color3(.31,.25,.20),.72)
     };
     this.rainTexture=this.makeRainTexture();
     this.mistTexture=this.makeMistTexture();
@@ -160,8 +167,74 @@ export class EnvironmentRenderer{
     this.lightningBursts.push({meshes:[bolt,branch],age:0,duration:.20});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.35);
   }
 
+  meteorTargetY(state,x,y){
+    const tile=(state?.map?.tiles||[]).find(value=>Number(value.x)===Number(x)&&Number(value.y)===Number(y));
+    return surfaceOf(tile||{})*ELEVATION_HEIGHT+.08;
+  }
+
+  createMeteorStrike(event,state){
+    const x=Number(event?.x),y=Number(event?.y);if(!Number.isFinite(x)||!Number.isFinite(y))return;
+    const fallDuration=Math.max(.2,Number(event.fallDuration||650)/1000),impactDuration=Math.max(.25,Number(event.impactDuration||700)/1000);
+    const innerRadius=Math.max(0,Number(event.innerRadius||0)),shockwaveRadius=Math.max(innerRadius,Number(event.shockwaveRadius||innerRadius));
+    const target=new BABYLON.Vector3(x*TILE_SIZE,this.meteorTargetY(state,x,y),y*TILE_SIZE),angle=hash01(`meteor:${event.sequence||0}:${x}:${y}`)*Math.PI*2;
+    const start=new BABYLON.Vector3(target.x+Math.cos(angle)*3.2,target.y+8.4,target.z+Math.sin(angle)*3.2),trailDirection=start.subtract(target).normalize();
+    const root=this.root(`meteor-fall-${event.sequence||state?.revision||0}`);root.position.copyFrom(start);root.metadata={castShadow:false,presentationType:"METEOR_STRIKE"};
+    const body=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-body-${event.sequence||0}`,{type:2,size:.46},this.scene),this.materials.meteorRock);body.metadata={castShadow:false};
+    body.scaling.set(1.05,.92,1.12);
+    const tails=[];
+    for(let i=0;i<4;i++){
+      const tail=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`meteor-tail-${event.sequence||0}-${i}`,{diameter:.48-i*.07,segments:6},this.scene),this.materials.meteorHot);
+      tail.position.copyFrom(trailDirection.scale(.38*(i+1)));tail.scaling.set(1,.78,1);tail.visibility=.78-i*.12;tail.metadata={castShadow:false};tails.push(tail);
+    }
+
+    const impactRoot=this.root(`meteor-impact-${event.sequence||state?.revision||0}`);impactRoot.position.copyFrom(target);impactRoot.metadata={castShadow:false,presentationType:"METEOR_IMPACT"};
+    const blast=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-blast-${event.sequence||0}`,{diameter:1,segments:9},this.scene),this.materials.meteorBlast);blast.position.y=.20;blast.visibility=0;blast.metadata={castShadow:false};
+    const ring=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateTorus(`meteor-wave-${event.sequence||0}`,{diameter:1,thickness:.075,tessellation:28},this.scene),this.materials.shockwave);ring.position.y=.055;ring.visibility=0;ring.metadata={castShadow:false};
+    const dust=[];
+    for(let i=0;i<8;i++){
+      const puff=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-dust-${event.sequence||0}-${i}`,{diameter:.42+(i%3)*.08,segments:5},this.scene),this.materials.meteorDust);
+      const a=i*Math.PI/4+hash01(`meteor-dust:${event.sequence||0}:${i}`)*.35;puff.metadata={castShadow:false,angle:a,reach:.55+(i%4)*.13};puff.visibility=0;dust.push(puff);
+    }
+    const debris=[];
+    for(let i=0;i<8;i++){
+      const chip=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-debris-${event.sequence||0}-${i}`,{type:2,size:.09+(i%3)*.025},this.scene),this.materials.fragments);
+      const a=i*Math.PI/4+hash01(`meteor-chip:${event.sequence||0}:${i}`)*.42;chip.metadata={castShadow:false,angle:a,speed:1.15+(i%4)*.18,lift:1.5+(i%3)*.28};chip.visibility=0;debris.push(chip);
+    }
+    const flash=new BABYLON.PointLight(`meteor-flash-${event.sequence||0}`,target.clone(),this.scene);flash.diffuse=new BABYLON.Color3(1,.42,.08);flash.specular=new BABYLON.Color3(.32,.10,.015);flash.range=Math.max(3,(shockwaveRadius+1)*TILE_SIZE*1.8);flash.intensity=0;
+    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age:0,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
+  }
+
+  updateMeteor(dt){
+    const keep=[];
+    for(const entry of this.meteorBursts){
+      entry.age+=dt;
+      if(entry.age<entry.fallDuration){
+        const p=clamp(entry.age/entry.fallDuration,0,1),q=p*p;
+        entry.root.position.copyFrom(BABYLON.Vector3.Lerp(entry.start,entry.target,q));
+        entry.body.rotation.x+=dt*5.2;entry.body.rotation.y+=dt*7.4;entry.body.rotation.z+=dt*3.6;
+        const pulse=.92+.10*Math.sin(entry.age*26);entry.body.scaling.set(1.05*pulse,.92*pulse,1.12*pulse);
+        for(let i=0;i<entry.tails.length;i++)entry.tails[i].visibility=(.76-i*.11)*(.72+.28*Math.sin(entry.age*19+i));
+        keep.push(entry);continue;
+      }
+
+      if(!entry.impacted){entry.impacted=true;entry.root.setEnabled(false);entry.blast.visibility=1;entry.ring.visibility=1;for(const puff of entry.dust)puff.visibility=.72;for(const chip of entry.debris)chip.visibility=1;entry.flash.intensity=4.2;}
+      const t=clamp((entry.age-entry.fallDuration)/entry.impactDuration,0,1),ease=1-Math.pow(1-t,3);
+      const blastScale=.35+Math.max(1,entry.innerRadius+.65)*TILE_SIZE*1.15*ease;entry.blast.scaling.setAll(blastScale);entry.blast.visibility=(1-t)*.88;
+      const waveDiameter=Math.max(TILE_SIZE*1.4,(entry.shockwaveRadius*2+1)*TILE_SIZE);entry.ring.scaling.setAll(.35+waveDiameter*ease);entry.ring.visibility=(1-t)*.82;
+      const seconds=t*entry.impactDuration;
+      for(const puff of entry.dust){const a=puff.metadata.angle,r=puff.metadata.reach*TILE_SIZE*(.25+ease*1.65);puff.position.set(Math.cos(a)*r,.10+ease*.72,Math.sin(a)*r);puff.scaling.setAll(.55+ease*1.05);puff.visibility=(1-t)*.66;}
+      for(const chip of entry.debris){const a=chip.metadata.angle,speed=chip.metadata.speed,lift=chip.metadata.lift,r=speed*seconds;chip.position.set(Math.cos(a)*r,.14+lift*seconds-2.4*seconds*seconds,Math.sin(a)*r);chip.rotation.x+=dt*8;chip.rotation.y+=dt*11;chip.visibility=1-t;}
+      entry.flash.intensity=Math.max(0,4.2*(1-t*3.4));
+      if(t>=1){entry.flash.dispose();entry.root.dispose();entry.impactRoot.dispose();}else keep.push(entry);
+    }
+    this.meteorBursts=keep;
+  }
+
   syncPresentationEvents(events,state){
-    for(const event of events||[]){if(event?.type!=="LIGHTNING_STRIKE")continue;const token=`${state?.revision||0}:${event.x}:${event.y}:${event.unitId||event.unit?.id||""}`;if(token===this.lastLightningToken)continue;this.lastLightningToken=token;this.createLightningBurst(event,state);}
+    for(const event of events||[]){
+      if(event?.type==="LIGHTNING_STRIKE"){const token=`${state?.revision||0}:${event.x}:${event.y}:${event.unitId||event.unit?.id||""}`;if(token===this.lastLightningToken)continue;this.lastLightningToken=token;this.createLightningBurst(event,state);continue;}
+      if(event?.type==="METEOR_STRIKE"){const token=String(event.sequence??`${state?.revision||0}:${event.x}:${event.y}`);if(this.seenPresentationSequences.has(token))continue;this.seenPresentationSequences.add(token);while(this.seenPresentationSequences.size>64)this.seenPresentationSequences.delete(this.seenPresentationSequences.values().next().value);this.createMeteorStrike(event,state);}
+    }
   }
 
   updateLightning(dt){
@@ -170,7 +243,7 @@ export class EnvironmentRenderer{
   }
 
   updateWeatherFrame(dt){
-    this.updateRainImpacts(dt);this.updateLightning(dt);
+    this.updateRainImpacts(dt);this.updateLightning(dt);this.updateMeteor(dt);
     const target=this.scene.activeCamera?.getTarget?.(),cameraKey=target?`${Math.round(target.x)},${Math.round(target.z)}`:"";
     if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireLights(this.lastState);this.syncFireGlows(this.lastState);}
 
@@ -495,6 +568,7 @@ export class EnvironmentRenderer{
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0},
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
+      meteorBursts:this.meteorBursts.length,
       fireGlows:this.fireGlows.size,
       fireLights:{active:this.fireLights.filter(light=>light.isEnabled()).length,maximum:4},
       electrifiedPresentation:"sparse-surface-arcs",

@@ -90,6 +90,14 @@ export const UnitAnimationEngine=(()=>{
     return event;
   }
 
+  function emitPresentation(type,detail={}){
+    const event={type:String(type||"PRESENTATION_EVENT").toUpperCase(),sequence:++sequence,...detail};
+    event.type=String(type||event.type||"PRESENTATION_EVENT").toUpperCase();
+    queue.push(event);
+    if(queue.length>256)queue.splice(0,queue.length-256);
+    return event;
+  }
+
   function emitAction(actor,target,skill,detail={}){
     if(!actor)return null;
     return emit(actor,skillState(skill),{
@@ -173,7 +181,7 @@ export const UnitAnimationEngine=(()=>{
 
   return Object.freeze({
     STATE,DEFAULTS,normalizeState,normalizeFacing,visualDefinition,skillState,
-    emit,emitAction,emitHit,emitDeath,emitMove,observe,drain,clear
+    emit,emitPresentation,emitAction,emitHit,emitDeath,emitMove,observe,drain,clear
   });
 })();
 

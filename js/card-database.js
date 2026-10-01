@@ -15,7 +15,7 @@ export const CARDS={
   tornado_card:{id:"tornado_card",name:"龍捲風",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:5,effect:{type:"AREA_PUSH",radius:1,distance:2,lift:3,damage:20,resistAxes:{horizontal:false,vertical:true},forces:["WIND"],fireTornadoDamage:45}},
   miracle_card:{id:"miracle_card",name:"神跡",type:"SPELL",spellType:"HEAL",faction:"NEUTRAL",cost:6,effect:{type:"AREA_HEAL",radius:1,heal:80,team:"PLAYER"}},
   fog_card:{id:"fog_card",name:"迷霧",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:3,effect:{type:"WEATHER",weather:"FOG",durationTurns:2}},
-  starfall_card:{id:"starfall_card",name:"星隕",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:10,effect:{type:"AREA_DAMAGE",radius:2,damage:100,forces:["HEAVY_FIRE","EXPLOSION","IMPACT"]}},
+  starfall_card:{id:"starfall_card",name:"星隕",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:10,effect:{type:"AREA_DAMAGE",radius:2,damage:100,forces:["HEAVY_FIRE","EXPLOSION","IMPACT"],shockwave:{outerRadius:1,damage:35,distance:2,lift:2,damageType:"PHYSICAL",resistAxes:{horizontal:false,vertical:true}},presentation:{type:"METEOR_STRIKE",fallDuration:650,impactDuration:700}}},
   snow_card:{id:"snow_card",name:"降雪",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:4,effect:{type:"WEATHER",weather:"SNOW",durationTurns:3}},
   scorching_sun_card:{id:"scorching_sun_card",name:"烈日",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:5,effect:{type:"WEATHER",weather:"SCORCHING_SUN",durationTurns:3}},
   blizzard_card:{id:"blizzard_card",name:"暴風雪",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:6,effect:{type:"WEATHER",weather:"BLIZZARD",durationTurns:2}},
