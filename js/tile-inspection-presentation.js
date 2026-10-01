@@ -1,5 +1,5 @@
 export const TileInspectionPresentation=(()=>{
-  const ENV={NONE:"一般",GRASS:"草木",WATER:"水",STONE:"石質"},WEATHER={CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",SNOW:"降雪",BLIZZARD:"暴風雪"};
+  const ENV={NONE:"一般",GRASS:"草木",WATER:"水",STONE:"石質"},WEATHER={CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",SNOW:"降雪",BLIZZARD:"暴風雪",SCORCHING_SUN:"烈日"};
   const EFFECT={TORNADO:"龍捲風",BURNING:"燃燒",BOILING:"沸騰",STEAM:"蒸氣",SMOKE:"黑煙",FRAGMENTS:"岩石破片",FIRE_TORNADO:"火龍捲",ELECTRIFIED:"帶電",SNOW:"積雪",ICE:"結冰",CURRENT:"急流"};
   const fmt=n=>Math.round(Number(n||0)*100)/100;
   const windName=wind=>{const x=Math.sign(Number(wind?.x||0)),y=Math.sign(Number(wind?.y||0));return x===0&&y<0?"北":x>0&&y<0?"東北":x>0&&y===0?"東":x>0&&y>0?"東南":x===0&&y>0?"南":x<0&&y>0?"西南":x<0&&y===0?"西":x<0&&y<0?"西北":"無風";};

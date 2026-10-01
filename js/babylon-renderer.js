@@ -98,6 +98,7 @@ export class BabylonRenderer{
         };
 
     const WEATHER_LIGHT=Object.freeze({
+      SCORCHING_SUN:{sun:1.16,fill:.9,hemi:.94,ambient:.96},
       CLEAR:{sun:1,fill:1,hemi:1,ambient:1},
       FOG:{sun:.42,fill:.82,hemi:.88,ambient:1.08},
       RAIN:{sun:.72,fill:.90,hemi:.92,ambient:.96},
@@ -115,7 +116,7 @@ export class BabylonRenderer{
     this.hemi.groundColor=base.ground;
 
     this.sun.intensity=base.sunIntensity*modifier.sun;
-    this.sun.diffuse=base.sunDiffuse;
+    this.sun.diffuse=weather==="SCORCHING_SUN"&&!night?new BABYLON.Color3(1,.91,.75):base.sunDiffuse;
 
     this.fill.intensity=base.fillIntensity*modifier.fill;
     this.fill.diffuse=base.fillDiffuse;

@@ -2,11 +2,11 @@ export const EnvironmentEngine=(()=>{
   const ELEMENT={NONE:"NONE",GRASS:"GRASS",WATER:"WATER",STONE:"STONE"};
   const FORCE={FIRE:"FIRE",HEAVY_FIRE:"HEAVY_FIRE",EXPLOSION:"EXPLOSION",WIND:"WIND",THUNDER:"THUNDER",IMPACT:"IMPACT",AVALANCHE_TRIGGER:"AVALANCHE_TRIGGER"};
   const EFFECT={BURNING:"BURNING",BOILING:"BOILING",STEAM:"STEAM",SMOKE:"SMOKE",FRAGMENTS:"FRAGMENTS",TORNADO:"TORNADO",FIRE_TORNADO:"FIRE_TORNADO",ELECTRIFIED:"ELECTRIFIED",SNOW:"SNOW",ICE:"ICE",CURRENT:"CURRENT",TRAP:"TRAP"};
-  const WEATHER={CLEAR:"CLEAR",FOG:"FOG",RAIN:"RAIN",HEAVY_RAIN:"HEAVY_RAIN",THUNDERSTORM:"THUNDERSTORM",SNOW:"SNOW",BLIZZARD:"BLIZZARD"};
+  const WEATHER={CLEAR:"CLEAR",FOG:"FOG",RAIN:"RAIN",HEAVY_RAIN:"HEAVY_RAIN",THUNDERSTORM:"THUNDERSTORM",SNOW:"SNOW",BLIZZARD:"BLIZZARD",SCORCHING_SUN:"SCORCHING_SUN"};
   const PRECIPITATION=Object.freeze({NONE:"NONE",RAIN:"RAIN",HEAVY_RAIN:"HEAVY_RAIN",SNOW:"SNOW"});
-  const CLIMATE_CHANNEL=Object.freeze({PRECIPITATION:"PRECIPITATION",FOG:"FOG",THUNDER:"THUNDER",TEMPERATURE:"TEMPERATURE",WIND:"WIND"});
+  const CLIMATE_CHANNEL=Object.freeze({PRECIPITATION:"PRECIPITATION",FOG:"FOG",THUNDER:"THUNDER",HEAT:"HEAT",TEMPERATURE:"TEMPERATURE",WIND:"WIND"});
   const WEATHER_RULES={THUNDERSTORM:{lightningChance:0.35,lightningDamage:60,metalWeight:2,waterWeight:2,treeWeight:2}};
-  const WEATHER_TURNS=Object.freeze({FOG:2,RAIN:3,HEAVY_RAIN:2,THUNDERSTORM:2,SNOW:3,BLIZZARD:2});
+  const WEATHER_TURNS=Object.freeze({FOG:2,RAIN:3,HEAVY_RAIN:2,THUNDERSTORM:2,SNOW:3,BLIZZARD:2,SCORCHING_SUN:3});
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
   const WIND_DIRECTION=Object.freeze({CALM:"CALM",N:"N",NE:"NE",E:"E",SE:"SE",S:"S",SW:"SW",W:"W",NW:"NW"});
   const WIND_VECTORS=Object.freeze({N:{x:0,y:-1},NE:{x:1,y:-1},E:{x:1,y:0},SE:{x:1,y:1},S:{x:0,y:1},SW:{x:-1,y:1},W:{x:-1,y:0},NW:{x:-1,y:-1},CALM:{x:0,y:0}});
@@ -42,6 +42,7 @@ export const EnvironmentEngine=(()=>{
       precipitation:{type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null},
       fog:{intensity:0,turnsRemaining:null},
       thunder:{intensity:0,turnsRemaining:null},
+      heat:{intensity:0,turnsRemaining:null},
       temperature:null,
       wind:null
     };
@@ -51,6 +52,7 @@ export const EnvironmentEngine=(()=>{
     else if(w===WEATHER.THUNDERSTORM){climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d};climate.thunder={intensity:1,turnsRemaining:d};climate.wind={x:1,y:0,strength:1.85};}
     else if(w===WEATHER.SNOW)climate.precipitation={type:PRECIPITATION.SNOW,intensity:1,turnsRemaining:d};
     else if(w===WEATHER.BLIZZARD){climate.precipitation={type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d};climate.wind={x:1,y:0,strength:2.1};}
+    if(w===WEATHER.SCORCHING_SUN)climate.heat={intensity:1,turnsRemaining:d};
     return climate;
   }
   function normalizeLayer(layer,{type=PRECIPITATION.NONE,intensity=0,turnsRemaining=null}={}){
@@ -61,15 +63,16 @@ export const EnvironmentEngine=(()=>{
     if(!state)return null;
     const legacy=climateFromWeather(state.weather||WEATHER.CLEAR,state.weatherTurnsRemaining);
     const source=state.climate&&typeof state.climate==="object"?state.climate:{};
-    const hasChannels=source.precipitation||source.fog||source.thunder||source.temperature!=null||source.wind;
+    const hasChannels=source.precipitation||source.fog||source.thunder||source.heat||source.temperature!=null||source.wind;
     if(!hasChannels){
-      source.precipitation={...legacy.precipitation};source.fog={...legacy.fog};source.thunder={...legacy.thunder};source.temperature=null;source.wind=legacy.wind?{...legacy.wind}:null;
+      source.precipitation={...legacy.precipitation};source.fog={...legacy.fog};source.thunder={...legacy.thunder};source.heat={...legacy.heat};source.temperature=null;source.wind=legacy.wind?{...legacy.wind}:null;
     }else{
       source.precipitation=normalizeLayer(source.precipitation,{...legacy.precipitation});
       source.fog={intensity:Math.max(0,Number(source.fog?.intensity??0)),turnsRemaining:turns(source.fog?.turnsRemaining,null)};
       source.thunder={intensity:Math.max(0,Number(source.thunder?.intensity??0)),turnsRemaining:turns(source.thunder?.turnsRemaining,null)};
       if(source.temperature!=null&&!Number.isFinite(Number(source.temperature)))source.temperature=null;
     }
+    source.heat={intensity:Math.max(0,Number(source.heat?.intensity??0)),turnsRemaining:turns(source.heat?.turnsRemaining,null)};
     source.turn=Math.max(0,Number(source.turn||0));
     state.climate=source;
     const sourceWind=source.wind||state.wind||legacy.wind||{};
@@ -97,11 +100,12 @@ export const EnvironmentEngine=(()=>{
     if(precipitation.type===PRECIPITATION.RAIN)return WEATHER.RAIN;
     if(precipitation.type===PRECIPITATION.SNOW)return WEATHER.SNOW;
     if(isFog(state))return WEATHER.FOG;
+    if(Number(state.climate?.heat?.intensity||0)>0)return WEATHER.SCORCHING_SUN;
     return WEATHER.CLEAR;
   }
   function compatibilityRemaining(state){
     const climate=state?.climate;if(!climate)return null;
-    const values=[climate.precipitation?.turnsRemaining,climate.fog?.turnsRemaining,climate.thunder?.turnsRemaining].filter(v=>v!=null).map(Number).filter(Number.isFinite);
+    const values=[climate.precipitation?.turnsRemaining,climate.fog?.turnsRemaining,climate.thunder?.turnsRemaining,climate.heat?.turnsRemaining].filter(v=>v!=null).map(Number).filter(Number.isFinite);
     return values.length?Math.max(...values):null;
   }
   function syncLegacyWeather(state){
@@ -116,6 +120,7 @@ export const EnvironmentEngine=(()=>{
     if(precipitation.type===PRECIPITATION.RAIN)return WEATHER.RAIN;
     if(precipitation.type===PRECIPITATION.SNOW)return WEATHER.SNOW;
     if(Number(climate.fog?.intensity||0)>0)return WEATHER.FOG;
+    if(Number(climate.heat?.intensity||0)>0)return WEATHER.SCORCHING_SUN;
     return WEATHER.CLEAR;
   }
   function climateSnapshot(state){
@@ -124,6 +129,7 @@ export const EnvironmentEngine=(()=>{
       precipitation:{type:precipitation.type||PRECIPITATION.NONE,intensity:Number(precipitation.intensity||0),turnsRemaining:precipitation.turnsRemaining??null},
       fog:{intensity:Number(fog.intensity||0),turnsRemaining:fog.turnsRemaining??null},
       thunder:{intensity:Number(thunder.intensity||0),turnsRemaining:thunder.turnsRemaining??null},
+      heat:{intensity:Number(climate.heat?.intensity||0),turnsRemaining:climate.heat?.turnsRemaining??null},
       temperature:climate.temperature==null?null:Number(climate.temperature),
       wind:{...windAt(state)},
       legacyWeather:legacyWeatherRaw(state)
@@ -140,16 +146,31 @@ export const EnvironmentEngine=(()=>{
     }else if(name===CLIMATE_CHANNEL.THUNDER){
       const input=typeof value==="object"?value:{intensity:value===false||value==="NONE"?0:Number(value)||1};const thunderIntensity=Math.max(0,Number(input?.intensity??intensity??1));
       climate.thunder={intensity:thunderIntensity,turnsRemaining:thunderIntensity<=0?null:turns(input?.turnsRemaining,duration)};
+    }else if(name===CLIMATE_CHANNEL.HEAT){
+      const input=typeof value==="object"&&value?value:{intensity:Number(value)||0};
+      const heatIntensity=Math.max(0,Number(input.intensity??intensity??1));
+      climate.heat={intensity:heatIntensity,turnsRemaining:heatIntensity>0?turns(input.turnsRemaining,duration):null};
     }else if(name===CLIMATE_CHANNEL.TEMPERATURE){
       climate.temperature=value==null||!Number.isFinite(Number(value))?null:Number(value);
     }else if(name===CLIMATE_CHANNEL.WIND){
       climate.wind=normalizeWind(value||{});state.wind={...climate.wind};
     }
+    // Wet/obscured skies and heat are mutually exclusive; wind remains independent.
+    if((name===CLIMATE_CHANNEL.PRECIPITATION&&climate.precipitation.type!==PRECIPITATION.NONE)||
+       (name===CLIMATE_CHANNEL.FOG&&climate.fog.intensity>0)||
+       (name===CLIMATE_CHANNEL.THUNDER&&climate.thunder.intensity>0))climate.heat={intensity:0,turnsRemaining:null};
+    if(name===CLIMATE_CHANNEL.HEAT&&climate.heat.intensity>0){
+      climate.precipitation={type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};
+      climate.fog={intensity:0,turnsRemaining:null};climate.thunder={intensity:0,turnsRemaining:null};
+      climate.temperature=null;
+    }
     syncLegacyWeather(state);return climateSnapshot(state);
   }
   function applyClimatePreset(state,weather,{duration=null}={}){
     if(!state)return[];const climate=ensureClimate(state),resolved=WEATHER[weather]?weather:WEATHER.CLEAR,d=duration==null?WEATHER_TURNS[resolved]??null:Math.max(0,Number(duration||0)),touched=[];
-    if(resolved===WEATHER.CLEAR){
+    climate.heat={intensity:0,turnsRemaining:null};
+    if(resolved===WEATHER.SCORCHING_SUN){setClimateChannel(state,CLIMATE_CHANNEL.HEAT,{intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.HEAT);}
+    else if(resolved===WEATHER.CLEAR){
       climate.precipitation={type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};climate.fog={intensity:0,turnsRemaining:null};climate.thunder={intensity:0,turnsRemaining:null};touched.push(CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.FOG,CLIMATE_CHANNEL.THUNDER);
     }else if(resolved===WEATHER.FOG){setClimateChannel(state,CLIMATE_CHANNEL.FOG,{intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.FOG);}
     else if(resolved===WEATHER.RAIN){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.RAIN,intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
@@ -176,13 +197,14 @@ export const EnvironmentEngine=(()=>{
   function applyRainToTerrain(map,state){const precipitation=precipitationAt(state),heavy=precipitation.type===PRECIPITATION.HEAVY_RAIN;return HydrologyEngine.applyRain(map,{heavy,amount:rainAmount(state),source:legacyWeatherRaw(state)});}
   function weatherPulse(map,state,events=[]){
     if(isRain(state))events.push(...applyRainToTerrain(map,state));
-    else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{source:"CLEAR_WEATHER"}));
+    else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{amount:HydrologyEngine.DRYING_PER_CLEAR_TURN*Number(window.ClimateEngine?.config?.(state)?.extraDrying||1),source:legacyWeatherRaw(state)}));
     if(window.ClimateEngine)events.push(...ClimateEngine.advance(map,state));
+    advanceFireDryness(map,state,events);
     if(window.EnvironmentResolver)events.push(...EnvironmentResolver.resolve(map,state,{source:"ENVIRONMENT_TICK"}));
     return events;
   }
-  function climateChannels(){return[CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.FOG,CLIMATE_CHANNEL.THUNDER];}
-  function layerFor(state,channel){const climate=ensureClimate(state);if(channel===CLIMATE_CHANNEL.PRECIPITATION)return climate.precipitation;if(channel===CLIMATE_CHANNEL.FOG)return climate.fog;if(channel===CLIMATE_CHANNEL.THUNDER)return climate.thunder;return null;}
+  function climateChannels(){return[CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.FOG,CLIMATE_CHANNEL.THUNDER,CLIMATE_CHANNEL.HEAT];}
+  function layerFor(state,channel){const climate=ensureClimate(state);if(channel===CLIMATE_CHANNEL.PRECIPITATION)return climate.precipitation;if(channel===CLIMATE_CHANNEL.FOG)return climate.fog;if(channel===CLIMATE_CHANNEL.THUNDER)return climate.thunder;if(channel===CLIMATE_CHANNEL.HEAT)return climate.heat;return null;}
   function expireClimate(state,events=[]){
     for(const channel of climateChannels()){
       const layer=layerFor(state,channel);if(!layer||layer.turnsRemaining!==0)continue;
@@ -231,6 +253,33 @@ export const EnvironmentEngine=(()=>{
     return events;
   }
   function flammableAt(map,x,y){const tile=tileAt(map,x,y);if(!tile||HydrologyEngine.isWater(tile))return false;if(window.EnvironmentObjectEngine?.flammableAt?.(map,x,y))return true;const object=objectAt(map,x,y);if(object&&(object.flammable===true||object.environment===ELEMENT.GRASS))return true;return TERRAINS[tile.terrain]?.environment===ELEMENT.GRASS;}
+  // Environmental fuel state, shared by all weather. A reproducible roll depends
+  // on map seed, tile and climate pulse, never on render order or Math.random().
+  function fireRoll(map,state,tile){
+    let h=2166136261;
+    for(const c of `${map.seed??map.id??"MAP"}:${state.climate.turn}:${tile.x},${tile.y}:FIRE`){h=Math.imul(h^c.charCodeAt(0),16777619);}
+    h=Math.imul(h^(h>>>16),0x45d9f3b);h=Math.imul(h^(h>>>16),0x45d9f3b);
+    return ((h^(h>>>16))>>>0)/4294967296;
+  }
+  function advanceFireDryness(map,state,events=[]){
+    const raining=isRain(state),snowing=isSnow(state),wind=windAt(state);
+    for(const tile of map?.tiles||[]){
+      const before=Math.max(0,Math.min(1,Number(tile.fireDryness||0)));
+      const wet=waterDepth(tile)>0||Number(tile.snowDepth||0)>0||Number(tile.iceThickness||0)>0;
+      const moisture=HydrologyEngine.soilMoisture(tile)/Math.max(.01,HydrologyEngine.soilCapacity(tile));
+      const temperature=window.ClimateEngine?.temperatureAt?.(state,tile)??7;
+      const drying=.06+Math.max(0,temperature-10)*.014;
+      tile.fireDryness=wet?0:raining||snowing?Math.max(0,before-.65):
+        Math.max(0,Math.min(1,before+(moisture>.25?-.15*moisture:drying*(1-moisture))));
+      if(wet||raining||snowing||moisture>.15||temperature<24||tile.fireDryness<.75||isBurning(state,tile.x,tile.y)||!flammableAt(map,tile.x,tile.y))continue;
+      const chance=Math.min(.12,(.025+(tile.fireDryness-.75)*.22)*(1+wind.strength*.12));
+      if(fireRoll(map,state,tile)>=chance)continue;
+      addEffect(state,tile.x,tile.y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});
+      addSmoke(state,tile.x,tile.y,{intensity:.9,duration:3,source:"NATURAL_FIRE"});
+      events.push({type:"IGNITE",x:tile.x,y:tile.y,effect:EFFECT.BURNING,source:"NATURAL_FIRE"});
+    }
+    return events;
+  }
   function spreadFire(map,state){
     if(!map||!state||isRain(state)||isSnow(state))return[];
     const pending=new Map();
@@ -255,7 +304,7 @@ export const EnvironmentEngine=(()=>{
         const [x,y]=k.split(",").map(Number);removeEffect(state,x,y,EFFECT.BURNING);events.push({type:isRain(state)?"RAIN_EXTINGUISHED_FIRE":"SNOW_EXTINGUISHED_FIRE",x,y});
       }
     }
-    if(map&&applyPulse){if(touched.includes(CLIMATE_CHANNEL.PRECIPITATION))weatherPulse(map,state,events);decrementClimate(state,touched);}
+    if(map&&applyPulse){if(touched.includes(CLIMATE_CHANNEL.PRECIPITATION)||touched.includes(CLIMATE_CHANNEL.HEAT))weatherPulse(map,state,events);decrementClimate(state,touched);}
     events.push({type:"WEATHER_SET",weather:resolved,duration:resolved===WEATHER.CLEAR?0:Number(duration??WEATHER_TURNS[resolved]??1),remaining:Number(state.weatherTurnsRemaining??0),climate:climateSnapshot(state)});
     for(const channel of touched)events.push({type:"CLIMATE_SET",channel,climate:climateSnapshot(state)});
     return events;

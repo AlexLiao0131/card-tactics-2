@@ -1,9 +1,10 @@
 export const ClimateEngine=(()=>{
   "use strict";
 
-  const WEATHER=Object.freeze({SNOW:"SNOW",BLIZZARD:"BLIZZARD"});
+  const WEATHER=Object.freeze({SNOW:"SNOW",BLIZZARD:"BLIZZARD",SCORCHING_SUN:"SCORCHING_SUN"});
   const SAFE_ICE=Object.freeze({LIGHT:.45,MEDIUM:.7,HEAVY:1,IMMOVABLE:1.2});
   const CFG=Object.freeze({
+    SCORCHING_SUN:{temperature:28,snowRate:0,flow:.95,melt:1.15,evaporation:2.75,extraDrying:1.5},
     CLEAR:{temperature:7,snowRate:0,flow:1,melt:.25},
     FOG:{temperature:5,snowRate:0,flow:1,melt:.12},
     RAIN:{temperature:6,snowRate:0,flow:1.35,melt:.55},
@@ -40,6 +41,7 @@ export const ClimateEngine=(()=>{
     if(precipitation==="HEAVY_RAIN")return thunderIntensity(state)>0?CFG.THUNDERSTORM:CFG.HEAVY_RAIN;
     if(precipitation==="RAIN")return CFG.RAIN;
     if(fogIntensity(state)>0)return CFG.FOG;
+    if(Number(state?.climate?.heat?.intensity||0)>0)return CFG.SCORCHING_SUN;
     return CFG.CLEAR;
   }
   function temperatureAt(state,tile){
@@ -94,7 +96,7 @@ export const ClimateEngine=(()=>{
     if(precipitationType(state)==="NONE"&&window.HydrologyEngine?.evaporateUnfedWater){
       const fogFactor=fogIntensity(state)>0?.5:1;
       const evaporation=HydrologyEngine.evaporateUnfedWater(map,{
-        amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*fogFactor,
+        amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*fogFactor*Number(cfg.evaporation||1),
         source:"CLIMATE_EVAPORATION"
       });
       events.push(...evaporation);

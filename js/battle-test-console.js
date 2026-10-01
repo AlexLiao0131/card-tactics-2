@@ -1,7 +1,7 @@
 (()=>{
 "use strict";
 
-const WEATHER_OPTIONS=[["CLEAR","晴朗"],["FOG","迷霧"],["RAIN","雨"],["HEAVY_RAIN","豪大雨"],["THUNDERSTORM","雷雨"],["SNOW","降雪"],["BLIZZARD","暴風雪"]];
+const WEATHER_OPTIONS=[["SCORCHING_SUN","烈日"],["CLEAR","晴朗"],["FOG","迷霧"],["RAIN","雨"],["HEAVY_RAIN","豪大雨"],["THUNDERSTORM","雷雨"],["SNOW","降雪"],["BLIZZARD","暴風雪"]];
 const WIND_OPTIONS=[["CALM","無風"],["N","北向"],["NE","東北向"],["E","東向"],["SE","東南向"],["S","南向"],["SW","西南向"],["W","西向"],["NW","西北向"]];
 const FORCE_OPTIONS=[["FIRE","火"],["HEAVY_FIRE","高熱"],["EXPLOSION","爆炸"],["WIND","風"],["THUNDER","雷"],["IMPACT","衝擊"],["AVALANCHE_TRIGGER","雪崩觸發"]];
 function runtime(){return window.CardTacticsRuntime?.debug||null}

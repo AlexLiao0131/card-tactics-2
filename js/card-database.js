@@ -17,6 +17,7 @@ export const CARDS={
   fog_card:{id:"fog_card",name:"迷霧",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:3,effect:{type:"WEATHER",weather:"FOG",durationTurns:2}},
   starfall_card:{id:"starfall_card",name:"星隕",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:10,effect:{type:"AREA_DAMAGE",radius:2,damage:100,forces:["HEAVY_FIRE","EXPLOSION","IMPACT"]}},
   snow_card:{id:"snow_card",name:"降雪",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:4,effect:{type:"WEATHER",weather:"SNOW",durationTurns:3}},
+  scorching_sun_card:{id:"scorching_sun_card",name:"烈日",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:5,effect:{type:"WEATHER",weather:"SCORCHING_SUN",durationTurns:3}},
   blizzard_card:{id:"blizzard_card",name:"暴風雪",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:6,effect:{type:"WEATHER",weather:"BLIZZARD",durationTurns:2}},
   bear_trap_card:{id:"bear_trap_card",name:"捕熊陷阱",type:"SPELL",spellType:"TRAP",faction:"HUNTER",cost:2,effect:{type:"TRAP"}},
   avalanche_card:{id:"avalanche_card",name:"雪崩",type:"SPELL",spellType:"TACTICAL",faction:"HUNTER",cost:6,effect:{type:"AREA_DAMAGE",radius:0,damage:0,forces:["AVALANCHE_TRIGGER"]}},

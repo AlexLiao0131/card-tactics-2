@@ -4,7 +4,7 @@ const TILE_EFFECT_INFO=Object.freeze({
   TORNADO:{name:"龍捲風",interaction:"持續風場；地面單位進入時觸發共用強制位移與墜落判定。"},BURNING:{name:"燃燒",interaction:"小火可被水／豪雨／降雪熄滅；風可使燃燒區形成火龍捲。"},BOILING:{name:"沸騰",interaction:"水體受持續高熱後進入沸騰；水中單位受高熱傷害，再次受高熱會逐步蒸發水量。"},STEAM:{name:"蒸氣",interaction:"蒸發／高熱產生的視線遮蔽；可被風力吹散。"},FRAGMENTS:{name:"岩石破片",interaction:"爆炸擊中石質環境時產生的物理破片效果。"},FIRE_TORNADO:{name:"火龍捲",interaction:"燃燒區受到風力作用形成；造成高額火焰環境傷害。"},ELECTRIFIED:{name:"帶電",interaction:"雷元素會沿四向相連的實際水體傳導；雨天與泥地本身不導電。"},SNOW:{name:"積雪",interaction:"積雪會增加移動成本；高山厚雪受爆炸／衝擊可引發雪崩。"},ICE:{name:"結冰",interaction:"冰面可讓單位走在水面上，但重量超過承載能力會踩裂。"},CURRENT:{name:"急流",interaction:"豪雨／雷雨會提高河流流速；急流可用共用強制位移把單位往下游沖走。"}
 });
 const TILE_ENVIRONMENT_NAME=Object.freeze({NONE:"一般",GRASS:"草木",WATER:"水",STONE:"石質"});
-const WEATHER_NAME=Object.freeze({CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",SNOW:"降雪",BLIZZARD:"暴風雪"});
+const WEATHER_NAME=Object.freeze({CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",SNOW:"降雪",BLIZZARD:"暴風雪",SCORCHING_SUN:"烈日"});
 function create(ctx){
   if(!ctx?.state)throw new Error("BattlePresentationController requires state().");
   function teamPresentation(team){if(team===ctx.TEAM?.PLAYER||team==="P"||team==="PLAYER")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E"||team==="ENEMY")return"ENEMY";if(team===ctx.TEAM?.NEUTRAL||team==="N"||team==="NEUTRAL")return"NEUTRAL";return String(team||"NEUTRAL");}
