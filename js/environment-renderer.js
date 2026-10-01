@@ -15,6 +15,33 @@ const SURFACE_EPSILON=.001;
 const RAIN_PARTICLE_CAPACITY=760;
 const MIST_PARTICLE_CAPACITY=120;
 const IMPACT_POOL_SIZE=18;
+const NO_MIST=Object.freeze({
+  emitRate:0,minSize:.75,maxSize:1.35,minLifeTime:1,maxLifeTime:2,
+  height:.55,boxHeight:.8,drift:.16,rise:.03,
+  color1:Object.freeze([.68,.76,.81,0]),color2:Object.freeze([.60,.69,.75,0])
+});
+const WEATHER_MIST_PROFILE=Object.freeze({
+  FOG:Object.freeze({
+    emitRate:26,minSize:.90,maxSize:1.75,minLifeTime:1.5,maxLifeTime:2.8,
+    height:.45,boxHeight:.72,drift:.12,rise:.025,
+    color1:Object.freeze([.72,.79,.83,.11]),color2:Object.freeze([.66,.73,.78,.055])
+  }),
+  BLIZZARD:Object.freeze({
+    emitRate:20,minSize:.50,maxSize:1.05,minLifeTime:.70,maxLifeTime:1.35,
+    height:1.05,boxHeight:1.45,drift:.42,rise:.015,
+    color1:Object.freeze([.82,.88,.93,.10]),color2:Object.freeze([.74,.82,.88,.045])
+  }),
+  HEAVY_RAIN:Object.freeze({
+    emitRate:7,minSize:.62,maxSize:1.18,minLifeTime:.85,maxLifeTime:1.55,
+    height:.58,boxHeight:.82,drift:.20,rise:.02,
+    color1:Object.freeze([.50,.59,.65,.075]),color2:Object.freeze([.42,.51,.58,.032])
+  }),
+  THUNDERSTORM:Object.freeze({
+    emitRate:9,minSize:.60,maxSize:1.15,minLifeTime:.78,maxLifeTime:1.42,
+    height:.60,boxHeight:.88,drift:.24,rise:.018,
+    color1:Object.freeze([.42,.51,.58,.080]),color2:Object.freeze([.34,.43,.50,.035])
+  })
+});
 
 function hash01(value){
   const text=String(value||"");let h=2166136261;
@@ -49,7 +76,7 @@ export class EnvironmentRenderer{
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
       wind:this.mat("env-wind",new BABYLON.Color3(.68,.82,.90),.23,new BABYLON.Color3(.12,.18,.22)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
-      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.42),
+      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.30),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.surfaceMat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
@@ -128,18 +155,44 @@ export class EnvironmentRenderer{
   weatherSettings(state){
     const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),wind=environment.wind||{};
     const raining=weather==="RAIN"||weather==="HEAVY_RAIN"||weather==="THUNDERSTORM";
-    return{weather,wind,raining,heavy:weather==="HEAVY_RAIN"||weather==="THUNDERSTORM",thunder:weather==="THUNDERSTORM"};
+    return{
+      weather,wind,raining,
+      heavy:weather==="HEAVY_RAIN"||weather==="THUNDERSTORM",
+      thunder:weather==="THUNDERSTORM",
+      mist:WEATHER_MIST_PROFILE[weather]||NO_MIST
+    };
   }
 
   syncWeatherParticles(state){
     const settings=this.weatherSettings(state),tiles=state?.map?.tiles||[],width=Math.max(1,Number(state?.map?.width||1)),height=Math.max(1,Number(state?.map?.height||1));
     const centerX=(width-1)*TILE_SIZE*.5,centerZ=(height-1)*TILE_SIZE*.5,maxSurface=tiles.length?Math.max(...tiles.map(tile=>surfaceOf(tile)*ELEVATION_HEIGHT)):0;
-    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),strength=Math.max(0,Number(settings.wind?.strength||0));
+    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),strength=Math.max(0,Number(settings.wind?.strength||0)),mist=settings.mist||NO_MIST;
     this.rainSystem.emitter.set(centerX,maxSurface+7.2,centerZ);this.rainSystem.minEmitBox.set(-width*TILE_SIZE*.56,0,-height*TILE_SIZE*.56);this.rainSystem.maxEmitBox.set(width*TILE_SIZE*.56,.5,height*TILE_SIZE*.56);
     const horizontal=.11+strength*.13;this.rainSystem.direction1.set(windX*horizontal,-1,windZ*horizontal);this.rainSystem.direction2.set(windX*horizontal*.82,-1,windZ*horizontal*.82);this.rainSystem.minEmitPower=10+strength*1.4;this.rainSystem.maxEmitPower=13+strength*1.8;
     this.rainSystem.emitRate=settings.weather==="RAIN"?170:settings.weather==="HEAVY_RAIN"?390:settings.weather==="THUNDERSTORM"?470:0;
-    this.mistSystem.emitter.set(centerX,maxSurface+.6,centerZ);this.mistSystem.minEmitBox.set(-width*TILE_SIZE*.5,0,-height*TILE_SIZE*.5);this.mistSystem.maxEmitBox.set(width*TILE_SIZE*.5,.8,height*TILE_SIZE*.5);this.mistSystem.direction1.set(windX*.18,.03,windZ*.18);this.mistSystem.direction2.set(windX*.28,.08,windZ*.28);this.mistSystem.emitRate=settings.heavy?14:0;
-    this.weatherPresentation={rainActive:settings.raining,rainEmitRate:this.rainSystem.emitRate,mistActive:settings.heavy,mistEmitRate:this.mistSystem.emitRate,wind:{x:windX,y:windZ,strength}};
+
+    this.mistSystem.emitter.set(centerX,maxSurface+Number(mist.height||.55),centerZ);
+    this.mistSystem.minEmitBox.set(-width*TILE_SIZE*.5,0,-height*TILE_SIZE*.5);
+    this.mistSystem.maxEmitBox.set(width*TILE_SIZE*.5,Number(mist.boxHeight||.8),height*TILE_SIZE*.5);
+    const drift=Number(mist.drift||0)*(1+strength*.22);
+    this.mistSystem.direction1.set(windX*drift,Number(mist.rise||0),windZ*drift);
+    this.mistSystem.direction2.set(windX*drift*1.35,Number(mist.rise||0)*1.8,windZ*drift*1.35);
+    this.mistSystem.minEmitPower=.10+strength*.035;this.mistSystem.maxEmitPower=.28+strength*.09;
+    this.mistSystem.minSize=Number(mist.minSize||.75);this.mistSystem.maxSize=Number(mist.maxSize||1.35);
+    this.mistSystem.minLifeTime=Number(mist.minLifeTime||1);this.mistSystem.maxLifeTime=Number(mist.maxLifeTime||2);
+    this.mistSystem.color1=new BABYLON.Color4(...mist.color1);this.mistSystem.color2=new BABYLON.Color4(...mist.color2);
+    this.mistSystem.colorDead=new BABYLON.Color4(mist.color2[0],mist.color2[1],mist.color2[2],0);
+    this.mistSystem.emitRate=Math.max(0,Number(mist.emitRate||0));
+
+    this.weatherPresentation={
+      rainActive:settings.raining,
+      rainEmitRate:this.rainSystem.emitRate,
+      mistActive:this.mistSystem.emitRate>0,
+      mistType:this.mistSystem.emitRate>0?settings.weather:null,
+      mistEmitRate:this.mistSystem.emitRate,
+      globalSceneFog:false,
+      wind:{x:windX,y:windZ,strength}
+    };
   }
 
   spawnRainImpact(){
@@ -382,6 +435,11 @@ export class EnvironmentRenderer{
     return new Set([...(tile.effects||[])].filter(type=>!SURFACE_TYPES.has(String(type))));
   }
 
+  effectDetail(tile,type){
+    const wanted=String(type||"");
+    return(tile?.effectDetails||[]).find(effect=>String(effect?.type||"")===wanted)||null;
+  }
+
   surfaceLayerAmount(type,tile){
     if(type==="SNOW")return snowDepth(tile);
     if(type==="ICE")return waterDepth(tile)>0?iceThickness(tile):0;
@@ -525,12 +583,16 @@ export class EnvironmentRenderer{
   syncAtmosphere(state){
     const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR"),night=environment.timeOfDay==="NIGHT";
     this.scene.clearColor=night?new BABYLON.Color4(.018,.027,.055,1):new BABYLON.Color4(.035,.055,.08,1);
-    if(weather==="FOG"){this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;this.scene.fogDensity=.022;this.scene.fogColor=new BABYLON.Color3(.48,.53,.57);}
-    else if(weather==="BLIZZARD"){this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;this.scene.fogDensity=.017;this.scene.fogColor=new BABYLON.Color3(.64,.69,.74);}
-    else if(weather==="RAIN"){this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;this.scene.fogDensity=.0025;this.scene.fogColor=new BABYLON.Color3(.28,.34,.38);}
-    else if(weather==="HEAVY_RAIN"){this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;this.scene.fogDensity=.009;this.scene.fogColor=new BABYLON.Color3(.20,.26,.31);}
-    else if(weather==="THUNDERSTORM"){this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;this.scene.fogDensity=.011;this.scene.fogColor=new BABYLON.Color3(.17,.22,.28);}
-    else{this.scene.fogMode=BABYLON.Scene.FOGMODE_NONE;this.scene.fogDensity=0;}
+
+    // Visibility is a gameplay/FOV rule (tile.fogged + TacticalEngine.canSee).
+    // Camera-distance Scene Fog made already-visible tiles unreadable, especially
+    // on the isometric camera. Weather atmosphere is therefore rendered with
+    // lighting + low-alpha particles instead of a full-screen EXP2 wash.
+    this.scene.fogMode=BABYLON.Scene.FOGMODE_NONE;
+    this.scene.fogDensity=0;
+    this.scene.fogStart=0;
+    this.scene.fogEnd=0;
+    this.atmosphereState={weather,globalSceneFog:false,visibilityOwner:"FOV"};
   }
 
   sync(state,presentationEvents=[]){
@@ -554,8 +616,13 @@ export class EnvironmentRenderer{
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
         let visible=tile.fogged?(visibleLights.has(key)?.70:type==="SMOKE"&&luminousTiles.has(`${tile.x},${tile.y}`)?.45:0):1;
         const friendlyRange=friendlyDistance(tile);
-        if(type==="SMOKE"&&friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.24:.42);
-        else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.34);
+        if(type==="SMOKE"){
+          const detail=this.effectDetail(tile,type),intensity=clamp(detail?.intensity??.8,0,2.5);
+          const density=clamp(.30+intensity*.22,.30,.78),size=clamp(.82+intensity*.16,.86,1.18);
+          node.scaling.setAll(size);
+          visible*=density;
+          if(friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.18:.30);
+        }else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.30);
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }
@@ -586,7 +653,9 @@ export class EnvironmentRenderer{
       perTileIceGrounds:false,
       perTileCurrentGrounds:false,
       mudIntegratedIntoTerrain:true,
-      weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0},
+      weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0,globalSceneFog:false},
+      atmosphere:this.atmosphereState||{globalSceneFog:false,visibilityOwner:"FOV"},
+      smokeDensityFromEffectDetails:true,
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
       meteorBursts:this.meteorBursts.length,
