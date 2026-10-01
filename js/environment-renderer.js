@@ -39,6 +39,7 @@ export class EnvironmentRenderer{
     this.fireLights=[];
     this.fireGlows=new Map();
     this.fireCameraKey="";
+    this.friendlyMaterialSignature="";
     this.meteorBursts=[];
     this.seenPresentationSequences=new Set();
 
@@ -83,6 +84,7 @@ export class EnvironmentRenderer{
           for(const mesh of node.getChildMeshes())mesh.visibility=clamp(.38+pulse*.58,0,1);
         }
       }
+      this.syncFriendlyVisibility(this.lastState);
       this.updateWeatherFrame(dt);
     });
   }
@@ -201,7 +203,8 @@ export class EnvironmentRenderer{
       const a=i*Math.PI/4+hash01(`meteor-chip:${event.sequence||0}:${i}`)*.42;chip.metadata={castShadow:false,angle:a,speed:1.15+(i%4)*.18,lift:1.5+(i%3)*.28};chip.visibility=0;debris.push(chip);
     }
     const flash=new BABYLON.PointLight(`meteor-flash-${event.sequence||0}`,target.clone(),this.scene);flash.diffuse=new BABYLON.Color3(1,.42,.08);flash.specular=new BABYLON.Color3(.32,.10,.015);flash.range=Math.max(3,(shockwaveRadius+1)*TILE_SIZE*1.8);flash.intensity=0;
-    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age:0,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
+    const now=globalThis.performance?.now?.()??Date.now(),startedAt=Number(event?.startedAt),age=Number.isFinite(startedAt)?Math.max(0,(now-startedAt)/1000):0;
+    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
   }
 
   updateMeteor(dt){
@@ -316,6 +319,16 @@ export class EnvironmentRenderer{
       mesh.visibility=Math.min(.7,Number(source.transmission||0)*(.45+mist*.25));
     }
     for(const [key,mesh] of this.fireGlows)if(!alive.has(key)){mesh.dispose();this.fireGlows.delete(key);}
+  }
+
+  syncFriendlyVisibility(state){
+    const friendly=(state?.units||[]).filter(unit=>unit?.friendlyToViewer),friendlyMaterialNames=new Set(friendly.map(unit=>`unit-billboard-mat-${unit.id}`));
+    const signature=`${(this.scene.materials||[]).length}|${friendly.map(unit=>unit.id).sort().join(",")}`;
+    if(signature===this.friendlyMaterialSignature)return;this.friendlyMaterialSignature=signature;
+    for(const material of this.scene.materials||[]){
+      if(material?.name==="player"||material?.name==="unit-facing"||material?.name==="unit-submerged"||material?.name==="unit-airborne"){material.fogEnabled=false;continue;}
+      if(String(material?.name||"").startsWith("unit-billboard-mat-"))material.fogEnabled=!friendlyMaterialNames.has(material.name);
+    }
   }
 
   mat(name,color,alpha=1,emissive=null){
@@ -523,10 +536,12 @@ export class EnvironmentRenderer{
     this.syncSurfaceLayers(state);
     this.syncWeatherParticles(state);
     this.syncPresentationEvents(presentationEvents,state);
+    this.syncFriendlyVisibility(state);
     this.syncFireLights(state);
     this.syncFireGlows(state);
     const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
     const luminousTiles=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible||light.transmission>0).map(light=>`${light.x},${light.y}`));
+    const friendlyUnits=(state?.units||[]).filter(unit=>unit?.friendlyToViewer),friendlyDistance=(tile)=>friendlyUnits.reduce((best,unit)=>Math.min(best,Math.abs(Number(unit.x)-Number(tile.x))+Math.abs(Number(unit.y)-Number(tile.y))),Infinity);
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
       const surface=surfaceOf(tile)*ELEVATION_HEIGHT;
@@ -534,7 +549,10 @@ export class EnvironmentRenderer{
         const key=keyOf(tile,type);alive.add(key);let node=this.nodes.get(key);
         if(!node){node=this.create(type,key,tile);if(!node)continue;this.nodes.set(key,node);}
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
-        const visible=tile.fogged?(visibleLights.has(key)?.70:type==="SMOKE"&&luminousTiles.has(`${tile.x},${tile.y}`)?.45:0):1;
+        let visible=tile.fogged?(visibleLights.has(key)?.70:type==="SMOKE"&&luminousTiles.has(`${tile.x},${tile.y}`)?.45:0):1;
+        const friendlyRange=friendlyDistance(tile);
+        if(type==="SMOKE"&&friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.24:.42);
+        else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.34);
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }

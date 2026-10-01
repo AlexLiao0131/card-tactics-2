@@ -97,13 +97,14 @@ function create(ctx){
     if(effect.type==="AREA_DAMAGE"&&String(presentation?.type||"").toUpperCase()==="METEOR_STRIKE"){
       resolvingPresentation=true;ctx.setPendingCard(null);
       const fallDuration=Math.max(200,Number(presentation.fallDuration||650)),impactDuration=Math.max(250,Number(presentation.impactDuration||700));
-      globalThis.UnitAnimationEngine?.emitPresentation?.("METEOR_STRIKE",{x:Number(center.x),y:Number(center.y),innerRadius:Math.max(0,Number(effect.radius||0)),shockwaveRadius:Math.max(0,Number(effect.radius||0))+Math.max(0,Number(effect.shockwave?.outerRadius||0)),fallDuration,impactDuration});
+      const startedAt=globalThis.performance?.now?.()??Date.now();
+      globalThis.UnitAnimationEngine?.emitPresentation?.("METEOR_STRIKE",{x:Number(center.x),y:Number(center.y),innerRadius:Math.max(0,Number(effect.radius||0)),shockwaveRadius:Math.max(0,Number(effect.radius||0))+Math.max(0,Number(effect.shockwave?.outerRadius||0)),fallDuration,impactDuration,startedAt});
       ctx.render();ctx.emitState();
-      const mapRef=s.map;
+      const mapRef=s.map,elapsed=Math.max(0,(globalThis.performance?.now?.()??Date.now())-startedAt),remaining=Math.max(0,fallDuration-elapsed);
       setTimeout(()=>{
         if(state().map!==mapRef){resolvingPresentation=false;return;}
         try{resolveAreaDamage(card,center,effect,affected,s);}finally{resolvingPresentation=false;finishResolvedCard();}
-      },fallDuration);
+      },remaining);
       return true;
     }
     if(effect.type==="AREA_FIRE"){
