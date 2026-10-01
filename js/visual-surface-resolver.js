@@ -228,6 +228,20 @@ export class VisualSurfaceResolver{
     return this.sampleHeightFromRing(elevationOf(tile),this.ringSamples(tile,byKey),ox,oz);
   }
 
+  // Sample the exact alternating triangles emitted by TerrainRenderer's 4x4 grid.
+  // Props use this instead of inventing a second height field at sloped contacts.
+  sampleRenderedHeight(tile,byKey,ox=0,oz=0){
+    if(!tile)return 0;
+    const x=Math.max(-.5,Math.min(.5,ox)),z=Math.max(-.5,Math.min(.5,oz));
+    const col=Math.min(2,Math.floor((x+.5)*3)),row=Math.min(2,Math.floor((z+.5)*3));
+    const u=(x-PATCH_OFFSETS[col])*3,v=(z-PATCH_OFFSETS[row])*3,ring=this.ringSamples(tile,byKey);
+    const height=(c,r)=>this.sampleHeightFromRing(elevationOf(tile),ring,PATCH_OFFSETS[c],PATCH_OFFSETS[r]);
+    const nw=height(col,row),ne=height(col+1,row),sw=height(col,row+1),se=height(col+1,row+1);
+    if(((Number(tile.x)+Number(tile.y)+row+col)&1)===0)
+      return u>=v?nw*(1-u)+ne*(u-v)+se*v:nw*(1-v)+se*u+sw*(v-u);
+    return u+v<=1?nw*(1-u-v)+ne*u+sw*v:ne*(1-v)+se*(u+v-1)+sw*(1-u);
+  }
+
   sampleHeightAtWorld(worldX,worldZ,byKey){
     const tx=Math.round(Number(worldX||0)/TILE_SIZE);
     const ty=Math.round(Number(worldZ||0)/TILE_SIZE);

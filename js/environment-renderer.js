@@ -36,6 +36,7 @@ export class EnvironmentRenderer{
     this.impactAccumulator=0;
     this.lightningBursts=[];
     this.lastLightningToken="";
+    this.fireLights=[];
 
 
     this.materials={
@@ -166,7 +167,32 @@ export class EnvironmentRenderer{
     for(const burst of this.lightningBursts){burst.age+=dt;const p=clamp(burst.age/burst.duration,0,1);for(const mesh of burst.meshes)mesh.alpha=(1-p)*.95;if(p>=1){for(const mesh of burst.meshes)mesh.dispose();}else keep.push(burst);}this.lightningBursts=keep;
   }
 
-  updateWeatherFrame(dt){this.updateRainImpacts(dt);this.updateLightning(dt);}
+  updateWeatherFrame(dt){
+    this.updateRainImpacts(dt);this.updateLightning(dt);
+    for(const light of this.fireLights)if(light.isEnabled())light.intensity=light.metadata.baseIntensity*(.94+.06*Math.sin(this.weatherTime*9+light.metadata.phase));
+  }
+
+  syncFireLights(state){
+    const sources=state?.presentation?.environment?.lightSources||[],byKey=new Map((state?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t]));
+    // Four shared lights cover distinct fire clusters; never one light per tile.
+    const selected=[];
+    for(const source of [...sources].sort((a,b)=>b.radius-a.radius||a.y-b.y||a.x-b.x)){
+      if(selected.some(other=>Math.hypot(other.x-source.x,other.y-source.y)<2))continue;
+      selected.push(source);if(selected.length===4)break;
+    }
+    for(let i=0;i<selected.length;i++){
+      let light=this.fireLights[i];
+      if(!light){light=new BABYLON.PointLight(`environment-fire-light-${i}`,BABYLON.Vector3.Zero(),this.scene);light.diffuse=new BABYLON.Color3(1,.40,.09);light.specular=new BABYLON.Color3(.16,.06,.01);this.fireLights.push(light);}
+      const source=selected[i],tile=byKey.get(`${source.x},${source.y}`);
+      light.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+1,source.y*TILE_SIZE);
+      light.range=Math.max(1,Number(source.radius||1))*TILE_SIZE;
+      light.metadata={baseIntensity:state?.presentation?.environment?.timeOfDay==="NIGHT"?1.4:1.05,phase:source.x*.7+source.y};
+      light.intensity=light.metadata.baseIntensity;light.setEnabled(true);
+    }
+    for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
+    // Three scene lights + lightning flash + up to four local fire lights.
+    if(selected.length)for(const material of this.scene.materials)if(material instanceof BABYLON.StandardMaterial&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+  }
 
   mat(name,color,alpha=1,emissive=null){
     const material=new BABYLON.StandardMaterial(name,this.scene);
@@ -373,6 +399,9 @@ export class EnvironmentRenderer{
     this.syncSurfaceLayers(state);
     this.syncWeatherParticles(state);
     this.syncPresentationEvents(presentationEvents,state);
+    this.syncFireLights(state);
+    const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).map(light=>`${light.x},${light.y}:${light.source}`));
+    const luminousTiles=new Set((state?.presentation?.environment?.lightSources||[]).map(light=>`${light.x},${light.y}`));
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
       const surface=surfaceOf(tile)*ELEVATION_HEIGHT;
@@ -380,7 +409,7 @@ export class EnvironmentRenderer{
         const key=keyOf(tile,type);alive.add(key);let node=this.nodes.get(key);
         if(!node){node=this.create(type,key,tile);if(!node)continue;this.nodes.set(key,node);}
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
-        const visible=tile.fogged?0:1;
+        const visible=tile.fogged?(visibleLights.has(key)?.70:type==="SMOKE"&&luminousTiles.has(`${tile.x},${tile.y}`)?.45:0):1;
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }
@@ -414,6 +443,7 @@ export class EnvironmentRenderer{
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0},
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
+      fireLights:{active:this.fireLights.filter(light=>light.isEnabled()).length,maximum:4},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
     };

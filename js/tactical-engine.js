@@ -131,6 +131,21 @@ export const TacticalEngine=(()=>{
     const altitude=Math.max(0,Number(observer?.verticalState?.altitude||0)),perAltitude=Math.max(0,Number(observer?.character?.verticalMobility?.visionRangePerAltitude||0));
     return Math.max(0,base+altitude*perAltitude+bonus);
   }
+  // Seeing a luminous source through mist does not reveal occupants around it.
+  function canSeeLight(m,observer,source,environmentState){
+    if(!m||!observer||!source)return false;
+    if(observer.x===source.x&&observer.y===source.y)return true;
+    const fogLimit=Number(globalThis.EnvironmentEngine?.visionRange?.(environmentState));
+    const personal=effectiveVisionRange(observer),bonus=effectVisionBonus(observer);
+    const limit=Number.isFinite(personal)?Math.max(Number.isFinite(fogLimit)?fogLimit+bonus:0,personal):fogLimit;
+    if(Number.isFinite(limit)&&D(observer,source)>limit+Math.max(0,Number(source.radius||0)))return false;
+    if(visionBlocked(environmentState,observer.x,observer.y))return false;
+    const start=elevation(tile(m,observer.x,observer.y))+1,end=elevation(tile(m,source.x,source.y))+.8;
+    return lineCells(observer,source).every(p=>{
+      const ground=tile(m,p.x,p.y);
+      return ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
+    });
+  }
   function canSee(m,observer,target,environmentState=null){
     if(!m||!observer||!target)return false;
     if(target?.character&&observer?.team!==target?.team&&globalThis.EffectEngine?.isStealthed?.(target)){
@@ -143,9 +158,13 @@ export const TacticalEngine=(()=>{
     const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
     if(senseRange>0&&D(observer,target)<=senseRange)return true;
     if(!environmentState||!window.EnvironmentEngine?.visionModifier)return true;
-    const bonus=effectVisionBonus(observer),rawEnvironmentLimit=Number(window.EnvironmentEngine?.visionRange?.(environmentState)),environmentLimit=Number.isFinite(rawEnvironmentLimit)?rawEnvironmentLimit+bonus:rawEnvironmentLimit,personalLimit=effectiveVisionRange(observer),limit=Number.isFinite(personalLimit)?(Number.isFinite(environmentLimit)?Math.max(environmentLimit,personalLimit):personalLimit):environmentLimit;if(Number.isFinite(limit)&&D(observer,target)>limit)return false;
+    const bonus=effectVisionBonus(observer),rawEnvironmentLimit=Number(window.EnvironmentEngine?.visionRange?.(environmentState)),environmentLimit=Number.isFinite(rawEnvironmentLimit)?rawEnvironmentLimit+bonus+Number(EnvironmentEngine.illuminationBonus?.(environmentState,target.x,target.y)||0):rawEnvironmentLimit,personalLimit=effectiveVisionRange(observer),limit=Number.isFinite(personalLimit)?(Number.isFinite(environmentLimit)?Math.max(environmentLimit,personalLimit):personalLimit):environmentLimit;if(Number.isFinite(limit)&&D(observer,target)>limit)return false;
     if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return false;
-    return lineCells(observer,target).every(p=>!visionBlocked(environmentState,p.x,p.y));
+    const start=elevation(tile(m,observer.x,observer.y))+1,end=elevation(tile(m,target.x,target.y))+1;
+    return lineCells(observer,target).every(p=>{
+      const ground=tile(m,p.x,p.y);
+      return ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
+    });
   }
   function companionVisionSource(u,s){const companionId=s?.requiresCompanionVision||s?.targeting?.companionId;if(!companionId)return null;return globalThis.CompanionDatabase?.targetingUnit?.(u,s.id,companionId)||null}
   function hasCompanionVision(m,u,target,s,environmentState=null){const companion=companionVisionSource(u,s);if(!companion?.alive)return false;const visionRange=effectiveVisionRange(companion);if(Number.isFinite(visionRange)&&D(companion,target)>visionRange)return false;return canSee(m,companion,target,environmentState)}
@@ -176,6 +195,6 @@ export const TacticalEngine=(()=>{
   function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,canSee,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,canSeeLight,canSee,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

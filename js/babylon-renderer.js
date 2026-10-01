@@ -148,7 +148,7 @@ export class BabylonRenderer{
   collectShadowCasters(){
     const casters=[],seen=new Set();
     const add=mesh=>{
-      if(!this.shadowMeshVisible(mesh)||seen.has(mesh.uniqueId))return;
+      if(mesh?.metadata?.castShadow===false||!this.shadowMeshVisible(mesh)||seen.has(mesh.uniqueId))return;
       seen.add(mesh.uniqueId);
       casters.push(mesh);
     };
