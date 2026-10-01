@@ -109,6 +109,15 @@ export class TerrainRenderer{
     this.textureBounds=null;
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
+    this.grassSignature="";this.grassMesh=null;this.grassBlades=[];
+    this.grassTime=0;this.grassFrameTime=0;this.grassWasCalm=true;
+    this.grassMaterial=new BABYLON.StandardMaterial("terrain-grass",scene);
+    this.grassMaterial.diffuseColor=BABYLON.Color3.White();
+    this.grassMaterial.specularColor=BABYLON.Color3.Black();
+    this.grassMaterial.backFaceCulling=false;this.grassMaterial.twoSidedLighting=true;
+    this.grassMaterial.maxSimultaneousLights=8;
+    this.grassObserver=scene.onBeforeRenderObservable.add(()=>this.animateGrass(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
+    scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.grassObserver));
   }
 
   makeSurfaceMaterial(){
@@ -151,6 +160,91 @@ export class TerrainRenderer{
     texture.name=`terrain-detail-${kind}`;texture.wrapU=texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
     texture.anisotropicFilteringLevel=2;
     return texture;
+  }
+
+  syncGrass(state,tiles){
+    this.grassWind=state?.presentation?.environment?.wind||{x:0,y:0,strength:0};
+    const signature=tiles.map(t=>[t.x,t.y,t.terrain,t.material,t.elevation,t.waterDepth,t.snowDepth,t.iceThickness,t.soilMoisture,t.debrisMass,t.fogged,!!t.core,!!t.capturePoint,(t.effects||[]).join(",")].join(":")).join("|");
+    if(signature===this.grassSignature)return;
+    this.grassSignature=signature;
+    this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];
+    if(!tiles.length)return;
+    const byKey=new Map(tiles.map(t=>[keyOf(t.x,t.y),t])),candidates=[];
+    for(const tile of tiles){
+      const terrain=this.surfaceResolver.baseTerrainOf(tile);
+      if(!["PLAIN","FOREST"].includes(terrain)||tile.core||tile.capturePoint||
+        Number(tile.waterDepth||0)>.01||Number(tile.iceThickness||0)>.01||
+        Number(tile.snowDepth||0)>.03||Number(tile.debrisMass||0)>.02||
+        (tile.effects||[]).some(e=>e==="BURNING"||e==="FIRE_TORNADO"))continue;
+      for(let i=0;i<3;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
+    }
+    // Distribute a fixed budget across the map, not just the first rows.
+    candidates.sort((a,b)=>a.rank-b.rank);
+    const positions=[],colors=[],indices=[];
+    for(const {tile,i,rank} of candidates.slice(0,512)){
+      const random=salt=>textureNoise(tile.x*13+i,tile.y*13,8192,salt);
+      const ox=(random(173)-.5)*.78,oz=(random(397)-.5)*.78;
+      // Leave the tile centre legible for units and small props.
+      if(Math.hypot(ox,oz)<.18)continue;
+      const tint=this.surfaceResolver.surfaceColorAt(tile,byKey,ox,oz);
+      for(let blade=0;blade<3;blade++){
+        const angle=random(613+blade*41)*Math.PI*2;
+        const dx=Math.cos(angle),dz=Math.sin(angle),width=.035+random(883+blade)*.025;
+        const height=.24+random(991+blade)*.19;
+        const cx=(tile.x+ox)*TILE_SIZE+dx*.055,cz=(tile.y+oz)*TILE_SIZE+dz*.055;
+        const rootY=(x,z)=>this.surfaceResolver.sampleRenderedHeight(tile,byKey,x/TILE_SIZE-tile.x,z/TILE_SIZE-tile.y)*ELEVATION_HEIGHT+.004;
+        const cy=rootY(cx,cz),base=positions.length/3;
+        const vertices=[
+          [cx-dx*width,rootY(cx-dx*width,cz-dz*width),cz-dz*width],
+          [cx+dx*width,rootY(cx+dx*width,cz+dz*width),cz+dz*width],
+          [cx-dx*width*.5,cy+height*.55,cz-dz*width*.5],
+          [cx+dx*width*.5,cy+height*.55,cz+dz*width*.5],
+          [cx+dx*.06,cy+height,cz+dz*.06]
+        ];
+        for(let v=0;v<5;v++){
+          positions.push(...vertices[v]);
+          const shade=v<2?.67:v<4?.95:1.15;
+          colors.push(Math.min(1,tint[0]*shade*.85),Math.min(1,tint[1]*shade*1.08),Math.min(1,tint[2]*shade*.75),1);
+        }
+        indices.push(base,base+2,base+1,base+1,base+2,base+3,base+2,base+4,base+3);
+        this.grassBlades.push({base:base*3,height,phase:rank*Math.PI*2+blade*.7});
+      }
+    }
+    if(!positions.length)return;
+    const mesh=new BABYLON.Mesh("terrain-grass",this.scene),data=new BABYLON.VertexData();
+    data.positions=positions;data.indices=indices;data.colors=colors;
+    data.normals=[];BABYLON.VertexData.ComputeNormals(positions,indices,data.normals);
+    data.applyToMesh(mesh,true);
+    mesh.material=this.grassMaterial;mesh.useVertexColors=true;mesh.isPickable=false;mesh.receiveShadows=true;
+    mesh.metadata={kind:"terrain-grass",visualOnly:true,bladeCount:this.grassBlades.length};
+    // Wind cannot move a tip further than this padded bound. Roots stay fixed.
+    const bounds=mesh.getBoundingInfo().boundingBox;
+    mesh.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.3,0,.3)),bounds.maximum.add(new BABYLON.Vector3(.3,0,.3))));
+    this.grassMesh=mesh;this.grassRest=new Float32Array(positions);this.grassPositions=new Float32Array(positions);
+    this.animateGrass(0,true);
+  }
+
+  animateGrass(dt,force=false){
+    this.grassTime+=dt;this.grassFrameTime+=dt;
+    if(!this.grassMesh||(!force&&this.grassFrameTime<1/30))return;
+    this.grassFrameTime=0;
+    const wind=this.grassWind||{},strength=Math.max(0,Math.min(3,Number(wind.strength||0)));
+    // Calm really is calm; do not invent wind in the presentation layer.
+    if(!force&&strength===0&&this.grassWasCalm)return;
+    this.grassWasCalm=strength===0;
+    const length=Math.hypot(Number(wind.x||0),Number(wind.y||0))||1;
+    const wx=Number(wind.x||0)/length,wz=Number(wind.y||0)/length;
+    const out=this.grassPositions,rest=this.grassRest;
+    for(const blade of this.grassBlades){
+      const wave=.62+.28*Math.sin(this.grassTime*(1.5+strength*.5)+blade.phase)+.1*Math.sin(this.grassTime*3.1+blade.phase*2);
+      const bend=blade.height*strength*.17*wave;
+      for(let vertex=2;vertex<5;vertex++){
+        const offset=blade.base+vertex*3,weight=vertex===4?1:.3;
+        out[offset]=rest[offset]+wx*bend*weight;
+        out[offset+2]=rest[offset+2]+wz*bend*weight;
+      }
+    }
+    this.grassMesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,out,false,false);
   }
 
   syncMaterialMap(tiles,byKey){
@@ -198,6 +292,7 @@ export class TerrainRenderer{
   }
 
   disposeMeshes(){
+    this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];this.grassSignature="";
     for(const mesh of this.meshes.values())mesh.dispose();
     this.meshes.clear();
     this.signatureValue="";
@@ -614,6 +709,7 @@ export class TerrainRenderer{
 
   sync(state){
     const tiles=[...tilesOf(state)].sort((a,b)=>Number(a.y)-Number(b.y)||Number(a.x)-Number(b.x));
+    this.syncGrass(state,tiles);
     if(!tiles.length){this.disposeMeshes();return;}
     const signature=this.signature(tiles);
     const geometry=this.geometrySignature(tiles);
@@ -649,6 +745,9 @@ export class TerrainRenderer{
       updates:{...this.updateCounts},
       surfaceMaterial:"MixMaterial",
       detailTextureSize:128,
+      grassBlades:this.grassBlades.length,
+      grassClumpLimit:512,
+      grassAnimationHz:30,
       materialMixSize:this.surfaceMaterial.mixTexture1.getSize(),
       polygonalSurface:true,
       tileBoxes:false,
