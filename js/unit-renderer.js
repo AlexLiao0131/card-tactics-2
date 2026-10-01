@@ -367,26 +367,11 @@ export class UnitRenderer{
       cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6);
     }
 
-    // All current FIGURE animation is root-level, so pieces sharing one material can
-    // be merged safely. This keeps hero detail from turning into dozens of draw calls.
-    const optimized=[],groups=new Map();
-    for(const mesh of meshes){
-      if(mesh?.metadata?.lineOnly||!mesh?.material||typeof BABYLON.Mesh?.MergeMeshes!=="function"){optimized.push(mesh);continue;}
-      const key=mesh.material.uniqueId??mesh.material.name??String(mesh.material);
-      if(!groups.has(key))groups.set(key,[]);
-      groups.get(key).push(mesh);
-    }
-    for(const group of groups.values()){
-      if(group.length<2){optimized.push(...group);continue;}
-      const merged=BABYLON.Mesh.MergeMeshes(group,true,true,undefined,false,true);
-      if(!merged){optimized.push(...group);continue;}
-      merged.name=`figure-batch-${unit.id}-${optimized.length}`;
-      merged.parent=root;merged.material=group[0]?.material||merged.material;merged.isPickable=false;merged.receiveShadows=true;
-      merged.metadata={kind:"unit-part",unitId:unit.id,castShadow:true,mergedFigureParts:group.length};
-      optimized.push(merged);
-    }
-
-    return{root,meshes:optimized,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+    // Keep FIGURE parts under the character root. Merging child meshes that already
+    // inherit the root transform can bake parent/world transforms differently across
+    // WebGL implementations and make the whole figure disappear after re-parenting.
+    // The visual prototype stays unmerged until a parent-safe batching path is added.
+    return{root,meshes,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
   }
 
   createVerticalCue(unit){
