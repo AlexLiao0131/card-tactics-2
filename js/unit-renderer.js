@@ -701,6 +701,24 @@ export class UnitRenderer{
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
 
+    const forcedKind=String(event?.kind||"").toUpperCase();
+    if(forcedKind==="AIRBORNE_FORCE"){
+      const spinTurns=2.25,spin=progress*Math.PI*2*spinTurns;
+      entry.root.rotation.y+=spin;
+      entry.root.rotation.z=Math.sin(progress*Math.PI*3)*.26;
+      if(entry.plane)entry.plane.rotation.z=Math.sin(progress*Math.PI*4)*.16;
+      if(entry.kind==="FIGURE"){
+        const parts=entry.figureParts||{},flail=Math.sin(progress*Math.PI*6);
+        if(parts.leftArm)parts.leftArm.rotation.x+=.85+flail*.34;
+        if(parts.rightArm)parts.rightArm.rotation.x-=.75+flail*.30;
+        if(parts.leftLeg)parts.leftLeg.rotation.x+=flail*.40;
+        if(parts.rightLeg)parts.rightLeg.rotation.x-=flail*.40;
+        if(parts.cape)parts.cape.rotation.x+=.30+Math.sin(progress*Math.PI*5)*.20;
+        if(parts.braid)parts.braid.rotation.x+=.38+Math.sin(progress*Math.PI*5.7)*.25;
+      }
+      return;
+    }
+
     const step=Math.sin(local*Math.PI*2);
     if(entry.kind==="FIGURE"){
       const motion=definition?.figureMotion||{};

@@ -13,6 +13,24 @@ export const PostEngagementEngine=(()=>{
   function fallbackDirection(map,units,target,distance,{z,airborne}={}){
     return DIRS.map((d,index)=>{let x=target.x,y=target.y,space=0;for(let i=0;i<distance;i++){const nx=x+d[0],ny=y+d[1],to=TacticalEngine.tile(map,nx,ny);if(!to)break;const occupied=gridOccupant(units,nx,ny,target);const surface=CollisionEngine.surfaceAt({map,units,x:nx,y:ny,z:Number(z),excludeId:target.id});if(surface||(!airborne&&occupied))break;if(!airborne&&TacticalEngine.elevationDelta(TacticalEngine.tile(map,x,y),to)>1)break;x=nx;y=ny;space++}return{d,index,space}}).sort((a,b)=>b.space-a.space||a.index-b.index)[0]?.d||[0,0];
   }
+  function emitForcedMovement(target,result,effect={}){
+    if(!result?.applied||!globalThis.UnitAnimationEngine?.emitMove||!result.start)return result;
+    const path=[];
+    const push=point=>{
+      if(!point)return;
+      const next={x:Number(point.x||0),y:Number(point.y||0),z:Number(point.z??point.elevation??0)};
+      const last=path[path.length-1];
+      if(last&&last.x===next.x&&last.y===next.y&&last.z===next.z)return;
+      path.push(next);
+    };
+    if(Number(result.lift||0)>0)push({x:result.start.x,y:result.start.y,z:Number(result.travelZ??result.start.z)});
+    for(const step of result.steps||[])push(step);
+    push(result.end);
+    if(!path.length)return result;
+    const duration=Math.max(360,Math.round(path.length*165+Math.max(0,Number(result.lift||0))*110));
+    UnitAnimationEngine.emitMove(target,{from:result.start,path,kind:Number(result.lift||0)>0?"AIRBORNE_FORCE":"FORCED_MOVE",duration});
+    return result;
+  }
   function forcedMove({map,units,source,target,effect,_depth=0,_visited=new Set(),onCollision=null}){
     if(!target?.alive)return{type:effect.type,applied:false,reason:"TARGET_DEAD",collisions:[]};
     if(_depth>CollisionEngine.MAX_CHAIN_DEPTH||_visited.has(target.id))return{type:effect.type,applied:false,reason:"CHAIN_LIMIT",collisions:[]};
@@ -26,7 +44,7 @@ export const PostEngagementEngine=(()=>{
 
     if(!dir.dx&&!dir.dy){
       const landing=resolveLanding({map,target,fromZ:trajectory.z});
-      return{type:effect.type,applied:lift>0,reason:lift>0?null:"BLOCKED",start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(trajectory.state),trajectoryState:trajectory.state,lift,travelZ,displacement,landing,falls:landing.damaging?[{from:landing.fromZ,to:landing.toZ,drop:landing.drop}]:[],fallDamage:landing.damage,defeated:!target.alive}
+      return emitForcedMovement(target,{type:effect.type,applied:lift>0,reason:lift>0?null:"BLOCKED",start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(trajectory.state),trajectoryState:trajectory.state,lift,travelZ,displacement,landing,falls:landing.damaging?[{from:landing.fromZ,to:landing.toZ,drop:landing.drop}]:[],fallDamage:landing.damage,defeated:!target.alive},effect)
     }
 
     for(let i=0;i<distance;i++){
@@ -81,7 +99,7 @@ export const PostEngagementEngine=(()=>{
       if(window.VerticalMobilityEngine){const tile=TacticalEngine.tile(map,target.x,target.y);if(tile)VerticalMobilityEngine.syncUnit(target,tile);}
       landingAdjusted=true;blockedBy=occupancyViolation.id;
     }
-    return{type:effect.type,applied:steps.length>0||lift>0||collisions.length>0,start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(preLandingState),trajectoryState:preLandingState,lift,travelZ,displacement,landing,falls,fallDamage:landing.damage,defeated:!target.alive,landingAdjusted,blockedBy,occupancySafe:!gridOccupant(units,target.x,target.y,target)};
+    return emitForcedMovement(target,{type:effect.type,applied:steps.length>0||lift>0||collisions.length>0,start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(preLandingState),trajectoryState:preLandingState,lift,travelZ,displacement,landing,falls,fallDamage:landing.damage,defeated:!target.alive,landingAdjusted,blockedBy,occupancySafe:!gridOccupant(units,target.x,target.y,target)},effect);
   }
   function process({map,units,queue=[]},hooks={}){
     const results=[];

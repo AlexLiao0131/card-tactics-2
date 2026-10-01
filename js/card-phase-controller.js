@@ -50,7 +50,7 @@ function create(ctx){
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER"){
-      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:true}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
+      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }
     if(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"].includes(card.effect?.type)){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
     return false;
@@ -93,7 +93,6 @@ function create(ctx){
       for(const unit of targets){
         if(!unit.alive)continue;
         const result=ctx.applyForcedMovement(center,unit,Math.max(0,Number(shockwave.distance||0)),{name:`${card.name}衝擊波`,lift:Math.max(0,Number(shockwave.lift||0)),damage:Math.max(0,Number(shockwave.damage||0)),damageType:shockwave.damageType||"PHYSICAL",resistAxes:shockwave.resistAxes||null});
-        if(result?.applied&&result.steps?.length)globalThis.UnitAnimationEngine?.emitMove?.(unit,{from:result.start,path:result.steps,kind:"SHOCKWAVE",duration:Math.max(220,result.steps.length*130)});
       }
     }
 
