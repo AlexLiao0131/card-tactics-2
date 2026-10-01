@@ -73,6 +73,17 @@ function mix3(a,b,c){
   ];
 }
 
+// Periodic detail fields: four small neutral textures retain the resolver's
+// established palette. No external image fetches or per-frame canvas work.
+function textureNoise(x,y,period,seed){
+  const ix=Math.floor(x),iy=Math.floor(y),tx=x-ix,ty=y-iy;
+  const smooth=t=>t*t*(3-2*t),u=smooth(tx),v=smooth(ty);
+  const value=(a,b)=>hash01(`${seed}:${((a%period)+period)%period}:${((b%period)+period)%period}`);
+  const a=value(ix,iy)*(1-u)+value(ix+1,iy)*u;
+  const b=value(ix,iy+1)*(1-u)+value(ix+1,iy+1)*u;
+  return a*(1-v)+b*v;
+}
+
 export class TerrainRenderer{
   constructor(scene){
     this.scene=scene;
@@ -86,23 +97,78 @@ export class TerrainRenderer{
     this.cliffColors=null;
     this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
+    this.textureSignature="";
+    this.textureBounds=null;
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
   }
 
   makeSurfaceMaterial(){
-    const material=new BABYLON.StandardMaterial("terrain-surface",this.scene);
+    const material=new BABYLON.MixMaterial("terrain-surface",this.scene);
+    this.detailTextures=["grass","soil","rock","sand"].map(kind=>this.makeDetailTexture(kind));
+    this.detailTextures.forEach((texture,index)=>{material[`diffuseTexture${index+1}`]=texture;});
+    material.mixTexture1=BABYLON.RawTexture.CreateRGBATexture(new Uint8Array([255,0,0,255]),1,1,this.scene,false,false,BABYLON.Texture.BILINEAR_SAMPLINGMODE);
+    // Scene uses three base lights, lightning, and bounded local fire lights.
+    material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
-    // Keep enough ambient fill to read terrain colours, but let the directional
-    // lights and flat face normals carry the elevation. Full-white ambient was
-    // flattening H0/H1/H2 into nearly the same value.
-    material.ambientColor=new BABYLON.Color3(.34,.34,.34);
+    // Neutral detail is multiplied by existing wet/depth/fog vertex colours.
     material.specularColor=new BABYLON.Color3(.018,.018,.018);
     material.specularPower=7;
     // Geometry has deterministic winding and face normals now.
     material.backFaceCulling=true;
     material.twoSidedLighting=false;
     return material;
+  }
+
+  makeDetailTexture(kind){
+    const size=128,pixels=new Uint8Array(size*size*4),tau=Math.PI*2;
+    for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+      const u=x/size,v=y/size;
+      const coarse=textureNoise(u*8,v*8,8,kind),fine=textureNoise(u*32,v*32,32,kind+"-fine");
+      let detail;
+      if(kind==="grass")detail=.86+.10*coarse+.04*Math.sin(tau*(u*24+v*8)+coarse*2)*fine;
+      else if(kind==="soil")detail=.82+.13*coarse+.05*fine;
+      else if(kind==="rock"){
+        const seam=Math.min(Math.abs(Math.sin(tau*(u*4)+coarse)),Math.abs(Math.sin(tau*(v*4)+coarse)));
+        detail=.88+.10*coarse-(seam<.12?.16*(1-seam/.12):0);
+      }else detail=.90+.06*coarse+.035*Math.sin(tau*(u*8+v*2)+coarse*2);
+      const value=Math.round(Math.max(0,Math.min(1,detail))*255),offset=(y*size+x)*4;
+      pixels[offset]=pixels[offset+1]=pixels[offset+2]=value;pixels[offset+3]=255;
+    }
+    const texture=BABYLON.RawTexture.CreateRGBATexture(pixels,size,size,this.scene,true,false,BABYLON.Texture.TRILINEAR_SAMPLINGMODE);
+    texture.name=`terrain-detail-${kind}`;texture.wrapU=texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
+    texture.anisotropicFilteringLevel=2;
+    return texture;
+  }
+
+  syncMaterialMap(tiles,byKey){
+    const signature=tiles.map(tile=>[tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,this.surfaceResolver.elevationOf(tile),Number(tile.waterDepth||0)>0?1:0].join(":")).join("|");
+    if(signature===this.textureSignature)return;
+    const minX=Math.min(...tiles.map(t=>Number(t.x))),minY=Math.min(...tiles.map(t=>Number(t.y)));
+    const spanX=Math.max(...tiles.map(t=>Number(t.x)))-minX+1,spanY=Math.max(...tiles.map(t=>Number(t.y)))-minY+1;
+    const width=spanX*4,height=spanY*4,pixels=new Uint8Array(width*height*4);
+    for(let py=0;py<height;py++)for(let px=0;px<width;px++){
+      const gx=minX-.5+(px+.5)/4,gy=minY-.5+(py+.5)/4;
+      const tile=byKey.get(keyOf(Math.round(gx),Math.round(gy)));
+      const w=tile?this.surfaceResolver.materialWeightsAt(tile,byKey,gx-tile.x,gy-tile.y):[0,1,0,0];
+      const offset=(py*width+px)*4,first=w[0]+w[1],firstThree=first+w[2];
+      // MixMaterial uses sequential blends, with inverted alpha (not RGBA
+      // additive splatting). Convert normalized weights to those blend factors.
+      pixels[offset]=255;
+      pixels[offset+1]=Math.round(255*(first>0?w[1]/first:0));
+      pixels[offset+2]=Math.round(255*(firstThree>0?w[2]/firstThree:0));
+      pixels[offset+3]=Math.round(255*(1-w[3]));
+    }
+    const previous=this.surfaceMaterial.mixTexture1,dimensions=previous.getSize();
+    if(dimensions.width===width&&dimensions.height===height)previous.update(pixels);
+    else{
+      const texture=BABYLON.RawTexture.CreateRGBATexture(pixels,width,height,this.scene,false,false,BABYLON.Texture.BILINEAR_SAMPLINGMODE);
+      texture.name="terrain-material-mix";texture.wrapU=texture.wrapV=BABYLON.Texture.CLAMP_ADDRESSMODE;
+      this.surfaceMaterial.mixTexture1=texture;previous.dispose();
+    }
+    for(const texture of this.detailTextures){texture.uScale=spanX/2;texture.vScale=spanY/2;}
+    this.textureBounds={minX:minX-.5,minY:minY-.5,spanX,spanY};
+    this.textureSignature=signature;
   }
 
   makeCliffMaterial(){
@@ -129,6 +195,7 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.surfaceColors=null;
     this.cliffColors=null;
+    this.textureSignature="";
   }
 
   signature(tiles){
@@ -233,6 +300,8 @@ export class TerrainRenderer{
       const color=shade(sourceColors[index],lightFactor);
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(n.x,n.y,n.z);
+      const bounds=this.textureBounds;
+      out.uvs.push((point.x/TILE_SIZE-bounds.minX)/bounds.spanX,(point.z/TILE_SIZE-bounds.minY)/bounds.spanY);
       out.binding.vertices.push({sample:point.sample,offset:out.colors.length,lightFactor});
       out.colors.push(color[0],color[1],color[2],1);
     });
@@ -243,7 +312,7 @@ export class TerrainRenderer{
   buildSurface(tiles,byKey){
     this.surfaceColorBindings=[];
     this.updateCounts.surfaceBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[]};
+    const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
     let skippedDegenerate=0;
     let minNormalY=1;
 
@@ -293,6 +362,7 @@ export class TerrainRenderer{
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
+    data.uvs=out.uvs;
     data.applyToMesh(mesh,false);
     this.surfaceColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,true);
@@ -538,6 +608,7 @@ export class TerrainRenderer{
     if(signature===this.signatureValue&&geometry===this.surfaceGeometrySignature)return;
 
     const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    this.syncMaterialMap(tiles,byKey);
     const cliffGeometry=geometry+"/"+this.cliffWaterSignature(tiles,byKey);
     const rebuildSurface=geometry!==this.surfaceGeometrySignature;
     const rebuildCliffs=cliffGeometry!==this.cliffGeometrySignature;
@@ -564,6 +635,9 @@ export class TerrainRenderer{
     return{
       meshes:this.meshes.size,
       updates:{...this.updateCounts},
+      surfaceMaterial:"MixMaterial",
+      detailTextureSize:128,
+      materialMixSize:this.surfaceMaterial.mixTexture1.getSize(),
       polygonalSurface:true,
       tileBoxes:false,
       permanentGridLines:false,

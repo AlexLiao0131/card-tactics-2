@@ -2,7 +2,7 @@
 "use strict";
 function create(ctx){
   const {TEAM,PHASE}=ctx;const state=()=>ctx.state();
-  let resolvingPresentation=false;
+  let resolvingPresentation=false,presentationGeneration=0;
   function waterRecheckUnits(units,reason){(units||[]).filter(unit=>unit?.alive).forEach(unit=>ctx.applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false}));}
   const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"]);
   function weatherName(weather){return weather==="SCORCHING_SUN"?"烈日":weather==="THUNDERSTORM"?"雷雨":weather==="HEAVY_RAIN"?"豪大雨":weather==="FOG"?"迷霧":weather==="SNOW"?"降雪":weather==="BLIZZARD"?"暴風雪":weather==="RAIN"?"雨":weather;}
@@ -37,7 +37,7 @@ function create(ctx){
     return end({automatic:true});
   }
   function begin({initial=false}={}){
-    resolvingPresentation=false;
+    resolvingPresentation=false;presentationGeneration++;
     const s=state(),cardState=s.cardState;
     if(cardState.zones.deck.length===0&&cardState.zones.hand.length===0){cardState.crystals=Math.min(cardState.maxCrystals||10,cardState.startingCrystals||4);ctx.setPendingCard(null);CardPhaseEngine.end(cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜牌庫已抽完，跳過卡牌階段，直接進入戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return;}
     ctx.setPhase(PHASE.CARD);ctx.clearSelection();const drawn=CardPhaseEngine.begin(cardState,{handSize:Number(s.stage.cardRules?.handSize||5)});ctx.pushLog(`Round ${s.round}｜卡牌階段開始｜💎 ${cardState.crystals}。`,"SYSTEM");
@@ -55,14 +55,27 @@ function create(ctx){
     if(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"].includes(card.effect?.type)){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
     return false;
   }
-  function resolveAreaDamage(card,center,effect,affected,s){
+  function nextPresentationFrame(){
+    return new Promise(resolve=>{
+      if(globalThis.requestAnimationFrame)requestAnimationFrame(()=>setTimeout(resolve,0));
+      else setTimeout(resolve,0);
+    });
+  }
+
+  async function resolveAreaDamage(card,center,effect,affected,s,generation){
     const environmentEvents=[];
-    affected.forEach(tile=>{
+    let sliceStarted=performance.now();
+    for(const tile of affected){
+      if(state().map!==s.map||generation!==presentationGeneration)return false;
       const u=ctx.unitAt(tile.x,tile.y);
       if(u&&Number(effect.damage||0)>0)ctx.damageUnitFlat(u,effect.damage||0,card.name);
       const events=EnvironmentEngine.apply({map:s.map,state:s.environmentState,x:tile.x,y:tile.y,forces:effect.forces||[]})||[];
       environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);
-    });
+      // Preserve the exact tile/force order and gameplay lock, but allow the
+      // already-running impact animation to render between expensive tiles.
+      if(performance.now()-sliceStarted>=8){await nextPresentationFrame();sliceStarted=performance.now();}
+    }
+    if(state().map!==s.map||generation!==presentationGeneration)return false;
 
     const shockwave=effect.shockwave||null;
     const innerRadius=Math.max(0,Number(effect.radius||0));
@@ -94,16 +107,27 @@ function create(ctx){
   function resolveAt(card,center){
     const s=state();if(resolvingPresentation||!card||s.phase!==PHASE.CARD||ctx.getPendingCard()!==card)return false;const effect=card.effect||{},affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
     const presentation=effect.presentation||null;
-    if(effect.type==="AREA_DAMAGE"&&String(presentation?.type||"").toUpperCase()==="METEOR_STRIKE"){
+    if(effect.type==="AREA_DAMAGE"){
+      const generation=++presentationGeneration;
       resolvingPresentation=true;ctx.setPendingCard(null);
-      const fallDuration=Math.max(200,Number(presentation.fallDuration||650)),impactDuration=Math.max(250,Number(presentation.impactDuration||700));
+      const meteor=String(presentation?.type||"").toUpperCase()==="METEOR_STRIKE";
+      const fallDuration=meteor?Math.max(200,Number(presentation.fallDuration||650)):0,impactDuration=Math.max(250,Number(presentation?.impactDuration||700));
       const startedAt=globalThis.performance?.now?.()??Date.now();
-      globalThis.UnitAnimationEngine?.emitPresentation?.("METEOR_STRIKE",{x:Number(center.x),y:Number(center.y),innerRadius:Math.max(0,Number(effect.radius||0)),shockwaveRadius:Math.max(0,Number(effect.radius||0))+Math.max(0,Number(effect.shockwave?.outerRadius||0)),fallDuration,impactDuration,startedAt});
+      if(meteor)globalThis.UnitAnimationEngine?.emitPresentation?.("METEOR_STRIKE",{x:Number(center.x),y:Number(center.y),innerRadius:Math.max(0,Number(effect.radius||0)),shockwaveRadius:Math.max(0,Number(effect.radius||0))+Math.max(0,Number(effect.shockwave?.outerRadius||0)),fallDuration,impactDuration,startedAt});
       ctx.render();ctx.emitState();
       const mapRef=s.map,elapsed=Math.max(0,(globalThis.performance?.now?.()??Date.now())-startedAt),remaining=Math.max(0,fallDuration-elapsed);
-      setTimeout(()=>{
-        if(state().map!==mapRef){resolvingPresentation=false;return;}
-        try{resolveAreaDamage(card,center,effect,affected,s);}finally{resolvingPresentation=false;finishResolvedCard();}
+      setTimeout(async()=>{
+        try{
+          // Give the impact deadline's frame a chance to paint before resolving
+          // hydrology and terrain forces. Renderer never decides game results.
+          if(meteor)await nextPresentationFrame();
+          if(state().map===mapRef&&generation===presentationGeneration)await resolveAreaDamage(card,center,effect,affected,s,generation);
+        }finally{
+          if(generation===presentationGeneration){
+            resolvingPresentation=false;
+            if(state().map===mapRef)finishResolvedCard();
+          }
+        }
       },remaining);
       return true;
     }
@@ -113,8 +137,7 @@ function create(ctx){
       const events=affected.map(tile=>EnvironmentEngine.createTornado(s.environmentState,tile.x,tile.y,{duration:2,pushDistance:Number(effect.distance||2),lift:Number(effect.lift||3),damage:Number(effect.damage||20),fireDamage:Number(effect.fireTornadoDamage||45),resistAxes:effect.resistAxes||{horizontal:false,vertical:true}}));events.forEach(ctx.logEnvironmentEvent);if(events.some(e=>e.type==="FIRE_TORNADO_CREATED"))ctx.pushLog("🔥🌪 火焰與龍捲風結合，形成火龍捲！","SYSTEM");affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(!u)return;const active=EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y),wind=active.find(e=>e.type===EnvironmentEngine.EFFECT.FIRE_TORNADO)||active.find(e=>e.type===EnvironmentEngine.EFFECT.TORNADO);if(u.alive)ctx.applyForcedMovement(center,u,Number(wind?.pushDistance||effect.distance||2),{name:wind?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO?"火龍捲":"龍捲風",lift:Number(wind?.lift||effect.lift||0),damage:Number(wind?.damage||effect.damage||0),damageType:wind?.damageType||"PHYSICAL",resistAxes:wind?.resistAxes||effect.resistAxes});});
     }else if(effect.type==="AREA_HEAL"){
       affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(!u?.alive||u.team!==TEAM.PLAYER)return;const before=u.hp;u.hp=Math.min(u.character.combat.hp,u.hp+Number(effect.heal||0));ctx.pushLog(`${card.name} → ${u.character.name}｜回復 ${u.hp-before} HP｜HP ${u.hp}。`,"BATTLE");});
-    }else if(effect.type==="AREA_DAMAGE"){
-      resolveAreaDamage(card,center,effect,affected,s);
+
     }else if(effect.type==="AREA_RELATION"){
       const source={id:"CARD_SOURCE",team:TEAM.PLAYER};affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(!u?.alive)return;for(const e of effect.effects||[]){if(e.relation!==EffectEngine.relation(source,u))continue;const r=EffectEngine.apply({source,target:u,effect:e});if(e.type==="HEAL")ctx.pushLog(`${card.name} → ${u.character.name}｜回復 ${r.amount||0} HP｜HP ${u.hp}。`,"BATTLE");else if(e.type==="MAGIC_DAMAGE"){ctx.pushLog(`${card.name} → ${u.character.name}｜${r.amount||0} 神聖傷害｜HP ${u.hp}。`,"BATTLE");if(!u.alive)ctx.handleDefeated(u,null,card);}}});
     }else if(effect.type==="AREA_BUFF"){

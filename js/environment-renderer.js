@@ -204,13 +204,16 @@ export class EnvironmentRenderer{
     }
     const flash=new BABYLON.PointLight(`meteor-flash-${event.sequence||0}`,target.clone(),this.scene);flash.diffuse=new BABYLON.Color3(1,.42,.08);flash.specular=new BABYLON.Color3(.32,.10,.015);flash.range=Math.max(3,(shockwaveRadius+1)*TILE_SIZE*1.8);flash.intensity=0;
     const now=globalThis.performance?.now?.()??Date.now(),startedAt=Number(event?.startedAt),age=Number.isFinite(startedAt)?Math.max(0,(now-startedAt)/1000):0;
-    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
+    // Compile transparent blast/dust shaders during descent, not on impact.
+    for(const mesh of [blast,ring,dust[0],debris[0]])mesh?.material?.forceCompilationAsync?.(mesh).catch(error=>console.warn("Impact material warmup",error));
+    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age,startedAt:Number.isFinite(startedAt)?startedAt:now,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
   }
 
   updateMeteor(dt){
+    const now=globalThis.performance?.now?.()??Date.now();
     const keep=[];
     for(const entry of this.meteorBursts){
-      entry.age+=dt;
+      entry.age=Math.max(0,(now-entry.startedAt)/1000);
       if(entry.age<entry.fallDuration){
         const p=clamp(entry.age/entry.fallDuration,0,1),q=p*p;
         entry.root.position.copyFrom(BABYLON.Vector3.Lerp(entry.start,entry.target,q));
@@ -220,8 +223,8 @@ export class EnvironmentRenderer{
         keep.push(entry);continue;
       }
 
-      if(!entry.impacted){entry.impacted=true;entry.root.setEnabled(false);entry.blast.visibility=1;entry.ring.visibility=1;for(const puff of entry.dust)puff.visibility=.72;for(const chip of entry.debris)chip.visibility=1;entry.flash.intensity=4.2;}
-      const t=clamp((entry.age-entry.fallDuration)/entry.impactDuration,0,1),ease=1-Math.pow(1-t,3);
+      if(!entry.impacted){entry.impacted=true;entry.impactStartedAt=now;entry.root.setEnabled(false);entry.blast.visibility=1;entry.ring.visibility=1;for(const puff of entry.dust)puff.visibility=.72;for(const chip of entry.debris)chip.visibility=1;entry.flash.intensity=4.2;}
+      const t=clamp((now-entry.impactStartedAt)/(entry.impactDuration*1000),0,1),ease=1-Math.pow(1-t,3);
       const blastScale=.35+Math.max(1,entry.innerRadius+.65)*TILE_SIZE*1.15*ease;entry.blast.scaling.setAll(blastScale);entry.blast.visibility=(1-t)*.88;
       const waveDiameter=Math.max(TILE_SIZE*1.4,(entry.shockwaveRadius*2+1)*TILE_SIZE);entry.ring.scaling.setAll(.35+waveDiameter*ease);entry.ring.visibility=(1-t)*.82;
       const seconds=t*entry.impactDuration;
@@ -274,7 +277,7 @@ export class EnvironmentRenderer{
     }
     for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
     // Three scene lights + lightning flash + up to four local fire lights.
-    if(selected.length)for(const material of this.scene.materials)if(material instanceof BABYLON.StandardMaterial&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+    if(selected.length)for(const material of this.scene.materials)if(Number.isFinite(material.maxSimultaneousLights)&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
   }
 
   makeFireGlowMaterial(){

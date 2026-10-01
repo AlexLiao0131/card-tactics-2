@@ -105,6 +105,28 @@ export class VisualSurfaceResolver{
     return VISUAL_TERRAIN_COLORS[baseTerrainOf(tile)]||VISUAL_TERRAIN_COLORS.DEFAULT;
   }
 
+  materialWeightsAt(tile,byKey,ox=0,oz=0){
+    // Texture identity only; moisture/depth/fog tint remains in surfaceColorAt.
+    const weightsOf=value=>{
+      const terrain=baseTerrainOf(value);
+      if(terrain==="SAND")return[0,0,0,1];
+      if(terrain==="HIGH_GROUND"||terrain==="WALL")return[0,0,1,0];
+      if(terrain==="MUD"||terrain==="WATER")return[0,1,0,0];
+      if(terrain==="FOREST")return[.72,.28,0,0];
+      return[1,0,0,0];
+    };
+    const result=weightsOf(tile);
+    // Keep the submerged bed independent of neighbouring dry grass.
+    if(waterDepthOf(tile)>0)return result;
+    let total=1;
+    for(const item of this.localInfluences(tile,byKey,ox,oz)){
+      if(!this.canSlope(tile,item.tile)||item.waterDepth>0)continue;
+      const amount=item.weight*.30,other=weightsOf(item.tile);total+=amount;
+      for(let i=0;i<4;i++)result[i]+=other[i]*amount;
+    }
+    return result.map(value=>value/total);
+  }
+
   moistureAmount(tile){
     const terrain=baseTerrainOf(tile);
     const cap=terrain==="SAND"?.22:.45;
