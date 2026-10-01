@@ -78,7 +78,15 @@ function mix3(a,b,c){
 function textureNoise(x,y,period,seed){
   const ix=Math.floor(x),iy=Math.floor(y),tx=x-ix,ty=y-iy;
   const smooth=t=>t*t*(3-2*t),u=smooth(tx),v=smooth(ty);
-  const value=(a,b)=>hash01(`${seed}:${((a%period)+period)%period}:${((b%period)+period)%period}`);
+  const value=(a,b)=>{
+    const px=((a%period)+period)%period,py=((b%period)+period)%period;
+    // Avalanche adjacent lattice coordinates so neighbouring samples do not
+    // inherit the correlations of string hashes (visible as bands).
+    let h=(seed^Math.imul(px,374761393)^Math.imul(py,668265263))>>>0;
+    h=Math.imul(h^(h>>>16),0x7feb352d);
+    h=Math.imul(h^(h>>>15),0x846ca68b);
+    return((h^(h>>>16))>>>0)/4294967295;
+  };
   const a=value(ix,iy)*(1-u)+value(ix+1,iy)*u;
   const b=value(ix,iy+1)*(1-u)+value(ix+1,iy+1)*u;
   return a*(1-v)+b*v;
@@ -121,17 +129,21 @@ export class TerrainRenderer{
   }
 
   makeDetailTexture(kind){
-    const size=128,pixels=new Uint8Array(size*size*4),tau=Math.PI*2;
+    const size=128,pixels=new Uint8Array(size*size*4);
+    const seed=Math.floor(hash01(kind)*4294967295);
     for(let y=0;y<size;y++)for(let x=0;x<size;x++){
       const u=x/size,v=y/size;
-      const coarse=textureNoise(u*8,v*8,8,kind),fine=textureNoise(u*32,v*32,32,kind+"-fine");
+      // Periodic domain warping breaks up the underlying noise lattice while
+      // keeping repeat edges seamless. No axis-aligned seams or sine stripes.
+      const wx=textureNoise(u*4,v*4,4,seed^101)-.5;
+      const wy=textureNoise(u*4,v*4,4,seed^307)-.5;
+      const coarse=textureNoise(u*8+wx,v*8+wy,8,seed);
+      const fine=textureNoise(u*32+wx,v*32+wy,32,seed^911);
       let detail;
-      if(kind==="grass")detail=.86+.10*coarse+.04*Math.sin(tau*(u*24+v*8)+coarse*2)*fine;
+      if(kind==="grass")detail=.85+.10*coarse+.025*fine;
       else if(kind==="soil")detail=.82+.13*coarse+.05*fine;
-      else if(kind==="rock"){
-        const seam=Math.min(Math.abs(Math.sin(tau*(u*4)+coarse)),Math.abs(Math.sin(tau*(v*4)+coarse)));
-        detail=.88+.10*coarse-(seam<.12?.16*(1-seam/.12):0);
-      }else detail=.90+.06*coarse+.035*Math.sin(tau*(u*8+v*2)+coarse*2);
+      else if(kind==="rock")detail=.86+.11*coarse+.025*fine;
+      else detail=.89+.06*coarse+.025*fine;
       const value=Math.round(Math.max(0,Math.min(1,detail))*255),offset=(y*size+x)*4;
       pixels[offset]=pixels[offset+1]=pixels[offset+2]=value;pixels[offset+3]=255;
     }
