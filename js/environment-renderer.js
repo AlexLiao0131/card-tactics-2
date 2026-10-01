@@ -15,6 +15,7 @@ const SURFACE_EPSILON=.001;
 const RAIN_PARTICLE_CAPACITY=760;
 const SNOW_PARTICLE_CAPACITY=920;
 const MIST_PARTICLE_CAPACITY=120;
+const SMOKE_PARTICLE_CAPACITY=260;
 const IMPACT_POOL_SIZE=18;
 const NO_MIST=Object.freeze({
   emitRate:0,minSize:.75,maxSize:1.35,minLifeTime:1,maxLifeTime:2,
@@ -85,6 +86,10 @@ export class EnvironmentRenderer{
     this.seenPresentationSequences=new Set();
     this.tornadoClusters=new Map();
     this.tornadoClusterSignature="";
+    this.smokeClusters=new Map();
+    this.smokeClusterSignature="";
+    this.fireFields=new Map();
+    this.fireFieldSignature="";
 
 
     this.materials={
@@ -92,7 +97,6 @@ export class EnvironmentRenderer{
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
       wind:this.mat("env-wind",new BABYLON.Color3(.68,.82,.90),.36,new BABYLON.Color3(.14,.22,.28)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
-      smoke:this.mat("env-smoke",new BABYLON.Color3(.12,.13,.14),.42),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.surfaceMat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
@@ -110,6 +114,9 @@ export class EnvironmentRenderer{
     this.rainTexture=this.makeRainTexture();
     this.snowTexture=this.makeSnowTexture();
     this.mistTexture=this.makeMistTexture();
+    this.smokeTexture=this.makeSmokeTexture();
+    this.smokeHazeMaterial=this.makeSmokeHazeMaterial();
+    this.fireFieldMaterial=this.makeFireFieldMaterial();
     this.rainSystem=this.makeRainSystem();
     this.snowSystem=this.makeSnowSystem();
     this.mistSystem=this.makeMistSystem();
@@ -138,6 +145,26 @@ export class EnvironmentRenderer{
             orb.position.y=Number(meta.baseY||.6)+Math.sin(a*1.7)*Number(meta.bob||.12);
             orb.rotation.x+=dt*4.2;orb.rotation.y+=dt*6.1;
           }
+        }else if(entry.fire){
+          for(let i=0;i<(entry.flames||[]).length;i++){
+            const flame=entry.flames[i],meta=flame.metadata||{},wave=Math.sin(this.weatherTime*Number(meta.speed||8)+Number(meta.phase||0)),flutter=Math.sin(this.weatherTime*(Number(meta.speed||8)*1.73)+Number(meta.phase||0)*.7);
+            const sx=Number(meta.scaleX||1),sy=Number(meta.scaleY||1),sz=Number(meta.scaleZ||1);
+            flame.scaling.set(sx*(.88+wave*.10),sy*(.92+wave*.16+flutter*.055),sz*(.90-wave*.07));
+            flame.position.y=Number(meta.baseY||.35)+wave*.045;
+            flame.rotation.z=Number(meta.baseTilt||0)+flutter*.10;
+            flame.visibility=clamp(Number(meta.baseVisibility||1)*(.86+wave*.11),.25,1);
+          }
+        }else if(entry.smokeCluster){
+          for(let i=0;i<(entry.hazes||[]).length;i++){
+            const haze=entry.hazes[i],meta=haze.metadata||{},wave=Math.sin(this.weatherTime*Number(meta.speed||.55)+Number(meta.phase||0));
+            haze.position.y=Number(meta.baseY||1)+wave*.06;
+            haze.scaling.x=Number(meta.baseScaleX||1)*(1+wave*.045);
+            haze.scaling.y=Number(meta.baseScaleY||1)*(1-wave*.025);
+            const age=Math.max(0,this.weatherTime-Number(entry.startedAt||0)),gather=.32+.68*clamp((age-.18)/1.35,0,1);haze.visibility=clamp(Number(meta.baseVisibility||.35)*gather*(1+wave*.08),0,.78);
+          }
+        }else if(entry.fireField){
+          const pulse=.93+Math.sin(this.weatherTime*Number(entry.speed||3.6)+Number(entry.phase||0))*.07;
+          for(const field of entry.fields||[]){const meta=field.metadata||{};field.scaling.x=Number(meta.baseScaleX||1)*pulse;field.scaling.y=Number(meta.baseScaleY||1)*pulse;field.visibility=clamp(Number(meta.baseVisibility||.2)*(1.02+Math.sin(this.weatherTime*5.7+Number(meta.phase||0))*.13),0,.55);}
         }else if(spin)node.rotation.y+=speed*dt;
         if(entry.electricArc){
           const pulse=.72+Math.sin(this.weatherTime*13+entry.phase)*.22;
@@ -170,6 +197,32 @@ export class EnvironmentRenderer{
   makeMistTexture(){
     const texture=new BABYLON.DynamicTexture("weather-mist-soft",{width:64,height:64},this.scene,false);texture.hasAlpha=true;
     const ctx=texture.getContext(),g=ctx.createRadialGradient(32,32,2,32,32,31);g.addColorStop(0,"rgba(205,222,232,.32)");g.addColorStop(.55,"rgba(190,210,222,.14)");g.addColorStop(1,"rgba(180,200,214,0)");ctx.fillStyle=g;ctx.fillRect(0,0,64,64);texture.update();return texture;
+  }
+
+  makeSmokeTexture(){
+    const texture=new BABYLON.DynamicTexture("environment-smoke-soft",{width:96,height:96},this.scene,false);texture.hasAlpha=true;
+    const ctx=texture.getContext();ctx.clearRect(0,0,96,96);
+    const blobs=[[48,52,40,.82],[32,48,25,.54],[64,43,28,.52],[54,30,22,.36]];
+    for(const [x,y,r,a] of blobs){const g=ctx.createRadialGradient(x,y,2,x,y,r);g.addColorStop(0,`rgba(255,255,255,${a})`);g.addColorStop(.52,`rgba(240,244,246,${a*.52})`);g.addColorStop(1,"rgba(225,232,236,0)");ctx.fillStyle=g;ctx.fillRect(0,0,96,96);}
+    texture.update();return texture;
+  }
+
+  makeSmokeHazeMaterial(){
+    const material=new BABYLON.StandardMaterial("environment-smoke-haze",this.scene);
+    material.diffuseTexture=this.smokeTexture;material.opacityTexture=this.smokeTexture;material.useAlphaFromDiffuseTexture=true;
+    material.diffuseColor=new BABYLON.Color3(.12,.13,.14);material.emissiveColor=new BABYLON.Color3(.035,.038,.042);
+    material.specularColor=BABYLON.Color3.Black();material.alpha=.72;material.disableDepthWrite=true;material.backFaceCulling=false;
+    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
+    return material;
+  }
+
+  makeFireFieldMaterial(){
+    const texture=new BABYLON.DynamicTexture("environment-fire-radiance-soft",{width:96,height:96},this.scene,false);texture.hasAlpha=true;
+    const ctx=texture.getContext(),g=ctx.createRadialGradient(48,48,2,48,48,47);g.addColorStop(0,"rgba(255,255,255,.92)");g.addColorStop(.38,"rgba(255,220,170,.48)");g.addColorStop(.72,"rgba(255,170,90,.18)");g.addColorStop(1,"rgba(255,120,40,0)");ctx.fillStyle=g;ctx.fillRect(0,0,96,96);texture.update();
+    const material=new BABYLON.StandardMaterial("environment-fire-radiance",this.scene);material.diffuseTexture=texture;material.opacityTexture=texture;material.useAlphaFromDiffuseTexture=true;
+    material.diffuseColor=new BABYLON.Color3(1,.22,.025);material.emissiveColor=new BABYLON.Color3(1,.16,.015);material.specularColor=BABYLON.Color3.Black();
+    material.alpha=.34;material.disableLighting=true;material.disableDepthWrite=true;material.backFaceCulling=false;material.fogEnabled=true;material.alphaMode=BABYLON.Engine.ALPHA_ADD;
+    return material;
   }
 
   makeRainSystem(){
@@ -232,13 +285,19 @@ export class EnvironmentRenderer{
       const baseX=Math.abs(windX)+Math.abs(windZ)>.001?windX:1,baseZ=Math.abs(windX)+Math.abs(windZ)>.001?windZ:.18,norm=Math.max(.001,Math.hypot(baseX,baseZ));
       const nx=baseX/norm,nz=baseZ/norm;
       if(blizzard){
-        this.snowSystem.direction1.set(nx*.96,-.24,nz*.96);this.snowSystem.direction2.set(nx*1.22,-.17,nz*1.22);
-        this.snowSystem.minEmitPower=7.2+strength*.55;this.snowSystem.maxEmitPower=10.4+strength*.85;
-        this.snowSystem.minLifeTime=.72;this.snowSystem.maxLifeTime=1.35;this.snowSystem.minSize=.045;this.snowSystem.maxSize=.11;this.snowSystem.emitRate=520;
+        // In an isometric camera, world-horizontal motion projects very strongly onto
+        // the screen. Keep downward velocity dominant so a blizzard still reads as
+        // falling snow, with wind bending the fall instead of turning it into a side scroll.
+        const cross=clamp(.24+strength*.085,.34,.52);
+        this.snowSystem.direction1.set(nx*cross,-1.28,nz*cross);this.snowSystem.direction2.set(nx*cross*1.22,-1.02,nz*cross*1.22);
+        this.snowSystem.minEmitPower=3.25+strength*.22;this.snowSystem.maxEmitPower=4.65+strength*.30;
+        this.snowSystem.minLifeTime=1.15;this.snowSystem.maxLifeTime=1.85;this.snowSystem.minSize=.05;this.snowSystem.maxSize=.12;this.snowSystem.emitRate=520;
+        this.snowSystem.gravity.set(0,-1.35,0);
       }else{
-        const drift=.10+strength*.08;
-        this.snowSystem.direction1.set(nx*drift,-1,nz*drift);this.snowSystem.direction2.set(-nx*drift*.35,-1,-nz*drift*.35);
-        this.snowSystem.minEmitPower=1.15;this.snowSystem.maxEmitPower=2.05;this.snowSystem.minLifeTime=2.6;this.snowSystem.maxLifeTime=4.4;this.snowSystem.minSize=.065;this.snowSystem.maxSize=.15;this.snowSystem.emitRate=190;
+        const drift=.045+strength*.045;
+        this.snowSystem.direction1.set(nx*drift+.018,-1.16,nz*drift);this.snowSystem.direction2.set(nx*drift-.018,-1.04,nz*drift);
+        this.snowSystem.minEmitPower=1.05;this.snowSystem.maxEmitPower=1.72;this.snowSystem.minLifeTime=2.7;this.snowSystem.maxLifeTime=4.6;this.snowSystem.minSize=.065;this.snowSystem.maxSize=.15;this.snowSystem.emitRate=190;
+        this.snowSystem.gravity.set(0,-.24,0);
       }
     }else this.snowSystem.emitRate=0;
 
@@ -397,7 +456,7 @@ export class EnvironmentRenderer{
     const target=this.scene.activeCamera?.getTarget?.(),cameraKey=target?`${Math.round(target.x)},${Math.round(target.z)}`:"";
     if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireLights(this.lastState);this.syncFireGlows(this.lastState);}
 
-    for(const light of this.fireLights)if(light.isEnabled())light.intensity=light.metadata.baseIntensity*(.94+.06*Math.sin(this.weatherTime*9+light.metadata.phase));
+    for(const light of this.fireLights)if(light.isEnabled()){const phase=Number(light.metadata?.phase||0),flicker=.90+.12*Math.sin(this.weatherTime*8.7+phase)+.035*Math.sin(this.weatherTime*17.3+phase*.6);light.intensity=Number(light.metadata?.baseIntensity||1)*flicker;light.range=Number(light.metadata?.baseRange||light.range)*( .97+.045*Math.sin(this.weatherTime*5.1+phase));}
   }
 
   syncFireLights(state){
@@ -415,8 +474,8 @@ export class EnvironmentRenderer{
       if(!light){light=new BABYLON.PointLight(`environment-fire-light-${i}`,BABYLON.Vector3.Zero(),this.scene);light.diffuse=new BABYLON.Color3(1,.40,.09);light.specular=new BABYLON.Color3(.16,.06,.01);this.fireLights.push(light);}
       const source=selected[i],tile=byKey.get(`${source.x},${source.y}`);
       light.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+1,source.y*TILE_SIZE);
-      light.range=Math.max(1,Number(source.radius||1))*TILE_SIZE;
-      light.metadata={baseIntensity:state?.presentation?.environment?.timeOfDay==="NIGHT"?1.4:1.05,phase:source.x*.7+source.y};
+      const baseRange=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;light.range=baseRange;
+      light.metadata={baseIntensity:state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18,baseRange,phase:source.x*.7+source.y};
       light.intensity=light.metadata.baseIntensity;light.setEnabled(true);
     }
     for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
@@ -512,11 +571,15 @@ export class EnvironmentRenderer{
   create(type,key,tile){
     const root=this.root(`environment-${key}`);
     if(type==="BURNING"){
-      const flame=this.addMesh(root,BABYLON.MeshBuilder.CreateCylinder(`burn-${key}`,{height:.88,diameterTop:.08,diameterBottom:.70,tessellation:8},this.scene),this.materials.fire);flame.position.y=.44;this.animated.set(key,{node:root,speed:2.8});
+      const flames=[],offsets=[[-.18,.02,-.08],[.15,.03,.12],[.02,.04,-.18],[-.03,.02,.18]];
+      for(let i=0;i<offsets.length;i++){
+        const height=.46+(i%3)*.16,flame=this.addMesh(root,BABYLON.MeshBuilder.CreateCylinder(`burn-${key}-${i}`,{height,diameterTop:.015,diameterBottom:.24+(i%2)*.08,tessellation:6},this.scene),i===1?this.materials.meteorHot:this.materials.fire);
+        flame.position.set(offsets[i][0],height*.48+offsets[i][1],offsets[i][2]);
+        flame.rotation.z=(i-1.5)*.055;flame.metadata={baseY:flame.position.y,baseTilt:flame.rotation.z,scaleX:1,scaleY:1,scaleZ:1,phase:hash01(`${key}:flame:${i}`)*Math.PI*2,speed:7.2+i*.9,baseVisibility:i===1?.94:.80};flames.push(flame);
+      }
+      this.animated.set(key,{node:root,spin:false,fire:true,flames,phase:hash01(key)*Math.PI*2});
     }else if(type==="STEAM"){
       const cloud=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`steam-${key}`,{diameter:.95,segments:8},this.scene),this.materials.steam);cloud.position.y=.62;cloud.scaling.set(1,.72,1);this.animated.set(key,{node:root,speed:.45});
-    }else if(type==="SMOKE"){
-      for(let i=0;i<4;i++){const puff=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`smoke-${key}-${i}`,{diameter:.72+i*.08,segments:7},this.scene),this.materials.smoke),side=(i%2?1:-1)*(.10+i*.035);puff.position.set(side,.48+i*.30,(i%3-1)*.08);puff.scaling.set(1.05,.76,1.05);}this.animated.set(key,{node:root,speed:.18});
     }else if(type==="ELECTRIFIED"){
       const phase=hash01(`electric:${key}`)*Math.PI*2;
       for(let i=0;i<3;i++){
@@ -535,13 +598,79 @@ export class EnvironmentRenderer{
   desiredNodeTypes(tile){
     return new Set([...(tile.effects||[])].filter(type=>{
       const value=String(type);
-      return !SURFACE_TYPES.has(value)&&value!=="TORNADO"&&value!=="FIRE_TORNADO";
+      return !SURFACE_TYPES.has(value)&&value!=="TORNADO"&&value!=="FIRE_TORNADO"&&value!=="SMOKE";
     }));
   }
 
   effectDetail(tile,type){
     const wanted=String(type||"");
     return(tile?.effectDetails||[]).find(effect=>String(effect?.type||"")===wanted)||null;
+  }
+
+  groupedEffectTiles(state,types,{diagonal=false,surfaceTolerance=Infinity}={}){
+    const wanted=new Set((types||[]).map(String)),tiles=(state?.map?.tiles||[]).filter(tile=>(tile.effects||[]).some(type=>wanted.has(String(type))));
+    const byKey=new Map(tiles.map(tile=>[`${tile.x},${tile.y}`,tile])),seen=new Set(),groups=[];
+    const dirs=diagonal?[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]:[[1,0],[-1,0],[0,1],[0,-1]];
+    for(const tile of tiles){const start=`${tile.x},${tile.y}`;if(seen.has(start))continue;const group=[],queue=[tile];seen.add(start);while(queue.length){const current=queue.shift();group.push(current);for(const[dx,dy]of dirs){const k=`${Number(current.x)+dx},${Number(current.y)+dy}`,next=byKey.get(k);if(!next||seen.has(k)||Math.abs(surfaceOf(current)-surfaceOf(next))>Number(surfaceTolerance))continue;seen.add(k);queue.push(next);}}groups.push(group);}
+    return groups;
+  }
+
+  smokeSignature(state){
+    return(state?.map?.tiles||[]).map(tile=>{if(!(tile.effects||[]).includes("SMOKE"))return null;const detail=this.effectDetail(tile,"SMOKE"),intensity=clamp(detail?.intensity??.8,0,2.5);return`${tile.x},${tile.y}:${intensity.toFixed(2)}:${surfaceOf(tile).toFixed(2)}`;}).filter(Boolean).sort().join("|");
+  }
+
+  disposeSmokeClusters(){
+    for(const entry of this.smokeClusters.values()){entry.system?.stop?.();entry.system?.dispose?.();this.animated.delete(entry.key);entry.root?.dispose?.();}
+    this.smokeClusters.clear();
+  }
+
+  createSmokeCluster(group,index,state){
+    if(!group?.length)return null;
+    const xs=group.map(tile=>Number(tile.x)),ys=group.map(tile=>Number(tile.y)),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+    const centerX=(minX+maxX)/2,centerY=(minY+maxY)/2,width=(maxX-minX+1)*TILE_SIZE,depth=(maxY-minY+1)*TILE_SIZE;
+    const details=group.map(tile=>this.effectDetail(tile,"SMOKE")),avgIntensity=details.reduce((sum,detail)=>sum+clamp(detail?.intensity??.8,0,2.5),0)/Math.max(1,details.length),maxIntensity=Math.max(...details.map(detail=>clamp(detail?.intensity??.8,0,2.5)));
+    const baseY=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length,key=`smoke-cluster-${index}-${minX},${minY}-${maxX},${maxY}`;
+    const root=this.root(key);root.position.set(centerX*TILE_SIZE,baseY,centerY*TILE_SIZE);root.metadata={kind:"environment-cluster",effectType:"SMOKE",tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:group.length,intensity:avgIntensity};
+    const hazes=[];
+    for(let i=0;i<2;i++){
+      const haze=this.addMesh(root,BABYLON.MeshBuilder.CreatePlane(`${key}-haze-${i}`,{size:1},this.scene),this.smokeHazeMaterial);haze.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;haze.position.set((i?1:-1)*width*.10,.82+i*.34,(i?-1:1)*depth*.08);haze.scaling.set(width*(1.05+i*.17),(.72+avgIntensity*.20)*(1-i*.08),1);haze.visibility=clamp(.20+avgIntensity*.14-i*.04,.18,.58);haze.metadata={castShadow:false,baseY:haze.position.y,baseScaleX:haze.scaling.x,baseScaleY:haze.scaling.y,baseVisibility:haze.visibility,phase:hash01(`${key}:haze:${i}`)*Math.PI*2,speed:.42+i*.16};hazes.push(haze);
+    }
+    const system=new BABYLON.ParticleSystem(`${key}-particles`,Math.min(520,SMOKE_PARTICLE_CAPACITY+group.length*24),this.scene);system.particleTexture=this.smokeTexture;
+    system.emitter=new BABYLON.Vector3(centerX*TILE_SIZE,baseY+.28,centerY*TILE_SIZE);system.minEmitBox=new BABYLON.Vector3(-width*.48,0,-depth*.48);system.maxEmitBox=new BABYLON.Vector3(width*.48,.24,depth*.48);
+    const wind=state?.presentation?.environment?.wind||{},windX=Number(wind.x||0),windZ=Number(wind.y||0),strength=Math.max(0,Number(wind.strength||0)),drift=.06+strength*.085;
+    system.direction1.set(windX*drift,.58,windZ*drift);system.direction2.set(windX*drift*1.55,1.08,windZ*drift*1.55);system.minEmitPower=.32+avgIntensity*.05;system.maxEmitPower=.72+maxIntensity*.08;
+    system.color1=new BABYLON.Color4(.12,.13,.14,clamp(.30+avgIntensity*.10,.34,.58));system.color2=new BABYLON.Color4(.22,.23,.24,clamp(.18+avgIntensity*.08,.22,.44));system.colorDead=new BABYLON.Color4(.28,.29,.30,0);
+    system.minSize=.34+avgIntensity*.06;system.maxSize=.78+maxIntensity*.18;system.minLifeTime=1.8;system.maxLifeTime=3.7;system.minAngularSpeed=-.55;system.maxAngularSpeed=.55;system.updateSpeed=.018;system.blendMode=BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+    system.addSizeGradient?.(0,.55);system.addSizeGradient?.(.45,1.05);system.addSizeGradient?.(1,1.55);
+    const baseEmitRate=Math.min(170,24+group.length*11+avgIntensity*20);system.emitRate=baseEmitRate;system.start();
+    const animated={node:root,spin:false,smokeCluster:true,hazes,phase:hash01(key)*Math.PI*2,startedAt:this.weatherTime};this.animated.set(key,animated);
+    return{key,root,system,baseEmitRate,animated,tiles:group.map(tile=>({x:tile.x,y:tile.y}))};
+  }
+
+  syncSmokeClusters(state){
+    const signature=this.smokeSignature(state);
+    if(signature!==this.smokeClusterSignature){this.disposeSmokeClusters();this.groupedEffectTiles(state,["SMOKE"],{diagonal:true}).forEach((group,index)=>{const entry=this.createSmokeCluster(group,index,state);if(entry)this.smokeClusters.set(entry.key,entry);});this.smokeClusterSignature=signature;}
+    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
+    for(const entry of this.smokeClusters.values()){const visible=(entry.tiles||[]).some(point=>!byKey.get(`${point.x},${point.y}`)?.fogged);entry.root?.setEnabled?.(visible);if(entry.system)entry.system.emitRate=visible?Number(entry.baseEmitRate||0):0;}
+  }
+
+  fireFieldSignatureOf(state){
+    return(state?.map?.tiles||[]).filter(tile=>(tile.effects||[]).includes("BURNING")).map(tile=>`${tile.x},${tile.y}:${surfaceOf(tile).toFixed(2)}`).sort().join("|");
+  }
+
+  disposeFireFields(){for(const entry of this.fireFields.values()){this.animated.delete(entry.key);entry.root?.dispose?.();}this.fireFields.clear();}
+
+  createFireField(group,index){
+    if(!group?.length)return null;const xs=group.map(tile=>Number(tile.x)),ys=group.map(tile=>Number(tile.y)),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),centerX=(minX+maxX)/2,centerY=(minY+maxY)/2;
+    const padding=TILE_SIZE*.82,width=(maxX-minX+1)*TILE_SIZE+padding*2,depth=(maxY-minY+1)*TILE_SIZE+padding*2,baseY=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length,key=`fire-field-${index}-${minX},${minY}-${maxX},${maxY}`;
+    const root=this.root(key);root.position.set(centerX*TILE_SIZE,baseY+.018,centerY*TILE_SIZE);root.metadata={kind:"environment-cluster",effectType:"FIRE_RADIANCE",tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:group.length};const fields=[];
+    for(let i=0;i<2;i++){const field=this.addMesh(root,BABYLON.MeshBuilder.CreateDisc(`${key}-radiance-${i}`,{radius:.5,tessellation:36},this.scene),this.fireFieldMaterial);field.rotation.x=Math.PI/2;field.position.y=.008+i*.008;field.scaling.set(width*(i?1.16:1),depth*(i?1.16:1),1);field.visibility=i?.12:.22;field.metadata={castShadow:false,baseScaleX:field.scaling.x,baseScaleY:field.scaling.y,baseVisibility:field.visibility,phase:hash01(`${key}:${i}`)*Math.PI*2};fields.push(field);}
+    const animated={node:root,spin:false,fireField:true,fields,phase:hash01(key)*Math.PI*2,speed:3.3};this.animated.set(key,animated);return{key,root,animated,tiles:group.map(tile=>({x:tile.x,y:tile.y}))};
+  }
+
+  syncFireFields(state){
+    const signature=this.fireFieldSignatureOf(state);if(signature!==this.fireFieldSignature){this.disposeFireFields();this.groupedEffectTiles(state,["BURNING"],{diagonal:true,surfaceTolerance:.30}).forEach((group,index)=>{const entry=this.createFireField(group,index);if(entry)this.fireFields.set(entry.key,entry);});this.fireFieldSignature=signature;}
+    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));for(const entry of this.fireFields.values()){const visible=(entry.tiles||[]).some(point=>!byKey.get(`${point.x},${point.y}`)?.fogged);entry.root?.setEnabled?.(visible);}
   }
 
   tornadoTypeAt(tile){
@@ -905,11 +1034,12 @@ export class EnvironmentRenderer{
     this.syncWeatherParticles(state);
     this.syncPresentationEvents(presentationEvents,state);
     this.syncTornadoClusters(state);
+    this.syncSmokeClusters(state);
+    this.syncFireFields(state);
     this.syncFriendlyVisibility(state);
     this.syncFireLights(state);
     this.syncFireGlows(state);
     const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
-    const luminousTiles=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible||light.transmission>0).map(light=>`${light.x},${light.y}`));
     const friendlyUnits=(state?.units||[]).filter(unit=>unit?.friendlyToViewer),friendlyDistance=(tile)=>friendlyUnits.reduce((best,unit)=>Math.min(best,Math.abs(Number(unit.x)-Number(tile.x))+Math.abs(Number(unit.y)-Number(tile.y))),Infinity);
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
@@ -918,15 +1048,9 @@ export class EnvironmentRenderer{
         const key=keyOf(tile,type);alive.add(key);let node=this.nodes.get(key);
         if(!node){node=this.create(type,key,tile);if(!node)continue;this.nodes.set(key,node);}
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
-        let visible=tile.fogged?(visibleLights.has(key)?.70:type==="SMOKE"&&luminousTiles.has(`${tile.x},${tile.y}`)?.45:0):1;
+        let visible=tile.fogged?(visibleLights.has(key)?.70:0):1;
         const friendlyRange=friendlyDistance(tile);
-        if(type==="SMOKE"){
-          const detail=this.effectDetail(tile,type),intensity=clamp(detail?.intensity??.8,0,2.5);
-          const density=clamp(.48+intensity*.20,.48,.94),size=clamp(.86+intensity*.20,.90,1.36);
-          node.scaling.setAll(size);
-          visible*=density;
-          if(friendlyRange<=1)visible=Math.min(visible,friendlyRange===0?.38:.56);
-        }else if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.38);
+        if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.38);
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }
@@ -961,6 +1085,9 @@ export class EnvironmentRenderer{
       atmosphere:this.atmosphereState||{globalSceneFog:false,visibilityOwner:"FOV"},
       visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),softBoundary:true}:{active:false,tiles:0,softBoundary:true},
       smokeDensityFromEffectDetails:true,
+      smokePresentation:{clusters:this.smokeClusters.size,risingParticles:true,mergedHaze:true,visionOwner:"EnvironmentEngine.visionModifier"},
+      firePresentation:{radianceFields:this.fireFields.size,flickeringFlames:true,adjacentHeatGlow:true},
+      snowPresentation:{screenFallDominant:true,windDeflection:true,blizzardDiagonalFall:true},
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
       meteorBursts:this.meteorBursts.length,
