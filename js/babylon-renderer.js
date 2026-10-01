@@ -33,6 +33,11 @@ export class BabylonRenderer{
     this.shadowGenerator=new BABYLON.ShadowGenerator(1024,this.sun);
     this.shadowGenerator.bias=.0008;
     this.shadowGenerator.normalBias=.025;
+    // Closed 3D casters use their back faces for the depth map. Their lit front
+    // faces then avoid sampling their own quantized depth (striped shadow acne).
+    // Keep the small existing biases and real cast/receive shadows; billboards
+    // and ground-contact decorations stay excluded by collectShadowCasters().
+    this.shadowGenerator.forceBackFacesOnly=true;
     this.shadowGenerator.transparencyShadow=true;
     this.sun.autoCalcShadowZBounds=true;
     this.sun.autoUpdateExtends=true;
