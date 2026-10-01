@@ -650,8 +650,24 @@ export class EnvironmentRenderer{
   syncSmokeClusters(state){
     const signature=this.smokeSignature(state);
     if(signature!==this.smokeClusterSignature){this.disposeSmokeClusters();this.groupedEffectTiles(state,["SMOKE"],{diagonal:true}).forEach((group,index)=>{const entry=this.createSmokeCluster(group,index,state);if(entry)this.smokeClusters.set(entry.key,entry);});this.smokeClusterSignature=signature;}
-    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
-    for(const entry of this.smokeClusters.values()){const visible=(entry.tiles||[]).some(point=>!byKey.get(`${point.x},${point.y}`)?.fogged);entry.root?.setEnabled?.(visible);if(entry.system)entry.system.emitRate=visible?Number(entry.baseEmitRate||0):0;}
+    const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[`${tile.x},${tile.y}`,tile])),globalMaskActive=tiles.some(tile=>tile?.fogged);
+    const touchesVisibleBoundary=point=>{
+      const tile=byKey.get(`${point.x},${point.y}`);
+      if(tile&&!tile.fogged)return true;
+      for(const[dx,dy]of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]){
+        const neighbor=byKey.get(`${Number(point.x)+dx},${Number(point.y)+dy}`);
+        if(neighbor&&!neighbor.fogged)return true;
+      }
+      return false;
+    };
+    for(const entry of this.smokeClusters.values()){
+      // Local SMOKE is the occluder itself: it must remain visible even though it
+      // blocks LOS. Only a true global FOV mask may hide smoke that is completely
+      // buried inside unexplored/fogged territory; boundary smoke stays visible.
+      const visible=!globalMaskActive||(entry.tiles||[]).some(touchesVisibleBoundary);
+      entry.root?.setEnabled?.(visible);
+      if(entry.system)entry.system.emitRate=visible?Number(entry.baseEmitRate||0):0;
+    }
   }
 
   fireFieldSignatureOf(state){
