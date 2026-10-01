@@ -203,6 +203,47 @@ export class UnitRenderer{
     const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
     root.metadata={kind:"unit",unitId:unit.id,visualKind:"FIGURE"};
     const meshes=[];
+    const figureParts={};
+
+    const makePart=(name,pivot)=>{
+      const node=new BABYLON.TransformNode(`unit-${unit.id}-${name}`,this.scene);
+      node.parent=root;
+      node.position.set(pivot[0]*scale,pivot[1]*scale,pivot[2]*scale);
+      node.metadata={
+        kind:"unit-part-root",
+        unitId:unit.id,
+        figurePart:name,
+        figurePivot:[...pivot],
+        figureBase:{
+          position:node.position.clone(),
+          rotation:node.rotation.clone(),
+          scaling:node.scaling.clone()
+        }
+      };
+      figureParts[name]=node;
+      return node;
+    };
+
+    makePart("body",[0,.82,0]);
+    makePart("head",[0,1.38,0]);
+    makePart("braid",[.17,1.40,.08]);
+    makePart("cape",[0,1.40,-.16]);
+    makePart("leftArm",[-.235,1.33,0]);
+    makePart("rightArm",[.235,1.33,0]);
+    makePart("leftLeg",[-.115,.82,0]);
+    makePart("rightLeg",[.115,.82,0]);
+    makePart("bow",[-.46,.96,.18]);
+    makePart("quiver",[.275,1.48,-.225]);
+    makePart("sword",[.30,.90,-.03]);
+
+    const localPoint=(partName,point)=>{
+      const pivot=figureParts[partName]?.metadata?.figurePivot||[0,0,0];
+      return new BABYLON.Vector3(
+        (point[0]-pivot[0])*scale,
+        (point[1]-pivot[1])*scale,
+        (point[2]-pivot[2])*scale
+      );
+    };
 
     const material={
       skin:this.figureMaterial("skin",colors.skin||"#e9b99d"),
@@ -223,96 +264,107 @@ export class UnitRenderer{
     material.cape.backFaceCulling=false;
     material.capeDark.backFaceCulling=false;
 
-    const finish=(mesh,mat,pos=null,rotation=null,scaling=null,{castShadow=true}={})=>{
-      mesh.parent=root;
+    const finish=(mesh,mat,pos=null,rotation=null,scaling=null,{castShadow=true,part=null}={})=>{
+      const parent=part?figureParts[part]||root:root;
+      const pivot=parent===root?[0,0,0]:parent.metadata?.figurePivot||[0,0,0];
+      mesh.parent=parent;
       mesh.material=mat;
       mesh.isPickable=false;
       mesh.receiveShadows=true;
-      mesh.metadata={...(mesh.metadata||{}),kind:"unit-part",unitId:unit.id,castShadow};
-      if(pos)mesh.position.set(pos[0]*scale,pos[1]*scale,pos[2]*scale);
+      mesh.metadata={...(mesh.metadata||{}),kind:"unit-part",unitId:unit.id,figurePart:part,castShadow};
+      if(pos)mesh.position.set(
+        (pos[0]-pivot[0])*scale,
+        (pos[1]-pivot[1])*scale,
+        (pos[2]-pivot[2])*scale
+      );
       if(rotation)mesh.rotation.set(rotation[0],rotation[1],rotation[2]);
       if(scaling)mesh.scaling.set(scaling[0],scaling[1],scaling[2]);
       meshes.push(mesh);
       return mesh;
     };
-    const sphere=(name,diameter,mat,pos,scaling=null,segments=6)=>finish(
+    const sphere=(name,diameter,mat,pos,scaling=null,segments=6,part=null)=>finish(
       BABYLON.MeshBuilder.CreateSphere(`${name}-${unit.id}`,{diameter:diameter*scale,segments},this.scene),
-      mat,pos,null,scaling
+      mat,pos,null,scaling,{part}
     );
-    const box=(name,size,mat,pos,rotation=null)=>finish(
+    const box=(name,size,mat,pos,rotation=null,part=null)=>finish(
       BABYLON.MeshBuilder.CreateBox(`${name}-${unit.id}`,{width:size[0]*scale,height:size[1]*scale,depth:size[2]*scale},this.scene),
-      mat,pos,rotation
+      mat,pos,rotation,null,{part}
     );
-    const cylinder=(name,heightValue,top,bottom,mat,pos,rotation=null,tessellation=6)=>finish(
+    const cylinder=(name,heightValue,top,bottom,mat,pos,rotation=null,tessellation=6,part=null)=>finish(
       BABYLON.MeshBuilder.CreateCylinder(`${name}-${unit.id}`,{
         height:heightValue*scale,diameterTop:top*scale,diameterBottom:bottom*scale,tessellation
       },this.scene),
-      mat,pos,rotation
+      mat,pos,rotation,null,{part}
     );
-    const custom=(name,points,indices,mat)=>{
+    const custom=(name,points,indices,mat,part=null)=>{
       const mesh=new BABYLON.Mesh(`${name}-${unit.id}`,this.scene);
       const positions=[];
-      for(const point of points)positions.push(point[0]*scale,point[1]*scale,point[2]*scale);
+      const pivot=part?figureParts[part]?.metadata?.figurePivot||[0,0,0]:[0,0,0];
+      for(const point of points)positions.push(
+        (point[0]-pivot[0])*scale,
+        (point[1]-pivot[1])*scale,
+        (point[2]-pivot[2])*scale
+      );
       const normals=[];BABYLON.VertexData.ComputeNormals(positions,indices,normals);
       const data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.applyToMesh(mesh);
-      return finish(mesh,mat);
+      return finish(mesh,mat,null,null,null,{part});
     };
 
     // Head: keep the face simple, spend geometry on silhouette instead of features.
-    sphere("figure-head",.33,material.skin,[0,1.54,.015],[.92,1.02,.88],6);
-    sphere("figure-hair-cap",.36,material.hair,[0,1.615,-.025],[1.03,.78,.98],6);
-    sphere("figure-hair-back",.30,material.hairDark,[0,1.46,-.12],[1.08,1.65,.76],5);
+    sphere("figure-head",.33,material.skin,[0,1.54,.015],[.92,1.02,.88],6,"head");
+    sphere("figure-hair-cap",.36,material.hair,[0,1.615,-.025],[1.03,.78,.98],6,"head");
+    sphere("figure-hair-back",.30,material.hairDark,[0,1.46,-.12],[1.08,1.65,.76],5,"head");
 
     // Angular fringe and side locks make the head read as hair rather than a helmet.
-    box("figure-bang-l",[.07,.24,.055],material.hair,[-.085,1.57,.145],[.18,0,-.28]);
-    box("figure-bang-c",[.06,.22,.05],material.hair,[0,1.575,.155],[.12,0,.06]);
-    box("figure-bang-r",[.065,.23,.052],material.hair,[.075,1.565,.145],[.18,0,.26]);
-    box("figure-side-lock-l",[.055,.36,.06],material.hair,[-.165,1.43,.035],[0,0,-.10]);
-    box("figure-side-lock-r",[.055,.31,.06],material.hair,[.165,1.45,.035],[0,0,.13]);
+    box("figure-bang-l",[.07,.24,.055],material.hair,[-.085,1.57,.145],[.18,0,-.28],"head");
+    box("figure-bang-c",[.06,.22,.05],material.hair,[0,1.575,.155],[.12,0,.06],"head");
+    box("figure-bang-r",[.065,.23,.052],material.hair,[.075,1.565,.145],[.18,0,.26],"head");
+    box("figure-side-lock-l",[.055,.36,.06],material.hair,[-.165,1.43,.035],[0,0,-.10],"head");
+    box("figure-side-lock-r",[.055,.31,.06],material.hair,[.165,1.45,.035],[0,0,.13],"head");
 
     if(figure.braid!==false){
       for(let i=0;i<6;i++){
         const t=i/5,offset=Math.sin(t*Math.PI)*.018;
-        cylinder(`figure-braid-${i}`,.12,.105-i*.006,.115-i*.006,material.hair,[.17+offset,1.34-t*.61,.09+t*.018],[0,0,-.18],6);
+        cylinder(`figure-braid-${i}`,.12,.105-i*.006,.115-i*.006,material.hair,[.17+offset,1.34-t*.61,.09+t*.018],[0,0,-.18],6,"braid");
       }
-      cylinder("figure-braid-tie",.055,.075,.075,material.leather,[.17,.71,.11],[0,0,-.18],6);
+      cylinder("figure-braid-tie",.055,.075,.075,material.leather,[.17,.71,.11],[0,0,-.18],6,"braid");
     }
 
     // Minimal anime face cue: two blue eye dots only.
-    sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4);
-    sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4);
+    sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4,"head");
+    sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4,"head");
 
     // Tapered torso gives a readable shoulder/waist silhouette at tactical zoom.
-    cylinder("figure-blouse",.43,.43,.31,material.shirt,[0,1.17,0],null,6);
-    cylinder("figure-vest",.36,.38,.29,material.leather,[0,1.15,.018],null,6);
-    cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6);
-    box("figure-belt",[.44,.07,.27],material.leather,[0,.96,.015]);
-    box("figure-buckle",[.068,.064,.035],material.metal,[0,.96,.16]);
-    box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04]);
-    sphere("figure-clasp",.075,material.metal,[-.19,1.36,.11],[1,.70,.45],5);
+    cylinder("figure-blouse",.43,.43,.31,material.shirt,[0,1.17,0],null,6,"body");
+    cylinder("figure-vest",.36,.38,.29,material.leather,[0,1.15,.018],null,6,"body");
+    cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6,"body");
+    box("figure-belt",[.44,.07,.27],material.leather,[0,.96,.015],null,"body");
+    box("figure-buckle",[.068,.064,.035],material.metal,[0,.96,.16],null,"body");
+    box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04],"body");
+    sphere("figure-clasp",.075,material.metal,[-.19,1.36,.11],[1,.70,.45],5,"body");
 
     // Sleeves taper into bracers; the slight angles stop the arms looking like rails.
-    cylinder("figure-upper-arm-l",.30,.14,.12,material.shirt,[-.265,1.20,0],[0,0,-.13],6);
-    cylinder("figure-upper-arm-r",.30,.14,.12,material.shirt,[.265,1.20,0],[0,0,.13],6);
-    cylinder("figure-forearm-l",.27,.115,.095,material.leather,[-.295,.94,.035],[0,0,-.05],6);
-    cylinder("figure-forearm-r",.27,.115,.095,material.leather,[.295,.94,.035],[0,0,.05],6);
-    box("figure-glove-l",[.105,.12,.115],material.dark,[-.305,.755,.055],[0,0,-.03]);
-    box("figure-glove-r",[.105,.12,.115],material.dark,[.305,.755,.055],[0,0,.03]);
-    sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4);
-    sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4);
+    cylinder("figure-upper-arm-l",.30,.14,.12,material.shirt,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
+    cylinder("figure-upper-arm-r",.30,.14,.12,material.shirt,[.265,1.20,0],[0,0,.13],6,"rightArm");
+    cylinder("figure-forearm-l",.27,.115,.095,material.leather,[-.295,.94,.035],[0,0,-.05],6,"leftArm");
+    cylinder("figure-forearm-r",.27,.115,.095,material.leather,[.295,.94,.035],[0,0,.05],6,"rightArm");
+    box("figure-glove-l",[.105,.12,.115],material.dark,[-.305,.755,.055],[0,0,-.03],"leftArm");
+    box("figure-glove-r",[.105,.12,.115],material.dark,[.305,.755,.055],[0,0,.03],"rightArm");
+    sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
+    sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
 
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
-    cylinder("figure-hips",.18,.33,.36,material.pants,[0,.82,0],null,6);
-    cylinder("figure-thigh-l",.38,.17,.145,material.pants,[-.115,.66,0],[0,0,.018],6);
-    cylinder("figure-thigh-r",.38,.17,.145,material.pants,[.115,.66,0],[0,0,-.018],6);
-    cylinder("figure-shin-l",.34,.135,.115,material.pants,[-.115,.36,.008],[0,0,.014],6);
-    cylinder("figure-shin-r",.34,.135,.115,material.pants,[.115,.36,.008],[0,0,-.014],6);
-    box("figure-boot-shaft-l",[.18,.29,.20],material.boots,[-.115,.245,.025]);
-    box("figure-boot-shaft-r",[.18,.29,.20],material.boots,[.115,.245,.025]);
-    box("figure-boot-foot-l",[.19,.11,.31],material.boots,[-.115,.075,.075],[-.03,0,0]);
-    box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0]);
-    box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02]);
-    box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02]);
+    cylinder("figure-hips",.18,.33,.36,material.pants,[0,.82,0],null,6,"body");
+    cylinder("figure-thigh-l",.38,.17,.145,material.pants,[-.115,.66,0],[0,0,.018],6,"leftLeg");
+    cylinder("figure-thigh-r",.38,.17,.145,material.pants,[.115,.66,0],[0,0,-.018],6,"rightLeg");
+    cylinder("figure-shin-l",.34,.135,.115,material.pants,[-.115,.36,.008],[0,0,.014],6,"leftLeg");
+    cylinder("figure-shin-r",.34,.135,.115,material.pants,[.115,.36,.008],[0,0,-.014],6,"rightLeg");
+    box("figure-boot-shaft-l",[.18,.29,.20],material.boots,[-.115,.245,.025],null,"leftLeg");
+    box("figure-boot-shaft-r",[.18,.29,.20],material.boots,[.115,.245,.025],null,"rightLeg");
+    box("figure-boot-foot-l",[.19,.11,.31],material.boots,[-.115,.075,.075],[-.03,0,0],"leftLeg");
+    box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
+    box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
+    box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
 
     // Multi-fold cloak: 15 vertices / 16 triangles, still cheap but much less flat.
     if(figure.cape!==false){
@@ -327,18 +379,18 @@ export class UnitRenderer{
         const a=row*5+i,b=a+1,c=a+5,d=c+1;
         indices.push(a,c,b,b,c,d);
       }
-      custom("figure-cloak",points,indices,material.cape);
-      box("figure-cape-collar-l",[.24,.10,.12],material.cape,[-.18,1.38,-.04],[0,.10,.04]);
-      box("figure-cape-collar-r",[.24,.10,.12],material.cape,[.18,1.38,-.04],[0,-.10,-.04]);
-      custom("figure-cape-fold",[[0,1.40,-.225],[-.055,.40,-.355],[.055,.40,-.355]],[0,1,2],material.capeDark);
+      custom("figure-cloak",points,indices,material.cape,"cape");
+      box("figure-cape-collar-l",[.24,.10,.12],material.cape,[-.18,1.38,-.04],[0,.10,.04],"cape");
+      box("figure-cape-collar-r",[.24,.10,.12],material.cape,[.18,1.38,-.04],[0,-.10,-.04],"cape");
+      custom("figure-cape-fold",[[0,1.40,-.225],[-.055,.40,-.355],[.055,.40,-.355]],[0,1,2],material.capeDark,"cape");
     }
 
     // Quiver and visible arrow tips/fletching.
     if(figure.quiver!==false){
-      cylinder("figure-quiver",.56,.14,.18,material.leather,[.275,1.18,-.225],[0,0,-.20],6);
+      cylinder("figure-quiver",.56,.14,.18,material.leather,[.275,1.18,-.225],[0,0,-.20],6,"quiver");
       for(let i=0;i<3;i++){
-        cylinder(`figure-arrow-${i}`,.53,.017,.017,material.bow,[.22+i*.045,1.43,-.225],[0,0,-.20],5);
-        box(`figure-fletching-${i}`,[.045,.065,.018],material.cape,[.17+i*.045,1.65,-.225],[0,0,-.20]);
+        cylinder(`figure-arrow-${i}`,.53,.017,.017,material.bow,[.22+i*.045,1.43,-.225],[0,0,-.20],5,"quiver");
+        box(`figure-fletching-${i}`,[.045,.065,.018],material.cape,[.17+i*.045,1.65,-.225],[0,0,-.20],"quiver");
       }
     }
 
@@ -348,30 +400,30 @@ export class UnitRenderer{
       for(let i=0;i<=12;i++){
         const t=i/12,y=.39+t*1.14;
         const bend=.19*Math.sin(t*Math.PI)+.035*Math.sin(t*Math.PI*3);
-        path.push(new BABYLON.Vector3((-.46-bend)*scale,y*scale,.18*scale));
+        path.push(localPoint("bow",[-.46-bend,y,.18]));
       }
       const bow=BABYLON.MeshBuilder.CreateTube(`figure-bow-${unit.id}`,{path,radius:.018*scale,tessellation:6,cap:BABYLON.Mesh.CAP_ALL},this.scene);
-      finish(bow,material.bow);
-      cylinder("figure-bow-grip",.16,.055,.055,material.leather,[-.46,.96,.18],[0,0,0],6);
+      finish(bow,material.bow,null,null,null,{part:"bow"});
+      cylinder("figure-bow-grip",.16,.055,.055,material.leather,[-.46,.96,.18],[0,0,0],6,"bow");
       const string=BABYLON.MeshBuilder.CreateLines(`figure-bow-string-${unit.id}`,{
-        points:[path[0],new BABYLON.Vector3(-.46*scale,.96*scale,.18*scale),path[path.length-1]]
+        points:[path[0],localPoint("bow",[-.46,.96,.18]),path[path.length-1]]
       },this.scene);
-      string.parent=root;string.color=this.figureColor(colors.bowString||"#d9c6a7");string.isPickable=false;
-      string.metadata={kind:"unit-part",unitId:unit.id,castShadow:false,lineOnly:true};meshes.push(string);
+      string.parent=figureParts.bow;string.color=this.figureColor(colors.bowString||"#d9c6a7");string.isPickable=false;
+      string.metadata={kind:"unit-part",unitId:unit.id,figurePart:"bow",castShadow:false,lineOnly:true};meshes.push(string);
     }
 
     // Side sword and pommel, kept simple because it is secondary equipment.
     if(figure.sideSword!==false){
-      box("figure-side-sword",[.065,.66,.055],material.dark,[.345,.59,-.045],[0,0,-.13]);
-      box("figure-side-guard",[.15,.035,.065],material.metal,[.30,.88,-.035],[0,0,-.13]);
-      cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6);
+      box("figure-side-sword",[.065,.66,.055],material.dark,[.345,.59,-.045],[0,0,-.13],"sword");
+      box("figure-side-guard",[.15,.035,.065],material.metal,[.30,.88,-.035],[0,0,-.13],"sword");
+      cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6,"sword");
     }
 
     // Keep FIGURE parts under the character root. Merging child meshes that already
     // inherit the root transform can bake parent/world transforms differently across
     // WebGL implementations and make the whole figure disappear after re-parenting.
     // The visual prototype stays unmerged until a parent-safe batching path is added.
-    return{root,meshes,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+    return{root,meshes,figureParts,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
   }
 
   createVerticalCue(unit){
@@ -587,10 +639,58 @@ export class UnitRenderer{
     entry.root.rotation.z=0;
     entry.root.scaling.setAll(entry.baseScale);
     if(entry.plane)entry.plane.rotation.z=0;
+    for(const node of Object.values(entry.figureParts||{})){
+      const base=node?.metadata?.figureBase;
+      if(!base)continue;
+      node.position.copyFrom(base.position);
+      node.rotation.copyFrom(base.rotation);
+      node.scaling.copyFrom(base.scaling);
+    }
     this.applyFacing(entry,unit,entry.definition,null,"IDLE");
   }
 
-  applyWalk(entry,unit,event,progress){
+  applyFigureWalk(entry,definition,local){
+    const parts=entry.figureParts;
+    if(entry.kind!=="FIGURE"||!parts)return;
+
+    const motion=definition?.figureMotion||{};
+    const cycle=local*Math.PI*2;
+    const stride=Math.sin(cycle);
+    const followLag=Number(motion.followLag??.65);
+    const capeFollow=Math.sin(cycle-followLag);
+    const braidFollow=Math.sin(cycle-followLag*.82);
+
+    const legSwing=Number(motion.legSwing??.50);
+    const armSwing=Number(motion.armSwing??.34);
+    const bowSwing=Number(motion.bowSwing??armSwing*.78);
+    const bodySway=Number(motion.bodySway??.025);
+    const torsoBob=Number(motion.torsoBob??.018);
+    const capeSwing=Number(motion.capeSwing??.11);
+    const capeTwist=Number(motion.capeTwist??.045);
+    const braidSwing=Number(motion.braidSwing??.16);
+    const braidTwist=Number(motion.braidTwist??.07);
+
+    if(parts.leftLeg)parts.leftLeg.rotation.x+=stride*legSwing;
+    if(parts.rightLeg)parts.rightLeg.rotation.x-=stride*legSwing;
+    if(parts.leftArm)parts.leftArm.rotation.x-=stride*armSwing;
+    if(parts.rightArm)parts.rightArm.rotation.x+=stride*armSwing;
+    if(parts.bow)parts.bow.rotation.x-=stride*bowSwing;
+
+    if(parts.body){
+      parts.body.rotation.z+=stride*bodySway;
+      parts.body.position.y+=Math.abs(stride)*torsoBob;
+    }
+    if(parts.cape){
+      parts.cape.rotation.x+=capeFollow*capeSwing;
+      parts.cape.rotation.z+=Math.sin(cycle-followLag*.55)*capeTwist;
+    }
+    if(parts.braid){
+      parts.braid.rotation.x+=braidFollow*braidSwing;
+      parts.braid.rotation.z+=Math.sin(cycle-followLag*1.15)*braidTwist;
+    }
+  }
+
+  applyWalk(entry,unit,event,progress,definition={}){
     const points=event.path||[];
     if(points.length<2)return;
     const scaled=clamp01(progress)*(points.length-1),index=Math.min(points.length-2,Math.floor(scaled)),local=scaled-index;
@@ -600,14 +700,24 @@ export class UnitRenderer{
     entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
-    entry.root.position.y+=Math.abs(Math.sin(local*Math.PI*2))*.17;
-    entry.root.rotation.z=Math.sin(local*Math.PI*2)*.11;
+
+    const step=Math.sin(local*Math.PI*2);
+    if(entry.kind==="FIGURE"){
+      const motion=definition?.figureMotion||{};
+      entry.root.position.y+=Math.abs(step)*Number(motion.bodyBob??.065);
+      entry.root.rotation.z=step*Number(motion.rootSway??.035);
+      this.applyFigureWalk(entry,definition,local);
+      return;
+    }
+
+    entry.root.position.y+=Math.abs(step)*.17;
+    entry.root.rotation.z=step*.11;
   }
 
   applyProcedural(entry,unit,state,progress,now,event,definition){
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
-    if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress);return;}
+    if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
 
     if(procedural==="BREATHE"||state==="IDLE"){
       const breathe=Math.sin(now/300);

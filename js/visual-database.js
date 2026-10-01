@@ -32,7 +32,25 @@ export const VISUALS={
         },
         animations:{
           IDLE:{duration:1200,loop:true,procedural:"BREATHE"},
-          WALK:{duration:180,loop:true,procedural:"STEP"},
+          WALK:{
+            duration:180,
+            loop:true,
+            procedural:"STEP",
+            figureMotion:{
+              bodyBob:.055,
+              rootSway:.028,
+              bodySway:.024,
+              torsoBob:.015,
+              legSwing:.50,
+              armSwing:.34,
+              bowSwing:.26,
+              capeSwing:.12,
+              capeTwist:.05,
+              braidSwing:.17,
+              braidTwist:.075,
+              followLag:.68
+            }
+          },
           ATTACK:{duration:320,loop:false,procedural:"LUNGE"},
           CAST:{duration:480,loop:false,procedural:"CAST"},
           HURT:{duration:240,loop:false,procedural:"RECOIL"},
