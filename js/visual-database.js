@@ -59,7 +59,7 @@ export const VISUALS={
   }
 };
 
-export class VisualDatabase=(()=>{
+export const VisualDatabase=(()=>{
   function group(name){return VISUALS[name]||null;}
   function get(groupName,id){return group(groupName)?.[id]||null;}
   function asset(groupName,id,key){return get(groupName,id)?.[key]??null;}
