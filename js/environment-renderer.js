@@ -37,6 +37,8 @@ export class EnvironmentRenderer{
     this.lightningBursts=[];
     this.lastLightningToken="";
     this.fireLights=[];
+    this.fireGlows=new Map();
+    this.fireCameraKey="";
 
 
     this.materials={
@@ -169,6 +171,9 @@ export class EnvironmentRenderer{
 
   updateWeatherFrame(dt){
     this.updateRainImpacts(dt);this.updateLightning(dt);
+    const target=this.scene.activeCamera?.getTarget?.(),cameraKey=target?`${Math.round(target.x)},${Math.round(target.z)}`:"";
+    if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireLights(this.lastState);this.syncFireGlows(this.lastState);}
+
     for(const light of this.fireLights)if(light.isEnabled())light.intensity=light.metadata.baseIntensity*(.94+.06*Math.sin(this.weatherTime*9+light.metadata.phase));
   }
 
@@ -176,7 +181,9 @@ export class EnvironmentRenderer{
     const sources=state?.presentation?.environment?.lightSources||[],byKey=new Map((state?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t]));
     // Four shared lights cover distinct fire clusters; never one light per tile.
     const selected=[];
-    for(const source of [...sources].sort((a,b)=>b.radius-a.radius||a.y-b.y||a.x-b.x)){
+    const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
+    const distance=source=>Math.hypot(source.x*TILE_SIZE-focus.x,source.y*TILE_SIZE-focus.z);
+    for(const source of [...sources].sort((a,b)=>distance(a)-distance(b)||b.radius-a.radius||a.y-b.y||a.x-b.x)){
       if(selected.some(other=>Math.hypot(other.x-source.x,other.y-source.y)<2))continue;
       selected.push(source);if(selected.length===4)break;
     }
@@ -192,6 +199,50 @@ export class EnvironmentRenderer{
     for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
     // Three scene lights + lightning flash + up to four local fire lights.
     if(selected.length)for(const material of this.scene.materials)if(material instanceof BABYLON.StandardMaterial&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+  }
+
+  makeFireGlowMaterial(){
+    const size=64,pixels=new Uint8Array(size*size*4);
+    for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+      const r=Math.hypot((x+.5-size/2)/(size/2),(y+.5-size/2)/(size/2)),i=(y*size+x)*4;
+      pixels[i]=255;pixels[i+1]=125;pixels[i+2]=30;
+      pixels[i+3]=Math.round(255*Math.pow(Math.max(0,1-r),2.2));
+    }
+    const texture=BABYLON.RawTexture.CreateRGBATexture(pixels,size,size,this.scene,false,false,BABYLON.Texture.BILINEAR_SAMPLINGMODE);
+    texture.hasAlpha=true;
+    const material=new BABYLON.StandardMaterial("fire-mist-glow",this.scene);
+    material.diffuseTexture=texture;material.useAlphaFromDiffuseTexture=true;
+    material.emissiveColor=BABYLON.Color3.White();material.disableLighting=true;
+    material.alphaMode=BABYLON.Engine.ALPHA_ADD;material.disableDepthWrite=true;
+    material.backFaceCulling=false;material.fogEnabled=false;
+    // Engine transmission already accounts for mist/smoke. Keep depth testing so
+    // the soft billboard cannot draw over foreground terrain or opaque props.
+    return material;
+  }
+
+  syncFireGlows(state){
+    const weather=state?.presentation?.environment?.weather;
+    const mist=weather==="FOG"?1:weather==="BLIZZARD"?.7:0;
+    const alive=new Set(),byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
+    const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
+    const sources=(state?.presentation?.environment?.lightSources||[]).filter(source=>Number(source.transmission||0)>0)
+      .sort((a,b)=>Math.hypot(a.x*TILE_SIZE-focus.x,a.y*TILE_SIZE-focus.z)-Math.hypot(b.x*TILE_SIZE-focus.x,b.y*TILE_SIZE-focus.z)).slice(0,48);
+    for(const source of sources){
+      const tile=byKey.get(`${source.x},${source.y}`),smoky=tile?.effects?.includes("SMOKE");
+      if(!mist&&!smoky)continue;
+      const key=`${source.x},${source.y}:${source.source}`;alive.add(key);
+      let mesh=this.fireGlows.get(key);
+      if(!mesh){
+        this.fireGlowMaterial??=this.makeFireGlowMaterial();
+        mesh=BABYLON.MeshBuilder.CreatePlane(`fire-glow-${key}`,{size:1},this.scene);
+        mesh.material=this.fireGlowMaterial;mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
+        mesh.isPickable=false;mesh.metadata={castShadow:false};this.fireGlows.set(key,mesh);
+      }
+      mesh.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+.8,source.y*TILE_SIZE);
+      mesh.scaling.setAll((1.6+mist*1.7)*Math.max(1,Number(source.radius||1)/2));
+      mesh.visibility=Math.min(.7,Number(source.transmission||0)*(.45+mist*.25));
+    }
+    for(const [key,mesh] of this.fireGlows)if(!alive.has(key)){mesh.dispose();this.fireGlows.delete(key);}
   }
 
   mat(name,color,alpha=1,emissive=null){
@@ -400,8 +451,9 @@ export class EnvironmentRenderer{
     this.syncWeatherParticles(state);
     this.syncPresentationEvents(presentationEvents,state);
     this.syncFireLights(state);
-    const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).map(light=>`${light.x},${light.y}:${light.source}`));
-    const luminousTiles=new Set((state?.presentation?.environment?.lightSources||[]).map(light=>`${light.x},${light.y}`));
+    this.syncFireGlows(state);
+    const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
+    const luminousTiles=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible||light.transmission>0).map(light=>`${light.x},${light.y}`));
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
       const surface=surfaceOf(tile)*ELEVATION_HEIGHT;
@@ -443,6 +495,7 @@ export class EnvironmentRenderer{
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0},
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
       lightningBursts:this.lightningBursts.length,
+      fireGlows:this.fireGlows.size,
       fireLights:{active:this.fireLights.filter(light=>light.isEnabled()).length,maximum:4},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
