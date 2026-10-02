@@ -78,7 +78,8 @@ export class UnitRenderer{
       Number(definition?.height||0),
       Number(definition?.lift||0),
       Number(unit?.collisionHeight||0),
-      JSON.stringify(definition?.figure||{})
+      JSON.stringify(definition?.figure||{}),
+      JSON.stringify(definition?.bird||{})
     ].join("|");
   }
 
@@ -227,7 +228,9 @@ export class UnitRenderer{
     makePart("body",[0,.82,0]);
     makePart("head",[0,1.38,0]);
     makePart("braid",[.17,1.40,.08]);
+    makePart("hairBack",[0,1.46,-.10]);
     makePart("cape",[0,1.40,-.16]);
+    makePart("skirt",[0,.92,-.01]);
     makePart("leftArm",[-.235,1.33,0]);
     makePart("rightArm",[.235,1.33,0]);
     makePart("leftLeg",[-.115,.82,0]);
@@ -235,6 +238,7 @@ export class UnitRenderer{
     makePart("bow",[-.46,.96,.18]);
     makePart("quiver",[.275,1.48,-.225]);
     makePart("sword",[.30,.90,-.03]);
+    makePart("weapon",[.30,.90,.02]);
 
     const localPoint=(partName,point)=>{
       const pivot=figureParts[partName]?.metadata?.figurePivot||[0,0,0];
@@ -259,6 +263,9 @@ export class UnitRenderer{
       metal:this.figureMaterial("metal",colors.metal||"#92745b"),
       bow:this.figureMaterial("bow",colors.bow||"#70472d"),
       eye:this.figureMaterial("eye",colors.eyes||"#4d87d9"),
+      accent:this.figureMaterial("accent",colors.accent||colors.capeDark||"#7a1f2b"),
+      weapon:this.figureMaterial("weapon",colors.weapon||"#d7d9df"),
+      gem:this.figureMaterial("gem",colors.gem||colors.eyes||"#b52635"),
       dark:this.figureMaterial("dark","#1d1c20")
     };
     material.cape.backFaceCulling=false;
@@ -333,6 +340,25 @@ export class UnitRenderer{
     // Minimal anime face cue: two blue eye dots only.
     sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4,"head");
     sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4,"head");
+
+    if(figure.pointedEars){
+      custom("figure-ear-l",[[-.155,1.57,.02],[-.33,1.60,.015],[-.165,1.48,.025]],[0,1,2],material.skin,"head");
+      custom("figure-ear-r",[[.155,1.57,.02],[.33,1.60,.015],[.165,1.48,.025]],[0,2,1],material.skin,"head");
+    }
+
+    if(figure.longHair){
+      const strandX=[-.24,-.14,-.05,.05,.14,.24];
+      for(let i=0;i<strandX.length;i++){
+        const x=strandX[i],outer=Math.abs(x)>.18;
+        cylinder(`figure-long-hair-${i}`,outer?.78:.88,.075,.11,material.hairDark,[x,1.08,-.15],[0,0,x*.32],6,"hairBack");
+      }
+      box("figure-long-hair-back",[.46,.52,.10],material.hair,[0,1.22,-.145],[.10,0,0],"hairBack");
+    }
+    if(figure.hairRibbon){
+      box("figure-hair-ribbon-knot",[.15,.10,.08],material.accent,[-.19,1.54,-.10],[0,.18,.12],"hairBack");
+      box("figure-hair-ribbon-tail-a",[.065,.40,.035],material.accent,[-.23,1.32,-.12],[.18,0,.15],"hairBack");
+      box("figure-hair-ribbon-tail-b",[.065,.36,.035],material.accent,[-.13,1.34,-.13],[-.12,0,-.10],"hairBack");
+    }
 
     // Tapered torso gives a readable shoulder/waist silhouette at tactical zoom.
     cylinder("figure-blouse",.43,.43,.31,material.shirt,[0,1.17,0],null,6,"body");
@@ -419,11 +445,67 @@ export class UnitRenderer{
       cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6,"sword");
     }
 
+    if(figure.skirtPanels){
+      const panel=(name,x,z,mat)=>custom(name,[
+        [x-.12,.94,z],[x+.12,.94,z],[x+.17,.38,z+.025],[x-.17,.38,z+.025]
+      ],[0,2,1,0,3,2],mat,"skirt");
+      panel("figure-skirt-front",0,.13,material.accent);
+      panel("figure-skirt-left",-.20,-.02,material.cape);
+      panel("figure-skirt-right",.20,-.02,material.cape);
+      panel("figure-skirt-back",0,-.15,material.capeDark);
+    }
+
+    if(figure.rapier){
+      cylinder("figure-rapier-blade",.92,.018,.032,material.weapon,[.33,.43,.08],[0,0,-.05],7,"weapon");
+      const guard=BABYLON.MeshBuilder.CreateTorus(`figure-rapier-guard-${unit.id}`,{diameter:.18*scale,thickness:.018*scale,tessellation:12},this.scene);
+      finish(guard,material.metal,[.305,.89,.075],[Math.PI/2,0,0],null,{part:"weapon"});
+      cylinder("figure-rapier-grip",.16,.045,.045,material.leather,[.29,.98,.07],[0,0,-.05],7,"weapon");
+      sphere("figure-rapier-gem",.055,material.gem,[.285,1.075,.07],[.75,.75,.75],5,"weapon");
+    }
+
     // Keep FIGURE parts under the character root. Merging child meshes that already
     // inherit the root transform can bake parent/world transforms differently across
     // WebGL implementations and make the whole figure disappear after re-parenting.
     // The visual prototype stays unmerged until a parent-safe batching path is added.
     return{root,meshes,figureParts,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+  }
+
+  createBird(unit,definition){
+    const bird=definition?.bird||{},colors=bird.colors||{};
+    const height=Math.max(.35,Number(definition?.height||bird.height||.72)),scale=height/.72;
+    const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
+    root.metadata={kind:"unit",unitId:unit.id,visualKind:"BIRD"};
+    const meshes=[],birdParts={};
+    const makePart=(name,pivot)=>{
+      const node=new BABYLON.TransformNode(`unit-${unit.id}-${name}`,this.scene);
+      node.parent=root;node.position.set(pivot[0]*scale,pivot[1]*scale,pivot[2]*scale);
+      node.metadata={kind:"unit-part-root",unitId:unit.id,birdPart:name,birdBase:{position:node.position.clone(),rotation:node.rotation.clone(),scaling:node.scaling.clone()}};
+      birdParts[name]=node;return node;
+    };
+    makePart("body",[0,.32,0]);makePart("head",[0,.49,.10]);makePart("leftWing",[-.12,.36,0]);makePart("rightWing",[.12,.36,0]);makePart("tail",[0,.27,-.15]);
+    const bodyMat=this.figureMaterial("bird-body",colors.body||"#65452f"),wingMat=this.figureMaterial("bird-wing",colors.wing||"#4b3326"),lightMat=this.figureMaterial("bird-light",colors.light||"#d8c6a1"),beakMat=this.figureMaterial("bird-beak",colors.beak||"#c89534"),eyeMat=this.figureMaterial("bird-eye",colors.eyes||"#d3a42e");
+    const finish=(mesh,mat,part,pos=null,rotation=null,scaling=null)=>{
+      const node=birdParts[part]||root;mesh.parent=node;mesh.material=mat;mesh.isPickable=false;mesh.receiveShadows=true;
+      const pivot=part==="body"?[0,.32,0]:part==="head"?[0,.49,.10]:part==="leftWing"?[-.12,.36,0]:part==="rightWing"?[.12,.36,0]:[0,.27,-.15];
+      if(pos)mesh.position.set((pos[0]-pivot[0])*scale,(pos[1]-pivot[1])*scale,(pos[2]-pivot[2])*scale);
+      if(rotation)mesh.rotation.set(...rotation);if(scaling)mesh.scaling.set(...scaling);
+      mesh.metadata={kind:"unit-part",unitId:unit.id,birdPart:part,castShadow:true};meshes.push(mesh);return mesh;
+    };
+    const sphere=(name,d,mat,part,pos,scaling)=>finish(BABYLON.MeshBuilder.CreateSphere(`${name}-${unit.id}`,{diameter:d*scale,segments:6},this.scene),mat,part,pos,null,scaling);
+    sphere("bird-body",.34,bodyMat,"body",[0,.32,0],[1,1.05,1.25]);
+    sphere("bird-chest",.22,lightMat,"body",[0,.34,.12],[.82,1.05,.72]);
+    sphere("bird-head",.20,bodyMat,"head",[0,.50,.11],[1,.95,1]);
+    const beak=BABYLON.MeshBuilder.CreateCylinder(`bird-beak-${unit.id}`,{height:.16*scale,diameterTop:0,diameterBottom:.09*scale,tessellation:6},this.scene);
+    finish(beak,beakMat,"head",[0,.48,.245],[Math.PI/2,0,0]);
+    sphere("bird-eye-l",.035,eyeMat,"head",[-.065,.525,.18],[.7,.7,.55]);sphere("bird-eye-r",.035,eyeMat,"head",[.065,.525,.18],[.7,.7,.55]);
+    const wing=(name,part,sign)=>{
+      const mesh=new BABYLON.Mesh(`${name}-${unit.id}`,this.scene),positions=[0,0,0,sign*.34*scale,.015*scale,-.02*scale,sign*.52*scale,-.02*scale,-.08*scale,sign*.30*scale,-.04*scale,.07*scale],indices=[0,1,2,0,2,3],normals=[];
+      BABYLON.VertexData.ComputeNormals(positions,indices,normals);const data=new BABYLON.VertexData();Object.assign(data,{positions,indices,normals});data.applyToMesh(mesh);
+      finish(mesh,wingMat,part);return mesh;
+    };
+    wing("bird-wing-l","leftWing",-1);wing("bird-wing-r","rightWing",1);
+    const tail=BABYLON.MeshBuilder.CreateBox(`bird-tail-${unit.id}`,{width:.22*scale,height:.055*scale,depth:.34*scale},this.scene);finish(tail,wingMat,"tail",[0,.26,-.29],[.08,0,0]);
+    return{root,meshes,birdParts,kind:"BIRD",height,lift:Number(definition?.lift||0)};
   }
 
   createVerticalCue(unit){
@@ -517,7 +599,9 @@ export class UnitRenderer{
       ?this.createBillboard(unit,definition)
       :kind==="FIGURE"
         ?this.createFigure(unit,definition)
-        :this.createCapsule(unit);
+        :kind==="BIRD"
+          ?this.createBird(unit,definition)
+          :this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);
     const verticalCue=this.createVerticalCue(unit);
@@ -646,6 +730,13 @@ export class UnitRenderer{
       node.rotation.copyFrom(base.rotation);
       node.scaling.copyFrom(base.scaling);
     }
+    for(const node of Object.values(entry.birdParts||{})){
+      const base=node?.metadata?.birdBase;
+      if(!base)continue;
+      node.position.copyFrom(base.position);
+      node.rotation.copyFrom(base.rotation);
+      node.scaling.copyFrom(base.scaling);
+    }
     this.applyFacing(entry,unit,entry.definition,null,"IDLE");
   }
 
@@ -688,6 +779,70 @@ export class UnitRenderer{
       parts.braid.rotation.x+=braidFollow*braidSwing;
       parts.braid.rotation.z+=Math.sin(cycle-followLag*1.15)*braidTwist;
     }
+    if(parts.hairBack){
+      parts.hairBack.rotation.x+=braidFollow*(braidSwing*.72);
+      parts.hairBack.rotation.z+=Math.sin(cycle-followLag)*braidTwist*.62;
+    }
+    if(parts.skirt)parts.skirt.rotation.x+=capeFollow*(capeSwing*.38);
+    if(parts.weapon)parts.weapon.rotation.x+=stride*.055;
+  }
+
+  applyBirdPose(entry,state,progress,now){
+    const parts=entry.birdParts;if(entry.kind!=="BIRD"||!parts)return;
+    const moving=state==="WALK",speed=moving?3.0:1.65,phase=(moving?progress:now/1000)*Math.PI*2*speed,flap=Math.sin(phase);
+    if(parts.leftWing)parts.leftWing.rotation.z=-.28-flap*.72;
+    if(parts.rightWing)parts.rightWing.rotation.z=.28+flap*.72;
+    if(parts.tail)parts.tail.rotation.x=.08+Math.sin(phase*.5)*.08;
+    if(parts.body)parts.body.rotation.x=-.04+Math.sin(phase*.5)*.035;
+    entry.root.position.y+=Math.sin(phase*.5)*.035;
+  }
+
+  attackTypeFor(event){
+    const id=event?.skillId;if(!id)return"";
+    try{return String(globalThis.SkillDatabase?.get?.(id)?.attackType||"").toUpperCase();}
+    catch(_error){return"";}
+  }
+
+  applyFigureAttack(entry,unit,event,progress){
+    const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
+    const type=this.attackTypeFor(event),facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
+    const ease=value=>{const t=clamp01(value);return t*t*(3-2*t);};
+
+    if(type==="SHOT"&&parts.bow){
+      const raise=ease(progress/.22),draw=progress<.66?ease((progress-.12)/.42):Math.max(0,1-ease((progress-.66)/.13)),recover=ease((progress-.72)/.28);
+      if(parts.leftArm){parts.leftArm.rotation.x-=raise*1.15;parts.leftArm.rotation.z-=raise*.34;}
+      if(parts.rightArm){parts.rightArm.rotation.x-=raise*.84;parts.rightArm.rotation.z+=draw*.92-recover*.16;}
+      parts.bow.rotation.x-=raise*.88;parts.bow.rotation.z+=raise*.16;
+      if(parts.body){parts.body.rotation.y-=draw*.20;parts.body.rotation.z-=draw*.06;}
+      if(parts.cape)parts.cape.rotation.x+=draw*.12-recover*.07;
+      if(parts.hairBack)parts.hairBack.rotation.x+=draw*.08;
+      if(parts.braid)parts.braid.rotation.x+=draw*.10;
+      entry.root.position.x-=vector.x*draw*.08;entry.root.position.z-=vector.z*draw*.08;
+      return true;
+    }
+
+    if(type==="PIERCE"&&parts.weapon){
+      const ready=ease(progress/.24),thrust=Math.sin(Math.PI*clamp01((progress-.16)/.68));
+      if(parts.rightArm){parts.rightArm.rotation.x-=ready*.55+thrust*.92;parts.rightArm.rotation.z+=ready*.20;}
+      if(parts.leftArm)parts.leftArm.rotation.x+=ready*.20;
+      parts.weapon.rotation.x-=ready*.65+thrust*.93;parts.weapon.rotation.z-=ready*.12;
+      if(parts.body){parts.body.rotation.x+=thrust*.06;parts.body.rotation.z-=thrust*.08;}
+      if(parts.cape)parts.cape.rotation.x+=thrust*.16;
+      if(parts.hairBack)parts.hairBack.rotation.x+=thrust*.12;
+      entry.root.position.x+=vector.x*thrust*.58;entry.root.position.z+=vector.z*thrust*.58;
+      return true;
+    }
+
+    if(type==="SLASH"&&(parts.sword||parts.weapon)){
+      const weapon=parts.sword||parts.weapon,wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
+      if(parts.rightArm){parts.rightArm.rotation.x-=wind*.48;parts.rightArm.rotation.z-=wind*.64-swing*1.28;}
+      weapon.rotation.x-=wind*.30;weapon.rotation.z-=wind*.55-swing*1.36;
+      if(parts.body)parts.body.rotation.y-=wind*.22-swing*.42;
+      if(parts.cape)parts.cape.rotation.z+=swing*.16;
+      entry.root.position.x+=vector.x*swing*.26;entry.root.position.z+=vector.z*swing*.26;
+      return true;
+    }
+    return false;
   }
 
   applyWalk(entry,unit,event,progress,definition={}){
@@ -720,6 +875,11 @@ export class UnitRenderer{
     }
 
     const step=Math.sin(local*Math.PI*2);
+    if(entry.kind==="BIRD"){
+      entry.root.position.y+=Math.abs(step)*.08;
+      this.applyBirdPose(entry,"WALK",local,performance.now());
+      return;
+    }
     if(entry.kind==="FIGURE"){
       const motion=definition?.figureMotion||{};
       entry.root.position.y+=Math.abs(step)*Number(motion.bodyBob??.065);
@@ -736,6 +896,12 @@ export class UnitRenderer{
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
+    const weaponAction=this.attackTypeFor(event);
+    if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
+
+    if(entry.kind==="BIRD"&&(state==="IDLE"||procedural==="FLAP")){
+      this.applyBirdPose(entry,state,progress,now);return;
+    }
 
     if(procedural==="BREATHE"||state==="IDLE"){
       const breathe=Math.sin(now/300);
