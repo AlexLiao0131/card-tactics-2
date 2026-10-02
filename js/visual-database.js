@@ -146,6 +146,58 @@ export const VISUALS={
         }
       }
     },
+    church_templar_hero_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.72,
+        figure:{
+          style:"DAWN_TEMPLAR_HEAVY",
+          braid:true,
+          longHair:true,
+          hairRibbon:true,
+          cape:true,
+          bow:false,
+          quiver:false,
+          sideSword:false,
+          heavyArmor:true,
+          royalTabard:true,
+          greatsword:true,
+          twoHanded:true,
+          colors:{
+            skin:"#edcfc3",
+            hair:"#d9d2ca",
+            hairDark:"#bdb5ae",
+            cape:"#263b65",
+            capeDark:"#182948",
+            leather:"#4b3a31",
+            leatherDark:"#2f2724",
+            shirt:"#f1ede4",
+            tabard:"#f4f0e7",
+            pants:"#34323a",
+            boots:"#343139",
+            metal:"#c4c6c8",
+            armor:"#d5d7d8",
+            gold:"#b89353",
+            weapon:"#e5e7e8",
+            holy:"#ffd563",
+            holyEmissive:"#ffc93f",
+            eyes:"#9a786d",
+            accent:"#b89353",
+            gem:"#f0c75e"
+          }
+        },
+        animations:{
+          IDLE:{duration:1280,loop:true,procedural:"BREATHE"},
+          WALK:{duration:205,loop:true,procedural:"STEP",figureMotion:{bodyBob:.035,rootSway:.018,bodySway:.014,torsoBob:.010,legSwing:.42,armSwing:.22,bowSwing:0,capeSwing:.15,capeTwist:.060,braidSwing:.14,braidTwist:.060,followLag:.74}},
+          ATTACK:{duration:430,loop:false,procedural:"LUNGE"},
+          CAST:{duration:520,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:800,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     ophi_eagle:{
       battle:{
         kind:"BIRD",

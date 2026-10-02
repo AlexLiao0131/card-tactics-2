@@ -266,10 +266,18 @@ export class UnitRenderer{
       accent:this.figureMaterial("accent",colors.accent||colors.capeDark||"#7a1f2b"),
       weapon:this.figureMaterial("weapon",colors.weapon||"#d7d9df"),
       gem:this.figureMaterial("gem",colors.gem||colors.eyes||"#b52635"),
+      armor:this.figureMaterial("armor",colors.armor||colors.metal||"#d7d9df"),
+      gold:this.figureMaterial("gold",colors.gold||"#b58a4d"),
+      tabard:this.figureMaterial("tabard",colors.tabard||colors.shirt||"#eee9df"),
+      holy:this.figureMaterial("holy",colors.holy||"#ffd86a"),
       dark:this.figureMaterial("dark","#1d1c20")
     };
     material.cape.backFaceCulling=false;
     material.capeDark.backFaceCulling=false;
+    material.holy.backFaceCulling=false;
+    material.holy.alpha=.72;
+    material.holy.emissiveColor=this.figureColor(colors.holyEmissive||colors.holy||"#ffd86a").scale(.92);
+    material.holy.specularColor=this.figureColor(colors.holy||"#ffd86a");
 
     const finish=(mesh,mat,pos=null,rotation=null,scaling=null,{castShadow=true,part=null}={})=>{
       const parent=part?figureParts[part]||root:root;
@@ -369,6 +377,15 @@ export class UnitRenderer{
     box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04],"body");
     sphere("figure-clasp",.075,material.metal,[-.19,1.36,.11],[1,.70,.45],5,"body");
 
+    if(figure.heavyArmor){
+      cylinder("figure-chest-plate",.38,.42,.34,material.armor,[0,1.18,.025],null,8,"body");
+      box("figure-chest-gold-trim",[.31,.055,.305],material.gold,[0,1.24,.08],null,"body");
+      sphere("figure-pauldron-l",.27,material.armor,[-.285,1.31,-.005],[1.18,.62,1.02],6,"leftArm");
+      sphere("figure-pauldron-r",.27,material.armor,[.285,1.31,-.005],[1.18,.62,1.02],6,"rightArm");
+      box("figure-pauldron-gold-l",[.17,.035,.19],material.gold,[-.31,1.34,.025],[0,0,-.12],"leftArm");
+      box("figure-pauldron-gold-r",[.17,.035,.19],material.gold,[.31,1.34,.025],[0,0,.12],"rightArm");
+    }
+
     // Sleeves taper into bracers; the slight angles stop the arms looking like rails.
     cylinder("figure-upper-arm-l",.30,.14,.12,material.shirt,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
     cylinder("figure-upper-arm-r",.30,.14,.12,material.shirt,[.265,1.20,0],[0,0,.13],6,"rightArm");
@@ -378,6 +395,12 @@ export class UnitRenderer{
     box("figure-glove-r",[.105,.12,.115],material.dark,[.305,.755,.055],[0,0,.03],"rightArm");
     sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
     sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
+    if(figure.heavyArmor){
+      cylinder("figure-vambrace-l",.29,.135,.115,material.armor,[-.298,.93,.035],[0,0,-.05],7,"leftArm");
+      cylinder("figure-vambrace-r",.29,.135,.115,material.armor,[.298,.93,.035],[0,0,.05],7,"rightArm");
+      box("figure-gauntlet-l",[.125,.13,.13],material.armor,[-.307,.755,.060],[0,0,-.03],"leftArm");
+      box("figure-gauntlet-r",[.125,.13,.13],material.armor,[.307,.755,.060],[0,0,.03],"rightArm");
+    }
 
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
     cylinder("figure-hips",.18,.33,.36,material.pants,[0,.82,0],null,6,"body");
@@ -391,6 +414,14 @@ export class UnitRenderer{
     box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
     box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
     box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
+    if(figure.heavyArmor){
+      box("figure-greave-l",[.205,.42,.215],material.armor,[-.115,.29,.02],[0,0,.02],"leftLeg");
+      box("figure-greave-r",[.205,.42,.215],material.armor,[.115,.29,.02],[0,0,-.02],"rightLeg");
+      sphere("figure-knee-l",.18,material.gold,[-.115,.49,.105],[1,.62,.46],5,"leftLeg");
+      sphere("figure-knee-r",.18,material.gold,[.115,.49,.105],[1,.62,.46],5,"rightLeg");
+      box("figure-sabatons-l",[.21,.115,.33],material.armor,[-.115,.075,.08],[-.03,0,0],"leftLeg");
+      box("figure-sabatons-r",[.21,.115,.33],material.armor,[.115,.075,.08],[-.03,0,0],"rightLeg");
+    }
 
     // Multi-fold cloak: 15 vertices / 16 triangles, still cheap but much less flat.
     if(figure.cape!==false){
@@ -455,12 +486,29 @@ export class UnitRenderer{
       panel("figure-skirt-back",0,-.15,material.capeDark);
     }
 
+    if(figure.royalTabard){
+      custom("figure-tabard-front",[[-.16,.98,.155],[.16,.98,.155],[.20,.28,.13],[-.20,.28,.13]],[0,2,1,0,3,2],material.tabard,"skirt");
+      custom("figure-tabard-back",[[-.17,.96,-.17],[.17,.96,-.17],[.23,.22,-.16],[-.23,.22,-.16]],[0,1,2,0,2,3],material.cape,"skirt");
+      box("figure-tabard-gold",[.055,.60,.025],material.gold,[0,.62,.17],null,"skirt");
+    }
+
     if(figure.rapier){
       cylinder("figure-rapier-blade",.92,.018,.032,material.weapon,[.33,.43,.08],[0,0,-.05],7,"weapon");
       const guard=BABYLON.MeshBuilder.CreateTorus(`figure-rapier-guard-${unit.id}`,{diameter:.18*scale,thickness:.018*scale,tessellation:12},this.scene);
       finish(guard,material.metal,[.305,.89,.075],[Math.PI/2,0,0],null,{part:"weapon"});
       cylinder("figure-rapier-grip",.16,.045,.045,material.leather,[.29,.98,.07],[0,0,-.05],7,"weapon");
       sphere("figure-rapier-gem",.055,material.gem,[.285,1.075,.07],[.75,.75,.75],5,"weapon");
+    }
+
+    if(figure.greatsword){
+      box("figure-greatsword-blade",[.115,1.10,.050],material.weapon,[.31,.47,.075],[0,0,-.04],"weapon");
+      box("figure-greatsword-core",[.036,.96,.058],material.holy,[.31,.50,.075],[0,0,-.04],"weapon");
+      box("figure-greatsword-guard",[.38,.055,.085],material.gold,[.285,1.00,.075],[0,0,-.04],"weapon");
+      cylinder("figure-greatsword-grip",.25,.052,.052,material.leather,[.275,1.145,.075],[0,0,-.04],8,"weapon");
+      sphere("figure-greatsword-pommel",.085,material.gold,[.27,1.295,.075],[.85,.85,.85],6,"weapon");
+      sphere("figure-greatsword-gem",.070,material.holy,[.285,.995,.105],[.72,.72,.42],6,"weapon");
+      const aura=BABYLON.MeshBuilder.CreateTorus(`figure-greatsword-aura-${unit.id}`,{diameter:.34*scale,thickness:.018*scale,tessellation:18},this.scene);
+      finish(aura,material.holy,[.30,.72,.075],[Math.PI/2,0,0],null,{part:"weapon",castShadow:false});
     }
 
     // Keep FIGURE parts under the character root. Merging child meshes that already
@@ -835,11 +883,14 @@ export class UnitRenderer{
 
     if(type==="SLASH"&&(parts.sword||parts.weapon)){
       const weapon=parts.sword||parts.weapon,wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
-      if(parts.rightArm){parts.rightArm.rotation.x-=wind*.48;parts.rightArm.rotation.z-=wind*.64-swing*1.28;}
-      weapon.rotation.x-=wind*.30;weapon.rotation.z-=wind*.55-swing*1.36;
-      if(parts.body)parts.body.rotation.y-=wind*.22-swing*.42;
-      if(parts.cape)parts.cape.rotation.z+=swing*.16;
-      entry.root.position.x+=vector.x*swing*.26;entry.root.position.z+=vector.z*swing*.26;
+      const twoHanded=entry.definition?.figure?.twoHanded===true;
+      if(parts.rightArm){parts.rightArm.rotation.x-=wind*(twoHanded?.70:.48);parts.rightArm.rotation.z-=wind*(twoHanded?.78:.64)-swing*(twoHanded?1.42:1.28);}
+      if(twoHanded&&parts.leftArm){parts.leftArm.rotation.x-=wind*.60+swing*.18;parts.leftArm.rotation.z+=wind*.55-swing*.96;}
+      weapon.rotation.x-=wind*(twoHanded?.44:.30);weapon.rotation.z-=wind*(twoHanded?.72:.55)-swing*(twoHanded?1.52:1.36);
+      if(parts.body){parts.body.rotation.y-=wind*(twoHanded?.30:.22)-swing*(twoHanded?.55:.42);parts.body.rotation.z-=swing*(twoHanded?.08:0);}
+      if(parts.cape)parts.cape.rotation.z+=swing*(twoHanded?.22:.16);
+      if(parts.hairBack)parts.hairBack.rotation.z+=swing*(twoHanded?.12:.06);
+      entry.root.position.x+=vector.x*swing*(twoHanded?.34:.26);entry.root.position.z+=vector.z*swing*(twoHanded?.34:.26);
       return true;
     }
     return false;
