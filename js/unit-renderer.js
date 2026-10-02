@@ -411,6 +411,42 @@ export class UnitRenderer{
     box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04],"body");
     sphere("figure-clasp",.075,material.metal,[-.19,1.36,.11],[1,.70,.45],5,"body");
 
+    if(figure.chestHarness){
+      box("figure-harness-a",[.048,.56,.032],material.leatherDark,[-.085,1.18,.158],[0,0,-.43],"body");
+      box("figure-harness-b",[.048,.56,.032],material.leather,[.085,1.18,.162],[0,0,.43],"body");
+      sphere("figure-harness-ring",.070,material.metal,[0,1.10,.18],[1,.38,.38],7,"body");
+    }
+
+    if(figure.beltDetail){
+      box("figure-belt-low",[.47,.050,.285],material.leatherDark,[0,.885,.018],[0,0,.035],"body");
+      box("figure-belt-low-buckle",[.060,.060,.035],material.metal,[-.095,.885,.17],[0,0,.04],"body");
+    }
+
+    if(figure.waistPouches){
+      box("figure-waist-pouch-l",[.13,.16,.085],material.leather,[-.235,.84,.085],[0,.08,-.05],"body");
+      box("figure-waist-pouch-r",[.13,.15,.080],material.leather,[.235,.85,.08],[0,-.08,.05],"body");
+      box("figure-waist-pouch-flap-l",[.115,.045,.095],material.leatherDark,[-.235,.905,.09],[.10,0,0],"body");
+      box("figure-waist-pouch-flap-r",[.115,.045,.090],material.leatherDark,[.235,.91,.085],[.10,0,0],"body");
+    }
+
+    if(figure.pendant){
+      cylinder("figure-pendant-chain",.18,.012,.012,material.metal,[0,1.34,.165],[0,0,0],6,"body");
+      sphere("figure-pendant-gem",.070,material.gem,[0,1.23,.185],[.72,1.0,.45],6,"body");
+    }
+
+    if(figure.neckAccessory){
+      const choker=BABYLON.MeshBuilder.CreateTorus(`figure-choker-${unit.id}`,{diameter:.24*scale,thickness:.025*scale,tessellation:12},this.scene);
+      finish(choker,material.leatherDark,[0,1.405,.01],[Math.PI/2,0,0],[1,.80,.85],{part:"body"});
+      sphere("figure-neck-gem",.052,material.gem,[0,1.385,.145],[.70,1.0,.42],5,"body");
+    }
+
+    if(figure.corsetDetail){
+      box("figure-corset-center",[.055,.33,.030],material.accent,[0,1.145,.177],null,"body");
+      box("figure-corset-l",[.040,.30,.028],material.leatherDark,[-.13,1.14,.165],[0,0,-.08],"body");
+      box("figure-corset-r",[.040,.30,.028],material.leatherDark,[.13,1.14,.165],[0,0,.08],"body");
+      for(let i=0;i<3;i++)sphere(`figure-corset-stud-${i}`,.025,material.metal,[0,1.06+i*.075,.195],[.65,.65,.38],5,"body");
+    }
+
     if(figure.thiefGear){
       box("figure-thief-cross-strap-a",[.055,.58,.035],material.leatherDark,[-.075,1.17,.16],[0,0,-.48],"body");
       box("figure-thief-cross-strap-b",[.055,.54,.035],material.leather,[.09,1.16,.165],[0,0,.48],"body");
@@ -427,6 +463,12 @@ export class UnitRenderer{
       sphere("figure-pauldron-r",.27,material.armor,[.285,1.31,-.005],[1.18,.62,1.02],6,"rightArm");
       box("figure-pauldron-gold-l",[.17,.035,.19],material.gold,[-.31,1.34,.025],[0,0,-.12],"leftArm");
       box("figure-pauldron-gold-r",[.17,.035,.19],material.gold,[.31,1.34,.025],[0,0,.12],"rightArm");
+      if(figure.armorTrim){
+        box("figure-armor-center-ridge",[.060,.30,.035],material.gold,[0,1.18,.195],null,"body");
+        sphere("figure-armor-brooch",.085,material.holy,[0,1.34,.205],[.85,.85,.40],7,"body");
+        box("figure-pauldron-ridge-l",[.22,.025,.16],material.gold,[-.295,1.285,.10],[0,0,-.13],"leftArm");
+        box("figure-pauldron-ridge-r",[.22,.025,.16],material.gold,[.295,1.285,.10],[0,0,.13],"rightArm");
+      }
     }
 
     // Sleeves taper into bracers; the slight angles stop the arms looking like rails.
@@ -438,11 +480,30 @@ export class UnitRenderer{
     box("figure-glove-r",[.105,.12,.115],material.dark,[.305,.755,.055],[0,0,.03],"rightArm");
     sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
     sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
+
+    if(figure.bracerDetail){
+      box("figure-bracer-band-l",[.145,.055,.14],material.metal,[-.298,.99,.04],[0,0,-.05],"leftArm");
+      box("figure-bracer-band-r",[.145,.055,.14],material.metal,[.298,.99,.04],[0,0,.05],"rightArm");
+      box("figure-bracer-ridge-l",[.045,.20,.025],material.accent,[-.298,.91,.115],[0,0,-.05],"leftArm");
+      box("figure-bracer-ridge-r",[.045,.20,.025],material.accent,[.298,.91,.115],[0,0,.05],"rightArm");
+    }
+
+    if(figure.gloveDetail){
+      box("figure-glove-cuff-l",[.145,.060,.145],material.leatherDark,[-.303,.79,.055],[0,0,-.03],"leftArm");
+      box("figure-glove-cuff-r",[.145,.060,.145],material.leatherDark,[.303,.79,.055],[0,0,.03],"rightArm");
+      sphere("figure-glove-stud-l",.034,material.metal,[-.303,.805,.13],[.65,.65,.38],5,"leftArm");
+      sphere("figure-glove-stud-r",.034,material.metal,[.303,.805,.13],[.65,.65,.38],5,"rightArm");
+    }
+
     if(figure.heavyArmor){
       cylinder("figure-vambrace-l",.29,.135,.115,material.armor,[-.298,.93,.035],[0,0,-.05],7,"leftArm");
       cylinder("figure-vambrace-r",.29,.135,.115,material.armor,[.298,.93,.035],[0,0,.05],7,"rightArm");
       box("figure-gauntlet-l",[.125,.13,.13],material.armor,[-.307,.755,.060],[0,0,-.03],"leftArm");
       box("figure-gauntlet-r",[.125,.13,.13],material.armor,[.307,.755,.060],[0,0,.03],"rightArm");
+      if(figure.armorTrim){
+        box("figure-gauntlet-gold-l",[.115,.030,.14],material.gold,[-.307,.805,.075],[0,0,-.03],"leftArm");
+        box("figure-gauntlet-gold-r",[.115,.030,.14],material.gold,[.307,.805,.075],[0,0,.03],"rightArm");
+      }
     }
 
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
@@ -462,6 +523,23 @@ export class UnitRenderer{
     box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
     box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
     box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
+
+    if(figure.legStraps){
+      box("figure-leg-strap-l-a",[.205,.045,.19],material.leatherDark,[-.115,.70,.015],[0,0,.02],"leftLeg");
+      box("figure-leg-strap-r-a",[.205,.045,.19],material.leather,[.115,.62,.015],[0,0,-.02],"rightLeg");
+      box("figure-leg-strap-r-b",[.205,.045,.19],material.leatherDark,[.115,.52,.015],[0,0,-.02],"rightLeg");
+      sphere("figure-leg-ring-r",.055,material.metal,[.205,.60,.10],[.80,.80,.35],6,"rightLeg");
+    }
+
+    if(figure.bootDetail){
+      box("figure-boot-sole-l",[.205,.045,.34],material.dark,[-.115,.028,.085],null,"leftLeg");
+      box("figure-boot-sole-r",[.205,.045,.34],material.dark,[.115,.028,.085],null,"rightLeg");
+      box("figure-boot-strap-l",[.20,.045,.225],material.leatherDark,[-.115,.245,.04],[0,0,.02],"leftLeg");
+      box("figure-boot-strap-r",[.20,.045,.225],material.leatherDark,[.115,.245,.04],[0,0,-.02],"rightLeg");
+      sphere("figure-boot-buckle-l",.045,material.metal,[-.205,.245,.135],[.70,.70,.35],5,"leftLeg");
+      sphere("figure-boot-buckle-r",.045,material.metal,[.205,.245,.135],[.70,.70,.35],5,"rightLeg");
+    }
+
     if(figure.thiefGear){
       box("figure-thigh-strap-l",[.21,.055,.19],material.leatherDark,[-.115,.68,.015],[0,0,.02],"leftLeg");
       box("figure-thigh-strap-r",[.21,.055,.19],material.leather,[.115,.61,.015],[0,0,-.02],"rightLeg");
@@ -474,6 +552,12 @@ export class UnitRenderer{
       sphere("figure-knee-r",.18,material.gold,[.115,.49,.105],[1,.62,.46],5,"rightLeg");
       box("figure-sabatons-l",[.21,.115,.33],material.armor,[-.115,.075,.08],[-.03,0,0],"leftLeg");
       box("figure-sabatons-r",[.21,.115,.33],material.armor,[.115,.075,.08],[-.03,0,0],"rightLeg");
+      if(figure.armorTrim){
+        box("figure-greave-gold-l",[.045,.30,.026],material.gold,[-.115,.30,.145],[0,0,.02],"leftLeg");
+        box("figure-greave-gold-r",[.045,.30,.026],material.gold,[.115,.30,.145],[0,0,-.02],"rightLeg");
+        box("figure-sabaton-gold-l",[.18,.025,.28],material.gold,[-.115,.095,.175],[-.03,0,0],"leftLeg");
+        box("figure-sabaton-gold-r",[.18,.025,.28],material.gold,[.115,.095,.175],[-.03,0,0],"rightLeg");
+      }
     }
 
     // Multi-fold cloak: 15 vertices / 16 triangles, still cheap but much less flat.
@@ -493,11 +577,21 @@ export class UnitRenderer{
       box("figure-cape-collar-l",[.24,.10,.12],material.cape,[-.18,1.38,-.04],[0,.10,.04],"cape");
       box("figure-cape-collar-r",[.24,.10,.12],material.cape,[.18,1.38,-.04],[0,-.10,-.04],"cape");
       custom("figure-cape-fold",[[0,1.40,-.225],[-.055,.40,-.355],[.055,.40,-.355]],[0,1,2],material.capeDark,"cape");
+      if(figure.capeLayers){
+        custom("figure-cape-inner",[[-.23,1.34,-.235],[.23,1.34,-.235],[.34,.42,-.31],[-.34,.42,-.31]],[0,2,1,0,3,2],material.capeDark,"cape");
+        custom("figure-cape-trim-l",[[-.35,1.28,-.17],[-.29,1.29,-.18],[-.47,.33,-.11],[-.53,.31,-.10]],[0,2,1,0,3,2],material.accent,"cape");
+        custom("figure-cape-trim-r",[[.29,1.29,-.18],[.35,1.28,-.17],[.53,.31,-.10],[.47,.33,-.11]],[0,2,1,0,3,2],material.accent,"cape");
+      }
     }
 
     // Quiver and visible arrow tips/fletching.
     if(figure.quiver!==false){
       cylinder("figure-quiver",.56,.14,.18,material.leather,[.275,1.18,-.225],[0,0,-.20],6,"quiver");
+      if(figure.quiverDetail){
+        cylinder("figure-quiver-rim",.055,.205,.205,material.metal,[.225,1.45,-.225],[0,0,-.20],8,"quiver");
+        box("figure-quiver-strap",[.055,.62,.032],material.leatherDark,[.13,1.18,-.205],[0,0,-.42],"quiver");
+        sphere("figure-quiver-charm",.050,material.accent,[.36,1.05,-.16],[.70,1.0,.42],5,"quiver");
+      }
       for(let i=0;i<3;i++){
         cylinder(`figure-arrow-${i}`,.53,.017,.017,material.bow,[.22+i*.045,1.43,-.225],[0,0,-.20],5,"quiver");
         box(`figure-fletching-${i}`,[.045,.065,.018],material.cape,[.17+i*.045,1.65,-.225],[0,0,-.20],"quiver");
@@ -515,6 +609,11 @@ export class UnitRenderer{
       const bow=BABYLON.MeshBuilder.CreateTube(`figure-bow-${unit.id}`,{path,radius:.018*scale,tessellation:6,cap:BABYLON.Mesh.CAP_ALL},this.scene);
       finish(bow,material.bow,null,null,null,{part:"bow"});
       cylinder("figure-bow-grip",.16,.055,.055,material.leather,[-.46,.96,.18],[0,0,0],6,"bow");
+      if(figure.bowDetail){
+        cylinder("figure-bow-band-upper",.06,.052,.052,material.metal,[-.49,1.31,.18],[0,0,-.20],7,"bow");
+        cylinder("figure-bow-band-lower",.06,.052,.052,material.metal,[-.49,.61,.18],[0,0,.20],7,"bow");
+        sphere("figure-bow-gem",.055,material.gem,[-.46,.96,.205],[.72,.72,.42],6,"bow");
+      }
       const string=BABYLON.MeshBuilder.CreateLines(`figure-bow-string-${unit.id}`,{
         points:[path[0],localPoint("bow",[-.46,.96,.18]),path[path.length-1]]
       },this.scene);
@@ -527,6 +626,11 @@ export class UnitRenderer{
       box("figure-side-sword",[.065,.66,.055],material.dark,[.345,.59,-.045],[0,0,-.13],"sword");
       box("figure-side-guard",[.15,.035,.065],material.metal,[.30,.88,-.035],[0,0,-.13],"sword");
       cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6,"sword");
+      if(figure.sideSwordDetail){
+        box("figure-side-sheath-band-a",[.090,.035,.075],material.metal,[.35,.70,-.04],[0,0,-.13],"sword");
+        box("figure-side-sheath-band-b",[.090,.035,.075],material.metal,[.38,.44,-.05],[0,0,-.13],"sword");
+        sphere("figure-side-pommel-gem",.055,material.gem,[.255,1.02,-.025],[.75,.75,.50],6,"sword");
+      }
     }
 
     if(figure.skirtPanels){
@@ -537,12 +641,22 @@ export class UnitRenderer{
       panel("figure-skirt-left",-.20,-.02,material.cape);
       panel("figure-skirt-right",.20,-.02,material.cape);
       panel("figure-skirt-back",0,-.15,material.capeDark);
+      if(figure.skirtTrim){
+        box("figure-skirt-trim-front",[.24,.035,.035],material.accent,[0,.42,.17],null,"skirt");
+        box("figure-skirt-trim-l",[.20,.035,.035],material.metal,[-.20,.47,.07],[0,0,.10],"skirt");
+        box("figure-skirt-trim-r",[.20,.035,.035],material.metal,[.20,.47,.07],[0,0,-.10],"skirt");
+      }
     }
 
     if(figure.royalTabard){
       custom("figure-tabard-front",[[-.16,.98,.155],[.16,.98,.155],[.20,.28,.13],[-.20,.28,.13]],[0,2,1,0,3,2],material.tabard,"skirt");
       custom("figure-tabard-back",[[-.17,.96,-.17],[.17,.96,-.17],[.23,.22,-.16],[-.23,.22,-.16]],[0,1,2,0,2,3],material.cape,"skirt");
       box("figure-tabard-gold",[.055,.60,.025],material.gold,[0,.62,.17],null,"skirt");
+      if(figure.tabardDetail){
+        box("figure-tabard-top-trim",[.30,.040,.028],material.gold,[0,.94,.18],null,"skirt");
+        sphere("figure-tabard-emblem",.080,material.holy,[0,.78,.19],[.90,.90,.35],7,"skirt");
+        box("figure-tabard-bottom-trim",[.31,.035,.026],material.gold,[0,.31,.16],null,"skirt");
+      }
     }
 
     if(figure.catTail){
@@ -569,6 +683,11 @@ export class UnitRenderer{
       finish(guard,material.metal,[.305,.89,.075],[Math.PI/2,0,0],null,{part:"weapon"});
       cylinder("figure-rapier-grip",.16,.045,.045,material.leather,[.29,.98,.07],[0,0,-.05],7,"weapon");
       sphere("figure-rapier-gem",.055,material.gem,[.285,1.075,.07],[.75,.75,.75],5,"weapon");
+      if(figure.rapierDetail){
+        const knuckle=BABYLON.MeshBuilder.CreateTorus(`figure-rapier-knuckle-${unit.id}`,{diameter:.14*scale,thickness:.014*scale,tessellation:12},this.scene);
+        finish(knuckle,material.metal,[.335,.93,.075],[Math.PI/2,0,.25],null,{part:"weapon"});
+        box("figure-rapier-fulleredge",[.018,.76,.012],material.accent,[.335,.48,.10],[0,0,-.05],"weapon");
+      }
     }
 
     if(figure.greatsword){
@@ -580,6 +699,11 @@ export class UnitRenderer{
       sphere("figure-greatsword-gem",.070,material.holy,[.285,.995,.105],[.72,.72,.42],6,"weapon");
       const aura=BABYLON.MeshBuilder.CreateTorus(`figure-greatsword-aura-${unit.id}`,{diameter:.34*scale,thickness:.018*scale,tessellation:18},this.scene);
       finish(aura,material.holy,[.30,.72,.075],[Math.PI/2,0,0],null,{part:"weapon",castShadow:false});
+      if(figure.greatswordDetail){
+        box("figure-greatsword-edge-l",[.018,.98,.060],material.holy,[.265,.50,.076],[0,0,-.04],"weapon");
+        box("figure-greatsword-edge-r",[.018,.98,.060],material.holy,[.355,.50,.076],[0,0,-.04],"weapon");
+        sphere("figure-greatsword-pommel-aura",.13,material.holy,[.27,1.295,.075],[.85,.85,.40],7,"weapon");
+      }
     }
 
     // Keep FIGURE parts under the character root. Merging child meshes that already
@@ -602,7 +726,7 @@ export class UnitRenderer{
       birdParts[name]=node;return node;
     };
     makePart("body",[0,.32,0]);makePart("head",[0,.49,.10]);makePart("leftWing",[-.12,.36,0]);makePart("rightWing",[.12,.36,0]);makePart("tail",[0,.27,-.15]);
-    const bodyMat=this.figureMaterial("bird-body",colors.body||"#65452f"),wingMat=this.figureMaterial("bird-wing",colors.wing||"#4b3326"),lightMat=this.figureMaterial("bird-light",colors.light||"#d8c6a1"),beakMat=this.figureMaterial("bird-beak",colors.beak||"#c89534"),eyeMat=this.figureMaterial("bird-eye",colors.eyes||"#d3a42e");
+    const bodyMat=this.figureMaterial("bird-body",colors.body||"#65452f"),wingMat=this.figureMaterial("bird-wing",colors.wing||"#4b3326"),lightMat=this.figureMaterial("bird-light",colors.light||"#d8c6a1"),headMat=this.figureMaterial("bird-head-light",colors.head||colors.light||"#e2dccb"),beakMat=this.figureMaterial("bird-beak",colors.beak||"#c89534"),eyeMat=this.figureMaterial("bird-eye",colors.eyes||"#d3a42e"),talonMat=this.figureMaterial("bird-talon",colors.talons||"#b18a4a");
     const finish=(mesh,mat,part,pos=null,rotation=null,scaling=null)=>{
       const node=birdParts[part]||root;mesh.parent=node;mesh.material=mat;mesh.isPickable=false;mesh.receiveShadows=true;
       const pivot=part==="body"?[0,.32,0]:part==="head"?[0,.49,.10]:part==="leftWing"?[-.12,.36,0]:part==="rightWing"?[.12,.36,0]:[0,.27,-.15];
@@ -613,7 +737,8 @@ export class UnitRenderer{
     const sphere=(name,d,mat,part,pos,scaling)=>finish(BABYLON.MeshBuilder.CreateSphere(`${name}-${unit.id}`,{diameter:d*scale,segments:6},this.scene),mat,part,pos,null,scaling);
     sphere("bird-body",.34,bodyMat,"body",[0,.32,0],[1,1.05,1.25]);
     sphere("bird-chest",.22,lightMat,"body",[0,.34,.12],[.82,1.05,.72]);
-    sphere("bird-head",.20,bodyMat,"head",[0,.50,.11],[1,.95,1]);
+    sphere("bird-head",.20,headMat,"head",[0,.50,.11],[1,.95,1]);
+    sphere("bird-neck",.19,headMat,"body",[0,.405,.055],[1.02,1.15,.92]);
     const beak=BABYLON.MeshBuilder.CreateCylinder(`bird-beak-${unit.id}`,{height:.16*scale,diameterTop:0,diameterBottom:.09*scale,tessellation:6},this.scene);
     finish(beak,beakMat,"head",[0,.48,.245],[Math.PI/2,0,0]);
     sphere("bird-eye-l",.035,eyeMat,"head",[-.065,.525,.18],[.7,.7,.55]);sphere("bird-eye-r",.035,eyeMat,"head",[.065,.525,.18],[.7,.7,.55]);
@@ -623,7 +748,31 @@ export class UnitRenderer{
       finish(mesh,wingMat,part);return mesh;
     };
     wing("bird-wing-l","leftWing",-1);wing("bird-wing-r","rightWing",1);
-    const tail=BABYLON.MeshBuilder.CreateBox(`bird-tail-${unit.id}`,{width:.22*scale,height:.055*scale,depth:.34*scale},this.scene);finish(tail,wingMat,"tail",[0,.26,-.29],[.08,0,0]);
+
+    const feather=(name,part,sign,y,z,length,rot)=>{
+      const mesh=BABYLON.MeshBuilder.CreateBox(`${name}-${unit.id}`,{width:.075*scale,height:.018*scale,depth:length*scale},this.scene);
+      finish(mesh,wingMat,part,[sign*(.18+Math.abs(z)*.16),y,z],[0,sign*rot,sign*.08]);
+    };
+    for(let i=0;i<4;i++){
+      feather(`bird-primary-l-${i}`,"leftWing",-1,.34-i*.010,-.10-i*.055,.25+i*.035,.12+i*.05);
+      feather(`bird-primary-r-${i}`,"rightWing",1,.34-i*.010,-.10-i*.055,.25+i*.035,.12+i*.05);
+    }
+
+    for(let i=-1;i<=1;i++){
+      const mesh=BABYLON.MeshBuilder.CreateBox(`bird-tail-feather-${i}-${unit.id}`,{width:.07*scale,height:.025*scale,depth:.36*scale},this.scene);
+      finish(mesh,wingMat,"tail",[i*.07,.26,-.31],[.08,i*.08,0]);
+    }
+
+    for(const sign of [-1,1]){
+      const legX=sign*.075;
+      const leg=BABYLON.MeshBuilder.CreateCylinder(`bird-leg-${sign}-${unit.id}`,{height:.16*scale,diameter:.032*scale,tessellation:6},this.scene);
+      finish(leg,talonMat,"body",[legX,.18,.035],[0,0,0]);
+      for(let toe=0;toe<3;toe++){
+        const claw=BABYLON.MeshBuilder.CreateCylinder(`bird-talon-${sign}-${toe}-${unit.id}`,{height:.10*scale,diameterTop:.012*scale,diameterBottom:.022*scale,tessellation:5},this.scene);
+        finish(claw,talonMat,"body",[legX+(toe-1)*.025,.105,.085+toe*.012],[Math.PI/2.8,0,(toe-1)*.20]);
+      }
+    }
+
     return{root,meshes,birdParts,kind:"BIRD",height,lift:Number(definition?.lift||0)};
   }
 
