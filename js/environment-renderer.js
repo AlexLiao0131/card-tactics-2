@@ -95,7 +95,9 @@ export class EnvironmentRenderer{
     this.materials={
       fire:this.mat("env-fire",new BABYLON.Color3(1,.28,.04),.76,new BABYLON.Color3(.9,.12,.01)),
       fireWind:this.mat("env-fire-wind",new BABYLON.Color3(1,.32,.05),.56,new BABYLON.Color3(.75,.08,.01)),
+      waterWind:this.mat("env-water-wind",new BABYLON.Color3(.30,.74,1),.48,new BABYLON.Color3(.08,.32,.52)),
       wind:this.mat("env-wind",new BABYLON.Color3(.68,.82,.90),.36,new BABYLON.Color3(.14,.22,.28)),
+      woodDebris:this.mat("env-tornado-wood",new BABYLON.Color3(.28,.16,.075),.96,new BABYLON.Color3(.035,.018,.006)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
@@ -696,10 +698,22 @@ export class EnvironmentRenderer{
     return null;
   }
 
+  tornadoDetailAt(tile){
+    const type=this.tornadoTypeAt(tile);if(!type)return null;
+    return this.effectDetail(tile,type)||null;
+  }
+
+  tornadoElementAt(tile){
+    const type=this.tornadoTypeAt(tile),detail=this.tornadoDetailAt(tile);
+    if(type==="FIRE_TORNADO")return"FIRE";
+    const element=String(detail?.element||"AIR").toUpperCase();
+    return element==="WATER"?"WATER":element==="FIRE"?"FIRE":"AIR";
+  }
+
   tornadoSignature(state){
     return(state?.map?.tiles||[]).map(tile=>{
-      const type=this.tornadoTypeAt(tile);if(!type)return null;
-      return`${tile.x},${tile.y}:${type}:${surfaceOf(tile).toFixed(3)}`;
+      const type=this.tornadoTypeAt(tile);if(!type)return null;const detail=this.tornadoDetailAt(tile);
+      return`${tile.x},${tile.y}:${type}:${this.tornadoElementAt(tile)}:${Number(detail?.clusterSize||1)}:${Number(detail?.clusterStrength||1).toFixed(2)}:${Number(detail?.carriedLogs||0)}:${surfaceOf(tile).toFixed(3)}`;
     }).filter(Boolean).sort().join("|");
   }
 
@@ -732,45 +746,54 @@ export class EnvironmentRenderer{
 
   createTornadoCluster(group,index){
     if(!group?.length)return null;
-    const fire=group.some(tile=>this.tornadoTypeAt(tile)==="FIRE_TORNADO"),type=fire?"FIRE_TORNADO":"TORNADO";
+    const fire=group.some(tile=>this.tornadoTypeAt(tile)==="FIRE_TORNADO"||this.tornadoElementAt(tile)==="FIRE"),water=!fire&&group.some(tile=>this.tornadoElementAt(tile)==="WATER"),type=fire?"FIRE_TORNADO":"TORNADO",element=fire?"FIRE":water?"WATER":"AIR";
     const xs=group.map(tile=>Number(tile.x)),ys=group.map(tile=>Number(tile.y));
     const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
     const centerX=(minX+maxX)/2,centerY=(minY+maxY)/2;
     const width=(maxX-minX+1)*TILE_SIZE,depth=(maxY-minY+1)*TILE_SIZE;
-    const span=Math.max(TILE_SIZE,Math.max(width,depth)),radius=Math.max(.55,span*.48);
-    const height=2.25+Math.min(1.65,Math.sqrt(group.length)*.48);
+    const span=Math.max(TILE_SIZE,Math.max(width,depth)),details=group.map(tile=>this.tornadoDetailAt(tile)).filter(Boolean),runtimeSize=Math.max(group.length,...details.map(detail=>Math.max(1,Number(detail?.clusterSize||1)))),strength=Math.max(1,...details.map(detail=>Number(detail?.clusterStrength||1))),carriedLogs=Math.max(0,...details.map(detail=>Number(detail?.carriedLogs||0)));
+    const radius=Math.max(.55,span*.48)*(1+Math.min(.28,(strength-1)*.12));
+    const height=2.25+Math.min(1.90,Math.sqrt(runtimeSize)*.48)+Math.min(.65,(strength-1)*.20);
     const baseY=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length;
     const key=`tornado-cluster-${index}-${minX},${minY}-${maxX},${maxY}`,root=this.root(key);
     root.position.set(centerX*TILE_SIZE,baseY,centerY*TILE_SIZE);
-    const outer=fire?this.materials.fireWind:this.materials.wind,rings=[],ringSpeeds=[],orbiters=[];
+    const outer=fire?this.materials.fireWind:water?this.materials.waterWind:this.materials.wind,rings=[],ringSpeeds=[],orbiters=[];
     const ground=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(`${key}-range`,{diameter:Math.max(.9,span*1.02),thickness:.045,tessellation:36},this.scene),outer);
-    ground.position.y=.045;ground.scaling.x=Math.max(.62,width/Math.max(.001,span));ground.scaling.z=Math.max(.62,depth/Math.max(.001,span));ground.visibility=fire?.68:.46;
+    ground.position.y=.045;ground.scaling.x=Math.max(.62,width/Math.max(.001,span));ground.scaling.z=Math.max(.62,depth/Math.max(.001,span));ground.visibility=fire?.68:water?.58:.46;
     const core=this.addMesh(root,BABYLON.MeshBuilder.CreateCylinder(`${key}-core`,{height,diameterTop:radius*1.72,diameterBottom:Math.max(.18,radius*.20),tessellation:18},this.scene),outer);
-    core.position.y=height*.50;core.scaling.z=.80;core.visibility=fire?.52:.40;
+    core.position.y=height*.50;core.scaling.z=.80;core.visibility=fire?.52:water?.48:.40;
     for(let i=0;i<6;i++){
       const t=i/5,diameter=Math.max(.46,radius*(.58+t*1.26));
       const ring=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(`${key}-ring-${i}`,{diameter,thickness:.035+.012*t,tessellation:28},this.scene),outer);
-      ring.position.y=.20+t*height*.88;ring.scaling.z=.58+.22*t;ring.rotation.z=(i%2?1:-1)*(.045+.018*t);ring.visibility=fire?.86:.78;
-      rings.push(ring);ringSpeeds.push((fire?5.8:4.4)*(1.20-t*.42)+(i%2)*.55);
+      ring.position.y=.20+t*height*.88;ring.scaling.z=.58+.22*t;ring.rotation.z=(i%2?1:-1)*(.045+.018*t);ring.visibility=fire?.86:water?.84:.78;
+      rings.push(ring);ringSpeeds.push((fire?5.8:water?5.15:4.4)*(1.20-t*.42)+(i%2)*.55);
     }
-    const orbMat=fire?this.materials.meteorHot:this.materials.fragments;
-    const orbCount=Math.min(14,6+group.length*2);
+    const orbMat=fire?this.materials.meteorHot:water?this.materials.waterWind:this.materials.fragments;
+    const orbCount=Math.min(16,6+runtimeSize*2);
     for(let i=0;i<orbCount;i++){
-      const orb=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`${key}-orb-${i}`,{type:2,size:fire?.055:.045},this.scene),orbMat);
+      const orb=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`${key}-orb-${i}`,{type:2,size:fire?.055:water?.050:.045},this.scene),orbMat);
       const tier=i%5,phase=hash01(`${key}:${i}`)*Math.PI*2;
-      orb.metadata={phase,speed:(fire?2.7:2.0)+tier*.18,radius:radius*(.34+.12*tier),baseY:.28+(tier/4)*height*.78,bob:.08+.025*(i%3)};
+      orb.metadata={phase,speed:(fire?2.7:water?2.45:2.0)+tier*.18,radius:radius*(.34+.12*tier),baseY:.28+(tier/4)*height*.78,bob:.08+.025*(i%3)};
       orbiters.push(orb);
+    }
+    const logCount=Math.min(6,Math.round(carriedLogs));
+    for(let i=0;i<logCount;i++){
+      const log=this.addMesh(root,BABYLON.MeshBuilder.CreateCylinder(`${key}-log-${i}`,{height:.58+Math.min(.24,i*.035),diameter:.11,tessellation:8},this.scene),this.materials.woodDebris);
+      const tier=i%5,phase=hash01(`${key}:log:${i}`)*Math.PI*2;log.rotation.z=Math.PI/2;
+      log.metadata={phase,speed:2.2+tier*.20,radius:radius*(.40+.10*tier),baseY:.42+(tier/4)*height*.70,bob:.10+.025*(i%3),tornadoLog:true};orbiters.push(log);
     }
     let light=null;
     if(fire){
       light=new BABYLON.PointLight(`${key}-light`,new BABYLON.Vector3(0,height*.52,0),this.scene);light.parent=root;light.diffuse=new BABYLON.Color3(1,.26,.035);light.specular=new BABYLON.Color3(.24,.05,.01);light.range=Math.max(2.8,span*1.6);light.intensity=1.15;
       for(let i=0;i<3;i++){const flame=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(`${key}-fire-${i}`,{diameter:radius*(.68+i*.38),thickness:.055,tessellation:24},this.scene),this.materials.fire);flame.position.y=.55+i*height*.22;flame.scaling.z=.62;flame.visibility=.82;rings.push(flame);ringSpeeds.push(7.4+i*.7);}
+    }else if(water){
+      for(let i=0;i<3;i++){const spray=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(`${key}-water-${i}`,{diameter:radius*(.64+i*.34),thickness:.045,tessellation:24},this.scene),this.materials.waterWind);spray.position.y=.46+i*height*.24;spray.scaling.z=.66;spray.visibility=.78;rings.push(spray);ringSpeeds.push(6.2+i*.55);}
     }
     const visible=group.some(tile=>!tile.fogged);root.setEnabled(visible);
-    root.metadata={kind:"environment-cluster",effectType:type,tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:group.length,visualRadius:radius,height};
+    root.metadata={kind:"environment-cluster",effectType:type,tornadoElement:element,tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:runtimeSize,clusterStrength:strength,carriedLogs,visualRadius:radius,height};
     const animated={node:root,spin:false,tornadoCluster:true,rings,ringSpeeds,orbiters,phase:hash01(key)*Math.PI*2};
     this.animated.set(key,animated);
-    return{key,root,light,animated,type};
+    return{key,root,light,animated,type,element};
   }
 
   syncTornadoClusters(state){

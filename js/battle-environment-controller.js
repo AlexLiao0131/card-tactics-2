@@ -110,7 +110,7 @@ function create(ctx){
     if(!unit.alive)return{completed:false,reason:"DEFEATED"};
     if(unit.x!==tile.x||unit.y!==tile.y)return{completed:false,reason:"CURRENT"};
     const interaction=EnvironmentEngine.pathInteraction({state:s.environmentState,x:tile.x,y:tile.y,kind}),forced=interaction.effects?.find(e=>e.type==="FORCED_MOVE");
-    if(forced&&effectContacts(unit,tile,forced.effect)){applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name:forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO?"火龍捲":"龍捲風",lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
+    if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE");applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
     const friction=Number(window.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);
     const momentum=Math.max(0,1-friction);
     if(kind==="UNIT"&&momentum>=.5&&(incoming.dx||incoming.dy)&&!window.VerticalMobilityEngine?.isAirborne?.(unit)&&!window.VerticalMobilityEngine?.isBurrowed?.(unit)){
@@ -129,6 +129,16 @@ function create(ctx){
   for(const unit of initial){if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!eventContacts(unit,tile,event))continue;const index=Math.max(0,path.findIndex(p=>p.x===unit.x&&p.y===unit.y)),here=path[index],next=path[Math.min(path.length-1,index+1)],dx=Math.sign((next?.x??here.x)-here.x),dy=Math.sign((next?.y??here.y)-here.y),source={x:unit.x-dx,y:unit.y-dy};applyForcedMovement(source,unit,Number(event.forceDistance||1),{name,damage:Number(event.damage||0),damageType:"PHYSICAL"});count++;}
   return count;
  }
+ function resolveTornadoSweep(event){
+  const s=state(),path=event.path||[],pathKeys=new Set(path.map(point=>`${point.x},${point.y}`)),initial=(s.units||[]).filter(unit=>unit?.alive&&pathKeys.has(`${unit.x},${unit.y}`));let count=0;
+  const element=String(event.element||"AIR").toUpperCase(),name=element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風",dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0)),debrisDamage=Math.max(0,Number(event.debrisDamage||0));
+  for(const unit of initial){
+   if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,window.EnvironmentContactEngine?.PROFILE?.AIR_COLUMN||"AIR_COLUMN",event))continue;
+   if(debrisDamage>0)ctx.pushLog(`${unit.character.name} 被${name}內捲起的樹幹撞擊｜額外 ${debrisDamage} 傷害。`,"BATTLE");
+   const source={x:unit.x-(dx||0),y:unit.y-(dy||0)};applyForcedMovement(source,unit,Number(event.pushDistance||2),{name,lift:Number(event.lift||0),damage:Number(event.damage||0)+debrisDamage,damageType:event.damageType||"PHYSICAL",resistAxes:{horizontal:false,vertical:true}});count++;
+  }
+  return count;
+ }
  function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),weatherEvents=EnvironmentEngine.advanceHydrology?.(s.map,s.environmentState)||[];weatherEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(weatherEvents,{reason:"天候／環境變化"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
@@ -137,6 +147,7 @@ function create(ctx){
   if(hydrologyChanged)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水位／冰面／地形變化",waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(hasElectric)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHECK",includeElectric:true,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
+  for(const tornado of list.filter(event=>event.type==="TORNADO_SWEEP"))affected+=resolveTornadoSweep(tornado);
   for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
   const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
   for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.BurialEngine?.state?.(unit)))BurialEngine.syncRenderPose(unit,s.map);
@@ -170,6 +181,12 @@ function create(ctx){
   else if(event.type==="STONE_FRAGMENT")ctx.pushLog(`爆炸擊中石質物件，(${event.x},${event.y}) 產生破片${event.destroyed?"並炸開道路":""}。`,"SYSTEM");
   else if(event.type==="TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 形成龍捲風場。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 的燃燒區被風捲起，形成火龍捲。`,"SYSTEM");
+  else if(event.type==="WATER_TORNADO_FORMED")ctx.pushLog(`🌊 龍捲風捲入水體，轉化為水龍捲｜規模 ${event.clusterSize||1} 格。`,"SYSTEM");
+  else if(event.type==="TORNADO_SWEEP")ctx.pushLog(`${event.element==="FIRE"?"🔥 火龍捲":event.element==="WATER"?"🌊 水龍捲":"🌪️ 龍捲風"}受風向推動${Number(event.moved||0)>0?` ${event.moved} 格`:"並持續盤旋"}｜融合規模 ${event.clusterSize||1}｜升力 ${event.lift||0}${event.carriedLogs?`｜捲帶樹幹 ${event.carriedLogs}`:""}。`,"DETAIL");
+  else if(event.type==="TORNADO_UPROOTED_TREE")ctx.pushLog(`🌪️ 龍捲風將 (${event.x},${event.y}) 的${event.objectType==="DEAD_TREE"?"枯木":"樹木"}連根拔起並捲入風柱。`,"SYSTEM");
+  else if(event.type==="TORNADO_EXTINGUISHED_FIRE")ctx.pushLog(`🌊 水龍捲撲滅 (${event.x},${event.y}) 的火焰。`,"DETAIL");
+  else if(event.type==="FIRE_TORNADO_STOKED")ctx.pushLog(`🔥 火龍捲使 (${event.x},${event.y}) 的火勢轉為猛烈燃燒。`,"DETAIL");
+  else if(event.type==="TORNADO_DISSIPATED")ctx.pushLog(`龍捲風移出戰場並消散。`,"DETAIL");
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
   else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL");

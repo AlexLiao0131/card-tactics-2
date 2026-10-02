@@ -292,9 +292,117 @@ export const EnvironmentEngine=(()=>{
     for(const {x,y} of pending.values()){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});addSmoke(state,x,y,{intensity:.9,duration:3,source:"FIRE_SPREAD"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING,source:"FIRE_SPREAD"});}
     return events;
   }
+  function tornadoGroups(map,state){
+    if(!map||!state?.effects)return[];
+    const cells=[];
+    for(const[k,list]of state.effects.entries()){
+      const effect=list.find(item=>item.type===EFFECT.FIRE_TORNADO)||list.find(item=>item.type===EFFECT.TORNADO);
+      if(!effect)continue;const[x,y]=k.split(",").map(Number);if(tileAt(map,x,y))cells.push({x,y,effect:{...effect}});
+    }
+    const byKey=new Map(cells.map(cell=>[key(cell.x,cell.y),cell])),seen=new Set(),groups=[];
+    for(const cell of cells){
+      const start=key(cell.x,cell.y);if(seen.has(start))continue;
+      const queue=[cell],group=[];seen.add(start);
+      while(queue.length){
+        const current=queue.shift();group.push(current);
+        for(const[dx,dy]of DIRS){const nk=key(current.x+dx,current.y+dy),next=byKey.get(nk);if(!next||seen.has(nk))continue;seen.add(nk);queue.push(next);}
+      }
+      groups.push(group);
+    }
+    return groups;
+  }
+  function tornadoClusterStats(group){
+    const effects=(group||[]).map(entry=>entry.effect||{}),size=Math.max(1,group?.length||1);
+    const maxBase=(field,fallback)=>Math.max(fallback,...effects.map(effect=>Math.max(0,Number(effect[`base${field}`]??effect[field.charAt(0).toLowerCase()+field.slice(1)]??fallback))));
+    const basePushDistance=maxBase("PushDistance",2),baseLift=maxBase("Lift",3);
+    const baseDamage=Math.max(20,...effects.map(effect=>Math.max(0,Number(effect.baseDamage??(effect.type===EFFECT.FIRE_TORNADO?20:effect.damage??20)))));
+    const baseFireDamage=Math.max(HAZARD.FIRE_TORNADO_DAMAGE,...effects.map(effect=>Math.max(0,Number(effect.baseFireDamage??(effect.type===EFFECT.FIRE_TORNADO?effect.damage:HAZARD.FIRE_TORNADO_DAMAGE)??HAZARD.FIRE_TORNADO_DAMAGE))));
+    const strength=Math.min(3.25,1+(size-1)*.45),tier=Math.min(3,Math.ceil((size-1)/2));
+    const carriedLogIds=[...new Set(effects.flatMap(effect=>Array.isArray(effect.carriedLogIds)?effect.carriedLogIds.map(String):[]))];
+    const pushDistance=Math.max(1,Math.round(basePushDistance+tier)),lift=Math.max(0,Math.round(baseLift+tier));
+    const damage=Math.max(0,Math.round(baseDamage*(1+Math.min(.75,(size-1)*.22))));
+    const fireDamage=Math.max(HAZARD.FIRE_TORNADO_DAMAGE,Math.round(baseFireDamage*(1+Math.min(.65,(size-1)*.18))));
+    const debrisDamage=Math.min(42,carriedLogIds.length*10+Math.max(0,carriedLogIds.length-1)*3);
+    return{size,strength,basePushDistance,baseLift,baseDamage,baseFireDamage,pushDistance,lift,damage,fireDamage,carriedLogIds,carriedLogs:carriedLogIds.length,debrisDamage};
+  }
+  function tornadoSweepCells(map,group,dx,dy,steps){
+    const seen=new Set(),out=[];
+    const push=(x,y)=>{const tile=tileAt(map,x,y),k=key(x,y);if(!tile||seen.has(k))return;seen.add(k);out.push({x,y});};
+    for(const entry of group)push(entry.x,entry.y);
+    for(let step=1;step<=steps;step++)for(const entry of group)push(entry.x+dx*step,entry.y+dy*step);
+    return out;
+  }
+  function tornadoNearbyCells(map,cells){
+    const seen=new Set(),out=[];
+    for(const point of cells||[])for(const[dx,dy]of [[0,0],...DIRS]){const x=point.x+dx,y=point.y+dy,k=key(x,y);if(seen.has(k)||!tileAt(map,x,y))continue;seen.add(k);out.push({x,y});}
+    return out;
+  }
+  function uprootTornadoTrees(map,cells,carriedLogIds,events){
+    if(!window.EnvironmentObjectEngine?.activeObjectsAt)return carriedLogIds;
+    const ids=new Set((carriedLogIds||[]).map(String));
+    for(const point of cells||[]){
+      for(const object of [...EnvironmentObjectEngine.activeObjectsAt(map,point.x,point.y)]){
+        const type=String(EnvironmentObjectEngine.normalizeType?.(object.type)||object.type||"").toUpperCase();
+        if(type!=="TREE"&&type!=="DEAD_TREE")continue;
+        const objectId=String(object.id||`${type}:${point.x},${point.y}`);
+        if(ids.has(objectId))continue;
+        if(EnvironmentObjectEngine.destroy?.(map,object,{events,reason:"TORNADO_UPROOT",debris:0})){ids.add(objectId);events.push({type:"TORNADO_UPROOTED_TREE",x:point.x,y:point.y,objectId,objectType:type});}
+      }
+    }
+    return[...ids];
+  }
+  function extinguishByWaterTornado(map,state,cells,events){
+    let count=0;
+    for(const point of tornadoNearbyCells(map,cells)){
+      if(!effectAt(state,point.x,point.y).some(effect=>effect.type===EFFECT.BURNING))continue;
+      removeEffect(state,point.x,point.y,EFFECT.BURNING);count++;events.push({type:"TORNADO_EXTINGUISHED_FIRE",x:point.x,y:point.y});
+    }
+    return count;
+  }
+  function stokeByFireTornado(map,state,cells,events){
+    let count=0;
+    for(const point of tornadoNearbyCells(map,cells)){
+      const burning=effectAt(state,point.x,point.y).find(effect=>effect.type===EFFECT.BURNING);if(!burning)continue;
+      const before=String(burning.fireIntensity||"NORMAL").toUpperCase();
+      burning.fireIntensity="HEAVY";burning.duration=Math.max(4,Number(burning.duration||0));burning.lightRadius=Math.max(3,Number(burning.lightRadius||0));burning.damage=Math.max(Number(burning.damage||0),Math.round(HAZARD.BURNING_DAMAGE*1.35));
+      addSmoke(state,point.x,point.y,{intensity:1.35,duration:3,source:"FIRE_TORNADO_STOKE"});
+      if(before!=="HEAVY"){count++;events.push({type:"FIRE_TORNADO_STOKED",x:point.x,y:point.y});}
+    }
+    return count;
+  }
+  function advanceTornadoes(map,state,events=[]){
+    if(!map||!state?.effects)return events;
+    const groups=tornadoGroups(map,state);if(!groups.length)return events;
+    const wind=windAt(state),dx=Math.sign(Number(wind.x||0)),dy=Math.sign(Number(wind.y||0)),moveSteps=Number(wind.strength||0)<.25?0:(Number(wind.strength||0)>=2?2:1);
+    for(const group of groups)for(const entry of group){removeEffect(state,entry.x,entry.y,EFFECT.TORNADO);removeEffect(state,entry.x,entry.y,EFFECT.FIRE_TORNADO);}
+    let serial=0;
+    for(const group of groups){
+      const beforeStats=tornadoClusterStats(group),sweep=tornadoSweepCells(map,group,dx,dy,moveSteps);
+      let carriedLogIds=uprootTornadoTrees(map,sweep,beforeStats.carriedLogIds,events);
+      const destination=group.map(entry=>({x:entry.x+dx*moveSteps,y:entry.y+dy*moveSteps,effect:entry.effect})).filter(entry=>tileAt(map,entry.x,entry.y));
+      if(!destination.length){events.push({type:"TORNADO_DISSIPATED",clusterSize:beforeStats.size,reason:"LEFT_MAP"});continue;}
+      const carriedWater=group.some(entry=>String(entry.effect.element||"").toUpperCase()==="WATER"),waterTouched=carriedWater||sweep.some(point=>HydrologyEngine.isWater(tileAt(map,point.x,point.y)));
+      const fireTouched=!waterTouched&&(group.some(entry=>entry.effect.type===EFFECT.FIRE_TORNADO||String(entry.effect.element||"").toUpperCase()==="FIRE")||sweep.some(point=>effectAt(state,point.x,point.y).some(effect=>effect.type===EFFECT.BURNING)));
+      const element=waterTouched?"WATER":fireTouched?"FIRE":"AIR",type=element==="FIRE"?EFFECT.FIRE_TORNADO:EFFECT.TORNADO;
+      if(waterTouched)extinguishByWaterTornado(map,state,sweep,events);else if(fireTouched)stokeByFireTornado(map,state,sweep,events);
+      const stats=tornadoClusterStats(destination.map(entry=>({x:entry.x,y:entry.y,effect:{...entry.effect,carriedLogIds}})));
+      carriedLogIds=[...new Set(carriedLogIds)];
+      const duration=Math.max(1,...group.map(entry=>Number(entry.effect.duration||1))),clusterId=`tornado-${Number(state.climate?.turn||0)}-${serial++}-${destination.map(entry=>key(entry.x,entry.y)).sort().join(";")}`;
+      const resolvedDamage=element==="FIRE"?stats.fireDamage:stats.damage;
+      for(const entry of destination){
+        const effect={type,duration,element,clusterId,clusterSize:stats.size,clusterStrength:stats.strength,basePushDistance:stats.basePushDistance,baseLift:stats.baseLift,baseDamage:stats.baseDamage,baseFireDamage:stats.baseFireDamage,pushDistance:stats.pushDistance,lift:stats.lift,damage:resolvedDamage,damageType:element==="FIRE"?"FIRE":element==="WATER"?"WATER":"PHYSICAL",resistAxes:{...(entry.effect.resistAxes||{horizontal:false,vertical:true})},visionBlock:false,carriedLogIds,carriedLogs:carriedLogIds.length,debrisDamage:Math.min(42,carriedLogIds.length*10+Math.max(0,carriedLogIds.length-1)*3)};
+        if(element==="FIRE")effect.lightRadius=3;
+        addEffect(state,entry.x,entry.y,effect);
+      }
+      if(element==="WATER"&&!group.some(entry=>String(entry.effect.element||"").toUpperCase()==="WATER"))events.push({type:"WATER_TORNADO_FORMED",x:destination[0].x,y:destination[0].y,clusterSize:stats.size});
+      if(element==="FIRE"&&!group.some(entry=>entry.effect.type===EFFECT.FIRE_TORNADO||String(entry.effect.element||"").toUpperCase()==="FIRE"))events.push({type:"FIRE_TORNADO_CREATED",x:destination[0].x,y:destination[0].y,effect:EFFECT.FIRE_TORNADO,source:"TORNADO_CONTACT_FIRE"});
+      events.push({type:"TORNADO_SWEEP",path:sweep,from:group.map(entry=>({x:entry.x,y:entry.y})),to:destination.map(entry=>({x:entry.x,y:entry.y})),dx,dy,moved:moveSteps,wind:{...wind},element,clusterSize:stats.size,clusterStrength:stats.strength,pushDistance:stats.pushDistance,lift:stats.lift,damage:resolvedDamage,damageType:element==="FIRE"?"FIRE":element==="WATER"?"WATER":"PHYSICAL",carriedLogs:carriedLogIds.length,debrisDamage:Math.min(42,carriedLogIds.length*10+Math.max(0,carriedLogIds.length-1)*3),contactProfile:"AIR_COLUMN",height:stats.lift+3});
+    }
+    recordDestroyedObjects(state,events);return events;
+  }
   function advanceHydrology(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);weatherPulse(map,state,events);decrementClimate(state);
-    events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
+    advanceTornadoes(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];
@@ -365,7 +473,7 @@ export const EnvironmentEngine=(()=>{
     const environment=environmentAt(map,x,y);
     if(forceSet.has(FORCE.WIND)&&steamBefore){removeEffect(state,x,y,EFFECT.STEAM);events.push({type:"STEAM_DISPERSED",x,y});}
     if(forceSet.has(FORCE.WIND)&&smokeBefore){removeEffect(state,x,y,EFFECT.SMOKE);events.push({type:"SMOKE_DISPERSED",x,y});}
-    if(forceSet.has(FORCE.WIND)&&burningBefore){addEffect(state,x,y,{type:EFFECT.FIRE_TORNADO,duration:2,lightRadius:3,damage:HAZARD.FIRE_TORNADO_DAMAGE,damageType:"FIRE",visionBlock:false});events.push({type:"FIRE_TORNADO_CREATED",x,y,effect:EFFECT.FIRE_TORNADO});}
+    if(forceSet.has(FORCE.WIND)&&burningBefore)events.push(createTornado(state,x,y,{duration:2}));
     if(raining&&forceSet.has(FORCE.FIRE)){if(effectAt(state,x,y).some(e=>e.type===EFFECT.BURNING)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}events.push({type:"RAIN_SUPPRESSED_FIRE",x,y});}
     else if(!raining&&environment===ELEMENT.GRASS&&forceSet.has(FORCE.FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});addSmoke(state,x,y,{intensity:.9,duration:3,source:"IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
     if(raining&&(forceSet.has(FORCE.HEAVY_FIRE)||forceSet.has(FORCE.EXPLOSION))){removeEffect(state,x,y,EFFECT.BURNING);addSteam(state,x,y,events,{duration:2,reason:forceSet.has(FORCE.HEAVY_FIRE)?"HEAVY_FIRE_IN_RAIN":"EXPLOSION_IN_RAIN"});}
@@ -383,10 +491,18 @@ export const EnvironmentEngine=(()=>{
     recordDestroyedObjects(state,events);return events;
   }
 
-  function createTornado(state,x,y,{duration=2,pushDistance=2,lift=3,damage=20,fireDamage=45,resistAxes={horizontal:false,vertical:true}}={}){const burning=isBurning(state,x,y);if(burning){addEffect(state,x,y,{type:EFFECT.FIRE_TORNADO,duration,pushDistance,lift,resistAxes:{...resistAxes},lightRadius:3,damage:fireDamage,damageType:"FIRE",visionBlock:false});return{type:"FIRE_TORNADO_CREATED",x,y,effect:EFFECT.FIRE_TORNADO};}addEffect(state,x,y,{type:EFFECT.TORNADO,duration,pushDistance,lift,resistAxes:{...resistAxes},damage,damageType:"PHYSICAL",visionBlock:false});return{type:"TORNADO_CREATED",x,y,effect:EFFECT.TORNADO};}
+  function createTornado(state,x,y,{duration=2,pushDistance=2,lift=3,damage=20,fireDamage=45,resistAxes={horizontal:false,vertical:true}}={}){
+    const burning=isBurning(state,x,y),base={duration,basePushDistance:pushDistance,baseLift:lift,baseDamage:damage,baseFireDamage:fireDamage,pushDistance,lift,resistAxes:{...resistAxes},clusterSize:1,clusterStrength:1,carriedLogIds:[],carriedLogs:0,debrisDamage:0,visionBlock:false};
+    if(burning){addEffect(state,x,y,{...base,type:EFFECT.FIRE_TORNADO,element:"FIRE",lightRadius:3,damage:fireDamage,damageType:"FIRE"});return{type:"FIRE_TORNADO_CREATED",x,y,effect:EFFECT.FIRE_TORNADO};}
+    addEffect(state,x,y,{...base,type:EFFECT.TORNADO,element:"AIR",damage,damageType:"PHYSICAL"});return{type:"TORNADO_CREATED",x,y,effect:EFFECT.TORNADO};
+  }
   function createTrap(state,x,y,{duration=4,damage=25,sourceTeam=null,sourceUnitId=null,name="陷阱"}={}){if(!state?.effects)return null;return addEffect(state,x,y,{type:EFFECT.TRAP,duration,damage:Math.max(0,Number(damage||0)),damageType:"PHYSICAL",sourceTeam,sourceUnitId,name,contactProfile:"SURFACE"});}
   function triggerTrap(state,x,y,unit){const trap=effectAt(state,x,y).find(effect=>effect.type===EFFECT.TRAP);if(!trap||!unit?.alive||trap.sourceTeam===unit.team)return null;removeEffect(state,x,y,EFFECT.TRAP);return{type:"TRAP_TRIGGERED",x,y,trap:{...trap},unitId:unit.id,damage:Math.max(0,Number(trap.damage||0))};}
-  function pathInteraction({state,x,y,kind="UNIT"}={}){const effects=effectAt(state,x,y),tornado=effects.find(e=>e.type===EFFECT.FIRE_TORNADO)||effects.find(e=>e.type===EFFECT.TORNADO);if(!tornado||kind==="SPACE")return{interrupted:false,effects:[]};if(kind==="PROJECTILE")return{interrupted:false,effects:[{type:"WIND_FIELD",effect:tornado}]};return{interrupted:true,effects:[{type:"FORCED_MOVE",effect:tornado,distance:Number(tornado.pushDistance||2),lift:Number(tornado.lift||0),resistAxes:tornado.resistAxes||{horizontal:false,vertical:true},damage:Number(tornado.damage||0)}]};}
+  function pathInteraction({state,x,y,kind="UNIT"}={}){
+    const effects=effectAt(state,x,y),tornado=effects.find(e=>e.type===EFFECT.FIRE_TORNADO)||effects.find(e=>e.type===EFFECT.TORNADO);if(!tornado||kind==="SPACE")return{interrupted:false,effects:[]};if(kind==="PROJECTILE")return{interrupted:false,effects:[{type:"WIND_FIELD",effect:tornado}]};
+    const debrisDamage=Math.max(0,Number(tornado.debrisDamage||0));
+    return{interrupted:true,effects:[{type:"FORCED_MOVE",effect:tornado,distance:Number(tornado.pushDistance||2),lift:Number(tornado.lift||0),resistAxes:tornado.resistAxes||{horizontal:false,vertical:true},damage:Number(tornado.damage||0)+debrisDamage,debrisDamage,element:String(tornado.element||"AIR").toUpperCase()}]};
+  }
   function tick(state){for(const [k,list] of [...state.effects.entries()]){const next=[];for(const effect of list){if(effect.duration==null){next.push(effect);continue;}const updated={...effect,duration:effect.duration-1};if(updated.duration>0)next.push(updated);}if(next.length)state.effects.set(k,next);else state.effects.delete(k);}}
   function lightSources(state){const out=[];for(const list of state.effects.values())for(const effect of list)if(effect.lightRadius>0)out.push({x:effect.x,y:effect.y,radius:effect.lightRadius,source:effect.type});return out;}
   function illuminationBonus(state,x,y){
@@ -401,6 +517,6 @@ export const EnvironmentEngine=(()=>{
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
   function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);return range;}
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windLabel,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windLabel,windAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceHydrology,advanceTornadoes,advanceSmoke,spreadFire,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

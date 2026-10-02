@@ -70,7 +70,15 @@ function create(ctx){
       type:String(effect?.type||""),
       intensity:effect?.intensity==null?null:Number(effect.intensity),
       duration:effect?.duration==null?null:Number(effect.duration),
-      visionBlock:effect?.visionBlock===true
+      visionBlock:effect?.visionBlock===true,
+      element:effect?.element==null?null:String(effect.element),
+      clusterSize:effect?.clusterSize==null?null:Number(effect.clusterSize),
+      clusterStrength:effect?.clusterStrength==null?null:Number(effect.clusterStrength),
+      pushDistance:effect?.pushDistance==null?null:Number(effect.pushDistance),
+      lift:effect?.lift==null?null:Number(effect.lift),
+      damage:effect?.damage==null?null:Number(effect.damage),
+      carriedLogs:effect?.carriedLogs==null?null:Number(effect.carriedLogs),
+      debrisDamage:effect?.debrisDamage==null?null:Number(effect.debrisDamage)
     })),fogged:visibility.active&&!tileVisible(tile,visibility),visionBlocked:!!s.environmentState&&!!EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked,deploymentAreaOwner:points.find(point=>(point.area||[]).some(t=>t.x===tile.x&&t.y===tile.y))?.owner||null,capturePoint:capturePoint?{id:capturePoint.id,name:capturePoint.name,owner:capturePoint.owner}:null,core:core?{id:core.id,owner:core.owner,name:core.name,hp:core.hp,maxHp:core.maxHp}:null};});
     return{revision:s.renderRevision,phase:s.phase,round:s.round,mode:s.mode,map:{id:s.map.id,width:s.map.width,height:s.map.height,tiles,objects:(s.map.objects||[]).map(o=>({...o}))},cores:s.cores.map(core=>({...core})),presentation:{deploymentPoints:points.map(point=>({id:point.id,name:point.name,owner:point.owner,capturable:point.capturable!==false,area:(point.area||[]).map(t=>({...t})),captureTiles:(point.captureTiles||[]).map(t=>({...t}))})),environment:{lightSources:(s.environmentState?EnvironmentEngine.lightSources(s.environmentState):[]).map(light=>({...light,visible:visibility.observerless||viewerObservers(s).some(observer=>TacticalEngine.canSeeLight(s.map,observer,light,s.environmentState)),transmission:visibility.observerless?1:Math.max(0,...viewerObservers(s).map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))})),weather:s.environmentState?.weather||"CLEAR",weatherTurnsRemaining:s.environmentState?.weatherTurnsRemaining??null,timeOfDay:s.environmentState?.timeOfDay||"DAY",wind:globalThis.EnvironmentEngine?.climateSnapshot?.(s.environmentState)?.wind||null},enemyHandCount:s.enemyCardState?.zones?.hand?.length||0,enemyDeckCount:s.enemyCardState?.zones?.deck?.length||0},units:s.units.filter(u=>u.alive&&unitVisibleToPlayer(u,visibility)).map(u=>{
       const tile=TacticalEngine.tile(s.map,u.x,u.y),vertical=globalThis.VerticalMobilityEngine?.describe?.(u,tile)||null;
