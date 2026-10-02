@@ -152,6 +152,7 @@ export class TerrainRenderer{
       if(kind==="grass")detail=.85+.10*coarse+.025*fine;
       else if(kind==="soil")detail=.82+.13*coarse+.05*fine;
       else if(kind==="rock")detail=.86+.11*coarse+.025*fine;
+      else if(kind==="cliff")detail=.79+.17*coarse+.055*fine;
       else detail=.89+.06*coarse+.025*fine;
       const value=Math.round(Math.max(0,Math.min(1,detail))*255),offset=(y*size+x)*4;
       pixels[offset]=pixels[offset+1]=pixels[offset+2]=value;pixels[offset+3]=255;
@@ -283,6 +284,10 @@ export class TerrainRenderer{
 
   makeCliffMaterial(){
     const material=new BABYLON.StandardMaterial("terrain-cliffs",this.scene);
+    // A separate texture keeps cliff repeat density independent of map size and
+    // the surface MixMaterial scales. Vertex colours still carry wet/fog tints.
+    material.diffuseTexture=this.makeDetailTexture("cliff");
+    material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
     // Vertical rock faces keep stronger ambient colour so they read as exposed
     // earth/stone rather than a black outline along water and high-ground rims.
@@ -548,7 +553,7 @@ export class TerrainRenderer{
   }
 
 
-  pushCliffTriangle(out,a,b,c,color){
+  pushCliffTriangle(out,a,b,c,color,axis){
     const geometric=faceNormal(a,b,c);
     if(!geometric)return false;
 
@@ -564,6 +569,12 @@ export class TerrainRenderer{
     for(const point of [a,b,c]){
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(normal.x,normal.y,normal.z);
+      // World-space dominant-axis projection: one repeat every 1.5 tiles,
+      // regardless of face height. Side walls use vertical Y, caps use X/Z.
+      const scale=TILE_SIZE*1.5;
+      if(axis==="x")out.uvs.push(point.z/scale,point.y/scale);
+      else if(axis==="z")out.uvs.push(point.x/scale,point.y/scale);
+      else out.uvs.push(point.x/scale,point.z/scale);
       out.colors.push(color[0],color[1],color[2],1);
     }
     out.indices.push(base,base+1,base+2);
@@ -572,8 +583,12 @@ export class TerrainRenderer{
 
   pushCliffQuad(out,a,b,c,d,color){
     const start=out.colors.length;
-    this.pushCliffTriangle(out,a,b,c,color);
-    this.pushCliffTriangle(out,a,c,d,color);
+    const normal=faceNormal(a,b,c)||faceNormal(a,c,d);
+    const nx=Math.abs(normal?.x||0),ny=Math.abs(normal?.y||0),nz=Math.abs(normal?.z||0);
+    const axis=ny>=nx&&ny>=nz?"y":nx>=nz?"x":"z";
+    // Both triangles of a rugged quad use the same plane to avoid a diagonal seam.
+    this.pushCliffTriangle(out,a,b,c,color,axis);
+    this.pushCliffTriangle(out,a,c,d,color,axis);
     const kind=Object.keys(out.palette).find(key=>out.palette[key]===color);
     out.binding.ranges.push({start,end:out.colors.length,kind});
   }
@@ -582,7 +597,7 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.cliffColors=null;
     this.updateCounts.cliffBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[]};
+    const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
@@ -687,6 +702,7 @@ export class TerrainRenderer{
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
+    data.uvs=out.uvs;
     data.applyToMesh(mesh,false);
     this.cliffColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
@@ -764,6 +780,8 @@ export class TerrainRenderer{
       microRegionGeometry:true,
       vertexColorTransitions:true,
       wetCliffBands:true,
+      cliffTextureProjection:"world-dominant-axis",
+      cliffTextureWorldSize:TILE_SIZE*1.5,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
       cliffSurfaceEdgeMatched:true,
