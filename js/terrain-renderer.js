@@ -173,19 +173,23 @@ export class TerrainRenderer{
     for(const tile of tiles){
       const terrain=this.surfaceResolver.baseTerrainOf(tile);
       if(!["PLAIN","FOREST"].includes(terrain)||tile.core||tile.capturePoint||
-        Number(tile.waterDepth||0)>.01||Number(tile.iceThickness||0)>.01||
+        Number(tile.waterDepth||0)>.001||Number(tile.iceThickness||0)>.01||
         Number(tile.snowDepth||0)>.03||Number(tile.debrisMass||0)>.02||
         (tile.effects||[]).some(e=>e==="BURNING"||e==="FIRE_TORNADO"))continue;
-      for(let i=0;i<3;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
+      for(let i=0;i<5;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
     }
     // Distribute a fixed budget across the map, not just the first rows.
     candidates.sort((a,b)=>a.rank-b.rank);
     const positions=[],colors=[],indices=[];
-    for(const {tile,i,rank} of candidates.slice(0,512)){
+    for(const {tile,i,rank} of candidates.slice(0,896)){
       const random=salt=>textureNoise(tile.x*13+i,tile.y*13,8192,salt);
       const ox=(random(173)-.5)*.78,oz=(random(397)-.5)*.78;
       // Leave the tile centre legible for units and small props.
       if(Math.hypot(ox,oz)<.18)continue;
+      // Keep roots and their maximum wind bend back from wet neighbouring cells.
+      const nearWater=[[1,0],[-1,0],[0,1],[0,-1]].some(([x,y])=>
+        Number(byKey.get(keyOf(tile.x+x,tile.y+y))?.waterDepth||0)>.001&&ox*x+oz*y>.20);
+      if(nearWater)continue;
       const tint=this.surfaceResolver.surfaceColorAt(tile,byKey,ox,oz);
       for(let blade=0;blade<3;blade++){
         const angle=random(613+blade*41)*Math.PI*2;
@@ -746,7 +750,7 @@ export class TerrainRenderer{
       surfaceMaterial:"MixMaterial",
       detailTextureSize:128,
       grassBlades:this.grassBlades.length,
-      grassClumpLimit:512,
+      grassClumpLimit:896,
       grassAnimationHz:30,
       materialMixSize:this.surfaceMaterial.mixTexture1.getSize(),
       polygonalSurface:true,

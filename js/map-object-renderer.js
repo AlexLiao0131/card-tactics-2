@@ -31,6 +31,9 @@ export class MapObjectRenderer{
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
+    this.bushTime=0;this.bushFrameTime=0;this.bushWasCalm=true;this.bushWind=null;
+    this.bushObserver=scene.onBeforeRenderObservable.add(()=>this.updateBushWind(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
+    scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.bushObserver));
   }
 
   mat(name,color){const material=new BABYLON.StandardMaterial(name,this.scene);material.diffuseColor=color;material.specularColor=BABYLON.Color3.Black();return material;}
@@ -65,12 +68,73 @@ export class MapObjectRenderer{
   }
 
   createBush(object){
-    const root=this.root(object),seed=hash01(object.id);
-    for(let i=0;i<3;i++){
-      const sphere=this.mesh(root,BABYLON.MeshBuilder.CreateSphere(`bush-${object.id}-${i}`,{diameter:.58,segments:7},this.scene),this.materials.bush);
-      sphere.position.set((i-1)*.24,.25+(i===1?.08:0),(i===1?.06:-.04));sphere.scaling.y=.72;
+    const root=this.root(object),positions=[],indices=[],weights=[];
+    // Broad pointed leaves around woody shoots distinguish shrubs from grass.
+    // One leaf mesh and one merged stem mesh replace the three rounded blobs.
+    let seed=Math.floor(hash01(object.id)*4294967295);
+    const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
+    const stems=[];
+    for(let shoot=0;shoot<7;shoot++){
+      const angle=shoot*2.399+random()*.4,radius=shoot===0?0:.12+random()*.2;
+      const x=Math.cos(angle)*radius,z=Math.sin(angle)*radius,height=.55+random()*.30;
+      const stem=BABYLON.MeshBuilder.CreateCylinder(`bush-stem-${object.id}-${shoot}`,{height,diameterTop:.018,diameterBottom:.035,tessellation:5},this.scene);
+      stem.position.set(x,height*.5,z);stems.push(stem);
+      for(let leaf=0;leaf<5;leaf++){
+        const a=angle+leaf*2.4,dx=Math.cos(a),dz=Math.sin(a),sideX=-dz,sideZ=dx;
+        const y=height*(.28+leaf*.13),length=.22+random()*.13,width=.06+random()*.045;
+        const start=positions.length/3;
+        positions.push(x,y,z,
+          x+dx*length*.5+sideX*width,y+.07,z+dz*length*.5+sideZ*width,
+          x+dx*length*.5,y+.105,z+dz*length*.5,
+          x+dx*length*.5-sideX*width,y+.07,z+dz*length*.5-sideZ*width,
+          x+dx*length,y+.17,z+dz*length);
+        weights.push(0,.5,.5,.5,1);
+        const faces=[0,1,2,0,2,3,1,4,2,2,4,3];
+        for(let i=0;i<faces.length;i+=3){
+          const a=start+faces[i],b=start+faces[i+1],c=start+faces[i+2];
+          indices.push(a,b,c,c,b,a);
+        }
+      }
     }
-    root.rotation.y=seed*Math.PI*2;root.scaling.setAll(.9+seed*.16);return root;
+    const normals=[];
+    // Calculate lighting normals from front faces, then retain reverse triangles
+    // for opaque two-sided leaves without changing other props' material.
+    const front=[];for(let i=0;i<indices.length;i+=6)front.push(...indices.slice(i,i+3));
+    BABYLON.VertexData.ComputeNormals(positions,front,normals);
+    for(let i=0;i<normals.length;i+=3)if(normals[i+1]<0){normals[i]*=-1;normals[i+1]*=-1;normals[i+2]*=-1;}
+    const leaves=this.mesh(root,new BABYLON.Mesh(`bush-leaves-${object.id}`,this.scene),this.materials.bush);
+    const data=new BABYLON.VertexData();Object.assign(data,{positions,indices,normals});data.applyToMesh(leaves,true);
+    leaves.metadata={leafSway:{rest:new Float32Array(positions),positions:new Float32Array(positions),weights,phase:random()*Math.PI*2}};
+    const bounds=leaves.getBoundingInfo().boundingBox;
+    leaves.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.08,0,.08)),bounds.maximum.add(new BABYLON.Vector3(.08,0,.08))));
+    const stemMesh=BABYLON.Mesh.MergeMeshes(stems,true,true);
+    if(stemMesh)this.mesh(root,stemMesh,this.materials.trunk);
+    return root;
+  }
+
+  updateBushWind(dt){
+    this.bushTime+=dt;this.bushFrameTime+=dt;
+    if(this.bushFrameTime<1/30)return;this.bushFrameTime=0;
+    const wind=this.bushWind||{},strength=clamp(Number(wind.strength||0),0,3);
+    if(strength===0&&this.bushWasCalm)return;
+    this.bushWasCalm=strength===0;
+    const direction=new BABYLON.Vector3(Number(wind.x||0),0,Number(wind.y||0));
+    if(direction.lengthSquared()>0)direction.normalize();
+    for(const entry of this.nodes.values()){
+      if(entry.signature!=="BUSH")continue;
+      for(const mesh of entry.model.getChildMeshes()){
+        const sway=mesh.metadata?.leafSway;if(!sway)continue;
+        const local=BABYLON.Vector3.TransformNormal(direction,mesh.computeWorldMatrix(true).clone().invert());
+        local.y=0;if(local.lengthSquared()>0)local.normalize();
+        const bend=strength*.022*(.65+.35*Math.sin(this.bushTime*1.9+sway.phase));
+        for(let v=0;v<sway.weights.length;v++){
+          const offset=v*3,amount=bend*sway.weights[v];
+          sway.positions[offset]=sway.rest[offset]+local.x*amount;
+          sway.positions[offset+2]=sway.rest[offset+2]+local.z*amount;
+        }
+        mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
+      }
+    }
   }
 
   createBoulder(object){
@@ -205,6 +269,7 @@ export class MapObjectRenderer{
   }
 
   sync(state){
+    this.bushWind=state?.presentation?.environment?.wind||null;
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
     const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&object.type!=="CORE");
     // Existing debrisMass is the source of truth. These are presentation records,
