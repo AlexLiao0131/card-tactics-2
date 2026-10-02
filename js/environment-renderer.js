@@ -620,7 +620,7 @@ export class EnvironmentRenderer{
   }
 
   disposeSmokeClusters(){
-    for(const entry of this.smokeClusters.values()){entry.system?.stop?.();entry.system?.dispose?.();this.animated.delete(entry.key);entry.root?.dispose?.();}
+    for(const entry of this.smokeClusters.values()){entry.system?.stop?.();entry.system?.dispose?.(false);this.animated.delete(entry.key);entry.root?.dispose?.();}
     this.smokeClusters.clear();
   }
 
