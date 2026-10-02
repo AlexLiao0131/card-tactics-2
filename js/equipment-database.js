@@ -21,7 +21,7 @@ export const EQUIPMENT={
 
   church_training_sword:{id:"church_training_sword",name:"教團訓練劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:[],defenseProfiles:[{id:"church_sword_parry",method:"PARRY",name:"長劍招架",vs:{SLASH:{chance:65},PIERCE:{chance:60},SHOT:{chance:10},STRIKE:{chance:0},MAGIC:{chance:0}}}]},
   church_greatsword:{id:"church_greatsword",name:"聖殿雙手劍",kind:"WEAPON",weaponKind:"GREATSWORD",attackType:"SLASH",element:"HOLY",affixes:[],defenseProfiles:[{id:"church_greatsword_parry",method:"PARRY",name:"雙手劍招架",vs:{SLASH:{chance:75},PIERCE:{chance:70},SHOT:{chance:15},STRIKE:{chance:10},MAGIC:{chance:0}}}]},
-  church_saint_greatsword:{id:"church_saint_greatsword",name:"常駐神聖附魔雙手劍",kind:"WEAPON",weaponKind:"GREATSWORD",attackType:"SLASH",element:"HOLY",affixes:[],defenseProfiles:[{id:"saint_greatsword_parry",method:"PARRY",name:"聖劍招架",vs:{SLASH:{chance:85},PIERCE:{chance:80},SHOT:{chance:25},STRIKE:{chance:15},MAGIC:{chance:0}}}]},
+  church_saint_greatsword:{id:"church_saint_greatsword",name:"常駐神聖附魔雙手劍",kind:"WEAPON",weaponKind:"GREATSWORD",attackType:"SLASH",element:"HOLY",affixes:[],lightSource:{radius:2,visionBonus:2,color:"#ffd563",intensity:1.25,kind:"HOLY"},defenseProfiles:[{id:"saint_greatsword_parry",method:"PARRY",name:"聖劍招架",vs:{SLASH:{chance:85},PIERCE:{chance:80},SHOT:{chance:25},STRIKE:{chance:15},MAGIC:{chance:0}}}]},
   church_heavy_plate:{id:"church_heavy_plate",name:"教團重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"NONE",affixes:[]},
   church_templar_plate:{id:"church_templar_plate",name:"聖殿騎士重甲",kind:"ARMOR",type:"HEAVY",types:["HEAVY"],element:"HOLY",affixes:[]},
   church_bishop_robe:{id:"church_bishop_robe",name:"主教法衣",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"HOLY",affixes:[]},
@@ -48,7 +48,9 @@ export const EquipmentDatabase=(()=>{
   function defenseProfiles(character){const profiles=[];for(const item of equippedItems(character))for(const profile of item.defenseProfiles||[])profiles.push({...profile,sourceId:item.id,sourceName:item.name});return profiles}
   function resolveLoadout(loadout={}){const weapons={};Object.entries(loadout.weaponIds||{}).forEach(([slot,id])=>{const item=get(id);if(item)weapons[slot]=item});return{armor:get(loadout.armorId)||{name:"無甲",type:"NONE",types:["NONE"],element:"NONE",affixes:[]},weapons,equipment:list(loadout.equipmentIds),guard:loadout.guardId?get(loadout.guardId):undefined}}
   function grantedSkillIds(character){const out=[];for(const item of equippedItems(character)){if(item?.basicSkillId)out.push(item.basicSkillId);for(const id of item?.grantedSkillIds||[])out.push(id)}return[...new Set(out)]}
-  return{get,list,equippedItems,defenseProfiles,resolveLoadout,grantedSkillIds}
+  function lightSources(character){const out=[];for(const item of equippedItems(character)){const light=item?.lightSource;if(!light||Number(light.radius)<=0)continue;out.push({...light,sourceId:item.id,sourceName:item.name});}return out}
+  function visionBonus(character){return lightSources(character).reduce((sum,light)=>sum+Math.max(0,Number(light.visionBonus||0)),0)}
+  return{get,list,equippedItems,defenseProfiles,resolveLoadout,grantedSkillIds,lightSources,visionBonus}
 })();
 globalThis.EQUIPMENT=EQUIPMENT;
 globalThis.EquipmentDatabase=EquipmentDatabase;

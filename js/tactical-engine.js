@@ -128,9 +128,9 @@ export const TacticalEngine=(()=>{
     return false;
   }
   function effectiveVisionRange(observer){
-    const explicit=Number(observer?.character?.visionRange),base=Number.isFinite(explicit)?explicit:BASE_VISION_RANGE,bonus=effectVisionBonus(observer);
+    const explicit=Number(observer?.character?.visionRange),base=Number.isFinite(explicit)?explicit:BASE_VISION_RANGE,bonus=effectVisionBonus(observer),equipmentBonus=Number(globalThis.EquipmentDatabase?.visionBonus?.(observer?.character)||0);
     const altitude=Math.max(0,Number(observer?.verticalState?.altitude||0)),perAltitude=Math.max(0,Number(observer?.character?.verticalMobility?.visionRangePerAltitude||0));
-    return Math.max(LOCAL_AWARENESS_RANGE,base+altitude*perAltitude+bonus);
+    return Math.max(LOCAL_AWARENESS_RANGE,base+altitude*perAltitude+bonus+equipmentBonus);
   }
   function environmentVisionLimit(environmentState,target=null){
     if(!environmentState||!window.EnvironmentEngine?.visionRange)return Infinity;
