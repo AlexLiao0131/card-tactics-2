@@ -84,7 +84,7 @@ export const EnvironmentObjectEngine=(()=>{
   }
 
   function activeObjectsAt(map,x,y){
-    return (map?.objects||[]).filter(o=>!o?.destroyed&&o.x===x&&o.y===y).map(hydrate);
+    return (map?.objects||[]).filter(o=>!o?.destroyed&&!o?.carriedBy&&o.x===x&&o.y===y).map(hydrate);
   }
 
   function deterministic01(value){
@@ -189,6 +189,25 @@ export const EnvironmentObjectEngine=(()=>{
     sortObjects(map);return true;
   }
 
+  function carriedObjects(map,carrierId=null){
+    const id=carrierId==null?null:String(carrierId);
+    return (map?.objects||[]).filter(object=>!object?.destroyed&&object?.carriedBy&&(id==null||String(object.carriedBy)===id)).map(hydrate);
+  }
+
+  function carryObject(map,object,carrierId,{events=[],reason="CARRIED"}={}){
+    if(!map||!object||object.destroyed||!carrierId)return null;hydrate(object);
+    const previous=object.carriedBy?String(object.carriedBy):null,next=String(carrierId);if(previous===next)return object;if(previous==null){object.carriedBlocksMovement=object.blocksMovement===true;object.blocksMovement=false;}object.carriedBy=next;
+    events.push({type:"ENV_OBJECT_CARRIED",objectId:object.id,objectType:normalizeType(object.type),carrierId:object.carriedBy,previousCarrierId:previous,x:object.x,y:object.y,reason});
+    sortObjects(map);return object;
+  }
+
+  function releaseObject(map,object,x,y,{events=[],reason="RELEASED"}={}){
+    if(!map||!object||object.destroyed)return null;hydrate(object);
+    const carrierId=object.carriedBy?String(object.carriedBy):null;object.x=Number(x);object.y=Number(y);delete object.carriedBy;if(object.carriedBlocksMovement!=null){object.blocksMovement=object.carriedBlocksMovement===true;delete object.carriedBlocksMovement;}
+    events.push({type:"ENV_OBJECT_RELEASED",objectId:object.id,objectType:normalizeType(object.type),carrierId,x:object.x,y:object.y,reason});
+    sortObjects(map);return object;
+  }
+
   function applyDamage(map,object,amount,{events=[],reason="DAMAGE",fire=false}={}){
     if(!object||object.destroyed||object.destructible===false)return{destroyed:false,damage:0};
     hydrate(object);const damage=Math.max(0,Math.round(Number(amount||0)));if(damage<=0)return{destroyed:false,damage:0};
@@ -256,7 +275,7 @@ export const EnvironmentObjectEngine=(()=>{
 
   return Object.freeze({
     TYPE,PROFILES,normalizeType,profile,isEnvironmentObject,hydrate,initializeMap,seedTerrainObjects,
-    activeObjectsAt,spawn,transform,destroy,fellTree,moveObject,applyDamage,burnAt,applyForces,tickBurning,
+    activeObjectsAt,spawn,transform,destroy,fellTree,moveObject,carriedObjects,carryObject,releaseObject,applyDamage,burnAt,applyForces,tickBurning,
     rootStrengthAt,erosionResistanceAt,flowResistanceAt,flammableAt,resolveMassFlow,sortObjects
   });
 })();

@@ -299,7 +299,7 @@ export class MapObjectRenderer{
   sync(state){
     this.vegetationWind=state?.presentation?.environment?.wind||null;
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
-    const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&object.type!=="CORE");
+    const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&!object.carriedBy&&object.type!=="CORE");
     // Existing debrisMass is the source of truth. These are presentation records,
     // never inserted into map.objects, so debris cannot acquire collision rules.
     for(const tile of tiles)if(Number(tile.debrisMass||0)>.02)objects.push({id:`visual-debris:${tile.x},${tile.y}`,type:"RUBBLE",x:tile.x,y:tile.y});
