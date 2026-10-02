@@ -198,6 +198,59 @@ export const VISUALS={
         }
       }
     },
+    cat_thief_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.62,
+        figure:{
+          style:"CATFOLK_THIEF",
+          braid:false,
+          midHair:true,
+          catEars:true,
+          catTail:true,
+          hood:true,
+          cape:true,
+          bow:false,
+          quiver:false,
+          sideSword:false,
+          skirtPanels:true,
+          thiefGear:true,
+          croppedTop:true,
+          asymmetricLegwear:true,
+          dualDaggers:true,
+          colors:{
+            skin:"#efc3b0",
+            hair:"#c9c0bb",
+            hairDark:"#9f9593",
+            cape:"#27272d",
+            capeDark:"#15161a",
+            leather:"#332b2a",
+            leatherDark:"#1a181b",
+            shirt:"#27242a",
+            pants:"#3a343b",
+            boots:"#211f22",
+            metal:"#a9825c",
+            weapon:"#c8c4c3",
+            eyes:"#8f82bd",
+            accent:"#a25c78",
+            gem:"#a782b4",
+            tail:"#c7b9ae",
+            tailTip:"#8e7b74",
+            innerEar:"#c98f98"
+          }
+        },
+        animations:{
+          IDLE:{duration:1050,loop:true,procedural:"BREATHE"},
+          WALK:{duration:150,loop:true,procedural:"STEP",figureMotion:{bodyBob:.062,rootSway:.034,bodySway:.030,torsoBob:.017,legSwing:.62,armSwing:.46,bowSwing:0,capeSwing:.20,capeTwist:.080,braidSwing:.18,braidTwist:.085,followLag:.58}},
+          ATTACK:{duration:300,loop:false,procedural:"LUNGE"},
+          CAST:{duration:420,loop:false,procedural:"CAST"},
+          HURT:{duration:220,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:680,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     ophi_eagle:{
       battle:{
         kind:"BIRD",

@@ -239,6 +239,9 @@ export class UnitRenderer{
     makePart("quiver",[.275,1.48,-.225]);
     makePart("sword",[.30,.90,-.03]);
     makePart("weapon",[.30,.90,.02]);
+    makePart("leftWeapon",[-.30,.80,.05]);
+    makePart("rightWeapon",[.30,.80,.05]);
+    makePart("tail",[0,.88,-.17]);
 
     const localPoint=(partName,point)=>{
       const pivot=figureParts[partName]?.metadata?.figurePivot||[0,0,0];
@@ -270,10 +273,16 @@ export class UnitRenderer{
       gold:this.figureMaterial("gold",colors.gold||"#b58a4d"),
       tabard:this.figureMaterial("tabard",colors.tabard||colors.shirt||"#eee9df"),
       holy:this.figureMaterial("holy",colors.holy||"#ffd86a"),
+      tail:this.figureMaterial("tail",colors.tail||colors.hair||"#c8b9ae"),
+      tailTip:this.figureMaterial("tail-tip",colors.tailTip||colors.hairDark||"#8f7b73"),
+      innerEar:this.figureMaterial("inner-ear",colors.innerEar||"#c99096"),
       dark:this.figureMaterial("dark","#1d1c20")
     };
     material.cape.backFaceCulling=false;
     material.capeDark.backFaceCulling=false;
+    material.hair.backFaceCulling=false;
+    material.tail.backFaceCulling=false;
+    material.innerEar.backFaceCulling=false;
     material.holy.backFaceCulling=false;
     material.holy.alpha=.72;
     material.holy.emissiveColor=this.figureColor(colors.holyEmissive||colors.holy||"#ffd86a").scale(.92);
@@ -354,6 +363,23 @@ export class UnitRenderer{
       custom("figure-ear-r",[[.155,1.57,.02],[.33,1.60,.015],[.165,1.48,.025]],[0,2,1],material.skin,"head");
     }
 
+    if(figure.catEars){
+      custom("figure-cat-ear-l",[[-.18,1.67,-.015],[-.10,1.88,-.02],[-.02,1.67,-.015]],[0,1,2],material.hair,"head");
+      custom("figure-cat-ear-r",[[.02,1.67,-.015],[.10,1.88,-.02],[.18,1.67,-.015]],[0,1,2],material.hair,"head");
+      custom("figure-cat-ear-inner-l",[[-.145,1.69,.01],[-.10,1.82,.005],[-.055,1.69,.01]],[0,1,2],material.innerEar,"head");
+      custom("figure-cat-ear-inner-r",[[.055,1.69,.01],[.10,1.82,.005],[.145,1.69,.01]],[0,1,2],material.innerEar,"head");
+      box("figure-cat-ear-ribbon-l",[.085,.045,.035],material.accent,[-.17,1.68,.055],[.06,0,-.20],"head");
+      box("figure-cat-ear-ribbon-r",[.085,.045,.035],material.accent,[.17,1.68,.055],[-.06,0,.20],"head");
+    }
+
+    if(figure.midHair){
+      const xs=[-.20,-.10,0,.10,.20];
+      for(let i=0;i<xs.length;i++){
+        const x=xs[i],outer=Math.abs(x)>.15;
+        cylinder(`figure-mid-hair-${i}`,outer?.46:.54,.07,.10,material.hairDark,[x,1.27,-.14],[0,0,x*.30],6,"hairBack");
+      }
+    }
+
     if(figure.longHair){
       const strandX=[-.24,-.14,-.05,.05,.14,.24];
       for(let i=0;i<strandX.length;i++){
@@ -368,14 +394,31 @@ export class UnitRenderer{
       box("figure-hair-ribbon-tail-b",[.065,.36,.035],material.accent,[-.13,1.34,-.13],[-.12,0,-.10],"hairBack");
     }
 
+    if(figure.hood){
+      const hood=BABYLON.MeshBuilder.CreateTorus(`figure-hood-${unit.id}`,{diameter:.43*scale,thickness:.085*scale,tessellation:12},this.scene);
+      finish(hood,material.cape,[0,1.46,-.13],[Math.PI/2,0,0],[1.08,.84,.68],{part:"cape"});
+      box("figure-hood-fold",[.40,.16,.12],material.capeDark,[0,1.35,-.15],[.12,0,0],"cape");
+    }
+
     // Tapered torso gives a readable shoulder/waist silhouette at tactical zoom.
-    cylinder("figure-blouse",.43,.43,.31,material.shirt,[0,1.17,0],null,6,"body");
-    cylinder("figure-vest",.36,.38,.29,material.leather,[0,1.15,.018],null,6,"body");
+    const cropped=figure.croppedTop===true;
+    cylinder("figure-blouse",cropped?.30:.43,.43,.31,material.shirt,[0,cropped?1.24:1.17,0],null,6,"body");
+    cylinder("figure-vest",cropped?.27:.36,.38,.29,material.leather,[0,cropped?1.235:1.15,.018],null,6,"body");
+    if(cropped)cylinder("figure-midriff",.18,.30,.29,material.skin,[0,1.01,.015],null,7,"body");
     cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6,"body");
     box("figure-belt",[.44,.07,.27],material.leather,[0,.96,.015],null,"body");
     box("figure-buckle",[.068,.064,.035],material.metal,[0,.96,.16],null,"body");
     box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04],"body");
     sphere("figure-clasp",.075,material.metal,[-.19,1.36,.11],[1,.70,.45],5,"body");
+
+    if(figure.thiefGear){
+      box("figure-thief-cross-strap-a",[.055,.58,.035],material.leatherDark,[-.075,1.17,.16],[0,0,-.48],"body");
+      box("figure-thief-cross-strap-b",[.055,.54,.035],material.leather,[.09,1.16,.165],[0,0,.48],"body");
+      box("figure-thief-belt-low",[.48,.055,.285],material.leatherDark,[0,.875,.02],[0,0,.04],"body");
+      box("figure-thief-pouch-l",[.14,.18,.09],material.leather,[-.24,.82,.08],[0,.08,-.05],"body");
+      box("figure-thief-pouch-r",[.13,.16,.08],material.leather,[.24,.84,.07],[0,-.08,.05],"body");
+      sphere("figure-thief-charm",.055,material.gem,[.13,.88,.17],[.70,1.05,.42],5,"body");
+    }
 
     if(figure.heavyArmor){
       cylinder("figure-chest-plate",.38,.42,.34,material.armor,[0,1.18,.025],null,8,"body");
@@ -403,17 +446,27 @@ export class UnitRenderer{
     }
 
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
+    const asymmetric=figure.asymmetricLegwear===true;
+    const leftThighMaterial=asymmetric?material.skin:material.pants;
+    const rightThighMaterial=material.pants;
+    const leftShinMaterial=asymmetric?material.skin:material.pants;
+    const rightShinMaterial=material.pants;
     cylinder("figure-hips",.18,.33,.36,material.pants,[0,.82,0],null,6,"body");
-    cylinder("figure-thigh-l",.38,.17,.145,material.pants,[-.115,.66,0],[0,0,.018],6,"leftLeg");
-    cylinder("figure-thigh-r",.38,.17,.145,material.pants,[.115,.66,0],[0,0,-.018],6,"rightLeg");
-    cylinder("figure-shin-l",.34,.135,.115,material.pants,[-.115,.36,.008],[0,0,.014],6,"leftLeg");
-    cylinder("figure-shin-r",.34,.135,.115,material.pants,[.115,.36,.008],[0,0,-.014],6,"rightLeg");
+    cylinder("figure-thigh-l",.38,.17,.145,leftThighMaterial,[-.115,.66,0],[0,0,.018],6,"leftLeg");
+    cylinder("figure-thigh-r",.38,.17,.145,rightThighMaterial,[.115,.66,0],[0,0,-.018],6,"rightLeg");
+    cylinder("figure-shin-l",.34,.135,.115,leftShinMaterial,[-.115,.36,.008],[0,0,.014],6,"leftLeg");
+    cylinder("figure-shin-r",.34,.135,.115,rightShinMaterial,[.115,.36,.008],[0,0,-.014],6,"rightLeg");
     box("figure-boot-shaft-l",[.18,.29,.20],material.boots,[-.115,.245,.025],null,"leftLeg");
     box("figure-boot-shaft-r",[.18,.29,.20],material.boots,[.115,.245,.025],null,"rightLeg");
     box("figure-boot-foot-l",[.19,.11,.31],material.boots,[-.115,.075,.075],[-.03,0,0],"leftLeg");
     box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
     box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
     box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
+    if(figure.thiefGear){
+      box("figure-thigh-strap-l",[.21,.055,.19],material.leatherDark,[-.115,.68,.015],[0,0,.02],"leftLeg");
+      box("figure-thigh-strap-r",[.21,.055,.19],material.leather,[.115,.61,.015],[0,0,-.02],"rightLeg");
+      box("figure-thigh-knife-sheath",[.055,.27,.055],material.leatherDark,[.205,.57,.04],[0,0,-.12],"rightLeg");
+    }
     if(figure.heavyArmor){
       box("figure-greave-l",[.205,.42,.215],material.armor,[-.115,.29,.02],[0,0,.02],"leftLeg");
       box("figure-greave-r",[.205,.42,.215],material.armor,[.115,.29,.02],[0,0,-.02],"rightLeg");
@@ -490,6 +543,24 @@ export class UnitRenderer{
       custom("figure-tabard-front",[[-.16,.98,.155],[.16,.98,.155],[.20,.28,.13],[-.20,.28,.13]],[0,2,1,0,3,2],material.tabard,"skirt");
       custom("figure-tabard-back",[[-.17,.96,-.17],[.17,.96,-.17],[.23,.22,-.16],[-.23,.22,-.16]],[0,1,2,0,2,3],material.cape,"skirt");
       box("figure-tabard-gold",[.055,.60,.025],material.gold,[0,.62,.17],null,"skirt");
+    }
+
+    if(figure.catTail){
+      const tailPath=[[0,.88,-.17],[-.18,.82,-.22],[-.36,.92,-.28],[-.43,1.10,-.27],[-.31,1.27,-.22],[-.12,1.31,-.18]].map(point=>localPoint("tail",point));
+      const tailMesh=BABYLON.MeshBuilder.CreateTube(`figure-cat-tail-${unit.id}`,{path:tailPath,radius:.060*scale,tessellation:7,cap:BABYLON.Mesh.CAP_ALL},this.scene);
+      finish(tailMesh,material.tail,null,null,null,{part:"tail"});
+      sphere("figure-cat-tail-tip",.15,material.tailTip,[-.12,1.31,-.18],[1.0,.78,.78],6,"tail");
+    }
+
+    if(figure.dualDaggers){
+      const dagger=(side,part,x)=>{
+        box(`figure-dagger-blade-${side}`,[.060,.34,.035],material.weapon,[x,.59,.075],[0,0,side==="l"?.10:-.10],part);
+        box(`figure-dagger-guard-${side}`,[.16,.035,.060],material.metal,[x,.76,.075],[0,0,0],part);
+        cylinder(`figure-dagger-grip-${side}`,.15,.045,.045,material.leather,[x,.855,.075],[0,0,0],6,part);
+        sphere(`figure-dagger-gem-${side}`,.050,material.gem,[x,.945,.075],[.75,.75,.55],5,part);
+      };
+      dagger("l","leftWeapon",-.30);
+      dagger("r","rightWeapon",.30);
     }
 
     if(figure.rapier){
@@ -833,6 +904,12 @@ export class UnitRenderer{
     }
     if(parts.skirt)parts.skirt.rotation.x+=capeFollow*(capeSwing*.38);
     if(parts.weapon)parts.weapon.rotation.x+=stride*.055;
+    if(parts.leftWeapon)parts.leftWeapon.rotation.x-=stride*armSwing*.92;
+    if(parts.rightWeapon)parts.rightWeapon.rotation.x+=stride*armSwing*.92;
+    if(parts.tail){
+      parts.tail.rotation.y+=Math.sin(cycle*.72-followLag)*.16;
+      parts.tail.rotation.z+=Math.sin(cycle-followLag*.45)*.12;
+    }
   }
 
   applyBirdPose(entry,state,progress,now){
@@ -848,6 +925,12 @@ export class UnitRenderer{
   attackTypeFor(event){
     const id=event?.skillId;if(!id)return"";
     try{return String(globalThis.SkillDatabase?.get?.(id)?.attackType||"").toUpperCase();}
+    catch(_error){return"";}
+  }
+
+  attackClassFor(event){
+    const id=event?.skillId;if(!id)return"";
+    try{return String(globalThis.SkillDatabase?.get?.(id)?.attackClass||"").toUpperCase();}
     catch(_error){return"";}
   }
 
@@ -869,6 +952,30 @@ export class UnitRenderer{
       return true;
     }
 
+    const dualDaggers=entry.definition?.figure?.dualDaggers===true;
+    if(type==="PIERCE"&&dualDaggers&&parts.rightWeapon){
+      const ranged=this.attackClassFor(event)==="RANGED";
+      if(ranged){
+        const draw=ease(progress/.32),throwPhase=Math.sin(Math.PI*clamp01((progress-.22)/.58));
+        if(parts.rightArm){parts.rightArm.rotation.x+=draw*.68-throwPhase*1.34;parts.rightArm.rotation.z-=draw*.44+throwPhase*.18;}
+        parts.rightWeapon.rotation.x+=draw*.72-throwPhase*1.55;parts.rightWeapon.rotation.z-=draw*.28;
+        if(parts.leftArm)parts.leftArm.rotation.z+=draw*.18;
+        if(parts.body)parts.body.rotation.y+=draw*.20-throwPhase*.34;
+        if(parts.cape)parts.cape.rotation.z-=throwPhase*.12;
+        if(parts.tail)parts.tail.rotation.y-=throwPhase*.18;
+        return true;
+      }
+      const ready=ease(progress/.22),thrust=Math.sin(Math.PI*clamp01((progress-.14)/.70));
+      if(parts.rightArm){parts.rightArm.rotation.x-=ready*.46+thrust*1.02;parts.rightArm.rotation.z+=ready*.18;}
+      if(parts.leftArm){parts.leftArm.rotation.x+=ready*.18;parts.leftArm.rotation.z-=ready*.36;}
+      parts.rightWeapon.rotation.x-=ready*.58+thrust*1.08;parts.rightWeapon.rotation.z-=ready*.10;
+      parts.leftWeapon.rotation.z+=ready*.28;
+      if(parts.body){parts.body.rotation.x+=thrust*.05;parts.body.rotation.y-=thrust*.16;}
+      if(parts.tail)parts.tail.rotation.y+=thrust*.22;
+      entry.root.position.x+=vector.x*thrust*.62;entry.root.position.z+=vector.z*thrust*.62;
+      return true;
+    }
+
     if(type==="PIERCE"&&parts.weapon){
       const ready=ease(progress/.24),thrust=Math.sin(Math.PI*clamp01((progress-.16)/.68));
       if(parts.rightArm){parts.rightArm.rotation.x-=ready*.55+thrust*.92;parts.rightArm.rotation.z+=ready*.20;}
@@ -878,6 +985,21 @@ export class UnitRenderer{
       if(parts.cape)parts.cape.rotation.x+=thrust*.16;
       if(parts.hairBack)parts.hairBack.rotation.x+=thrust*.12;
       entry.root.position.x+=vector.x*thrust*.58;entry.root.position.z+=vector.z*thrust*.58;
+      return true;
+    }
+
+    if(type==="SLASH"&&dualDaggers&&parts.leftWeapon&&parts.rightWeapon){
+      const wind=ease(progress/.22);
+      const first=Math.sin(Math.PI*clamp01((progress-.12)/.50));
+      const second=Math.sin(Math.PI*clamp01((progress-.42)/.50));
+      if(parts.rightArm){parts.rightArm.rotation.x-=wind*.36+first*.64;parts.rightArm.rotation.z-=wind*.52-first*1.05+second*.28;}
+      if(parts.leftArm){parts.leftArm.rotation.x-=wind*.24+second*.62;parts.leftArm.rotation.z+=wind*.48+second*1.00-first*.22;}
+      parts.rightWeapon.rotation.z-=wind*.48-first*1.28+second*.24;
+      parts.leftWeapon.rotation.z+=wind*.44+second*1.24-first*.20;
+      if(parts.body){parts.body.rotation.y-=first*.34;parts.body.rotation.y+=second*.40;parts.body.rotation.z+=(second-first)*.06;}
+      if(parts.cape)parts.cape.rotation.z+=(second-first)*.18;
+      if(parts.tail){parts.tail.rotation.y+=(first-second)*.28;parts.tail.rotation.z+=(second-first)*.16;}
+      const dash=Math.max(first,second);entry.root.position.x+=vector.x*dash*.34;entry.root.position.z+=vector.z*dash*.34;
       return true;
     }
 
@@ -921,6 +1043,7 @@ export class UnitRenderer{
         if(parts.rightLeg)parts.rightLeg.rotation.x-=flail*.40;
         if(parts.cape)parts.cape.rotation.x+=.30+Math.sin(progress*Math.PI*5)*.20;
         if(parts.braid)parts.braid.rotation.x+=.38+Math.sin(progress*Math.PI*5.7)*.25;
+        if(parts.tail){parts.tail.rotation.y+=Math.sin(progress*Math.PI*7)*.45;parts.tail.rotation.z+=Math.cos(progress*Math.PI*6)*.28;}
       }
       return;
     }
@@ -958,6 +1081,10 @@ export class UnitRenderer{
       const breathe=Math.sin(now/300);
       entry.root.position.y+=breathe*.055;
       entry.root.scaling.y=entry.baseScale*(1+breathe*.035);
+      if(entry.kind==="FIGURE"&&entry.figureParts?.tail){
+        entry.figureParts.tail.rotation.y+=Math.sin(now/420)*.14;
+        entry.figureParts.tail.rotation.z+=Math.sin(now/610+.8)*.09;
+      }
       return;
     }
 
