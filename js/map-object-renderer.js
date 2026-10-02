@@ -31,9 +31,9 @@ export class MapObjectRenderer{
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
-    this.bushTime=0;this.bushFrameTime=0;this.bushWasCalm=true;this.bushWind=null;
-    this.bushObserver=scene.onBeforeRenderObservable.add(()=>this.updateBushWind(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
-    scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.bushObserver));
+    this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
+    this.vegetationObserver=scene.onBeforeRenderObservable.add(()=>this.updateVegetationWind(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
+    scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.vegetationObserver));
   }
 
   mat(name,color){const material=new BABYLON.StandardMaterial(name,this.scene);material.diffuseColor=color;material.specularColor=BABYLON.Color3.Black();return material;}
@@ -46,8 +46,36 @@ export class MapObjectRenderer{
     const trunk=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`tree-trunk-${object.id}`,{height:1.25,diameter:.24,tessellation:7},this.scene),trunkMat);
     trunk.position.y=.625;
     if(!dead){
-      const canopy=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`tree-canopy-${object.id}`,{height:1.35,diameterTop:.10,diameterBottom:1.08,tessellation:8},this.scene),this.materials.foliage);
-      canopy.position.y=1.48;
+      const positions=[],indices=[],segments=7;
+      let randomState=Math.floor(seed*4294967295);
+      const random=()=>{randomState=(Math.imul(randomState,1664525)+1013904223)>>>0;return randomState/4294967296;};
+      // Overlapping, asymmetric foliage tiers retain the existing tree footprint
+      // and height. All tiers share one mesh rather than adding draw calls.
+      for(let tier=0;tier<3;tier++){
+        const base=positions.length/3,bottom=.81+tier*.32,height=.70-tier*.025;
+        const radius=.58-tier*.13,angle=tier*1.1+random()*.4;
+        const cx=(random()-.5)*.13,cz=(random()-.5)*.13;
+        const sizes=Array.from({length:segments},()=>.84+random()*.25);
+        for(let ring=0;ring<2;ring++)for(let i=0;i<segments;i++){
+          const a=angle+i/segments*Math.PI*2,r=radius*sizes[i]*(ring?.62:1);
+          positions.push(cx+Math.cos(a)*r,bottom+ring*height*.48+(random()-.5)*.055,cz+Math.sin(a)*r);
+        }
+        const tip=positions.length/3;positions.push(cx+.035,bottom+height,cz-.025);
+        const centre=positions.length/3;positions.push(cx,bottom,cz);
+        for(let i=0;i<segments;i++){
+          const next=(i+1)%segments,a=base+i,b=base+next,c=base+segments+i,d=base+segments+next;
+          indices.push(a,b,c,b,d,c,c,d,tip,centre,b,a);
+        }
+      }
+      const normals=[];BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+      const canopy=this.mesh(root,new BABYLON.Mesh(`tree-canopy-${object.id}`,this.scene),this.materials.foliage);
+      const data=new BABYLON.VertexData();Object.assign(data,{positions,indices,normals});data.applyToMesh(canopy,true);
+      canopy.convertToFlatShadedMesh();
+      const rest=new Float32Array(canopy.getVerticesData(BABYLON.VertexBuffer.PositionKind));
+      const weights=Array.from({length:rest.length/3},(_,i)=>Math.pow(clamp((rest[i*3+1]-1)/1.2,0,1),1.5));
+      canopy.metadata={leafSway:{rest,positions:new Float32Array(rest),weights,phase:random()*Math.PI*2,amplitude:.04,speed:1.25}};
+      const bounds=canopy.getBoundingInfo().boundingBox;
+      canopy.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.13,0,.13)),bounds.maximum.add(new BABYLON.Vector3(.13,0,.13))));
     }else{
       for(let i=0;i<2;i++){
         const branch=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`dead-branch-${object.id}-${i}`,{height:.62,diameter:.08,tessellation:6},this.scene),trunkMat);
@@ -112,21 +140,21 @@ export class MapObjectRenderer{
     return root;
   }
 
-  updateBushWind(dt){
-    this.bushTime+=dt;this.bushFrameTime+=dt;
-    if(this.bushFrameTime<1/30)return;this.bushFrameTime=0;
-    const wind=this.bushWind||{},strength=clamp(Number(wind.strength||0),0,3);
-    if(strength===0&&this.bushWasCalm)return;
-    this.bushWasCalm=strength===0;
+  updateVegetationWind(dt){
+    this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
+    if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
+    const wind=this.vegetationWind||{},strength=clamp(Number(wind.strength||0),0,3);
+    if(strength===0&&this.vegetationWasCalm)return;
+    this.vegetationWasCalm=strength===0;
     const direction=new BABYLON.Vector3(Number(wind.x||0),0,Number(wind.y||0));
     if(direction.lengthSquared()>0)direction.normalize();
     for(const entry of this.nodes.values()){
-      if(entry.signature!=="BUSH")continue;
+      if(entry.signature!=="BUSH"&&entry.signature!=="TREE")continue;
       for(const mesh of entry.model.getChildMeshes()){
         const sway=mesh.metadata?.leafSway;if(!sway)continue;
         const local=BABYLON.Vector3.TransformNormal(direction,mesh.computeWorldMatrix(true).clone().invert());
         local.y=0;if(local.lengthSquared()>0)local.normalize();
-        const bend=strength*.022*(.65+.35*Math.sin(this.bushTime*1.9+sway.phase));
+        const bend=strength*(sway.amplitude??.022)*(.65+.35*Math.sin(this.vegetationTime*(sway.speed??1.9)+sway.phase));
         for(let v=0;v<sway.weights.length;v++){
           const offset=v*3,amount=bend*sway.weights[v];
           sway.positions[offset]=sway.rest[offset]+local.x*amount;
@@ -269,7 +297,7 @@ export class MapObjectRenderer{
   }
 
   sync(state){
-    this.bushWind=state?.presentation?.environment?.wind||null;
+    this.vegetationWind=state?.presentation?.environment?.wind||null;
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
     const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&object.type!=="CORE");
     // Existing debrisMass is the source of truth. These are presentation records,
