@@ -283,20 +283,22 @@ export class TerrainRenderer{
   }
 
   makeCliffMaterial(){
-    const material=new BABYLON.StandardMaterial("terrain-cliffs",this.scene);
-    // A separate texture keeps cliff repeat density independent of map size and
-    // the surface MixMaterial scales. Vertex colours still carry wet/fog tints.
-    material.diffuseTexture=this.makeDetailTexture("cliff");
+    const material=new BABYLON.TriPlanarMaterial("terrain-cliffs",this.scene);
+    // Stage 12F: cliff detail is sampled in world space on all three axes and the
+    // shader blends those samples by the face normal. This removes the hard
+    // dominant-axis switch at corners while leaving cliff geometry untouched.
+    this.cliffDetailTexture=this.makeDetailTexture("cliff");
+    material.diffuseTextureX=this.cliffDetailTexture;
+    material.diffuseTextureY=this.cliffDetailTexture;
+    material.diffuseTextureZ=this.cliffDetailTexture;
+    material.tileSize=TILE_SIZE*1.5;
     material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
-    // Vertical rock faces keep stronger ambient colour so they read as exposed
-    // earth/stone rather than a black outline along water and high-ground rims.
-    material.ambientColor=new BABYLON.Color3(.32,.32,.32);
     material.specularColor=new BABYLON.Color3(.012,.012,.012);
     material.specularPower=5;
-    // Cliff quads may face any cardinal direction.
+    // Cliff quads already carry outward normals; disabling culling keeps the
+    // existing rugged rim/apron visibility without adding duplicate geometry.
     material.backFaceCulling=false;
-    material.twoSidedLighting=true;
     return material;
   }
 
@@ -553,12 +555,13 @@ export class TerrainRenderer{
   }
 
 
-  pushCliffTriangle(out,a,b,c,color,axis){
+  pushCliffTriangle(out,a,b,c,color){
     const geometric=faceNormal(a,b,c);
     if(!geometric)return false;
 
     // Match Babylon's front-face winding: the lighting normal is opposite the
-    // right-handed cross-product used by faceNormal().
+    // right-handed cross-product used by faceNormal(). TriPlanarMaterial reads
+    // these normals directly to blend its three world-space projections.
     const normal={
       x:-geometric.x,
       y:-geometric.y,
@@ -569,12 +572,6 @@ export class TerrainRenderer{
     for(const point of [a,b,c]){
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(normal.x,normal.y,normal.z);
-      // World-space dominant-axis projection: one repeat every 1.5 tiles,
-      // regardless of face height. Side walls use vertical Y, caps use X/Z.
-      const scale=TILE_SIZE*1.5;
-      if(axis==="x")out.uvs.push(point.z/scale,point.y/scale);
-      else if(axis==="z")out.uvs.push(point.x/scale,point.y/scale);
-      else out.uvs.push(point.x/scale,point.z/scale);
       out.colors.push(color[0],color[1],color[2],1);
     }
     out.indices.push(base,base+1,base+2);
@@ -583,12 +580,8 @@ export class TerrainRenderer{
 
   pushCliffQuad(out,a,b,c,d,color){
     const start=out.colors.length;
-    const normal=faceNormal(a,b,c)||faceNormal(a,c,d);
-    const nx=Math.abs(normal?.x||0),ny=Math.abs(normal?.y||0),nz=Math.abs(normal?.z||0);
-    const axis=ny>=nx&&ny>=nz?"y":nx>=nz?"x":"z";
-    // Both triangles of a rugged quad use the same plane to avoid a diagonal seam.
-    this.pushCliffTriangle(out,a,b,c,color,axis);
-    this.pushCliffTriangle(out,a,c,d,color,axis);
+    this.pushCliffTriangle(out,a,b,c,color);
+    this.pushCliffTriangle(out,a,c,d,color);
     const kind=Object.keys(out.palette).find(key=>out.palette[key]===color);
     out.binding.ranges.push({start,end:out.colors.length,kind});
   }
@@ -597,7 +590,7 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.cliffColors=null;
     this.updateCounts.cliffBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
+    const out={positions:[],indices:[],normals:[],colors:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
@@ -702,7 +695,6 @@ export class TerrainRenderer{
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
-    data.uvs=out.uvs;
     data.applyToMesh(mesh,false);
     this.cliffColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
@@ -722,6 +714,8 @@ export class TerrainRenderer{
       sharedVisualSurfaceEdgeVertices:true,
       sceneLightingPrimary:true,
       reducedBakedLighting:true,
+      cliffTextureProjection:"triplanar-world-normal-blend",
+      cliffTextureWorldSize:TILE_SIZE*1.5,
       cliffEdgeSegments:CLIFF_EDGE_SEGMENTS
     };
     return mesh;
@@ -764,6 +758,7 @@ export class TerrainRenderer{
       meshes:this.meshes.size,
       updates:{...this.updateCounts},
       surfaceMaterial:"MixMaterial",
+      cliffMaterial:"TriPlanarMaterial",
       detailTextureSize:128,
       grassBlades:this.grassBlades.length,
       grassClumpLimit:896,
@@ -780,7 +775,7 @@ export class TerrainRenderer{
       microRegionGeometry:true,
       vertexColorTransitions:true,
       wetCliffBands:true,
-      cliffTextureProjection:"world-dominant-axis",
+      cliffTextureProjection:"triplanar-world-normal-blend",
       cliffTextureWorldSize:TILE_SIZE*1.5,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
