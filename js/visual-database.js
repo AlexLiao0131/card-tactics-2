@@ -1,9 +1,9 @@
 export const VISUALS={
   characters:{
     livia_default:{
-      portrait:"assets/characters/livia/portrait.webp",
-      card:"assets/characters/livia/card.webp",
-      tactical:"assets/characters/livia/tactical.webp",
+      portrait:"assets/images/characters/livia/portrait.png",
+      card:"assets/images/characters/livia/full.png",
+      tactical:"assets/images/characters/livia/full.png",
       expressions:{},
       battle:{
         kind:"FIGURE",
