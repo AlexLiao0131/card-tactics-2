@@ -283,22 +283,33 @@ export class TerrainRenderer{
   }
 
   makeCliffMaterial(){
-    const material=new BABYLON.TriPlanarMaterial("terrain-cliffs",this.scene);
-    // Stage 12F: cliff detail is sampled in world space on all three axes and the
-    // shader blends those samples by the face normal. This removes the hard
-    // dominant-axis switch at corners while leaving cliff geometry untouched.
+    // Keep the StandardMaterial lighting model that the rest of the terrain uses,
+    // then replace only its diffuse sampling with world-space triplanar projection.
+    // Babylon's stock TriPlanarMaterial has no ambient term, which makes vertical
+    // faces go nearly black under this scene's mostly downward lighting.
+    const material=new BABYLON.CustomMaterial("terrain-cliffs",this.scene);
     this.cliffDetailTexture=this.makeDetailTexture("cliff");
-    material.diffuseTextureX=this.cliffDetailTexture;
-    material.diffuseTextureY=this.cliffDetailTexture;
-    material.diffuseTextureZ=this.cliffDetailTexture;
-    material.tileSize=TILE_SIZE*1.5;
+    material.AddUniform("cliffTexture","sampler2D",this.cliffDetailTexture);
+    material.AddUniform("cliffTileSize","float",TILE_SIZE*1.5);
+    material.Fragment_Custom_Diffuse(`
+      vec3 cliffWeights=abs(normalW);
+      cliffWeights*=cliffWeights;
+      cliffWeights/=max(cliffWeights.x+cliffWeights.y+cliffWeights.z,0.0001);
+      vec3 cliffX=texture2D(cliffTexture,vPositionW.zy/cliffTileSize).rgb;
+      vec3 cliffY=texture2D(cliffTexture,vPositionW.xz/cliffTileSize).rgb;
+      vec3 cliffZ=texture2D(cliffTexture,vPositionW.xy/cliffTileSize).rgb;
+      baseColor.rgb*=cliffX*cliffWeights.x+cliffY*cliffWeights.y+cliffZ*cliffWeights.z;
+    `);
     material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
+    material.ambientColor=new BABYLON.Color3(.32,.32,.32);
     material.specularColor=new BABYLON.Color3(.012,.012,.012);
     material.specularPower=5;
-    // Cliff quads already carry outward normals; disabling culling keeps the
-    // existing rugged rim/apron visibility without adding duplicate geometry.
+    // Cliff quads may expose either winding around rugged rims/aprons. Standard
+    // two-sided lighting flips the normal for back faces before the same triplanar
+    // and scene-lighting path is evaluated, without duplicating geometry.
     material.backFaceCulling=false;
+    material.twoSidedLighting=true;
     return material;
   }
 
@@ -758,7 +769,7 @@ export class TerrainRenderer{
       meshes:this.meshes.size,
       updates:{...this.updateCounts},
       surfaceMaterial:"MixMaterial",
-      cliffMaterial:"TriPlanarMaterial",
+      cliffMaterial:"CustomMaterial(StandardLighting+TriPlanar)",
       detailTextureSize:128,
       grassBlades:this.grassBlades.length,
       grassClumpLimit:896,
