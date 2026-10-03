@@ -105,6 +105,12 @@ export class VisualSurfaceResolver{
     return VISUAL_TERRAIN_COLORS[baseTerrainOf(tile)]||VISUAL_TERRAIN_COLORS.DEFAULT;
   }
 
+  surfaceBlendAmount(value){
+    // One continuous appearance field between neighbouring tile centres.
+    // Shared borders are exactly 50/50 and smoothstep removes visible grid seams.
+    return .5*smooth01(clamp01(Math.abs(Number(value||0))*2));
+  }
+
   materialWeightsAt(tile,byKey,ox=0,oz=0){
     // Texture identity only; moisture/depth/fog tint remains in surfaceColorAt.
     const weightsOf=value=>{
@@ -115,16 +121,36 @@ export class VisualSurfaceResolver{
       if(terrain==="FOREST")return[.72,.28,0,0];
       return[1,0,0,0];
     };
-    const result=weightsOf(tile);
-    // Keep the submerged bed independent of neighbouring dry grass.
-    if(waterDepthOf(tile)>0)return result;
-    let total=1;
-    for(const item of this.localInfluences(tile,byKey,ox,oz)){
-      if(!this.canSlope(tile,item.tile)||item.waterDepth>0)continue;
-      const amount=item.weight*.30,other=weightsOf(item.tile);total+=amount;
-      for(let i=0;i<4;i++)result[i]+=other[i]*amount;
+    const mixWeights=(a,b,t)=>a.map((value,index)=>value+(b[index]-value)*t);
+    const local=weightsOf(tile);
+
+    // Keep submerged beds independent of neighbouring dry materials.
+    if(waterDepthOf(tile)>0)return local;
+
+    const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
+    const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
+    const sx=Math.sign(px),sz=Math.sign(pz);
+    const tx=this.surfaceBlendAmount(px),tz=this.surfaceBlendAmount(pz);
+    const dryConnected=(from,to)=>!!to&&waterDepthOf(to)<=0&&this.canSlope(from,to);
+
+    const rawX=sx?this.tileAt(byKey,tile.x+sx,tile.y):null;
+    const rawZ=sz?this.tileAt(byKey,tile.x,tile.y+sz):null;
+    const xTile=dryConnected(tile,rawX)?rawX:tile;
+    const zTile=dryConnected(tile,rawZ)?rawZ:tile;
+
+    let diagonal=tile;
+    if(sx&&sz){
+      const candidate=this.tileAt(byKey,tile.x+sx,tile.y+sz);
+      const joinsX=candidate&&rawX&&dryConnected(rawX,candidate);
+      const joinsZ=candidate&&rawZ&&dryConnected(rawZ,candidate);
+      if(candidate&&waterDepthOf(candidate)<=0&&(joinsX||joinsZ))diagonal=candidate;
+      else if(xTile!==tile)diagonal=xTile;
+      else if(zTile!==tile)diagonal=zTile;
     }
-    return result.map(value=>value/total);
+
+    const nearRow=mixWeights(local,weightsOf(xTile),tx);
+    const farRow=mixWeights(weightsOf(zTile),weightsOf(diagonal),tx);
+    return mixWeights(nearRow,farRow,tz);
   }
 
   moistureAmount(tile){
@@ -275,7 +301,9 @@ export class VisualSurfaceResolver{
   }
 
   edgeInfluence(value){
-    return smooth01((Math.abs(Number(value||0))-1/6)/(1/3));
+    // Colour/environment transitions use the same centre-to-centre span as
+    // material weights instead of starting only in the outer third of a tile.
+    return this.surfaceBlendAmount(value);
   }
 
   localInfluences(tile,byKey,ox,oz){
@@ -507,6 +535,8 @@ export class VisualSurfaceResolver{
       sharedTerrainState:true,
       sharedEnvironmentScalarSampling:true,
       naturalMaterialTransitions:true,
+      centreToCentreSurfaceBlend:true,
+      sharedBorderMaterialWeights:true,
       submergedBedIsolation:true,
       gameplayGridSubdivision:false
     };
