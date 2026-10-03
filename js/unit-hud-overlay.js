@@ -80,11 +80,18 @@ export class UnitHudOverlay{
     const showMana=maxMana>0;
     hud.manaRow.hidden=!showMana;hud.manaTrack.hidden=!showMana;
     if(showMana){hud.mana.textContent=`MP ${Math.round(mana)}/${Math.round(maxMana)}`;hud.manaFill.style.width=`${Math.round(manaPct*10000)/100}%`;}
+
+    // Extra character resources deliberately reuse the existing MP row/track
+    // geometry. They stay compact and visually aligned with HP/MP instead of
+    // introducing a second, larger HUD component.
     hud.resourceBox.replaceChildren();
     for(const[id,resource]of Object.entries(resources)){
       const value=Math.max(0,Number(resource?.value||0)),max=Math.max(0,Number(resource?.max||0));if(max<=0)continue;
-      const wrap=createElement("div",`unit-hud-resource unit-hud-resource-${id}`),label=createElement("div","unit-hud-resource-row"),track=createElement("div","unit-hud-track unit-hud-resource-track"),fill=createElement("i",`unit-hud-fill unit-hud-resource-fill unit-hud-resource-fill-${id}`);
-      label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
+      const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
+      label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;
+      fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;
+      fill.style.background="#8d5bd6";
+      track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
     }
 
     hud.node.dataset.team=String(unit.team||"NEUTRAL");
@@ -166,7 +173,7 @@ export class UnitHudOverlay{
         y>-100&&y<rootRect.height+100;
 
       hud.node.hidden=!visible;
-     if(!visible)continue;
+      if(!visible)continue;
 
       // Screen-space DOM HUD: only translate position. It never inherits 3D rotation,
       // plane winding, camera pitch or billboard orientation.
@@ -180,7 +187,7 @@ export class UnitHudOverlay{
   }
 
   dispose(){
-   window.removeEventListener("cardtactics:inspection",this.onInspection);
+    window.removeEventListener("cardtactics:inspection",this.onInspection);
     this.root.remove();
     this.nodes.clear();
     this.finishedState.clear();

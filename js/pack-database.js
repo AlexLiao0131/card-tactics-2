@@ -10,6 +10,7 @@ export const CARD_GROUPS={
   SEA_WORLD_SUPPLEMENT:{id:"SEA_WORLD_SUPPLEMENT",name:"海世界補充包",cards:["nereia_card"]},
   BEAST_SUPPLEMENT:{id:"BEAST_SUPPLEMENT",name:"獸族補充包",cards:["cat_thief_hero_card"]},
   ANGEL_SUPPLEMENT:{id:"ANGEL_SUPPLEMENT",name:"天使族補充包",cards:["angel_archer_hero_card"]},
+  DEMON_SUPPLEMENT:{id:"DEMON_SUPPLEMENT",name:"魔族補充包",cards:["velsa_card"]},
   OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
 };
 export const PACK_PRODUCTS={
