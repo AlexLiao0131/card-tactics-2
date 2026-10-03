@@ -51,7 +51,8 @@ export const CARDS={
   seraphina_card:{id:"seraphina_card",name:"瑟拉菲娜",type:"CHARACTER",characterId:"seraphina",loadoutId:"seraphina_default",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
   nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",loadoutId:"nereia_default",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"},
   cat_thief_hero_card:{id:"cat_thief_hero_card",name:"米菈",type:"CHARACTER",characterId:"cat_thief_hero",loadoutId:"cat_thief_hero_default",faction:"BEAST",unitType:"HERO",cost:6,pack:"BEAST_SUPPLEMENT"},
-  angel_archer_hero_card:{id:"angel_archer_hero_card",name:"天使族弓箭手",type:"CHARACTER",characterId:"angel_archer_hero",loadoutId:"angel_archer_hero_default",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"}
+  angel_archer_hero_card:{id:"angel_archer_hero_card",name:"天使族弓箭手",type:"CHARACTER",characterId:"angel_archer_hero",loadoutId:"angel_archer_hero_default",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"},
+  velsa_card:{id:"velsa_card",name:"薇爾莎・奈赫爾",type:"CHARACTER",characterId:"velsa",loadoutId:"velsa_default",faction:"DEMON",unitType:"HERO",cost:6}
 };
 export const CardDatabase=(()=>{
   const AVAILABILITY=Object.freeze({COLLECTION:"COLLECTION",BATTLE_ONLY:"BATTLE_ONLY"});

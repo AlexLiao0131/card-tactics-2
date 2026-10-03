@@ -95,7 +95,13 @@ export const SKILLS={
   seraphina_blood_burst:{id:"seraphina_blood_burst",name:"血爆",category:"ATTACK",weapon:"rapier",power:1.4,manaCost:22,range:{min:1,max:1},attackType:"PIERCE",element:"DARK",speed:10,target:"ENEMY",support:false},
   seraphina_regeneration:{id:"seraphina_regeneration",name:"血之再生",category:"SPECIAL",power:0,manaCost:18,range:{min:0,max:0},target:"SELF",support:false,effects:[{type:"HEAL",amount:80}]},
 
-  water_tentacle:{id:"water_tentacle",name:"觸手拖曳",category:"ATTACK",weapon:"claw",power:.95,range:{min:1,max:2},attackType:"STRIKE",element:"WATER",speed:0,target:"ENEMY",support:false,affixes:[],postEffects:[{type:"PULL",distance:2}]}
+  water_tentacle:{id:"water_tentacle",name:"觸手拖曳",category:"ATTACK",weapon:"claw",power:.95,range:{min:1,max:2},attackType:"STRIKE",element:"WATER",speed:0,target:"ENEMY",support:false,affixes:[],postEffects:[{type:"PULL",distance:2}]},
+
+  velsa_arcane_bolt:{id:"velsa_arcane_bolt",name:"異界魔彈",category:"MAGIC",weapon:"staff",power:1.05,manaCost:12,range:{min:2,max:4},attackType:"MAGIC",element:"DARK",speed:0,target:"ENEMY",support:true,affixes:["SANITY_SCALING"]},
+  velsa_cognitive_corruption:{id:"velsa_cognitive_corruption",name:"認知污染",category:"MAGIC",weapon:"staff",power:0,manaCost:30,resourceCosts:{sanity:20},range:{min:2,max:4},target:"ENEMY",targetType:"SINGLE",speed:-10,support:false,highDimensional:true,utilityAction:{type:"SCHEDULE_TURN_SIMULATION",mode:"MIRROR_PERCEPTION",durationTurns:1,illusionPool:"OBSERVED_HOSTILES",illusionCount:2},affixes:["HIGH_DIMENSION","COGNITIVE_CORRUPTION"]},
+  velsa_space_fold:{id:"velsa_space_fold",name:"空間折疊",category:"SPECIAL",power:0,manaCost:30,resourceCosts:{sanity:10},range:{min:1,max:5},target:"TILE",targetType:"AOE",radius:0,speed:10,support:false,requiresVision:false,highDimensional:true,utilityAction:{type:"WORMHOLE_TRANSIT",entry:"CASTER_TILE",exit:"TARGET_TILE",ignoreIntermediate:true,requireLegalDestination:true,persists:false},affixes:["HIGH_DIMENSION","SPACE_FOLD"]},
+  velsa_dimension_collapse:{id:"velsa_dimension_collapse",name:"維度坍縮",category:"MAGIC",weapon:"staff",power:1.25,manaCost:45,resourceCosts:{sanity:15},range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,attackType:"MAGIC",element:"DARK",speed:-15,support:false,highDimensional:true,areaDamage:{mode:"MAGIC_POWER",centerMultiplier:1.35,relation:"ENEMY"},affixes:["HIGH_DIMENSION","SANITY_SCALING","DIMENSION_COLLAPSE"]},
+  velsa_existence_breakdown:{id:"velsa_existence_breakdown",name:"存在崩解",category:"MAGIC",weapon:"staff",power:1.75,manaCost:55,resourceCosts:{sanity:20},range:{min:2,max:5},attackType:"MAGIC",element:"DARK",speed:-20,target:"ENEMY",support:false,highDimensional:true,affixes:["HIGH_DIMENSION","SANITY_SCALING","EXISTENCE_BREAKDOWN"]}
 };
 export const PASSIVES={
   GUARDIAN_INSTINCT:{id:"GUARDIAN_INSTINCT",name:"守護本能",category:"PASSIVE",defenseProfiles:[{id:"guardian_instinct_guard",method:"GUARD",name:"守護本能",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.70},PIERCE:{damageMultiplier:.75},SHOT:{damageMultiplier:.70},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.90}}}]},
@@ -126,7 +132,8 @@ export const PASSIVES={
   PRINCESS_OATH:{id:"PRINCESS_OATH",name:"王女之誓",category:"PASSIVE",description:"艾莉西亞選擇待機守住戰線時，援護效果進一步提高；成功替友軍承受攻擊後獲得短暫聖護。",guardRules:{waitedDamageMultiplier:.75,afterInterceptEffects:[{type:"SHIELD",id:"ROYAL_HOLY_GUARD",name:"聖護",classification:"POSITIVE",amount:45,duration:1}]}},
   STIGMATA:{id:"STIGMATA",name:"聖痕",category:"PASSIVE",description:"伊莉絲的治療、淨化與祝福會留下恩寵；恩寵抵消下一個可防禦的負面狀態後消失。",skillTriggers:[{whenTags:["HEALING","PURIFICATION","BLESSING"],relations:["SELF","ALLY"],effect:{type:"BUFF",id:"GRACE",name:"恩寵",classification:"POSITIVE",duration:2,negativeEffectGuard:{charges:1}}}]},
   CHURCH_GUARDIAN:{id:"CHURCH_GUARDIAN",name:"聖殿援護",category:"PASSIVE",defenseProfiles:[{id:"church_guard_ally",method:"GUARD",name:"聖殿援護",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.55},PIERCE:{damageMultiplier:.60},SHOT:{damageMultiplier:.55},STRIKE:{damageMultiplier:.70},MAGIC:{damageMultiplier:.80}}}]},
-  PATIENT:{id:"PATIENT",name:"病患",category:"PASSIVE",description:"不完整的遠古人類病患。吸血後可暫時恢復為5V規格。",bloodRestoration:{grade:"5V",duration:3,values:{str:20,agi:20,int:20,wil:20,vit:20}}}
+  PATIENT:{id:"PATIENT",name:"病患",category:"PASSIVE",description:"不完整的遠古人類病患。吸血後可暫時恢復為5V規格。",bloodRestoration:{grade:"5V",duration:3,values:{str:20,agi:20,int:20,wil:20,vit:20}}},
+  INCOMPLETE_HIGH_DIMENSION_CORRUPTION:{id:"INCOMPLETE_HIGH_DIMENSION_CORRUPTION",name:"不完全污染",category:"PASSIVE",description:"高維污染並未完全覆寫薇爾莎的三維人格。她仍能維持自我與一般人溝通；Sanity 下降時則逐步接近完整魔族狀態。"}
 };
 export const SkillDatabase=(()=>{
   function get(id){const skill=SKILLS[id];if(!skill)throw new Error("Unknown skill: "+id);return skill}

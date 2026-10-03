@@ -39,8 +39,8 @@
           const targets=targetsForSkill(actor,skill);
           if(targets.length){
             targets.sort((a,b)=>{
-              const ah=a.kind==="CORE"?Number(a.core?.hp??Infinity):Number(a.hp??Infinity);
-              const bh=b.kind==="CORE"?Number(b.core?.hp??Infinity):Number(b.hp??Infinity);
+              const ah=a.kind==="CORE"?Number(a.core?.hp??Infinity):Number(a.hallucination?a.perceivedHp??a.hp??Infinity:a.hp??Infinity);
+              const bh=b.kind==="CORE"?Number(b.core?.hp??Infinity):Number(b.hallucination?b.perceivedHp??b.hp??Infinity:b.hp??Infinity);
               return ah-bh||distance(actor,a)-distance(actor,b)||String(a.id).localeCompare(String(b.id));
             });
             return{attacker:actor,defender:targets[0],skill};
@@ -124,6 +124,10 @@
           },400);
           return;
         }
+
+        // During a hallucinated AI turn, the AI resolves against its mirror world without
+        // opening a reaction window on the unaffected player's real presentation.
+        if(ctx.hallucinationActiveFor?.(attack.attacker?.team)){resolveAutonomousAttack(attack);return;}
 
         // Any hostile SINGLE attack against a player-controlled unit uses the same reaction pipeline.
         // AI-vs-neutral and neutral-vs-AI remain autonomous because neither side is player-controlled.

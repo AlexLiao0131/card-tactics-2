@@ -83,12 +83,13 @@ export const ItemInventoryEngine=(()=>{
   function takeGround(id,x,y){const index=groundItems.findIndex(item=>item.id===id&&item.x===Number(x)&&item.y===Number(y));if(index<0)return null;return groundItems.splice(index,1)[0]||null}
   function removeGround(id){const index=groundItems.findIndex(item=>item.id===id);if(index<0)return null;return groundItems.splice(index,1)[0]||null}
   function battleGroundItems(){return groundItems.map(clone)}
+  function restoreBattleGroundItems(items=[]){groundItems=(items||[]).map(clone);groundSerial=Math.max(groundSerial,groundItems.length);return battleGroundItems()}
   function resetProfile(){localStorage.removeItem(STORAGE_KEY);return defaults()}
 
   return Object.freeze({
     state,gold,addGold,spendGold,stash,stashCount,grant,consumeOwned,buy,
     deckEntries,slotCountForCard,syncPreparationsForDeck,preparation,assignedCount,availableCount,equip,unequip,loadoutsForDeck,
-    beginBattle,claimBattleLoadout,makePayload,spawnGroundItem,dropPayload,groundAt,takeGround,removeGround,battleGroundItems,resetProfile
+    beginBattle,claimBattleLoadout,makePayload,spawnGroundItem,dropPayload,groundAt,takeGround,removeGround,battleGroundItems,restoreBattleGroundItems,resetProfile
   });
 })();
 

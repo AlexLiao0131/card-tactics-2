@@ -36,7 +36,8 @@ export const LOADOUTS={
   water_lurker_default:{id:"water_lurker_default",characterId:"water_lurker",armorId:"natural_hide",weaponIds:{claw:"forest_claw"},skillIds:["water_tentacle","claw"]},
   nereia_default:{id:"nereia_default",characterId:"nereia",armorId:"nereia_scale_battle_suit",weaponIds:{trident:"nereia_royal_trident"},equipmentIds:[],skillIds:["nereia_trident_thrust","nereia_water_bullet","nereia_tsunami","aquatic_depth_control"]},
   cat_thief_hero_default:{id:"cat_thief_hero_default",characterId:"cat_thief_hero",armorId:"beast_thief_leather",weaponIds:{daggers:"beast_dual_daggers",throwing_knife:"beast_poison_throwing_knife"},equipmentIds:[],skillIds:["cat_dual_slash","cat_backstab","cat_poison_knife","cat_thief_trap","cat_steal_card","cat_hide"]},
-  angel_archer_hero_default:{id:"angel_archer_hero_default",characterId:"angel_archer_hero",armorId:"angel_light_armor",weaponIds:{bow:"angel_longbow"},equipmentIds:[],skillIds:["angel_bow_shot","angel_holy_shot","angel_heal","angel_lift_drop","angel_carry_ally","angel_release_ally","angel_wing_control"]}
+  angel_archer_hero_default:{id:"angel_archer_hero_default",characterId:"angel_archer_hero",armorId:"angel_light_armor",weaponIds:{bow:"angel_longbow"},equipmentIds:[],skillIds:["angel_bow_shot","angel_holy_shot","angel_heal","angel_lift_drop","angel_carry_ally","angel_release_ally","angel_wing_control"]},
+  velsa_default:{id:"velsa_default",characterId:"velsa",armorId:"mage_cloth",weaponIds:{staff:"velsa_dimension_staff"},equipmentIds:[],skillIds:["velsa_cognitive_corruption","velsa_space_fold","velsa_dimension_collapse","velsa_existence_breakdown"]}
 };
 
 export const LoadoutDatabase=(()=>{

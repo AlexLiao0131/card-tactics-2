@@ -137,7 +137,7 @@
       if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return false;
       if(target.kind!=="CORE")return false;
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
-      ctx.consumeSkill(unit,skill);skill=ctx.effectiveSkill(unit,skill);
+      skill=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
       const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-Number(target.core.defense||30)));
@@ -151,6 +151,13 @@
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
       if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>!!transportReleasePlan(attacker,tile));
+      if(skill?.utilityAction?.type==="TELEPORT_TO_TILE")return map.tiles.filter(tile=>{
+        const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);if(d<range.min||d>range.max)return false;
+        if(ctx.unitAt(tile.x,tile.y))return false;
+        if(!TacticalEngine.canOccupyTerrain(attacker,tile))return false;
+        if(TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker))return false;
+        return skill.requiresVision===false||TacticalEngine.canSee(map,attacker,tile,environmentState);
+      });
       return map.tiles.filter(tile=>{
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
         if(d<range.min||d>range.max)return false;
@@ -192,6 +199,15 @@
         ctx.pushLog(`${attacker.character.name} 偷走對方一張手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅限本場戰鬥。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
+      if(action.type==="SCHEDULE_TURN_SIMULATION"){
+        if(!target?.character||target.team===attacker.team)return false;
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+        const effective=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+        const scheduled=ctx.scheduleTurnSimulation?.({source:attacker,targetTeam:target.team,skill:effective,action});
+        if(!scheduled){ctx.pushLog(`${skill.name} 無法建立認知污染。`,"SYSTEM");ctx.render();return false;}
+        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
       if(action.type==="LIFT_DROP"){
         if(!target?.character||target.team===attacker.team||!canLiftTarget(attacker,target)){ctx.pushLog(`${skill.name} 只能抓起比搬運能力更輕的敵人。`,"SYSTEM");ctx.render();return false;}
         globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
@@ -213,8 +229,18 @@
     }
 
     function executeMapUtility(attacker,center,skill){
-      const action=skill?.utilityAction;if(action?.type!=="RELEASE_CARRIED"||!pendingTransport||pendingTransport.carrier?.id!==attacker?.id)return false;
-      const {map}=state(),plan=transportReleasePlan(attacker,center);if(!plan){ctx.pushLog(`${skill.name}：沒有合法的空運放置路徑。`,"SYSTEM");ctx.render();return false;}
+      const action=skill?.utilityAction,{map}=state();if(!action||!ctx.canUseSkill(attacker,skill))return false;
+      if(action.type==="TELEPORT_TO_TILE"){
+        const destination=TacticalEngine.tile(map,center.x,center.y);
+        if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(attacker,destination)||TacticalEngine.isBlockedByObject(map,center.x,center.y,attacker)){ctx.pushLog(`${skill.name}：終點不是合法站立位置。`,"SYSTEM");ctx.render();return false;}
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
+        attacker.x=destination.x;attacker.y=destination.y;attacker.z=Number(globalThis.VerticalMobilityEngine?.surfaceZ?.(destination)??TacticalEngine.elevation(destination)??0);
+        globalThis.VerticalMobilityEngine?.syncUnit?.(attacker,destination);ctx.enterTile(attacker);
+        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜折疊空間至 (${destination.x},${destination.y})，中間地形與障礙不參與碰撞。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      if(action.type!=="RELEASE_CARRIED"||!pendingTransport||pendingTransport.carrier?.id!==attacker?.id)return false;
+      const plan=transportReleasePlan(attacker,center);if(!plan){ctx.pushLog(`${skill.name}：沒有合法的空運放置路徑。`,"SYSTEM");ctx.render();return false;}
       if(plan.path.length){const moved=ctx.traverseUnitPath(attacker,plan.path,{kind:"UNIT"});if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運途中受到環境影響而中斷。`,"SYSTEM");return finishActiveSkill(attacker);}}
       attacker.moved=true;const pending=pendingTransport,passenger=pending.passenger,destination=TacticalEngine.tile(map,center.x,center.y),fromZ=Number(globalThis.VerticalMobilityEngine?.describe?.(attacker,TacticalEngine.tile(map,attacker.x,attacker.y))?.physicalZ??attacker.z??0);
       ctx.consumeSkill(attacker,skill);passenger.x=destination.x;passenger.y=destination.y;passenger.z=fromZ;delete passenger.carriedByUnitId;delete passenger.transportHidden;delete attacker.carryingUnitId;
@@ -273,8 +299,7 @@
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
       if(!ctx.canUseSkill(attacker,skill))return false;
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
-      ctx.consumeSkill(attacker,skill);
-      skill=ctx.effectiveSkill(attacker,skill);
+      skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
       if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
         const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
@@ -290,11 +315,23 @@
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
-          const shield=globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
+          const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
           occupant.hp=Math.max(0,occupant.hp-shield.damage);
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
           else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
+        });
+      }
+      if(skill.areaDamage?.mode==="MAGIC_POWER"){
+        affected.forEach(tile=>{
+          const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
+          const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();if(relation==="ENEMY"&&occupant.team===attacker.team)return;if(relation==="ALLY"&&occupant.team!==attacker.team)return;
+          const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
+          const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
+          const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
+          if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
         });
       }
       if(skill.aoeDamage){
@@ -381,7 +418,7 @@
     function executeEffectSkill(attacker,target,skill){
       if(!window.EffectEngine||!ctx.canUseSkill(attacker,skill))return false;
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
-      ctx.consumeSkill(attacker,skill);
+      skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];
       if(Array.isArray(skill.relationEffects)){
@@ -392,7 +429,7 @@
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
             const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
             let dealt=0,absorbed=0;
-            if(result.hit){const shield=EffectEngine.resolveIncomingDamage(target,result.damage);dealt=shield.damage;absorbed=shield.absorbed;target.hp=Math.max(0,target.hp-dealt);if(target.hp===0)target.alive=false;}
+            if(result.hit){const shield=target.hallucination===true?{damage:Math.max(1,Number(target.hp||1)),absorbed:0}:EffectEngine.resolveIncomingDamage(target,result.damage);dealt=shield.damage;absorbed=shield.absorbed;target.hp=Math.max(0,target.hp-dealt);if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);

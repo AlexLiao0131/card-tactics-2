@@ -76,7 +76,7 @@ export const BattleResolution=(()=>{
   }
   function applyStatuses(entry){
     if(!entry?.result?.hit||Number(entry.result.damage||0)<=0||!globalThis.EffectEngine)return[];const applied=[];
-    for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(Math.random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result});}
+    for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(Math.random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result})}
     return applied;
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
@@ -85,20 +85,22 @@ export const BattleResolution=(()=>{
     for(const a of queue){
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
       if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
-      const resolved=resolveAction(c,a),baseResult=resolved.result;
-      globalThis.UnitAnimationEngine?.emitAction?.(a.actor,a.target,a.skill,{role:a.role});
-      hooks.consumeSkill?.(a.actor,a.skill);
-      const shield=globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(a.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp};
-      a.target.hp=Math.max(0,a.target.hp-result.damage);
-      if(a.target.hp===0){a.target.alive=false;hooks.onDefeated?.(a.target,a.actor,a.skill)}
-      else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(a.target,{sourceId:a.actor.id,skillId:a.skill?.id||null,damage:Number(result.damage||0)});
-      if(a.target.alive&&globalThis.EffectEngine){
-        for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:a.target,target:a.target,effect});
+      const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
+      const action={...a,skill};
+      const resolved=resolveAction(c,action),baseResult=resolved.result;
+      globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
+      hooks.consumeSkill?.(action.actor,skill);
+      const hallucinationHit=action.target?.hallucination===true&&baseResult.hit,shield=hallucinationHit?{damage:Math.max(1,Number(action.target.hp||1)),absorbed:0,shieldHp:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(action.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
+      action.target.hp=Math.max(0,action.target.hp-result.damage);
+      if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
+      else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:Number(result.damage||0)});
+      if(action.target.alive&&globalThis.EffectEngine){
+        for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
       }
-      if(a.actor.alive&&globalThis.EffectEngine){
-        for(const effect of a.skill?.afterUseEffects||[])EffectEngine.apply({source:a.actor,target:a.actor,effect});
+      if(action.actor.alive&&globalThis.EffectEngine){
+        for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
       }
-      const e={...a,resolved:{...resolved,result},result,hpAfter:a.target.hp};
+      const e={...action,resolved:{...resolved,result},result,hpAfter:action.target.hp};
       e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};

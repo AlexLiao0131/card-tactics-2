@@ -50,15 +50,16 @@ export class UnitHudOverlay{
     const mana=createElement("span","unit-hud-mana");
     const manaTrack=createElement("div","unit-hud-track unit-hud-mana-track");
     const manaFill=createElement("i","unit-hud-fill unit-hud-mana-fill");
+    const resourceBox=createElement("div","unit-hud-resource-box");
 
     row.append(name,hp);
     track.appendChild(fill);
     manaRow.appendChild(mana);
     manaTrack.appendChild(manaFill);
-    node.append(row,track,manaRow,manaTrack);
+    node.append(row,track,manaRow,manaTrack,resourceBox);
     this.root.appendChild(node);
 
-    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,key:""};
+    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,resourceBox,key:""};
     this.nodes.set(unit.id,hud);
     return hud;
   }
@@ -68,7 +69,8 @@ export class UnitHudOverlay{
     const maxHp=Math.max(1,Number(unit.maxHp||hp||1));
     const pct=clamp01(hp/maxHp);
     const mana=Math.max(0,Number(unit.mana||0)),maxMana=Math.max(0,Number(unit.maxMana||0)),manaPct=maxMana>0?clamp01(mana/maxMana):0;
-    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${unit.team}|${unit.finished?1:0}`;
+    const resources=unit.resources||{},resourceKey=Object.entries(resources).map(([id,r])=>`${id}:${r.value}/${r.max}`).join("|");
+    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${unit.team}|${unit.finished?1:0}`;
     if(hud.key===key)return;
     hud.key=key;
 
@@ -78,6 +80,12 @@ export class UnitHudOverlay{
     const showMana=maxMana>0;
     hud.manaRow.hidden=!showMana;hud.manaTrack.hidden=!showMana;
     if(showMana){hud.mana.textContent=`MP ${Math.round(mana)}/${Math.round(maxMana)}`;hud.manaFill.style.width=`${Math.round(manaPct*10000)/100}%`;}
+    hud.resourceBox.replaceChildren();
+    for(const[id,resource]of Object.entries(resources)){
+      const value=Math.max(0,Number(resource?.value||0)),max=Math.max(0,Number(resource?.max||0));if(max<=0)continue;
+      const wrap=createElement("div",`unit-hud-resource unit-hud-resource-${id}`),label=createElement("div","unit-hud-resource-row"),track=createElement("div","unit-hud-track unit-hud-resource-track"),fill=createElement("i",`unit-hud-fill unit-hud-resource-fill unit-hud-resource-fill-${id}`);
+      label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
+    }
 
     hud.node.dataset.team=String(unit.team||"NEUTRAL");
     hud.node.classList.toggle("finished",!!unit.finished);
@@ -158,7 +166,7 @@ export class UnitHudOverlay{
         y>-100&&y<rootRect.height+100;
 
       hud.node.hidden=!visible;
-      if(!visible)continue;
+     if(!visible)continue;
 
       // Screen-space DOM HUD: only translate position. It never inherits 3D rotation,
       // plane winding, camera pitch or billboard orientation.
@@ -172,7 +180,7 @@ export class UnitHudOverlay{
   }
 
   dispose(){
-    window.removeEventListener("cardtactics:inspection",this.onInspection);
+   window.removeEventListener("cardtactics:inspection",this.onInspection);
     this.root.remove();
     this.nodes.clear();
     this.finishedState.clear();
