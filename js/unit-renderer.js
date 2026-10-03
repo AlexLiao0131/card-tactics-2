@@ -270,6 +270,8 @@ export class UnitRenderer{
       weapon:this.figureMaterial("weapon",colors.weapon||"#d7d9df"),
       gem:this.figureMaterial("gem",colors.gem||colors.eyes||"#b52635"),
       armor:this.figureMaterial("armor",colors.armor||colors.metal||"#d7d9df"),
+      chainmail:this.figureMaterial("chainmail",colors.chainmail||"#777b7c"),
+      steelDark:this.figureMaterial("steel-dark",colors.steelDark||"#5b5f60"),
       gold:this.figureMaterial("gold",colors.gold||"#b58a4d"),
       tabard:this.figureMaterial("tabard",colors.tabard||colors.shirt||"#eee9df"),
       holy:this.figureMaterial("holy",colors.holy||"#ffd86a"),
@@ -346,6 +348,13 @@ export class UnitRenderer{
     box("figure-side-lock-l",[.055,.36,.06],material.hair,[-.165,1.43,.035],[0,0,-.10],"head");
     box("figure-side-lock-r",[.055,.31,.06],material.hair,[.165,1.45,.035],[0,0,.13],"head");
 
+    if(figure.messyHair){
+      box("figure-messy-lock-l",[.055,.24,.052],material.hairDark,[-.13,1.50,.12],[.12,0,-.38],"head");
+      box("figure-messy-lock-r",[.052,.21,.050],material.hairDark,[.13,1.49,.12],[.10,0,.34],"head");
+      box("figure-messy-back-l",[.060,.28,.055],material.hairDark,[-.12,1.40,-.12],[.20,0,-.16],"hairBack");
+      box("figure-messy-back-r",[.060,.25,.055],material.hairDark,[.12,1.41,-.12],[-.16,0,.14],"hairBack");
+    }
+
     if(figure.braid!==false){
       for(let i=0;i<6;i++){
         const t=i/5,offset=Math.sin(t*Math.PI)*.018;
@@ -406,6 +415,12 @@ export class UnitRenderer{
     cylinder("figure-vest",cropped?.27:.36,.38,.29,material.leather,[0,cropped?1.235:1.15,.018],null,6,"body");
     if(cropped)cylinder("figure-midriff",.18,.30,.29,material.skin,[0,1.01,.015],null,7,"body");
     cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6,"body");
+
+    if(figure.chainmail){
+      cylinder("figure-chainmail-torso",.47,.405,.315,material.chainmail,[0,1.15,.012],null,10,"body");
+      cylinder("figure-chainmail-skirt",.30,.345,.375,material.chainmail,[0,.80,.006],null,10,"body");
+    }
+
     box("figure-belt",[.44,.07,.27],material.leather,[0,.96,.015],null,"body");
     box("figure-buckle",[.068,.064,.035],material.metal,[0,.96,.16],null,"body");
     box("figure-pouch",[.13,.16,.08],material.leather,[.20,.87,.12],[0,.08,.04],"body");
@@ -456,6 +471,30 @@ export class UnitRenderer{
       sphere("figure-thief-charm",.055,material.gem,[.13,.88,.17],[.70,1.05,.42],5,"body");
     }
 
+    if(figure.upperBreastplate){
+      custom("figure-upper-breastplate",[
+        [-.215,1.37,.185],[.215,1.37,.185],[.185,1.18,.195],[-.185,1.18,.195],
+        [-.17,1.39,.105],[.17,1.39,.105],[.15,1.18,.115],[-.15,1.18,.115]
+      ],[
+        0,2,1,0,3,2,
+        4,5,6,4,6,7,
+        0,4,7,0,7,3,
+        1,2,6,1,6,5,
+        0,1,5,0,5,4,
+        3,7,6,3,6,2
+      ],material.armor,"body");
+      box("figure-upper-breastplate-ridge",[.038,.165,.026],material.steelDark,[0,1.275,.205],null,"body");
+      box("figure-upper-breastplate-strap-l",[.045,.30,.025],material.leatherDark,[-.175,1.29,.198],[0,0,-.12],"body");
+      box("figure-upper-breastplate-strap-r",[.045,.30,.025],material.leatherDark,[.175,1.29,.198],[0,0,.12],"body");
+    }
+
+    if(figure.mediumPlate){
+      sphere("figure-medium-pauldron-l",.24,material.armor,[-.29,1.31,-.004],[1.15,.48,.95],6,"leftArm");
+      sphere("figure-medium-pauldron-r",.22,material.armor,[.29,1.31,-.004],[1.08,.44,.92],6,"rightArm");
+      box("figure-medium-pauldron-edge-l",[.19,.025,.16],material.steelDark,[-.31,1.29,.055],[0,0,-.10],"leftArm");
+      box("figure-medium-pauldron-edge-r",[.18,.025,.15],material.steelDark,[.31,1.29,.055],[0,0,.10],"rightArm");
+    }
+
     if(figure.heavyArmor){
       cylinder("figure-chest-plate",.38,.42,.34,material.armor,[0,1.18,.025],null,8,"body");
       box("figure-chest-gold-trim",[.31,.055,.305],material.gold,[0,1.24,.08],null,"body");
@@ -474,6 +513,10 @@ export class UnitRenderer{
     // Sleeves taper into bracers; the slight angles stop the arms looking like rails.
     cylinder("figure-upper-arm-l",.30,.14,.12,material.shirt,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
     cylinder("figure-upper-arm-r",.30,.14,.12,material.shirt,[.265,1.20,0],[0,0,.13],6,"rightArm");
+    if(figure.chainmail){
+      cylinder("figure-chainmail-sleeve-l",.25,.145,.125,material.chainmail,[-.268,1.17,.002],[0,0,-.13],8,"leftArm");
+      cylinder("figure-chainmail-sleeve-r",.25,.145,.125,material.chainmail,[.268,1.17,.002],[0,0,.13],8,"rightArm");
+    }
     cylinder("figure-forearm-l",.27,.115,.095,material.leather,[-.295,.94,.035],[0,0,-.05],6,"leftArm");
     cylinder("figure-forearm-r",.27,.115,.095,material.leather,[.295,.94,.035],[0,0,.05],6,"rightArm");
     box("figure-glove-l",[.105,.12,.115],material.dark,[-.305,.755,.055],[0,0,-.03],"leftArm");
@@ -493,6 +536,13 @@ export class UnitRenderer{
       box("figure-glove-cuff-r",[.145,.060,.145],material.leatherDark,[.303,.79,.055],[0,0,.03],"rightArm");
       sphere("figure-glove-stud-l",.034,material.metal,[-.303,.805,.13],[.65,.65,.38],5,"leftArm");
       sphere("figure-glove-stud-r",.034,material.metal,[.303,.805,.13],[.65,.65,.38],5,"rightArm");
+    }
+
+    if(figure.mediumPlate){
+      box("figure-medium-vambrace-l",[.135,.22,.145],material.armor,[-.298,.92,.05],[0,0,-.05],"leftArm");
+      box("figure-medium-vambrace-r",[.135,.22,.145],material.armor,[.298,.92,.05],[0,0,.05],"rightArm");
+      box("figure-medium-vambrace-band-l",[.145,.030,.15],material.steelDark,[-.298,.84,.065],[0,0,-.05],"leftArm");
+      box("figure-medium-vambrace-band-r",[.145,.030,.15],material.steelDark,[.298,.84,.065],[0,0,.05],"rightArm");
     }
 
     if(figure.heavyArmor){
@@ -545,6 +595,12 @@ export class UnitRenderer{
       box("figure-thigh-strap-r",[.21,.055,.19],material.leather,[.115,.61,.015],[0,0,-.02],"rightLeg");
       box("figure-thigh-knife-sheath",[.055,.27,.055],material.leatherDark,[.205,.57,.04],[0,0,-.12],"rightLeg");
     }
+    if(figure.mediumPlate){
+      box("figure-medium-knee-l",[.17,.14,.18],material.armor,[-.115,.49,.085],[0,0,.02],"leftLeg");
+      box("figure-medium-knee-r",[.17,.14,.18],material.armor,[.115,.49,.085],[0,0,-.02],"rightLeg");
+      box("figure-medium-shin-plate-l",[.15,.22,.075],material.armor,[-.115,.31,.12],[0,0,.02],"leftLeg");
+      box("figure-medium-shin-plate-r",[.15,.22,.075],material.armor,[.115,.31,.12],[0,0,-.02],"rightLeg");
+    }
     if(figure.heavyArmor){
       box("figure-greave-l",[.205,.42,.215],material.armor,[-.115,.29,.02],[0,0,.02],"leftLeg");
       box("figure-greave-r",[.205,.42,.215],material.armor,[.115,.29,.02],[0,0,-.02],"rightLeg");
@@ -581,6 +637,11 @@ export class UnitRenderer{
         custom("figure-cape-inner",[[-.23,1.34,-.235],[.23,1.34,-.235],[.34,.42,-.31],[-.34,.42,-.31]],[0,2,1,0,3,2],material.capeDark,"cape");
         custom("figure-cape-trim-l",[[-.35,1.28,-.17],[-.29,1.29,-.18],[-.47,.33,-.11],[-.53,.31,-.10]],[0,2,1,0,3,2],material.accent,"cape");
         custom("figure-cape-trim-r",[[.29,1.29,-.18],[.35,1.28,-.17],[.53,.31,-.10],[.47,.33,-.11]],[0,2,1,0,3,2],material.accent,"cape");
+      }
+      if(figure.tatteredCape){
+        custom("figure-cape-tatter-l",[[-.43,.74,-.24],[-.20,.72,-.30],[-.36,.14,-.21]],[0,1,2],material.cape,"cape");
+        custom("figure-cape-tatter-c",[[-.19,.70,-.31],[.15,.70,-.33],[.02,.08,-.29]],[0,1,2],material.capeDark,"cape");
+        custom("figure-cape-tatter-r",[[.16,.72,-.30],[.43,.74,-.24],[.34,.18,-.20]],[0,1,2],material.cape,"cape");
       }
     }
 
@@ -688,6 +749,15 @@ export class UnitRenderer{
         finish(knuckle,material.metal,[.335,.93,.075],[Math.PI/2,0,.25],null,{part:"weapon"});
         box("figure-rapier-fulleredge",[.018,.76,.012],material.accent,[.335,.48,.10],[0,0,-.05],"weapon");
       }
+    }
+
+    if(figure.fieldGreatsword){
+      box("figure-field-greatsword-blade",[.125,1.12,.050],material.weapon,[.31,.46,.075],[0,0,-.04],"weapon");
+      box("figure-field-greatsword-fuller",[.032,.98,.056],material.steelDark,[.31,.48,.077],[0,0,-.04],"weapon");
+      box("figure-field-greatsword-guard",[.36,.050,.082],material.metal,[.285,1.01,.075],[0,0,-.04],"weapon");
+      cylinder("figure-field-greatsword-grip",.29,.054,.054,material.leatherDark,[.275,1.18,.075],[0,0,-.04],8,"weapon");
+      sphere("figure-field-greatsword-pommel",.080,material.metal,[.268,1.35,.075],[.82,.82,.82],6,"weapon");
+      box("figure-field-greatsword-guard-core",[.060,.075,.088],material.steelDark,[.285,1.01,.075],[0,0,-.04],"weapon");
     }
 
     if(figure.greatsword){
@@ -1127,13 +1197,28 @@ export class UnitRenderer{
 
     if(type==="PIERCE"&&parts.weapon){
       const ready=ease(progress/.24),thrust=Math.sin(Math.PI*clamp01((progress-.16)/.68));
-      if(parts.rightArm){parts.rightArm.rotation.x-=ready*.55+thrust*.92;parts.rightArm.rotation.z+=ready*.20;}
-      if(parts.leftArm)parts.leftArm.rotation.x+=ready*.20;
-      parts.weapon.rotation.x-=ready*.65+thrust*.93;parts.weapon.rotation.z-=ready*.12;
-      if(parts.body){parts.body.rotation.x+=thrust*.06;parts.body.rotation.z-=thrust*.08;}
-      if(parts.cape)parts.cape.rotation.x+=thrust*.16;
+      const twoHanded=entry.definition?.figure?.twoHanded===true;
+      if(parts.rightArm){parts.rightArm.rotation.x-=ready*(twoHanded?.66:.55)+thrust*(twoHanded?1.04:.92);parts.rightArm.rotation.z+=ready*(twoHanded?.28:.20);}
+      if(parts.leftArm){
+        if(twoHanded){parts.leftArm.rotation.x-=ready*.48+thrust*.72;parts.leftArm.rotation.z-=ready*.30;}
+        else parts.leftArm.rotation.x+=ready*.20;
+      }
+      parts.weapon.rotation.x-=ready*(twoHanded?.72:.65)+thrust*(twoHanded?1.08:.93);parts.weapon.rotation.z-=ready*.12;
+      if(parts.body){parts.body.rotation.x+=thrust*(twoHanded?.08:.06);parts.body.rotation.z-=thrust*.08;}
+      if(parts.cape)parts.cape.rotation.x+=thrust*(twoHanded?.20:.16);
       if(parts.hairBack)parts.hairBack.rotation.x+=thrust*.12;
-      entry.root.position.x+=vector.x*thrust*.58;entry.root.position.z+=vector.z*thrust*.58;
+      entry.root.position.x+=vector.x*thrust*(twoHanded?.66:.58);entry.root.position.z+=vector.z*thrust*(twoHanded?.66:.58);
+      return true;
+    }
+
+    if(type==="STRIKE"&&parts.weapon&&entry.definition?.figure?.twoHanded===true){
+      const wind=ease(progress/.30),impact=Math.sin(Math.PI*clamp01((progress-.22)/.62));
+      if(parts.rightArm){parts.rightArm.rotation.x-=wind*.82-impact*.30;parts.rightArm.rotation.z-=wind*.52+impact*.54;}
+      if(parts.leftArm){parts.leftArm.rotation.x-=wind*.74-impact*.24;parts.leftArm.rotation.z+=wind*.46-impact*.48;}
+      parts.weapon.rotation.x-=wind*.88+impact*.62;parts.weapon.rotation.z-=wind*.44-impact*.78;
+      if(parts.body){parts.body.rotation.x-=wind*.10;parts.body.rotation.y-=wind*.24-impact*.28;}
+      if(parts.cape)parts.cape.rotation.z+=impact*.24;
+      entry.root.position.x+=vector.x*impact*.30;entry.root.position.z+=vector.z*impact*.30;
       return true;
     }
 

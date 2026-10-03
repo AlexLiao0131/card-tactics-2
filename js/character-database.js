@@ -1,6 +1,6 @@
 export const CHARACTERS={
 livia:{id:"livia",name:"莉維亞",visualId:"livia_default",archetype:"RANGED",attributes:{str:20,agi:20,int:20,wil:20,vit:20,luk:16},combat:{hp:210,atk:94,matk:90,def:55,mdef:90,move:5},passives:["PERFECT_GENOME_5V","CAPTAIN_HIGHEST_AUTHORITY","NO_CHANT","AMBUSH"]},
-leon:{id:"leon",name:"第一劍士・雷昂",archetype:"MELEE",attributes:{str:20,agi:18,int:8,wil:14,vit:17,luk:12},combat:{hp:260,atk:100,matk:35,def:75,mdef:58,move:4},passives:["CHAMPION_SWORDSMAN"]},
+leon:{id:"leon",name:"第一劍士・雷昂",visualId:"leon_default",archetype:"MELEE",attributes:{str:20,agi:18,int:8,wil:14,vit:17,luk:12},combat:{hp:260,atk:100,matk:35,def:75,mdef:58,move:4},passives:["CHAMPION_SWORDSMAN"]},
 kahn:{id:"kahn",name:"卡恩",archetype:"RANGED",attributes:{str:17,agi:20,int:10,wil:17,vit:15,luk:18},combat:{hp:225,atk:96,matk:42,def:58,mdef:65,move:5},passives:["HUNTER_OF_THE_EDGE"]},
 cassandra:{id:"cassandra",name:"卡珊多拉",archetype:"MAGE",attributes:{str:6,agi:11,int:20,wil:19,vit:10,luk:13},combat:{hp:195,atk:38,matk:105,def:40,mdef:95,move:4},passives:["HERETIC"]},
 imperial_swordsman:{id:"imperial_swordsman",name:"帝國劍兵",archetype:"MELEE",attributes:{str:12,agi:10,int:6,wil:9,vit:12,luk:8},combat:{hp:240,atk:78,matk:28,def:68,mdef:44,move:4},passives:["SWORDSMAN"]},

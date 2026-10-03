@@ -75,6 +75,63 @@ export const VISUALS={
         }
       }
     },
+    leon_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.78,
+        figure:{
+          style:"COMMONER_CHAMPION",
+          braid:false,
+          messyHair:true,
+          cape:true,
+          tatteredCape:true,
+          chainmail:true,
+          upperBreastplate:true,
+          mediumPlate:true,
+          chestHarness:true,
+          beltDetail:true,
+          waistPouches:true,
+          bracerDetail:true,
+          gloveDetail:true,
+          bootDetail:true,
+          bow:false,
+          quiver:false,
+          sideSword:false,
+          fieldGreatsword:true,
+          twoHanded:true,
+          colors:{
+            skin:"#d9ad91",
+            hair:"#4a3026",
+            hairDark:"#2f201a",
+            cape:"#2b2d31",
+            capeDark:"#17191c",
+            leather:"#5a3b27",
+            leatherDark:"#342318",
+            shirt:"#665f55",
+            pants:"#35312e",
+            boots:"#493121",
+            metal:"#9d9d98",
+            armor:"#b6b7b4",
+            chainmail:"#777b7c",
+            steelDark:"#555a5b",
+            weapon:"#c7c8c5",
+            eyes:"#6a4b32",
+            accent:"#5b4638",
+            gem:"#6a4b32"
+          }
+        },
+        animations:{
+          IDLE:{duration:1180,loop:true,procedural:"BREATHE"},
+          WALK:{duration:190,loop:true,procedural:"STEP",figureMotion:{bodyBob:.042,rootSway:.020,bodySway:.018,torsoBob:.011,legSwing:.48,armSwing:.26,bowSwing:0,capeSwing:.18,capeTwist:.070,braidSwing:.10,braidTwist:.040,followLag:.70}},
+          ATTACK:{duration:390,loop:false,procedural:"LUNGE"},
+          CAST:{duration:460,loop:false,procedural:"CAST"},
+          HURT:{duration:250,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:760,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     ophi_default:{
       expressions:{},
       battle:{
