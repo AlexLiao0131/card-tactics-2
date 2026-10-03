@@ -379,18 +379,13 @@ export class TerrainRenderer{
   cliffPalette(tile,neighbor,dir,byKey,drop){
     const fog=tile.fogged?.62:1;
     const edgeColor=this.surfaceResolver.transitionColorAt(tile,byKey,dir.dx*.46,dir.dy*.46);
-    const lowerColor=neighbor
-      ?this.surfaceResolver.transitionColorAt(neighbor,byKey,-dir.dx*.46,-dir.dy*.46)
-      :this.surfaceResolver.colorOf(tile);
     const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
     const wallColor=shade(exposedRock,Math.max(.76,.86-Math.min(.08,drop*.015))*fog);
     const bankWaterDepth=Math.max(this.surfaceResolver.waterDepthOf(tile),this.surfaceResolver.waterDepthOf(neighbor));
     const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
     return{
       wallColor,wetWallFactor,
-      wetWallColor:mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor),
-      rimColor:shade(edgeColor,.98*fog*elevationShade(this.surfaceResolver.elevationOf(tile))),
-      apronColor:shade(lowerColor,.86*fog)
+      wetWallColor:mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor)
     };
   }
 
@@ -442,8 +437,11 @@ export class TerrainRenderer{
     this.surfaceColorBindings=[];
     this.updateCounts.surfaceBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
+    const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
+    const boundaryBase=minElevation-.75;
     let skippedDegenerate=0;
     let minNormalY=1;
+    let ruggedSurfaceEdges=0;
 
     const addFace=(a,b,c,colors)=>{
       const before=out.normals.length;
@@ -484,6 +482,44 @@ export class TerrainRenderer{
           addFace(ne.point,se.point,sw.point,[ne.color,se.color,sw.color]);
         }
       }
+
+      // A rugged cliff's upper shoulder belongs to the terrain surface, not the
+      // cliff material. Extend the same surface mesh from the authored grid edge
+      // to the visible rugged boundary, so there is no second-material cap pasted
+      // over the square tile edge.
+      for(const dir of DIRS){
+        const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
+        const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):boundaryBase;
+        if(this.surfaceResolver.elevationOf(tile)-lower<=this.surfaceResolver.maxVisualSlopeDelta)continue;
+
+        const edge=dir.id==="N"?grid[0]
+          :dir.id==="E"?grid.map(row=>row[3])
+          :dir.id==="S"?[...grid[3]].reverse()
+          :[...grid].reverse().map(row=>row[0]);
+        const rough=this.cliffRoughPolyline(tile,dir);
+        const roughTop=rough.map((point,index)=>{
+          const source=edge[index];
+          const sourceSample=samples[source.point.sample];
+          const sample=samples.length;
+          samples.push({
+            ox:point.x/TILE_SIZE-Number(tile.x),
+            oz:point.z/TILE_SIZE-Number(tile.y),
+            height:Number(sourceSample.height),
+            color:sourceSample.color
+          });
+          return{
+            point:{sample,x:point.x,y:source.point.y,z:point.z},
+            color:source.color
+          };
+        });
+
+        for(let i=0;i<roughTop.length-1;i++){
+          const a=edge[i],b=edge[i+1],ra=roughTop[i],rb=roughTop[i+1];
+          addFace(a.point,b.point,rb.point,[a.color,b.color,rb.color]);
+          addFace(a.point,rb.point,ra.point,[a.color,rb.color,ra.color]);
+        }
+        ruggedSurfaceEdges++;
+      }
     }
 
     const mesh=new BABYLON.Mesh("terrain-surface",this.scene);
@@ -512,7 +548,9 @@ export class TerrainRenderer{
       microRegionGeometry:true,
       vertexColorTransitions:true,
       submergedBedIsolation:true,
-      trianglesPerTile:18,
+      baseTrianglesPerTile:18,
+      ruggedSurfaceExtensions:true,
+      ruggedSurfaceEdges,
       skippedDegenerate,
       minNormalY
     };
@@ -535,17 +573,6 @@ export class TerrainRenderer{
     if(dir.id==="E")return patch.map(row=>row[3]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
     if(dir.id==="S")return [...patch[3]].reverse().map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
     return [...patch].reverse().map(row=>row[0]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-  }
-
-  cliffLowerEdgeSamples(neighbor,dir,byKey){
-    if(!neighbor)return null;
-    const patch=this.surfaceResolver.resolveTile(neighbor,byKey).patchGrid;
-    // Return the neighbouring surface along the exact same world-space edge and
-    // in the same point order as the higher tile's edge.
-    if(dir.id==="N")return patch[3].map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    if(dir.id==="E")return patch.map(row=>row[0]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    if(dir.id==="S")return [...patch[0]].reverse().map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    return [...patch].reverse().map(row=>row[3]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
   }
 
   cliffRoughPolyline(tile,dir,segments=CLIFF_EDGE_SEGMENTS){
@@ -571,8 +598,8 @@ export class TerrainRenderer{
     if(!geometric)return false;
 
     // Match Babylon's front-face winding: the lighting normal is opposite the
-    // right-handed cross-product used by faceNormal(). TriPlanarMaterial reads
-    // these normals directly to blend its three world-space projections.
+    // right-handed cross-product used by faceNormal(). The cliff custom material
+    // uses these normals for both Standard lighting and triplanar blending.
     const normal={
       x:-geometric.x,
       y:-geometric.y,
@@ -606,9 +633,10 @@ export class TerrainRenderer{
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
 
-    // The underlying grid edge stays the rule boundary. The visible cliff rim is
-    // an outward eroded polyline, but its inner cap edge now reuses the exact
-    // VisualSurface patch vertices so the rugged silhouette cannot open cracks.
+    // The gameplay grid remains the rule boundary, while rendering uses the same
+    // rugged polyline as the surface extension above. Cliff geometry begins at
+    // that shared visible edge and runs downward only; it no longer owns a top
+    // cap or a lower apron laid over either terrain surface.
 
     let ruggedEdges=0;
     for(const tile of tiles){
@@ -619,27 +647,41 @@ export class TerrainRenderer{
         const drop=top-lower;
         if(drop<=this.surfaceResolver.maxVisualSlopeDelta)continue;
 
-        // The cap/apron must share the exact 4x4 VisualSurface edge vertices.
-        // Estimating a separate corner→midpoint→corner profile created tiny gaps
-        // after Stage 6 subdivided the terrain at 1/3 and 2/3 positions.
+        // The wall top uses the same 4x4 VisualSurface edge heights as the
+        // surface-owned rugged shoulder. Its bottom samples the actual rendered
+        // lower surface at the outward rough position, so no apron overlay is needed.
         const topEdge=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
-        const lowerEdge=this.cliffLowerEdgeSamples(neighbor,dir,byKey);
 
         const rough=this.cliffRoughPolyline(tile,dir);
-        const nominal=this.cliffEdgePoints(tile,dir);
-        const [[x1,z1],[x2,z2]]=nominal;
         out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
-        const {wallColor,wetWallColor,wetWallFactor,rimColor,apronColor}=out.palette;
+        const {wallColor,wetWallColor,wetWallFactor}=out.palette;
         out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
         this.cliffColorBindings.push(out.binding);
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
-          const ta=a.t,tb=b.t;
           const aTop=topEdge[i].y;
           const bTop=topEdge[i+1].y;
-          const aBot=Math.min(lowerEdge?lowerEdge[i].y:lower*EH,aTop);
-          const bBot=Math.min(lowerEdge?lowerEdge[i+1].y:lower*EH,bTop);
+          const aBot=Math.min(
+            neighbor
+              ?this.surfaceResolver.sampleRenderedHeight(
+                neighbor,byKey,
+                a.x/TILE_SIZE-Number(neighbor.x),
+                a.z/TILE_SIZE-Number(neighbor.y)
+              )*EH
+              :lower*EH,
+            aTop
+          );
+          const bBot=Math.min(
+            neighbor
+              ?this.surfaceResolver.sampleRenderedHeight(
+                neighbor,byKey,
+                b.x/TILE_SIZE-Number(neighbor.x),
+                b.z/TILE_SIZE-Number(neighbor.y)
+              )*EH
+              :lower*EH,
+            bTop
+          );
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
@@ -674,27 +716,6 @@ export class TerrainRenderer{
             );
           }
 
-          // Original grid-edge samples and the rugged rim now meet at the exact
-          // same heights as VisualSurface. No epsilon lift is needed because these
-          // strips extend outside the terrain surface instead of overlapping it.
-          const na={x:x1+(x2-x1)*ta,z:z1+(z2-z1)*ta};
-          const nb={x:x1+(x2-x1)*tb,z:z1+(z2-z1)*tb};
-          this.pushCliffQuad(
-            out,
-            {x:na.x,y:aTop,z:na.z},
-            {x:nb.x,y:bTop,z:nb.z},
-            {x:b.x,y:bTop,z:b.z},
-            {x:a.x,y:aTop,z:a.z},
-            rimColor
-          );
-          this.pushCliffQuad(
-            out,
-            {x:a.x,y:aBot,z:a.z},
-            {x:b.x,y:bBot,z:b.z},
-            {x:nb.x,y:bBot,z:nb.z},
-            {x:na.x,y:aBot,z:na.z},
-            apronColor
-          );
         }
         ruggedEdges++;
       }
@@ -719,10 +740,12 @@ export class TerrainRenderer{
       polygonal:true,
       explicitFaceNormals:true,
       surfaceMatchedEdges:true,
-      ruggedNaturalRims:true,
-      erosionCap:true,
+      ruggedNaturalWalls:true,
+      erosionCap:false,
+      lowerApronOverlay:false,
       ruggedEdges,
-      sharedVisualSurfaceEdgeVertices:true,
+      sharedRuggedSurfaceBoundary:true,
+      lowerSurfaceMatchedWall:true,
       sceneLightingPrimary:true,
       reducedBakedLighting:true,
       cliffTextureProjection:"triplanar-world-normal-blend",
@@ -791,6 +814,9 @@ export class TerrainRenderer{
       reliefLighting:true,
       ruggedNaturalCliffs:true,
       cliffSurfaceEdgeMatched:true,
+      surfaceOwnsRuggedCliffRim:true,
+      cliffApronOverlay:false,
+      cliffBottomMatchesRenderedLowerSurface:true,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       skippedDegenerate:surface?.metadata?.skippedDegenerate??null,
       minNormalY:surface?.metadata?.minNormalY??null
