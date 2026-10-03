@@ -91,3 +91,9 @@
   .unit-hud-mana-row{font-size:9px}
   .unit-hud-mana-track{height:5px}
 }
+
+.unit-hud-resource-row{margin-top:4px;display:flex;justify-content:flex-end;font-size:10px;line-height:1;font-weight:800;white-space:nowrap}
+.unit-hud-resource-track{height:6px;margin-top:3px}
+.unit-hud-resource-fill{background:#8d74d8}
+.unit-hud-resource-fill-sanity{background:#a56bd6}
+@media(max-width:700px){.unit-hud-resource-row{font-size:9px}.unit-hud-resource-track{height:5px}}
