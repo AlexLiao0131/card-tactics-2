@@ -421,11 +421,16 @@ export class UnitRenderer{
     }
 
     // Tapered torso gives a readable shoulder/waist silhouette at tactical zoom.
+    // Some armour sets (for example a fitted scale cuirass) are the torso garment
+    // themselves and must not reveal the generic shirt/vest underneath.
     const cropped=figure.croppedTop===true;
-    cylinder("figure-blouse",cropped?.30:.43,.43,.31,material.shirt,[0,cropped?1.24:1.17,0],null,6,"body");
-    cylinder("figure-vest",cropped?.27:.36,.38,.29,material.leather,[0,cropped?1.235:1.15,.018],null,6,"body");
-    if(cropped)cylinder("figure-midriff",.18,.30,.29,material.skin,[0,1.01,.015],null,7,"body");
-    cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6,"body");
+    const replaceBaseTorso=figure.replaceBaseTorso===true;
+    if(!replaceBaseTorso){
+      cylinder("figure-blouse",cropped?.30:.43,.43,.31,material.shirt,[0,cropped?1.24:1.17,0],null,6,"body");
+      cylinder("figure-vest",cropped?.27:.36,.38,.29,material.leather,[0,cropped?1.235:1.15,.018],null,6,"body");
+      if(cropped)cylinder("figure-midriff",.18,.30,.29,material.skin,[0,1.01,.015],null,7,"body");
+      cylinder("figure-waist",.16,.29,.34,material.leatherDark,[0,.94,.005],null,6,"body");
+    }
 
     if(figure.chainmail){
       cylinder("figure-chainmail-torso",.47,.405,.315,material.chainmail,[0,1.15,.012],null,10,"body");
@@ -540,17 +545,22 @@ export class UnitRenderer{
       }
     }
 
-    // Sleeves taper into bracers; the slight angles stop the arms looking like rails.
-    cylinder("figure-upper-arm-l",.30,.14,.12,material.shirt,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
-    cylinder("figure-upper-arm-r",.30,.14,.12,material.shirt,[.265,1.20,0],[0,0,.13],6,"rightArm");
+    // Sleeves taper into bracers; bare-arm outfits swap the shared sleeve material
+    // for skin while keeping any jewellery / bracer overlays as separate parts.
+    const bareArms=figure.bareArms===true;
+    const upperArmMaterial=bareArms?material.skin:material.shirt;
+    const forearmMaterial=bareArms?material.skin:material.leather;
+    const handMaterial=bareArms?material.skin:material.dark;
+    cylinder("figure-upper-arm-l",.30,.14,.12,upperArmMaterial,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
+    cylinder("figure-upper-arm-r",.30,.14,.12,upperArmMaterial,[.265,1.20,0],[0,0,.13],6,"rightArm");
     if(figure.chainmail){
       cylinder("figure-chainmail-sleeve-l",.25,.145,.125,material.chainmail,[-.268,1.17,.002],[0,0,-.13],8,"leftArm");
       cylinder("figure-chainmail-sleeve-r",.25,.145,.125,material.chainmail,[.268,1.17,.002],[0,0,.13],8,"rightArm");
     }
-    cylinder("figure-forearm-l",.27,.115,.095,material.leather,[-.295,.94,.035],[0,0,-.05],6,"leftArm");
-    cylinder("figure-forearm-r",.27,.115,.095,material.leather,[.295,.94,.035],[0,0,.05],6,"rightArm");
-    box("figure-glove-l",[.105,.12,.115],material.dark,[-.305,.755,.055],[0,0,-.03],"leftArm");
-    box("figure-glove-r",[.105,.12,.115],material.dark,[.305,.755,.055],[0,0,.03],"rightArm");
+    cylinder("figure-forearm-l",.27,.115,.095,forearmMaterial,[-.295,.94,.035],[0,0,-.05],6,"leftArm");
+    cylinder("figure-forearm-r",.27,.115,.095,forearmMaterial,[.295,.94,.035],[0,0,.05],6,"rightArm");
+    box("figure-glove-l",[.105,.12,.115],handMaterial,[-.305,.755,.055],[0,0,-.03],"leftArm");
+    box("figure-glove-r",[.105,.12,.115],handMaterial,[.305,.755,.055],[0,0,.03],"rightArm");
     sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
     sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
 
