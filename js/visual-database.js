@@ -296,6 +296,61 @@ export const VISUALS={
         }
       }
     },
+    nereia_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.70,
+        figure:{
+          style:"DEEP_SEA_QUEEN",
+          braid:false,
+          longHair:true,
+          seaFinEars:true,
+          scaleArmor:true,
+          seaDrapes:true,
+          seaJewelry:true,
+          seaSandals:true,
+          cape:false,
+          bow:false,
+          quiver:false,
+          sideSword:false,
+          trident:true,
+          bracerDetail:true,
+          aquaticMotion:{surfacePitch:-.18,divePitch:-1.02,surfaceKick:.26,diveKick:.40,surfaceBob:.040,diveBob:.024,bodyRoll:.030,hairFloat:.38,drapeFloat:.34},
+          colors:{
+            skin:"#edc7b4",
+            hair:"#5f86a8",
+            hairDark:"#345b7b",
+            cape:"#2e5d86",
+            capeDark:"#183b61",
+            leather:"#4b3a36",
+            leatherDark:"#282126",
+            shirt:"#e9edf0",
+            pants:"#244665",
+            boots:"#2e5573",
+            metal:"#c5a05e",
+            armor:"#7fb5c7",
+            scale:"#356f91",
+            scaleLight:"#9bd2da",
+            pearl:"#edf2ef",
+            gold:"#c4a15d",
+            weapon:"#8cc6d9",
+            eyes:"#78b8d6",
+            accent:"#244f78",
+            gem:"#2fa9da"
+          }
+        },
+        animations:{
+          IDLE:{duration:1350,loop:true,procedural:"BREATHE"},
+          WALK:{duration:220,loop:true,procedural:"STEP",figureMotion:{bodyBob:.035,rootSway:.016,bodySway:.016,torsoBob:.010,legSwing:.40,armSwing:.24,bowSwing:0,capeSwing:.18,capeTwist:.060,braidSwing:.24,braidTwist:.090,followLag:.80}},
+          ATTACK:{duration:390,loop:false,procedural:"LUNGE"},
+          CAST:{duration:540,loop:false,procedural:"CAST"},
+          HURT:{duration:250,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:780,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     cat_thief_default:{
       expressions:{},
       battle:{

@@ -278,6 +278,9 @@ export class UnitRenderer{
       tail:this.figureMaterial("tail",colors.tail||colors.hair||"#c8b9ae"),
       tailTip:this.figureMaterial("tail-tip",colors.tailTip||colors.hairDark||"#8f7b73"),
       innerEar:this.figureMaterial("inner-ear",colors.innerEar||"#c99096"),
+      scale:this.figureMaterial("scale",colors.scale||"#2f6581"),
+      scaleLight:this.figureMaterial("scale-light",colors.scaleLight||"#91c7d3"),
+      pearl:this.figureMaterial("pearl",colors.pearl||"#e8eef0"),
       dark:this.figureMaterial("dark","#1d1c20")
     };
     material.cape.backFaceCulling=false;
@@ -285,6 +288,7 @@ export class UnitRenderer{
     material.hair.backFaceCulling=false;
     material.tail.backFaceCulling=false;
     material.innerEar.backFaceCulling=false;
+    material.scaleLight.backFaceCulling=false;
     material.holy.backFaceCulling=false;
     material.holy.alpha=.72;
     material.holy.emissiveColor=this.figureColor(colors.holyEmissive||colors.holy||"#ffd86a").scale(.92);
@@ -370,6 +374,13 @@ export class UnitRenderer{
     if(figure.pointedEars){
       custom("figure-ear-l",[[-.155,1.57,.02],[-.33,1.60,.015],[-.165,1.48,.025]],[0,1,2],material.skin,"head");
       custom("figure-ear-r",[[.155,1.57,.02],[.33,1.60,.015],[.165,1.48,.025]],[0,2,1],material.skin,"head");
+    }
+
+    if(figure.seaFinEars){
+      custom("figure-sea-fin-ear-l",[[-.155,1.57,.015],[-.30,1.68,-.005],[-.28,1.54,.015],[-.31,1.45,.005]],[0,1,2,0,2,3],material.scaleLight,"head");
+      custom("figure-sea-fin-ear-r",[[.155,1.57,.015],[.30,1.68,-.005],[.28,1.54,.015],[.31,1.45,.005]],[0,2,1,0,3,2],material.scaleLight,"head");
+      sphere("figure-sea-ear-gem-l",.052,material.gem,[-.185,1.56,.055],[.65,1,.45],6,"head");
+      sphere("figure-sea-ear-gem-r",.052,material.gem,[.185,1.56,.055],[.65,1,.45],6,"head");
     }
 
     if(figure.catEars){
@@ -488,6 +499,25 @@ export class UnitRenderer{
       box("figure-upper-breastplate-strap-r",[.045,.30,.025],material.leatherDark,[.175,1.29,.198],[0,0,.12],"body");
     }
 
+    if(figure.scaleArmor){
+      cylinder("figure-scale-cuirass",.36,.395,.305,material.scale,[0,1.18,.028],null,10,"body");
+      cylinder("figure-scale-waist",.23,.305,.315,material.scaleLight,[0,.97,.022],null,10,"body");
+      box("figure-scale-gold-spine",[.038,.34,.028],material.gold,[0,1.18,.206],null,"body");
+      box("figure-scale-neck-trim",[.31,.035,.032],material.gold,[0,1.37,.17],null,"body");
+      box("figure-scale-waist-trim",[.34,.035,.030],material.gold,[0,1.00,.17],null,"body");
+      const scaleRows=[
+        {y:1.31,xs:[-.15,-.075,0,.075,.15]},
+        {y:1.23,xs:[-.18,-.09,0,.09,.18]},
+        {y:1.15,xs:[-.15,-.075,0,.075,.15]},
+        {y:1.07,xs:[-.12,-.04,.04,.12]}
+      ];
+      let seaScaleIndex=0;
+      for(const row of scaleRows)for(const x of row.xs){
+        sphere(`figure-scale-tile-${seaScaleIndex++}`,.085,seaScaleIndex%2?material.scaleLight:material.scale,[x,row.y,.195],[.85,.48,.28],5,"body");
+      }
+      sphere("figure-scale-chest-gem",.075,material.gem,[0,1.34,.215],[.72,1,.40],7,"body");
+    }
+
     if(figure.mediumPlate){
       sphere("figure-medium-pauldron-l",.24,material.armor,[-.29,1.31,-.004],[1.15,.48,.95],6,"leftArm");
       sphere("figure-medium-pauldron-r",.22,material.armor,[.29,1.31,-.004],[1.08,.44,.92],6,"rightArm");
@@ -556,6 +586,16 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.seaJewelry){
+      const collar=BABYLON.MeshBuilder.CreateTorus(`figure-sea-collar-${unit.id}`,{diameter:.28*scale,thickness:.018*scale,tessellation:16},this.scene);
+      finish(collar,material.gold,[0,1.42,.02],[Math.PI/2,0,0],null,{part:"body"});
+      sphere("figure-sea-neck-gem",.065,material.gem,[0,1.385,.155],[.65,1,.42],7,"body");
+      sphere("figure-sea-hip-gem-l",.060,material.gem,[-.22,.91,.13],[.60,1,.40],6,"body");
+      sphere("figure-sea-hip-gem-r",.060,material.gem,[.22,.91,.13],[.60,1,.40],6,"body");
+      box("figure-sea-chain-l",[.020,.30,.018],material.gold,[-.18,.78,.13],[0,0,-.20],"body");
+      box("figure-sea-chain-r",[.020,.30,.018],material.gold,[.18,.78,.13],[0,0,.20],"body");
+    }
+
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
     const asymmetric=figure.asymmetricLegwear===true;
     const leftThighMaterial=asymmetric?material.skin:material.pants;
@@ -567,12 +607,23 @@ export class UnitRenderer{
     cylinder("figure-thigh-r",.38,.17,.145,rightThighMaterial,[.115,.66,0],[0,0,-.018],6,"rightLeg");
     cylinder("figure-shin-l",.34,.135,.115,leftShinMaterial,[-.115,.36,.008],[0,0,.014],6,"leftLeg");
     cylinder("figure-shin-r",.34,.135,.115,rightShinMaterial,[.115,.36,.008],[0,0,-.014],6,"rightLeg");
-    box("figure-boot-shaft-l",[.18,.29,.20],material.boots,[-.115,.245,.025],null,"leftLeg");
-    box("figure-boot-shaft-r",[.18,.29,.20],material.boots,[.115,.245,.025],null,"rightLeg");
-    box("figure-boot-foot-l",[.19,.11,.31],material.boots,[-.115,.075,.075],[-.03,0,0],"leftLeg");
-    box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
-    box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
-    box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
+    if(figure.seaSandals){
+      box("figure-sea-foot-l",[.18,.09,.29],material.skin,[-.115,.065,.075],[-.03,0,0],"leftLeg");
+      box("figure-sea-foot-r",[.18,.09,.29],material.skin,[.115,.065,.075],[-.03,0,0],"rightLeg");
+      for(const [side,x] of [["l",-.115],["r",.115]]){
+        box(`figure-sea-sandal-sole-${side}`,[.19,.025,.31],material.gold,[x,.025,.08],[-.03,0,0],side==="l"?"leftLeg":"rightLeg");
+        box(`figure-sea-sandal-strap-a-${side}`,[.025,.34,.025],material.gold,[x-.045,.22,.105],[0,0,-.20],side==="l"?"leftLeg":"rightLeg");
+        box(`figure-sea-sandal-strap-b-${side}`,[.025,.34,.025],material.gold,[x+.045,.22,.105],[0,0,.20],side==="l"?"leftLeg":"rightLeg");
+        sphere(`figure-sea-sandal-gem-${side}`,.050,material.gem,[x,.22,.135],[.62,1,.42],6,side==="l"?"leftLeg":"rightLeg");
+      }
+    }else{
+      box("figure-boot-shaft-l",[.18,.29,.20],material.boots,[-.115,.245,.025],null,"leftLeg");
+      box("figure-boot-shaft-r",[.18,.29,.20],material.boots,[.115,.245,.025],null,"rightLeg");
+      box("figure-boot-foot-l",[.19,.11,.31],material.boots,[-.115,.075,.075],[-.03,0,0],"leftLeg");
+      box("figure-boot-foot-r",[.19,.11,.31],material.boots,[.115,.075,.075],[-.03,0,0],"rightLeg");
+      box("figure-boot-cuff-l",[.205,.07,.215],material.leather,[-.115,.37,.025],[0,0,.02],"leftLeg");
+      box("figure-boot-cuff-r",[.205,.07,.215],material.leather,[.115,.37,.025],[0,0,-.02],"rightLeg");
+    }
 
     if(figure.legStraps){
       box("figure-leg-strap-l-a",[.205,.045,.19],material.leatherDark,[-.115,.70,.015],[0,0,.02],"leftLeg");
@@ -720,6 +771,20 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.seaDrapes){
+      const finPanel=(name,points,mat)=>custom(name,points,[0,2,1,0,3,2],mat,"skirt");
+      finPanel("figure-sea-drape-front",[[-.12,.96,.16],[.12,.96,.16],[.18,.30,.14],[-.18,.30,.14]],material.pearl);
+      finPanel("figure-sea-drape-left",[[-.28,.92,.04],[-.08,.94,.02],[-.18,.18,-.02],[-.42,.30,-.03]],material.scaleLight);
+      finPanel("figure-sea-drape-right",[[.08,.94,.02],[.28,.92,.04],[.42,.30,-.03],[.18,.18,-.02]],material.scaleLight);
+      finPanel("figure-sea-drape-back",[[-.24,.93,-.13],[.24,.93,-.13],[.34,.20,-.22],[-.34,.20,-.22]],material.cape);
+      custom("figure-sea-fin-tail-l",[[-.40,.44,-.06],[-.15,.36,-.10],[-.34,.08,-.10]],[0,1,2],material.cape,"skirt");
+      custom("figure-sea-fin-tail-r",[[.15,.36,-.10],[.40,.44,-.06],[.34,.08,-.10]],[0,1,2],material.cape,"skirt");
+      box("figure-sea-drape-gold-l",[.025,.58,.022],material.gold,[-.19,.60,.16],[0,0,-.08],"skirt");
+      box("figure-sea-drape-gold-r",[.025,.58,.022],material.gold,[.19,.60,.16],[0,0,.08],"skirt");
+      sphere("figure-sea-drape-gem-l",.052,material.gem,[-.20,.34,.17],[.60,1,.42],6,"skirt");
+      sphere("figure-sea-drape-gem-r",.052,material.gem,[.20,.34,.17],[.60,1,.42],6,"skirt");
+    }
+
     if(figure.catTail){
       const tailPath=[[0,.88,-.17],[-.18,.82,-.22],[-.36,.92,-.28],[-.43,1.10,-.27],[-.31,1.27,-.22],[-.12,1.31,-.18]].map(point=>localPoint("tail",point));
       const tailMesh=BABYLON.MeshBuilder.CreateTube(`figure-cat-tail-${unit.id}`,{path:tailPath,radius:.060*scale,tessellation:7,cap:BABYLON.Mesh.CAP_ALL},this.scene);
@@ -749,6 +814,17 @@ export class UnitRenderer{
         finish(knuckle,material.metal,[.335,.93,.075],[Math.PI/2,0,.25],null,{part:"weapon"});
         box("figure-rapier-fulleredge",[.018,.76,.012],material.accent,[.335,.48,.10],[0,0,-.05],"weapon");
       }
+    }
+
+    if(figure.trident){
+      cylinder("figure-trident-shaft",1.18,.040,.045,material.leatherDark,[.31,.68,.075],[0,0,-.04],8,"weapon");
+      box("figure-trident-center-prong",[.055,.42,.045],material.weapon,[.31,.10,.075],[0,0,-.04],"weapon");
+      custom("figure-trident-left-prong",[[.28,.28,.075],[.10,.04,.075],[.17,.37,.075]],[0,1,2],material.weapon,"weapon");
+      custom("figure-trident-right-prong",[[.34,.28,.075],[.52,.04,.075],[.45,.37,.075]],[0,2,1],material.weapon,"weapon");
+      box("figure-trident-crossguard",[.36,.045,.070],material.gold,[.31,.31,.075],[0,0,-.04],"weapon");
+      sphere("figure-trident-gem",.095,material.gem,[.31,.27,.105],[.72,1,.42],7,"weapon");
+      box("figure-trident-gold-spine",[.025,.30,.052],material.gold,[.31,.12,.105],[0,0,-.04],"weapon");
+      sphere("figure-trident-pommel",.075,material.gold,[.265,1.31,.075],[.82,.82,.82],6,"weapon");
     }
 
     if(figure.fieldGreatsword){
@@ -1058,6 +1134,7 @@ export class UnitRenderer{
   resetPose(entry,unit){
     entry.root.position.copyFrom(entry.basePosition);
     entry.facingMarker.root.position.copyFrom(entry.baseMarkerPosition);
+    entry.root.rotation.x=0;
     entry.root.rotation.z=0;
     entry.root.scaling.setAll(entry.baseScale);
     if(entry.plane)entry.plane.rotation.z=0;
@@ -1129,6 +1206,28 @@ export class UnitRenderer{
       parts.tail.rotation.y+=Math.sin(cycle*.72-followLag)*.16;
       parts.tail.rotation.z+=Math.sin(cycle-followLag*.45)*.12;
     }
+  }
+
+  applyFigureAquaticPose(entry,unit,phase,{moving=false,now=performance.now()}={}){
+    const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
+    const mode=String(unit?.verticalMode||"").toUpperCase();
+    if(mode!=="SWIMMING"&&mode!=="DIVING")return false;
+    const motion=entry.definition?.figure?.aquaticMotion||{};
+    const cycle=(moving?phase:now/1000)*Math.PI*2;
+    const wave=Math.sin(cycle),follow=Math.sin(cycle-.85),deep=mode==="DIVING";
+    entry.root.rotation.x+=Number(deep?motion.divePitch??-1.02:motion.surfacePitch??-.18);
+    entry.root.position.y+=wave*Number(deep?motion.diveBob??.025:motion.surfaceBob??.045);
+    if(parts.body)parts.body.rotation.z+=wave*Number(motion.bodyRoll??.035);
+    if(parts.leftLeg)parts.leftLeg.rotation.x+=wave*Number(deep?motion.diveKick??.38:motion.surfaceKick??.26);
+    if(parts.rightLeg)parts.rightLeg.rotation.x-=wave*Number(deep?motion.diveKick??.38:motion.surfaceKick??.26);
+    if(parts.leftArm){parts.leftArm.rotation.x+=deep?-.42:-.18;parts.leftArm.rotation.z+=follow*.08;}
+    if(parts.rightArm){parts.rightArm.rotation.x+=deep?-.48:-.22;parts.rightArm.rotation.z-=follow*.08;}
+    if(parts.weapon){parts.weapon.rotation.x+=deep?-.36:-.12;parts.weapon.rotation.z+=wave*.035;}
+    if(parts.hairBack){parts.hairBack.rotation.x+=Number(motion.hairFloat??.34)+follow*.16;parts.hairBack.rotation.z+=wave*.10;}
+    if(parts.braid){parts.braid.rotation.x+=Number(motion.hairFloat??.34)+follow*.14;parts.braid.rotation.z-=wave*.08;}
+    if(parts.skirt){parts.skirt.rotation.x+=Number(motion.drapeFloat??.30)+follow*.18;parts.skirt.rotation.z-=wave*.08;}
+    if(parts.cape){parts.cape.rotation.x+=Number(motion.drapeFloat??.30)+follow*.14;parts.cape.rotation.z+=wave*.06;}
+    return true;
   }
 
   applyBirdPose(entry,state,progress,now){
@@ -1289,6 +1388,7 @@ export class UnitRenderer{
       return;
     }
     if(entry.kind==="FIGURE"){
+      if(this.applyFigureAquaticPose(entry,unit,local,{moving:true,now:performance.now()}))return;
       const motion=definition?.figureMotion||{};
       entry.root.position.y+=Math.abs(step)*Number(motion.bodyBob??.065);
       entry.root.rotation.z=step*Number(motion.rootSway??.035);
@@ -1304,6 +1404,7 @@ export class UnitRenderer{
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
+    const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     const weaponAction=this.attackTypeFor(event);
     if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
@@ -1312,6 +1413,7 @@ export class UnitRenderer{
     }
 
     if(procedural==="BREATHE"||state==="IDLE"){
+      if(aquaticPose)return;
       const breathe=Math.sin(now/300);
       entry.root.position.y+=breathe*.055;
       entry.root.scaling.y=entry.baseScale*(1+breathe*.035);
@@ -1344,6 +1446,17 @@ export class UnitRenderer{
 
     if(procedural==="CAST"||state==="CAST"){
       const pulse=Math.sin(Math.PI*progress);
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.trident){
+        const parts=entry.figureParts||{};
+        if(parts.rightArm){parts.rightArm.rotation.x-=pulse*.82;parts.rightArm.rotation.z-=pulse*.18;}
+        if(parts.leftArm){parts.leftArm.rotation.x-=pulse*.36;parts.leftArm.rotation.z+=pulse*.28;}
+        if(parts.weapon){parts.weapon.rotation.x-=pulse*.72;parts.weapon.rotation.z-=pulse*.18;}
+        if(parts.hairBack)parts.hairBack.rotation.x+=pulse*.18;
+        if(parts.skirt)parts.skirt.rotation.x+=pulse*.16;
+        entry.root.position.y+=pulse*.12;
+        entry.root.scaling.setAll(entry.baseScale*(1+pulse*.06));
+        return;
+      }
       entry.root.position.y+=pulse*.30;
       entry.root.rotation.y+=progress*Math.PI*2;
       entry.root.scaling.setAll(entry.baseScale*(1+pulse*.18));
