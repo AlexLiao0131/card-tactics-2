@@ -954,15 +954,15 @@ export class UnitRenderer{
   updateVerticalCue(entry,unit){
     const cue=entry?.verticalCue;if(!cue)return;
     const mode=String(unit?.verticalMode||"");
-    const visible=mode==="DIVING"||mode==="FLYING";
+    const visible=mode==="DIVING"||mode==="SINKING"||mode==="FLYING";
     cue.ring.setEnabled(visible);cue.stem.setEnabled(false);
     if(!visible)return;
-    const material=mode==="DIVING"?this.materials.submerged:this.materials.airborne;
+    const submerged=mode==="DIVING"||mode==="SINKING",material=submerged?this.materials.submerged:this.materials.airborne;
     const surfaceWorld=Number(unit.verticalSurfaceZ??unit.renderZ??unit.z??0)*ELEVATION_HEIGHT;
     const unitWorld=Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT;
     cue.ring.material=material;cue.stem.material=material;
     cue.ring.position.set(Number(unit.x||0)*TILE_SIZE,surfaceWorld+.055,Number(unit.y||0)*TILE_SIZE);
-    cue.ring.scaling.setAll(mode==="DIVING"?1.06:.88);
+    cue.ring.scaling.setAll(submerged?1.06:.88);
     const span=unitWorld-surfaceWorld;
     if(Math.abs(span)>.08){
       cue.stem.setEnabled(true);
@@ -1221,10 +1221,10 @@ export class UnitRenderer{
   applyFigureAquaticPose(entry,unit,phase,{moving=false,now=performance.now()}={}){
     const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
     const mode=String(unit?.verticalMode||"").toUpperCase();
-    if(mode!=="SWIMMING"&&mode!=="DIVING")return false;
+    if(mode!=="SWIMMING"&&mode!=="DIVING"&&mode!=="SINKING")return false;
     const motion=entry.definition?.figure?.aquaticMotion||{};
     const cycle=(moving?phase:now/1000)*Math.PI*2;
-    const wave=Math.sin(cycle),follow=Math.sin(cycle-.85),deep=mode==="DIVING";
+    const wave=Math.sin(cycle),follow=Math.sin(cycle-.85),deep=mode==="DIVING"||mode==="SINKING";
     entry.root.rotation.x+=Number(deep?motion.divePitch??-1.02:motion.surfacePitch??-.18);
     entry.root.position.y+=wave*Number(deep?motion.diveBob??.025:motion.surfaceBob??.045);
     if(parts.body)parts.body.rotation.z+=wave*Number(motion.bodyRoll??.035);
@@ -1533,11 +1533,11 @@ export class UnitRenderer{
 
       if(entry.kind==="CAPSULE")entry.root.material=this.materials[unit.team]??this.materials.NEUTRAL;
 
-      const verticalMode=String(unit.verticalMode||"");
-      const scale=(unit.selected?1.13:unit.finished?.92:1)*(verticalMode==="DIVING"?.9:1);
+      const verticalMode=String(unit.verticalMode||""),submerged=verticalMode==="DIVING"||verticalMode==="SINKING";
+      const scale=(unit.selected?1.13:unit.finished?.92:1)*(submerged?.9:1);
       entry.baseScale=scale;
       const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.45:1;
-      const verticalOpacity=verticalMode==="DIVING"?.5:1;
+      const verticalOpacity=submerged?.48:1;
       this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity*verticalOpacity);
       this.updateVerticalCue(entry,unit);
 

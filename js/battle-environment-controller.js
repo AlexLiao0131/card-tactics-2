@@ -15,10 +15,13 @@ function activeWaterRules(unit){
   return out;
 }
 function baseState(unit,tile,fatigue=currentFatigue(unit)){
-  const depth=Math.max(0,Number(window.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),weight=weightClass(unit),rules=activeWaterRules(unit);
+  const depth=Math.max(0,Number(window.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),weight=weightClass(unit),rules=activeWaterRules(unit),forcedTurns=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0));
   if(window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{state:STATE.DRY,depth,weight,safe:true,fatigue};
   if(depth<=0)return{state:STATE.DRY,depth,weight,safe:true,fatigue};
   if(set.has("AQUATIC"))return{state:STATE.AQUATIC,depth,weight,safe:true,fatigue};
+  // A breaking rogue wave can engulf a surface swimmer/wader/water-walker and
+  // temporarily force them below the surface. Explicit anti-sinking effects still win.
+  if(forcedTurns>0&&!rules.preventSinking)return{state:STATE.SINKING,depth,weight,safe:false,fatigue:Math.max(fatigue,FATIGUE_LIMIT),forcedSubmerge:true,forcedSubmergeTurns:forcedTurns};
   if(set.has("WATER_WALK")||rules.waterWalk)return{state:STATE.WATER_WALK,depth,weight,safe:true,fatigue,source:rules.waterWalk?"EFFECT":null};
   if(window.ClimateEngine?.isFrozen?.(tile)&&ClimateEngine.iceSupports(unit,tile))return{state:STATE.ICE,depth,weight,safe:true,iceThickness:ClimateEngine.iceThickness(tile),fatigue};
   if(depth<2)return{state:STATE.WADING,depth,weight,safe:true,fatigue};
@@ -26,6 +29,19 @@ function baseState(unit,tile,fatigue=currentFatigue(unit)){
   return{state:STATE.SWIMMING,depth,weight,safe:true,fatigue};
 }
 function assess(unit,tile){return baseState(unit,tile)}
+function forceSubmerge(unit,tile,{turns=1,impactDamage=0}={}){
+  if(!unit?.alive||!tile)return{applied:false,reason:"INVALID_TARGET",damage:0};
+  const depth=Math.max(0,Number(window.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),rules=activeWaterRules(unit);
+  if(depth<=0)return{applied:false,reason:"NO_WATER",damage:0};
+  if(window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{applied:false,reason:"NO_WATER_CONTACT",damage:0};
+  const impact=Math.max(0,Math.round(Number(impactDamage||0)));
+  if(set.has("AQUATIC"))return{applied:false,reason:"AQUATIC",damage:impact,state:STATE.AQUATIC};
+  if(rules.preventSinking)return{applied:false,reason:"PREVENT_SINKING",damage:impact,state:unit?.waterInteraction?.state||STATE.WATER_WALK};
+  const previous=unit.waterInteraction||{};
+  unit.waterInteraction={...previous,fatigue:Math.max(FATIGUE_LIMIT,Number(previous.fatigue||0)),forcedSubmergeTurns:Math.max(1,Math.floor(Number(turns||1)))};
+  const resolved=resolve(unit,tile,{trigger:"WAVE"});
+  return{...resolved,applied:resolved.state===STATE.SINKING,damage:Math.max(Number(resolved.damage||0),Math.max(0,Math.round(Number(impactDamage||0))))};
+}
 function resolve(unit,tile,{trigger="CHECK"}={}){
   const previous=unit?.waterInteraction||{state:STATE.DRY,depth:0,weight:weightClass(unit),fatigue:0},set=traits(unit),rules=activeWaterRules(unit);let ice=null;
   if(tile&&!window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit)&&window.ClimateEngine?.isFrozen?.(tile)&&!set.has("AQUATIC")&&!set.has("WATER_WALK")&&!rules.waterWalk&&!ClimateEngine.iceSupports(unit,tile))ice=ClimateEngine.resolveIceStep(unit,tile);
@@ -40,12 +56,16 @@ function resolve(unit,tile,{trigger="CHECK"}={}){
   let damage=0;
   if(next.state===STATE.SINKING){
     if(trigger==="TICK"&&!rules.breathing)damage=Number(TICK_DAMAGE[next.weight]??TICK_DAMAGE.LIGHT);
-    else if(trigger==="ENTER"||trigger==="CHANGE"){const newlySinking=previous.state!==STATE.SINKING;if(newlySinking||ice?.broke)damage=Number(ENTRY_DAMAGE[next.weight]??ENTRY_DAMAGE.LIGHT);}
+    else if(trigger==="ENTER"||trigger==="CHANGE"||trigger==="WAVE"){const newlySinking=previous.state!==STATE.SINKING;if(newlySinking||ice?.broke||trigger==="WAVE")damage=Number(ENTRY_DAMAGE[next.weight]??ENTRY_DAMAGE.LIGHT);}
   }
-  if(unit){unit.waterInteraction={...next};window.VerticalMobilityEngine?.syncUnit?.(unit,tile);}
+  if(unit){
+    const forcedBefore=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0)),forcedAfter=trigger==="TICK"?Math.max(0,forcedBefore-1):forcedBefore;
+    unit.waterInteraction={...next,forcedSubmerge:forcedAfter>0,forcedSubmergeTurns:forcedAfter};
+    window.VerticalMobilityEngine?.syncUnit?.(unit,tile);
+  }
   return{...next,fatigueLimit:FATIGUE_LIMIT,fatigueGain:Number(FATIGUE_GAIN[next.weight]??FATIGUE_GAIN.LIGHT),previousState:previous.state,previousDepth:Number(previous.depth||0),previousFatigue:Number(previous.fatigue||0),changed,damage,trigger,ice,breathing:rules.breathing};
 }
-return Object.freeze({STATE,FATIGUE_LIMIT,FATIGUE_GAIN,FATIGUE_RECOVERY_PER_TICK,ENTRY_DAMAGE,TICK_DAMAGE,assess,resolve,activeWaterRules});
+return Object.freeze({STATE,FATIGUE_LIMIT,FATIGUE_GAIN,FATIGUE_RECOVERY_PER_TICK,ENTRY_DAMAGE,TICK_DAMAGE,assess,resolve,forceSubmerge,activeWaterRules});
 })();
 
 (()=>{
@@ -140,13 +160,23 @@ function create(ctx){
   return count;
  }
  function resolveRogueWave(event){
-  const s=state(),cells=event.cells||[],cellKeys=new Set(cells.map(point=>`${point.x},${point.y}`)),dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0));if(!cellKeys.size||(!dx&&!dy))return 0;
+  const s=state(),cells=event.cells||[],cellKeys=new Set(cells.map(point=>`${point.x},${point.y}`));if(!cellKeys.size)return 0;
   globalThis.UnitAnimationEngine?.emitPresentation?.("ROGUE_WAVE",{...event});
   const initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
   for(const unit of initial){
-    if(!unit.alive||window.VerticalMobilityEngine?.ignoresCurrent?.(unit))continue;
-    const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,window.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",event))continue;
-    applyForcedMovement({x:unit.x-dx,y:unit.y-dy},unit,Math.max(1,Number(event.forceDistance||2)),{name:"瘋狗浪",damage:Math.max(0,Number(event.damage||0)),damageType:"WATER"});count++;
+    if(!unit.alive||window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
+    const tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=window.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";
+    if(!profileContacts(unit,tile,profile,event))continue;
+    const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:Math.max(0,Number(event.damage||0))});
+    if(result?.damage>0&&unit.alive)ctx.damageUnitFlat(unit,result.damage,"瘋狗浪");
+    if(!unit.alive){count++;continue;}
+    if(!result?.applied){
+      if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被瘋狗浪吞沒，但水生體質能在浪下保持穩定。`,"DETAIL");
+      else if(result?.reason==="PREVENT_SINKING")ctx.pushLog(`${unit.character.name} 遭瘋狗浪覆蓋，但防沉沒效果使其沒有被捲入水下。`,"DETAIL");
+      continue;
+    }
+    ctx.pushLog(`${unit.character.name} 被瘋狗浪捲入水下｜進入沉沒狀態｜浪高 ${Number(event.waveHeight||0).toFixed(2)}。`,"BATTLE");
+    count++;
   }
   return count;
  }
@@ -203,7 +233,7 @@ function create(ctx){
   else if(event.type==="TORNADO_DISSIPATED")ctx.pushLog(`龍捲風移出戰場並消散。`,"DETAIL");
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
   else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="TYPHOON"?"颱風":event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
-  else if(event.type==="ROGUE_WAVE")ctx.pushLog(`🌊 颱風風場與水域條件形成瘋狗浪｜風力 ${Number(event.windStrength||0).toFixed(1)}｜迎風距離 ${Number(event.fetch||0).toFixed(1)}｜推力 ${event.forceDistance||0}。`,"SYSTEM");
+  else if(event.type==="ROGUE_WAVE")ctx.pushLog(`🌊 颱風風場與水域條件形成瘋狗浪｜風力 ${Number(event.windStrength||0).toFixed(1)}｜迎風距離 ${Number(event.fetch||0).toFixed(1)}｜浪高 ${Number(event.waveHeight||0).toFixed(2)}｜會將接觸單位捲入水下。`,"SYSTEM");
   else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");

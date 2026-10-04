@@ -93,6 +93,7 @@ export class WaterRenderer{
     this.cascadeMaterial=cascade.material;
     this.cascadeTexture=cascade.texture;
     this.foamMaterial=this.makeSideMaterial("water-foam",new BABYLON.Color3(.78,.93,1),.52);
+    this.rogueFoamMaterial=this.makeSideMaterial("rogue-wave-foam",new BABYLON.Color3(.90,.98,1),.86);
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
@@ -102,7 +103,13 @@ export class WaterRenderer{
         this.waveAccumulator=0;
         for(const entry of this.surfaceAnimations.values())this.animateSurface(entry,this.waveTime);
       }
-      this.rogueWaves=this.rogueWaves.filter(wave=>this.waveTime-wave.startedAt<=wave.duration+.25);
+      const active=[];
+      for(const wave of this.rogueWaves){
+        const age=this.waveTime-wave.startedAt;
+        if(age>wave.duration+.25){wave.visual?.dispose?.();continue;}
+        this.updateRogueWaveVisual(wave,age);active.push(wave);
+      }
+      this.rogueWaves=active;
       this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
       for(const entry of this.cascades.values()){
         entry.foam.rotation.y+=dt*.7;
@@ -269,9 +276,11 @@ export class WaterRenderer{
     const mesh=entry?.mesh;if(!mesh||mesh.isDisposed?.())return;
     const base=entry.basePositions,positions=entry.positions,normals=entry.normals,weights=entry.waveWeights;
     const flowX=entry.flowX||[],flowZ=entry.flowZ||[],flowSpeeds=entry.flowSpeeds||[],wind=this.wind||{x:0,z:0,strength:0};
-    const rawWindStrength=clamp(wind.strength||0,0,8),windStrength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawWindStrength)??(rawWindStrength<=3?rawWindStrength:Math.min(4,3+(rawWindStrength-3)*.2)),windUnit=windStrength/3;
+    const rawWindStrength=clamp(wind.strength||0,0,8),windStrength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawWindStrength)??rawWindStrength;
     const wx=Number(wind.x||0),wz=Number(wind.z||0),wpx=-wz,wpz=wx,windPresence=smooth01(rawWindStrength/.8);
-    const windAmp=ELEVATION_HEIGHT*Math.min(.10,.010*windPresence+.020*windUnit+.035*windUnit*windUnit),windK=(2.15+windStrength*.72)/TILE_SIZE,windRate=.75+windStrength*.82,calmAmp=ELEVATION_HEIGHT*.009;
+    // Keep low wind close to the old look, then let actual 4-8 force steepen the
+    // surface progressively. The only cap is geometric safety, not wind compression.
+    const windAmp=ELEVATION_HEIGHT*Math.min(.24,.010*windPresence+.012*windStrength+.0036*windStrength*windStrength),windK=(2.15+windStrength*.72)/TILE_SIZE,windRate=.75+windStrength*.82,calmAmp=ELEVATION_HEIGHT*.009;
     const rogueWaves=this.rogueWaves.filter(wave=>wave.surfaceIds.has(entry.id));
     for(let i=0;i<base.length/3;i++){
       const o=i*3,x=base[o],z=base[o+2],w=Number(weights[i]||0);let wave=0,dydx=0,dydz=0;
@@ -299,7 +308,43 @@ export class WaterRenderer{
     mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
   }
 
-  syncRogueWaveEvents(events=[]){
+  createRogueWaveVisual(wave){
+    if(!globalThis.BABYLON||!wave)return null;
+    const root=new BABYLON.TransformNode(`rogue-wave-${wave.token}`,this.scene),span=Math.max(TILE_SIZE,Number(wave.maxPerp-wave.minPerp)+TILE_SIZE*1.30);
+    root.rotation.y=Math.atan2(wave.dx,wave.dz);
+    const crest=BABYLON.MeshBuilder.CreateGround(`rogue-wave-crest-${wave.token}`,{width:span,height:TILE_SIZE*.24,subdivisions:1},this.scene);
+    crest.parent=root;crest.material=this.rogueFoamMaterial;crest.isPickable=false;crest.position.z=-TILE_SIZE*.06;crest.visibility=.92;
+    const backwash=BABYLON.MeshBuilder.CreateGround(`rogue-wave-backwash-${wave.token}`,{width:span*.94,height:TILE_SIZE*.13,subdivisions:1},this.scene);
+    backwash.parent=root;backwash.material=this.rogueFoamMaterial;backwash.isPickable=false;backwash.position.z=-TILE_SIZE*.30;backwash.visibility=.48;
+    const spray=[];
+    const count=Math.max(8,Math.min(18,Math.round(span/(TILE_SIZE*.55))));
+    for(let i=0;i<count;i++){
+      const clump=BABYLON.MeshBuilder.CreateSphere(`rogue-wave-spray-${wave.token}-${i}`,{diameter:.08+(i%3)*.025,segments:4},this.scene);
+      clump.parent=root;clump.material=this.rogueFoamMaterial;clump.isPickable=false;clump.metadata={offset:(i/(Math.max(1,count-1))-.5)*span,phase:hash01(`${wave.token}:spray:${i}`)*Math.PI*2};spray.push(clump);
+    }
+    root.metadata={kind:"rogue-wave-foam",presentationOnly:true};
+    return{root,crest,backwash,spray,span,dispose:()=>root.dispose(false,false)};
+  }
+
+  updateRogueWaveVisual(wave,age){
+    const visual=wave?.visual;if(!visual)return;
+    const t=clamp(age/Math.max(.001,wave.duration),0,1),progress=smooth01(t),crestAlong=wave.startAlong+(wave.endAlong-wave.startAlong)*progress,centerPerp=(wave.minPerp+wave.maxPerp)*.5;
+    visual.root.position.x=crestAlong*wave.dx+centerPerp*(-wave.dz);
+    visual.root.position.z=crestAlong*wave.dz+centerPerp*wave.dx;
+    visual.root.position.y=wave.surfaceY+wave.amplitude*(.72+.12*Math.sin(t*Math.PI))+.025;
+    const fade=smooth01(Math.min(1,t*5))*smooth01(Math.min(1,(1-t)*5));
+    visual.crest.visibility=.92*fade;visual.backwash.visibility=.50*fade;
+    visual.crest.scaling.z=.82+.28*Math.sin(t*Math.PI);visual.backwash.scaling.z=.78+.18*Math.sin(t*Math.PI);
+    for(let i=0;i<visual.spray.length;i++){
+      const spray=visual.spray[i],meta=spray.metadata||{},phase=Number(meta.phase||0),pulse=.5+.5*Math.sin(age*(7.2+(i%4)*.55)+phase);
+      spray.position.x=Number(meta.offset||0)+Math.sin(age*2.3+phase)*.08;
+      spray.position.z=-TILE_SIZE*(.02+.13*pulse);
+      spray.position.y=.04+wave.amplitude*(.12+.26*pulse);
+      spray.visibility=fade*(.36+.54*pulse);
+    }
+  }
+
+  syncRogueWaveEvents(events=[],state=null){
     for(const event of events||[]){
       if(String(event?.type||"").toUpperCase()!=="ROGUE_WAVE")continue;
       const token=String(event.sequence??`${event.windForce||0}:${event.cells?.length||0}:${event.dx||0},${event.dy||0}:${event.durationMs||0}`);
@@ -309,7 +354,9 @@ export class WaterRenderer{
       const ux=dx/length,uz=dz/length,px=-uz,pz=ux,world=cells.map(cell=>({x:Number(cell.x)*TILE_SIZE,z:Number(cell.y)*TILE_SIZE})),along=world.map(point=>point.x*ux+point.z*uz),perp=world.map(point=>point.x*px+point.z*pz),cellKeys=new Set(cells.map(cell=>keyOf(cell.x,cell.y))),surfaceIds=new Set();
       for(const[id,entry]of this.surfaceAnimations)if([...entry.tileKeys].some(tileKey=>cellKeys.has(tileKey)))surfaceIds.add(id);
       if(!surfaceIds.size)continue;
-      this.rogueWaves.push({token,surfaceIds,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime});
+      const stateTiles=new Map(tilesOf(state).map(tile=>[keyOf(tile.x,tile.y),tile])),surfaces=cells.map(cell=>stateTiles.get(keyOf(cell.x,cell.y))).filter(Boolean).map(tile=>logicalSurface(tile)*ELEVATION_HEIGHT+SURFACE_OFFSET),surfaceY=surfaces.length?average(surfaces):0;
+      const wave={token,surfaceIds,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime,surfaceY};
+      wave.visual=this.createRogueWaveVisual(wave);this.rogueWaves.push(wave);
     }
   }
 
@@ -863,7 +910,7 @@ export class WaterRenderer{
       }
       this.surfaceSignature=surfaceSignature;
     }
-    this.syncRogueWaveEvents(presentationEvents);
+    this.syncRogueWaveEvents(presentationEvents,state);
     for(const entry of this.surfaceAnimations.values()){
       if(!entry?.mesh?.metadata)continue;
       entry.mesh.metadata.windWaveStrength=this.wind.strength;
@@ -914,6 +961,7 @@ export class WaterRenderer{
       refinedWaterTopology:true,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
+      rogueWaveFoamCrest:true,
       activeRogueWaves:this.rogueWaves.length,
       currentOverlay:false,
       reflectiveWaterMaterial:false,

@@ -30,7 +30,10 @@ export const EnvironmentEngine=(()=>{
   function windDirection(value={}){const strength=Math.max(0,Number(value?.strength||0));if(strength<=.001)return WIND_DIRECTION.CALM;const x=Math.sign(Number(value?.x||0)),y=Math.sign(Number(value?.y||0));return x===0&&y<0?WIND_DIRECTION.N:x>0&&y<0?WIND_DIRECTION.NE:x>0&&y===0?WIND_DIRECTION.E:x>0&&y>0?WIND_DIRECTION.SE:x===0&&y>0?WIND_DIRECTION.S:x<0&&y>0?WIND_DIRECTION.SW:x<0&&y===0?WIND_DIRECTION.W:x<0&&y<0?WIND_DIRECTION.NW:WIND_DIRECTION.CALM;}
   function windVector(direction="CALM"){return{...(WIND_VECTORS[String(direction||"CALM").toUpperCase()]||WIND_VECTORS.CALM)}}
   function windTier(value=0){const strength=Math.max(WIND_SCALE.MIN,Math.min(WIND_SCALE.MAX,Number(typeof value==="object"?value?.strength:value)||0)),level=Math.max(0,Math.min(8,Math.round(strength)));return{...WIND_LEVELS[level],strength};}
-  function windVisualStrength(value=0){const strength=Math.max(WIND_SCALE.MIN,Math.min(WIND_SCALE.MAX,Number(typeof value==="object"?value?.strength:value)||0));return strength<=3?strength:Math.min(4,3+(strength-3)*.2);}
+  // Presentation consumes the same 0-8 wind scale as the simulation. Individual
+  // renderers may bound geometry displacement for mesh safety, but the weather
+  // strength itself is never compressed (typhoon 5.8 stays 5.8, tornado 7.5 stays 7.5).
+  function windVisualStrength(value=0){return Math.max(WIND_SCALE.MIN,Math.min(WIND_SCALE.MAX,Number(typeof value==="object"?value?.strength:value)||0));}
   function windLabel(value={}){const direction=typeof value==="string"?String(value).toUpperCase():windDirection(value);if(direction===WIND_DIRECTION.CALM)return WIND_LABEL.CALM;const strength=Math.max(0,Number(value?.strength||0)),tier=windTier(strength);return `${WIND_LABEL[direction]||direction}${strength>0?` ${strength.toFixed(2)}（${tier.label}）`:""}`;}
   function normalizeWind(value={}){
     const requestedDirection=String(value?.direction||"").toUpperCase(),vector=WIND_VECTORS[requestedDirection];
@@ -490,9 +493,9 @@ export const EnvironmentEngine=(()=>{
     if(!map||!state||legacyWeatherRaw(state)!==WEATHER.TYPHOON)return events;
     const candidates=waterComponents(map).map(group=>({group,profile:waterWindProfile(map,state,group)})).filter(entry=>entry.profile?.qualified).sort((a,b)=>b.profile.windForce-a.profile.windForce).slice(0,2);
     for(const {group,profile} of candidates){
-      const force=profile.windForce,forceDistance=force>=11?4:force>=9.5?3:2,damage=Math.round(10+force*2),waveHeight=Math.max(.38,Math.min(.82,.38+(force-8.3)*.09)),durationMs=Math.round(Math.max(1200,Math.min(2600,900+profile.fetch*140)));
+      const force=profile.windForce,submergeTurns=force>=11?2:1,damage=Math.round(10+force*2),waveHeight=Math.max(.38,Math.min(.82,.38+(force-8.3)*.09)),durationMs=Math.round(Math.max(1200,Math.min(2600,900+profile.fetch*140)));
       const cells=group.map(tile=>({x:Number(tile.x),y:Number(tile.y)})).sort((a,b)=>(a.x*profile.ux+a.y*profile.uy)-(b.x*profile.ux+b.y*profile.uy));
-      events.push({type:"ROGUE_WAVE",weather:WEATHER.TYPHOON,cells,dx:Math.sign(profile.ux),dy:Math.sign(profile.uy),windForce:Number(force.toFixed(2)),windStrength:Number(profile.wind.strength||0),fetch:Number(profile.fetch.toFixed(2)),crossSpan:Number(profile.crossSpan.toFixed(2)),averageDepth:Number(profile.avgDepth.toFixed(2)),averageFlow:Number(profile.avgFlow.toFixed(2)),forceDistance,damage,waveHeight:Number(waveHeight.toFixed(3)),durationMs,derivedFromWind:true,contactProfile:"WATER_VOLUME"});
+      events.push({type:"ROGUE_WAVE",weather:WEATHER.TYPHOON,cells,dx:Math.sign(profile.ux),dy:Math.sign(profile.uy),windForce:Number(force.toFixed(2)),windStrength:Number(profile.wind.strength||0),fetch:Number(profile.fetch.toFixed(2)),crossSpan:Number(profile.crossSpan.toFixed(2)),averageDepth:Number(profile.avgDepth.toFixed(2)),averageFlow:Number(profile.avgFlow.toFixed(2)),submergeForce:Number(force.toFixed(2)),submergeTurns,damage,waveHeight:Number(waveHeight.toFixed(3)),durationMs,derivedFromWind:true,contactProfile:"WAVE_VOLUME"});
     }
     return events;
   }

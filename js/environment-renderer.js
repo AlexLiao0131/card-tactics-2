@@ -282,7 +282,7 @@ export class EnvironmentRenderer{
   syncWeatherParticles(state){
     const settings=this.weatherSettings(state),tiles=state?.map?.tiles||[],width=Math.max(1,Number(state?.map?.width||1)),height=Math.max(1,Number(state?.map?.height||1));
     const centerX=(width-1)*TILE_SIZE*.5,centerZ=(height-1)*TILE_SIZE*.5,maxSurface=tiles.length?Math.max(...tiles.map(tile=>surfaceOf(tile)*ELEVATION_HEIGHT)):0;
-    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),rawStrength=Math.max(0,Number(settings.wind?.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength),mist=settings.mist||NO_MIST;
+    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),rawStrength=Math.max(0,Number(settings.wind?.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength),mist=settings.mist||NO_MIST;
     this.rainSystem.emitter.set(centerX,maxSurface+7.2,centerZ);this.rainSystem.minEmitBox.set(-width*TILE_SIZE*.56,0,-height*TILE_SIZE*.56);this.rainSystem.maxEmitBox.set(width*TILE_SIZE*.56,.5,height*TILE_SIZE*.56);
     const horizontal=.11+strength*.13;this.rainSystem.direction1.set(windX*horizontal,-1,windZ*horizontal);this.rainSystem.direction2.set(windX*horizontal*.82,-1,windZ*horizontal*.82);this.rainSystem.minEmitPower=10+strength*1.4;this.rainSystem.maxEmitPower=13+strength*1.8;
     this.rainSystem.emitRate=settings.weather==="RAIN"?170:settings.weather==="HEAVY_RAIN"?390:settings.weather==="THUNDERSTORM"?470:settings.weather==="TYPHOON"?620:0;
@@ -646,7 +646,7 @@ export class EnvironmentRenderer{
     }
     const system=new BABYLON.ParticleSystem(`${key}-particles`,Math.min(520,SMOKE_PARTICLE_CAPACITY+group.length*24),this.scene);system.particleTexture=this.smokeTexture;
     system.emitter=new BABYLON.Vector3(centerX*TILE_SIZE,baseY+.28,centerY*TILE_SIZE);system.minEmitBox=new BABYLON.Vector3(-width*.48,0,-depth*.48);system.maxEmitBox=new BABYLON.Vector3(width*.48,.24,depth*.48);
-    const wind=state?.presentation?.environment?.wind||{},windX=Number(wind.x||0),windZ=Number(wind.y||0),rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength),drift=.06+strength*.085;
+    const wind=state?.presentation?.environment?.wind||{},windX=Number(wind.x||0),windZ=Number(wind.y||0),rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength),drift=.06+strength*.085;
     system.direction1.set(windX*drift,.58,windZ*drift);system.direction2.set(windX*drift*1.55,1.08,windZ*drift*1.55);system.minEmitPower=.32+avgIntensity*.05;system.maxEmitPower=.72+maxIntensity*.08;
     system.color1=new BABYLON.Color4(.12,.13,.14,clamp(.30+avgIntensity*.10,.34,.58));system.color2=new BABYLON.Color4(.22,.23,.24,clamp(.18+avgIntensity*.08,.22,.44));system.colorDead=new BABYLON.Color4(.28,.29,.30,0);
     system.minSize=.34+avgIntensity*.06;system.maxSize=.78+maxIntensity*.18;system.minLifeTime=1.8;system.maxLifeTime=3.7;system.minAngularSpeed=-.55;system.maxAngularSpeed=.55;system.updateSpeed=.018;system.blendMode=BABYLON.ParticleSystem.BLENDMODE_STANDARD;

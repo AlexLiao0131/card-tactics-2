@@ -75,7 +75,7 @@ export class MapObjectRenderer{
       const weights=Array.from({length:rest.length/3},(_,i)=>Math.pow(clamp((rest[i*3+1]-1)/1.2,0,1),1.5));
       canopy.metadata={leafSway:{rest,positions:new Float32Array(rest),weights,phase:random()*Math.PI*2,amplitude:.04,speed:1.25}};
       const bounds=canopy.getBoundingInfo().boundingBox;
-      canopy.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.13,0,.13)),bounds.maximum.add(new BABYLON.Vector3(.13,0,.13))));
+      canopy.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.42,0,.42)),bounds.maximum.add(new BABYLON.Vector3(.42,0,.42))));
     }else{
       for(let i=0;i<2;i++){
         const branch=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`dead-branch-${object.id}-${i}`,{height:.62,diameter:.08,tessellation:6},this.scene),trunkMat);
@@ -134,7 +134,7 @@ export class MapObjectRenderer{
     const data=new BABYLON.VertexData();Object.assign(data,{positions,indices,normals});data.applyToMesh(leaves,true);
     leaves.metadata={leafSway:{rest:new Float32Array(positions),positions:new Float32Array(positions),weights,phase:random()*Math.PI*2}};
     const bounds=leaves.getBoundingInfo().boundingBox;
-    leaves.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.08,0,.08)),bounds.maximum.add(new BABYLON.Vector3(.08,0,.08))));
+    leaves.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.24,0,.24)),bounds.maximum.add(new BABYLON.Vector3(.24,0,.24))));
     const stemMesh=BABYLON.Mesh.MergeMeshes(stems,true,true);
     if(stemMesh)this.mesh(root,stemMesh,this.materials.trunk);
     return root;
@@ -143,7 +143,7 @@ export class MapObjectRenderer{
   updateVegetationWind(dt){
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
-    const wind=this.vegetationWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength);
+    const wind=this.vegetationWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength);
     if(strength===0&&this.vegetationWasCalm)return;
     this.vegetationWasCalm=strength===0;
     const direction=new BABYLON.Vector3(Number(wind.x||0),0,Number(wind.y||0));
@@ -154,7 +154,8 @@ export class MapObjectRenderer{
         const sway=mesh.metadata?.leafSway;if(!sway)continue;
         const local=BABYLON.Vector3.TransformNormal(direction,mesh.computeWorldMatrix(true).clone().invert());
         local.y=0;if(local.lengthSquared()>0)local.normalize();
-        const bend=strength*(sway.amplitude??.022)*(.65+.35*Math.sin(this.vegetationTime*(sway.speed??1.9)+sway.phase));
+        const primary=.58+.30*Math.sin(this.vegetationTime*((sway.speed??1.9)+strength*.16)+sway.phase),gust=.12*Math.sin(this.vegetationTime*(3.4+strength*.22)+sway.phase*1.73);
+        const bend=strength*(sway.amplitude??.022)*Math.max(.18,primary+gust);
         for(let v=0;v<sway.weights.length;v++){
           const offset=v*3,amount=bend*sway.weights[v];
           sway.positions[offset]=sway.rest[offset]+local.x*amount;

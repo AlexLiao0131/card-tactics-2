@@ -3,6 +3,7 @@ export const EnvironmentContactEngine=(()=>{
     SURFACE:"SURFACE",
     SURFACE_FLOW:"SURFACE_FLOW",
     WATER_VOLUME:"WATER_VOLUME",
+    WAVE_VOLUME:"WAVE_VOLUME",
     AIR_COLUMN:"AIR_COLUMN",
     GROUND_SHOCK:"GROUND_SHOCK",
     ALL:"ALL"
@@ -50,6 +51,7 @@ export const EnvironmentContactEngine=(()=>{
       case PROFILE.SURFACE:return new Set([LAYER.SURFACE]);
       case PROFILE.SURFACE_FLOW:return new Set([LAYER.SURFACE,LAYER.WATER_SURFACE]);
       case PROFILE.WATER_VOLUME:return new Set([LAYER.WATER_SURFACE,LAYER.UNDERWATER]);
+      case PROFILE.WAVE_VOLUME:return new Set([LAYER.SURFACE,LAYER.WATER_SURFACE,LAYER.UNDERWATER]);
       case PROFILE.AIR_COLUMN:return new Set([LAYER.SURFACE,LAYER.WATER_SURFACE,LAYER.AIR]);
       case PROFILE.GROUND_SHOCK:return new Set([LAYER.SURFACE,LAYER.UNDERGROUND]);
       case PROFILE.ALL:return new Set(Object.values(LAYER));
@@ -76,6 +78,10 @@ export const EnvironmentContactEngine=(()=>{
         return{minZ:ground,maxZ:ground+flowHeight(source),profile};
       case PROFILE.WATER_VOLUME:
         return water==null||water<=ground+EPSILON?null:{minZ:ground,maxZ:water,profile};
+      case PROFILE.WAVE_VOLUME:{
+        const crest=Math.max(0,Number(source?.waveHeight||0));
+        return water==null||water<=ground+EPSILON?null:{minZ:ground,maxZ:water+crest,profile};
+      }
       case PROFILE.AIR_COLUMN:{
         const height=Math.max(2,Number(source.verticalHeight??source.height??(Number(source.lift||0)+3)??6));
         return{minZ:ground,maxZ:Math.max(surface,ground)+height,profile};
@@ -125,6 +131,7 @@ export const EnvironmentContactEngine=(()=>{
       case "WATER_BOILING":
       case "WATER_EVAPORATION":
       case "RIVER_SURGE":return PROFILE.WATER_VOLUME;
+      case "ROGUE_WAVE":return PROFILE.WAVE_VOLUME;
       case "TORNADO_CREATED":
       case "FIRE_TORNADO_CREATED":return PROFILE.AIR_COLUMN;
       default:return null;
