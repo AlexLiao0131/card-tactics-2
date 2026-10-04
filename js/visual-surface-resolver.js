@@ -7,6 +7,7 @@ const WATERBED_DEEP=Object.freeze([.13,.24,.25]);
 const WET_GRASS=Object.freeze([.29,.43,.24]);
 const WET_FOREST=Object.freeze([.14,.28,.18]);
 const WET_SAND=Object.freeze([.48,.42,.29]);
+const WET_MUD=Object.freeze([.24,.20,.15]);
 const SILT_BANK=Object.freeze([.34,.34,.24]);
 const FOREST_SOIL=Object.freeze([.24,.31,.20]);
 const GRAVEL=Object.freeze([.43,.42,.37]);
@@ -167,7 +168,7 @@ export class VisualSurfaceResolver{
     if(terrain==="SAND")return mixColor(base,WET_SAND,.72*wet);
     if(terrain==="FOREST")return mixColor(base,WET_FOREST,.58*wet);
     if(terrain==="HIGH_GROUND"||tile?.material==="ROCK")return mixColor(base,WET_ROCK,.48*wet);
-    if(terrain==="MUD")return mixColor(base,SILT_BANK,.50*wet);
+    if(terrain==="MUD")return mixColor(base,WET_MUD,.65*wet);
     return mixColor(base,WET_GRASS,.62*wet);
   }
 
@@ -323,6 +324,34 @@ export class VisualSurfaceResolver{
     return out;
   }
 
+  shoreContactAt(tile,byKey,ox=0,oz=0){
+    // Presentation only: immediate shared edges and the rendered ground height.
+    // No diagonal shortcuts through land and no wet tint up a dry high cliff.
+    if(!tile||waterDepthOf(tile)>0)return 0;
+    let ground=null;
+    let contact=0;
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const water=this.tileAt(byKey,tile.x+dx,tile.y+dy);
+      const level=this.waterSurfaceOf(water);
+      if(level==null)continue;
+      const distance=Math.max(0,.5-ox*dx-oz*dy);
+      const edge=1-smooth01(distance/.48);
+      if(edge<=0)continue;
+      if(ground==null)ground=this.sampleRenderedHeight(tile,byKey,ox,oz);
+      const height=1-smooth01(Math.abs(ground-level)/.65);
+      const depth=smooth01(waterDepthOf(water)/.12);
+      contact=Math.max(contact,edge*height*depth);
+    }
+    return contact;
+  }
+
+  cliffWaterContact(tile,neighbor){
+    // The lower neighbour touches this wall. Water on the upper tile alone
+    // does not wet the whole exposed cliff (waterfalls have their own renderer).
+    const level=this.waterSurfaceOf(neighbor);
+    return level==null?{level:0,strength:0}:{level,strength:smooth01(waterDepthOf(neighbor)/.12)};
+  }
+
   transitionColorAt(tile,byKey,ox=0,oz=0){
     if(!tile)return VISUAL_TERRAIN_COLORS.DEFAULT;
     const localDepth=waterDepthOf(tile);
@@ -332,10 +361,10 @@ export class VisualSurfaceResolver{
     let color=this.wetDryColor(tile);
     const influences=this.localInfluences(tile,byKey,ox,oz);
 
-    let waterInfluence=0,forestInfluence=0,rockInfluence=0;
+    const waterInfluence=this.shoreContactAt(tile,byKey,ox,oz);
+    let forestInfluence=0,rockInfluence=0;
     for(const item of influences){
       const w=clamp01(item.weight);
-      if(item.waterDepth>0)waterInfluence=Math.max(waterInfluence,w*smooth01(item.waterDepth/.35));
       if(item.terrain==="FOREST")forestInfluence=Math.max(forestInfluence,w);
       if(item.terrain==="HIGH_GROUND"||item.material==="ROCK")rockInfluence=Math.max(rockInfluence,w);
     }
@@ -353,6 +382,9 @@ export class VisualSurfaceResolver{
       const wet=clamp01(waterInfluence*1.20);
       if(terrain==="SAND"){
         color=mixColor(color,WET_SAND,.82*wet);
+        color=mixColor(color,[.38,.33,.23],.22*wet*wet);
+      }else if(terrain==="MUD"){
+        color=mixColor(color,WET_MUD,.78*wet);
       }else if(terrain==="FOREST"){
         color=mixColor(color,WET_FOREST,.72*wet);
         color=mixColor(color,FOREST_SOIL,.34*smooth01((wet-.42)/.58));

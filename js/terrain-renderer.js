@@ -103,6 +103,7 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.surfaceColors=null;
     this.cliffColors=null;
+    this.cliffWaterData=null;
     this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
     this.textureSignature="";
@@ -292,6 +293,10 @@ export class TerrainRenderer{
     material.AddUniform("cliffTexture","sampler2D",this.cliffDetailTexture);
     material.AddUniform("cliffTileSize","float",TILE_SIZE*1.5);
     material.AddUniform("cliffElevationHeight","float",ELEVATION_HEIGHT);
+    material.AddAttribute("cliffWaterContact");
+    material.Vertex_Definitions("attribute vec2 cliffWaterContact; varying vec2 vCliffWaterContact;");
+    material.Vertex_MainEnd("vCliffWaterContact=cliffWaterContact;");
+    material.Fragment_Definitions("varying vec2 vCliffWaterContact;");
     material.Fragment_Custom_Diffuse(`
       vec3 cliffNormal=normalize(normalW);
       vec3 cliffWeights=abs(cliffNormal);
@@ -318,6 +323,14 @@ export class TerrainRenderer{
       vec3 cliffSlopeTint=mix(vec3(1.0),vec3(1.035,1.025,0.985),cliffSlope);
       // Multiply the existing palette so wet bands and fog remain authoritative.
       baseColor.rgb*=cliffDetail*cliffLayerTint*cliffHeightTone*cliffSlopeTint;
+
+      // Actual adjacent water level, in world units, on the existing wall mesh.
+      // A soft damp strip and a narrow darker waterline; no overlay geometry.
+      float cliffWaterDelta=(vPositionW.y-vCliffWaterContact.x)/cliffElevationHeight;
+      float cliffDamp=(1.0-smoothstep(-0.06,0.24,cliffWaterDelta))*vCliffWaterContact.y;
+      float cliffWaterline=(1.0-smoothstep(0.025,0.13,abs(cliffWaterDelta)))*vCliffWaterContact.y;
+      baseColor.rgb*=mix(vec3(1.0),vec3(0.72,0.82,0.84),cliffDamp);
+      baseColor.rgb*=1.0-0.10*cliffWaterline;
     `);
     material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
@@ -343,6 +356,7 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.surfaceColors=null;
     this.cliffColors=null;
+    this.cliffWaterData=null;
     this.textureSignature="";
   }
 
@@ -353,6 +367,7 @@ export class TerrainRenderer{
       String(tile.dryTerrain||""),
       String(tile.material||""),
       Math.max(0,Number(tile.waterDepth||0)),
+      this.surfaceResolver.waterSurfaceOf(tile),
       Math.max(0,Number(tile.soilMoisture||0)),
       tile.fogged?1:0
     ].join(":")).sort().join("|");
@@ -404,7 +419,9 @@ export class TerrainRenderer{
     const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
     return{
       wallColor,wetWallFactor,
-      wetWallColor:mixColor(wallColor,[.16,.24,.23],.55*wetWallFactor)
+      // Preserve the existing two-band geometry; the shader now locates wet
+      // colour using water height instead of painting the bottom 46% uniformly.
+      wetWallColor:[...wallColor]
     };
   }
 
@@ -414,12 +431,17 @@ export class TerrainRenderer{
       const tile=byKey.get(binding.key);
       const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+binding.dir.dx,tile.y+binding.dir.dy);
       const palette=this.cliffPalette(tile,neighbor,binding.dir,byKey,binding.drop);
+      const contact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
       for(const range of binding.ranges){
         const color=palette[range.kind];
-        for(let i=range.start;i<range.end;i+=4)this.cliffColors.set([...color,1],i);
+        for(let i=range.start;i<range.end;i+=4){
+          this.cliffColors.set([...color,1],i);
+          this.cliffWaterData.set([contact.level*ELEVATION_HEIGHT,contact.strength],i/2);
+        }
       }
     }
     this.meshes.get("cliffs").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors);
+    this.meshes.get("cliffs").updateVerticesData("cliffWaterContact",this.cliffWaterData);
   }
 
 
@@ -630,6 +652,7 @@ export class TerrainRenderer{
       out.positions.push(point.x,point.y,point.z);
       out.normals.push(normal.x,normal.y,normal.z);
       out.colors.push(color[0],color[1],color[2],1);
+      out.waterContacts.push(out.waterContact.level*ELEVATION_HEIGHT,out.waterContact.strength);
     }
     out.indices.push(base,base+1,base+2);
     return true;
@@ -646,8 +669,9 @@ export class TerrainRenderer{
   buildCliffs(tiles,byKey){
     this.cliffColorBindings=[];
     this.cliffColors=null;
+    this.cliffWaterData=null;
     this.updateCounts.cliffBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[]};
+    const out={positions:[],indices:[],normals:[],colors:[],waterContacts:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
@@ -673,6 +697,7 @@ export class TerrainRenderer{
 
         const rough=this.cliffRoughPolyline(tile,dir);
         out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
+        out.waterContact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
         const {wallColor,wetWallColor,wetWallFactor}=out.palette;
         out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
         this.cliffColorBindings.push(out.binding);
@@ -749,6 +774,8 @@ export class TerrainRenderer{
     data.applyToMesh(mesh,false);
     this.cliffColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
+    this.cliffWaterData=new Float32Array(out.waterContacts);
+    mesh.setVerticesData("cliffWaterContact",this.cliffWaterData,true,2);
 
     mesh.material=this.cliffMaterial;
     mesh.useVertexColors=true;
@@ -830,6 +857,8 @@ export class TerrainRenderer{
       microRegionGeometry:true,
       vertexColorTransitions:true,
       wetCliffBands:true,
+      shorelineHeightAware:true,
+      cliffWaterlineFollowsWaterLevel:true,
       cliffTextureProjection:"triplanar-world-normal-blend",
       cliffHeightStrata:true,
       cliffSlopeTint:true,
