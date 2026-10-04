@@ -15,6 +15,12 @@ const NORMAL_EPSILON=1e-8;
 const CLIFF_RUGGEDNESS=.13;
 const CLIFF_EDGE_SEGMENTS=3;
 const RELIEF_ELEVATION_STEP=.035;
+// All profiles retain five vertices / three triangles per blade.
+const GRASS_PROFILES=Object.freeze([
+  Object.freeze({height:.19,heightRange:.12,width:.040,widthRange:.020,waist:.72,mid:.48,curve:.035}),
+  Object.freeze({height:.27,heightRange:.14,width:.025,widthRange:.016,waist:.46,mid:.61,curve:.065}),
+  Object.freeze({height:.32,heightRange:.14,width:.029,widthRange:.018,waist:.57,mid:.54,curve:.10})
+]);
 
 function hash01(value){
   const text=String(value||"");let h=2166136261;
@@ -166,7 +172,7 @@ export class TerrainRenderer{
 
   syncGrass(state,tiles){
     this.grassWind=state?.presentation?.environment?.wind||{x:0,y:0,strength:0};
-    const signature=tiles.map(t=>[t.x,t.y,t.terrain,t.material,t.elevation,t.waterDepth,t.snowDepth,t.iceThickness,t.soilMoisture,t.debrisMass,t.fogged,!!t.core,!!t.capturePoint,(t.effects||[]).join(",")].join(":")).join("|");
+    const signature=tiles.map(t=>[t.x,t.y,t.terrain,t.dryTerrain,t.material,t.elevation,t.waterDepth,t.waterSurfaceZ,t.snowDepth,t.iceThickness,t.soilMoisture,t.debrisMass,t.fogged,!!t.core,!!t.capturePoint,(t.effects||[]).join(",")].join(":")).join("|");
     if(signature===this.grassSignature)return;
     this.grassSignature=signature;
     this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];
@@ -178,11 +184,13 @@ export class TerrainRenderer{
         Number(tile.waterDepth||0)>.001||Number(tile.iceThickness||0)>.01||
         Number(tile.snowDepth||0)>.03||Number(tile.debrisMass||0)>.02||
         (tile.effects||[]).some(e=>e==="BURNING"||e==="FIRE_TORNADO"))continue;
-      for(let i=0;i<5;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
+      const clumps=terrain==="FOREST"?5:3;
+      for(let i=0;i<clumps;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
     }
     // Distribute a fixed budget across the map, not just the first rows.
     candidates.sort((a,b)=>a.rank-b.rank);
     const positions=[],colors=[],indices=[];
+    const variantCounts=[0,0,0],clumpsByTerrain={PLAIN:0,FOREST:0};
     for(const {tile,i,rank} of candidates.slice(0,896)){
       const random=salt=>textureNoise(tile.x*13+i,tile.y*13,8192,salt);
       const ox=(random(173)-.5)*.78,oz=(random(397)-.5)*.78;
@@ -192,20 +200,33 @@ export class TerrainRenderer{
       const nearWater=[[1,0],[-1,0],[0,1],[0,-1]].some(([x,y])=>
         Number(byKey.get(keyOf(tile.x+x,tile.y+y))?.waterDepth||0)>.001&&ox*x+oz*y>.20);
       if(nearWater)continue;
-      const tint=this.surfaceResolver.surfaceColorAt(tile,byKey,ox,oz);
+      const shore=this.surfaceResolver.shoreContactAt(tile,byKey,ox,oz);
+      if(random(1597)<shore*.65)continue;
+      const terrain=this.surfaceResolver.baseTerrainOf(tile);
+      const dryness=1-this.surfaceResolver.moistureAmount(tile);
+      const tint=mixColor(this.surfaceResolver.surfaceColorAt(tile,byKey,ox,oz),
+        [.58,.49,.23],dryness*(terrain==="FOREST"?.26:.46));
+      clumpsByTerrain[terrain]++;
       for(let blade=0;blade<3;blade++){
+        const variant=Math.min(2,Math.floor(random(1201+blade*53)*GRASS_PROFILES.length));
+        const profile=GRASS_PROFILES[variant];
+        variantCounts[variant]++;
         const angle=random(613+blade*41)*Math.PI*2;
-        const dx=Math.cos(angle),dz=Math.sin(angle),width=.035+random(883+blade)*.025;
-        const height=.24+random(991+blade)*.19;
+        const dx=Math.cos(angle),dz=Math.sin(angle),width=profile.width+random(883+blade)*profile.widthRange;
+        const height=(profile.height+random(991+blade)*profile.heightRange)*(1-shore*.18);
+        // Bend in an independent direction, not along every blade's width axis.
+        const curveAngle=random(1409+blade*37)*Math.PI*2;
+        const curve=profile.curve*(.65+random(1481+blade)*.35);
+        const bx=Math.cos(curveAngle)*curve,bz=Math.sin(curveAngle)*curve;
         const cx=(tile.x+ox)*TILE_SIZE+dx*.055,cz=(tile.y+oz)*TILE_SIZE+dz*.055;
         const rootY=(x,z)=>this.surfaceResolver.sampleRenderedHeight(tile,byKey,x/TILE_SIZE-tile.x,z/TILE_SIZE-tile.y)*ELEVATION_HEIGHT+.004;
         const cy=rootY(cx,cz),base=positions.length/3;
         const vertices=[
           [cx-dx*width,rootY(cx-dx*width,cz-dz*width),cz-dz*width],
           [cx+dx*width,rootY(cx+dx*width,cz+dz*width),cz+dz*width],
-          [cx-dx*width*.5,cy+height*.55,cz-dz*width*.5],
-          [cx+dx*width*.5,cy+height*.55,cz+dz*width*.5],
-          [cx+dx*.06,cy+height,cz+dz*.06]
+          [cx-dx*width*profile.waist+bx*.3,cy+height*profile.mid,cz-dz*width*profile.waist+bz*.3],
+          [cx+dx*width*profile.waist+bx*.3,cy+height*profile.mid,cz+dz*width*profile.waist+bz*.3],
+          [cx+bx,cy+height,cz+bz]
         ];
         for(let v=0;v<5;v++){
           positions.push(...vertices[v]);
@@ -222,7 +243,7 @@ export class TerrainRenderer{
     data.normals=[];BABYLON.VertexData.ComputeNormals(positions,indices,data.normals);
     data.applyToMesh(mesh,true);
     mesh.material=this.grassMaterial;mesh.useVertexColors=true;mesh.isPickable=false;mesh.receiveShadows=true;
-    mesh.metadata={kind:"terrain-grass",visualOnly:true,bladeCount:this.grassBlades.length};
+    mesh.metadata={kind:"terrain-grass",visualOnly:true,bladeCount:this.grassBlades.length,variantCounts,clumpsByTerrain};
     // Wind cannot move a tip further than this padded bound. Roots stay fixed.
     const bounds=mesh.getBoundingInfo().boundingBox;
     mesh.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.5,0,.5)),bounds.maximum.add(new BABYLON.Vector3(.5,0,.5))));
