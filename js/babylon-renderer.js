@@ -37,28 +37,28 @@ const SKY_PROFILES=Object.freeze({
 });
 
 
-const LIGHT_COLOR_PROFILES=Object.freeze({
+const LIGHTING_PROFILES=Object.freeze({
   DAY:Object.freeze({
-    SCORCHING_SUN:Object.freeze({label:"WARM_HARSH_DAYLIGHT",sun:[1.00,.84,.60],hemi:[.92,.96,1.00],ground:[.29,.24,.15],fill:[.60,.73,.96],ambient:[.19,.18,.12]}),
-    CLEAR:Object.freeze({label:"NEUTRAL_WARM_DAYLIGHT",sun:[1.00,.95,.84],hemi:[.96,.98,1.00],ground:[.22,.27,.18],fill:[.66,.78,.94],ambient:[.18,.20,.15]}),
-    FOG:Object.freeze({label:"SOFT_COOL_OVERCAST",sun:[.84,.87,.89],hemi:[.87,.91,.94],ground:[.24,.27,.25],fill:[.73,.81,.85],ambient:[.18,.20,.20]}),
-    RAIN:Object.freeze({label:"COOL_OVERCAST",sun:[.72,.80,.88],hemi:[.78,.87,.94],ground:[.18,.22,.22],fill:[.62,.75,.88],ambient:[.14,.17,.18]}),
-    HEAVY_RAIN:Object.freeze({label:"COLD_OVERCAST",sun:[.60,.70,.80],hemi:[.68,.78,.86],ground:[.15,.19,.20],fill:[.54,.68,.82],ambient:[.12,.15,.17]}),
-    THUNDERSTORM:Object.freeze({label:"COLD_STORM",sun:[.48,.60,.76],hemi:[.58,.69,.82],ground:[.11,.15,.18],fill:[.42,.57,.76],ambient:[.09,.12,.16]}),
-    TYPHOON:Object.freeze({label:"COLD_TYPHOON",sun:[.44,.57,.70],hemi:[.54,.66,.74],ground:[.10,.15,.16],fill:[.38,.54,.66],ambient:[.08,.12,.14]}),
-    SNOW:Object.freeze({label:"COOL_WHITE_SNOW",sun:[.92,.96,1.00],hemi:[.94,.98,1.00],ground:[.30,.34,.36],fill:[.76,.86,1.00],ambient:[.20,.22,.23]}),
-    BLIZZARD:Object.freeze({label:"COLD_WHITE_BLIZZARD",sun:[.72,.82,.90],hemi:[.82,.90,.96],ground:[.22,.26,.28],fill:[.64,.76,.88],ambient:[.16,.18,.20]})
+    SCORCHING_SUN:Object.freeze({label:"WARM_HARSH_DAYLIGHT",balance:"DIRECT_HARD",sun:[1.00,.84,.60],hemi:[.92,.96,1.00],ground:[.29,.24,.15],fill:[.60,.73,.96],ambient:[.19,.18,.12],sunIntensity:.93,hemiIntensity:.62,fillIntensity:.24,ambientScale:.96,shadowDarkness:.42}),
+    CLEAR:Object.freeze({label:"NEUTRAL_WARM_DAYLIGHT",balance:"DIRECT_BALANCED",sun:[1.00,.95,.84],hemi:[.96,.98,1.00],ground:[.22,.27,.18],fill:[.66,.78,.94],ambient:[.18,.20,.15],sunIntensity:.82,hemiIntensity:.68,fillIntensity:.27,ambientScale:1,shadowDarkness:.34}),
+    FOG:Object.freeze({label:"SOFT_COOL_OVERCAST",balance:"DIFFUSE_FLAT",sun:[.84,.87,.89],hemi:[.87,.91,.94],ground:[.24,.27,.25],fill:[.73,.81,.85],ambient:[.18,.20,.20],sunIntensity:.24,hemiIntensity:.70,fillIntensity:.31,ambientScale:1.08,shadowDarkness:.07}),
+    RAIN:Object.freeze({label:"COOL_OVERCAST",balance:"DIFFUSE_COOL",sun:[.72,.80,.88],hemi:[.78,.87,.94],ground:[.18,.22,.22],fill:[.62,.75,.88],ambient:[.14,.17,.18],sunIntensity:.45,hemiIntensity:.68,fillIntensity:.31,ambientScale:.96,shadowDarkness:.14}),
+    HEAVY_RAIN:Object.freeze({label:"COLD_OVERCAST",balance:"DIFFUSE_HEAVY",sun:[.60,.70,.80],hemi:[.68,.78,.86],ground:[.15,.19,.20],fill:[.54,.68,.82],ambient:[.12,.15,.17],sunIntensity:.28,hemiIntensity:.64,fillIntensity:.32,ambientScale:.90,shadowDarkness:.08}),
+    THUNDERSTORM:Object.freeze({label:"COLD_STORM",balance:"DIFFUSE_STORM",sun:[.48,.60,.76],hemi:[.58,.69,.82],ground:[.11,.15,.18],fill:[.42,.57,.76],ambient:[.09,.12,.16],sunIntensity:.22,hemiIntensity:.57,fillIntensity:.29,ambientScale:.84,shadowDarkness:.06}),
+    TYPHOON:Object.freeze({label:"COLD_TYPHOON",balance:"DIFFUSE_TYPHOON",sun:[.44,.57,.70],hemi:[.54,.66,.74],ground:[.10,.15,.16],fill:[.38,.54,.66],ambient:[.08,.12,.14],sunIntensity:.17,hemiIntensity:.55,fillIntensity:.28,ambientScale:.80,shadowDarkness:.05}),
+    SNOW:Object.freeze({label:"COOL_WHITE_SNOW",balance:"BOUNCE_BRIGHT",sun:[.92,.96,1.00],hemi:[.94,.98,1.00],ground:[.30,.34,.36],fill:[.76,.86,1.00],ambient:[.20,.22,.23],sunIntensity:.58,hemiIntensity:.80,fillIntensity:.34,ambientScale:1.02,shadowDarkness:.14}),
+    BLIZZARD:Object.freeze({label:"COLD_WHITE_BLIZZARD",balance:"DIFFUSE_WHITEOUT",sun:[.72,.82,.90],hemi:[.82,.90,.96],ground:[.22,.26,.28],fill:[.64,.76,.88],ambient:[.16,.18,.20],sunIntensity:.25,hemiIntensity:.72,fillIntensity:.34,ambientScale:1,shadowDarkness:.06})
   }),
   NIGHT:Object.freeze({
-    SCORCHING_SUN:Object.freeze({label:"COOL_MOONLIGHT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095]}),
-    CLEAR:Object.freeze({label:"COOL_MOONLIGHT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095]}),
-    FOG:Object.freeze({label:"MUTED_MOONLIGHT",sun:[.42,.49,.61],hemi:[.48,.56,.66],ground:[.065,.075,.085],fill:[.30,.36,.48],ambient:[.055,.065,.080]}),
-    RAIN:Object.freeze({label:"COLD_RAIN_NIGHT",sun:[.34,.45,.64],hemi:[.39,.51,.68],ground:[.045,.060,.080],fill:[.23,.34,.54],ambient:[.035,.050,.075]}),
-    HEAVY_RAIN:Object.freeze({label:"COLD_DARK_NIGHT",sun:[.28,.38,.56],hemi:[.33,.44,.60],ground:[.038,.050,.070],fill:[.19,.28,.46],ambient:[.028,.040,.064]}),
-    THUNDERSTORM:Object.freeze({label:"BLUE_STORM_NIGHT",sun:[.24,.34,.54],hemi:[.28,.40,.59],ground:[.030,.045,.065],fill:[.16,.25,.44],ambient:[.022,.034,.060]}),
-    TYPHOON:Object.freeze({label:"BLUE_TYPHOON_NIGHT",sun:[.23,.35,.50],hemi:[.27,.40,.54],ground:[.030,.045,.060],fill:[.15,.25,.40],ambient:[.022,.035,.054]}),
-    SNOW:Object.freeze({label:"PALE_SNOW_MOONLIGHT",sun:[.55,.64,.82],hemi:[.60,.70,.88],ground:[.085,.10,.13],fill:[.36,.47,.70],ambient:[.060,.075,.11]}),
-    BLIZZARD:Object.freeze({label:"COLD_WHITE_NIGHT",sun:[.42,.52,.68],hemi:[.48,.60,.74],ground:[.065,.080,.10],fill:[.29,.40,.58],ambient:[.045,.060,.085]})
+    SCORCHING_SUN:Object.freeze({label:"COOL_MOONLIGHT",balance:"MOONLIT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095],sunIntensity:.10,hemiIntensity:.25,fillIntensity:.08,ambientScale:.96,shadowDarkness:.08}),
+    CLEAR:Object.freeze({label:"COOL_MOONLIGHT",balance:"MOONLIT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095],sunIntensity:.10,hemiIntensity:.25,fillIntensity:.08,ambientScale:1,shadowDarkness:.08}),
+    FOG:Object.freeze({label:"MUTED_MOONLIGHT",balance:"MOON_DIFFUSE",sun:[.42,.49,.61],hemi:[.48,.56,.66],ground:[.065,.075,.085],fill:[.30,.36,.48],ambient:[.055,.065,.080],sunIntensity:.035,hemiIntensity:.25,fillIntensity:.09,ambientScale:1.08,shadowDarkness:.03}),
+    RAIN:Object.freeze({label:"COLD_RAIN_NIGHT",balance:"MOON_DIFFUSE_RAIN",sun:[.34,.45,.64],hemi:[.39,.51,.68],ground:[.045,.060,.080],fill:[.23,.34,.54],ambient:[.035,.050,.075],sunIntensity:.055,hemiIntensity:.24,fillIntensity:.085,ambientScale:.96,shadowDarkness:.04}),
+    HEAVY_RAIN:Object.freeze({label:"COLD_DARK_NIGHT",balance:"MOON_DIFFUSE_DARK",sun:[.28,.38,.56],hemi:[.33,.44,.60],ground:[.038,.050,.070],fill:[.19,.28,.46],ambient:[.028,.040,.064],sunIntensity:.035,hemiIntensity:.21,fillIntensity:.08,ambientScale:.90,shadowDarkness:.025}),
+    THUNDERSTORM:Object.freeze({label:"BLUE_STORM_NIGHT",balance:"MOON_STORM",sun:[.24,.34,.54],hemi:[.28,.40,.59],ground:[.030,.045,.065],fill:[.16,.25,.44],ambient:[.022,.034,.060],sunIntensity:.03,hemiIntensity:.19,fillIntensity:.07,ambientScale:.84,shadowDarkness:.02}),
+    TYPHOON:Object.freeze({label:"BLUE_TYPHOON_NIGHT",balance:"MOON_TYPHOON",sun:[.23,.35,.50],hemi:[.27,.40,.54],ground:[.030,.045,.060],fill:[.15,.25,.40],ambient:[.022,.035,.054],sunIntensity:.025,hemiIntensity:.18,fillIntensity:.065,ambientScale:.80,shadowDarkness:.02}),
+    SNOW:Object.freeze({label:"PALE_SNOW_MOONLIGHT",balance:"MOON_SNOW_BOUNCE",sun:[.55,.64,.82],hemi:[.60,.70,.88],ground:[.085,.10,.13],fill:[.36,.47,.70],ambient:[.060,.075,.11],sunIntensity:.075,hemiIntensity:.30,fillIntensity:.10,ambientScale:1.02,shadowDarkness:.06}),
+    BLIZZARD:Object.freeze({label:"COLD_WHITE_NIGHT",balance:"MOON_WHITEOUT",sun:[.42,.52,.68],hemi:[.48,.60,.74],ground:[.065,.080,.10],fill:[.29,.40,.58],ambient:[.045,.060,.085],sunIntensity:.04,hemiIntensity:.25,fillIntensity:.09,ambientScale:1,shadowDarkness:.03})
   })
 });
 
@@ -236,55 +236,43 @@ export class BabylonRenderer{
   syncLighting(state){
     const environment=state?.presentation?.environment||{};
     const weather=String(environment.weather||"CLEAR").toUpperCase();
-    const night=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT";
-    const timeOfDay=night?"NIGHT":"DAY";
+    const timeOfDay=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT"?"NIGHT":"DAY";
 
-    // Stage 13B deliberately consumes the existing DAY/NIGHT + Weather state.
-    // EnvironmentEngine remains the sole owner of time/weather rules; this layer
-    // only maps that state to physically coherent light colours.
-    const paletteTable=LIGHT_COLOR_PROFILES[timeOfDay];
-    const palette=paletteTable[weather]||paletteTable.CLEAR;
+    // Stage 13C keeps one render profile per existing Environment state. The same
+    // profile owns colour temperature, direct/diffuse balance and shadow contrast,
+    // so weather cannot tint the light one way while leaving an unrelated shadow
+    // response behind. EnvironmentEngine still owns every gameplay rule.
+    const table=LIGHTING_PROFILES[timeOfDay];
+    const profile=table[weather]||table.CLEAR;
     const color=value=>new BABYLON.Color3(...value);
-    const intensity=night
-      ?{hemi:.27,sun:.11,fill:.075}
-      :{hemi:.72,sun:.78,fill:.30};
 
-    const WEATHER_LIGHT=Object.freeze({
-      SCORCHING_SUN:{sun:1.16,fill:.9,hemi:.94,ambient:.96},
-      CLEAR:{sun:1,fill:1,hemi:1,ambient:1},
-      FOG:{sun:.42,fill:.82,hemi:.88,ambient:1.08},
-      RAIN:{sun:.72,fill:.90,hemi:.92,ambient:.96},
-      HEAVY_RAIN:{sun:.52,fill:.82,hemi:.82,ambient:.90},
-      THUNDERSTORM:{sun:.40,fill:.74,hemi:.74,ambient:.84},
-      TYPHOON:{sun:.32,fill:.68,hemi:.70,ambient:.80},
-      SNOW:{sun:.80,fill:1.02,hemi:1.02,ambient:1.02},
-      BLIZZARD:{sun:.56,fill:.92,hemi:.92,ambient:1.00}
-    });
-    const modifier=WEATHER_LIGHT[weather]||WEATHER_LIGHT.CLEAR;
+    this.scene.ambientColor=color(profile.ambient).scale(profile.ambientScale);
 
-    this.scene.ambientColor=color(palette.ambient).scale(modifier.ambient);
+    this.hemi.intensity=profile.hemiIntensity;
+    this.hemi.diffuse=color(profile.hemi);
+    this.hemi.groundColor=color(profile.ground);
 
-    this.hemi.intensity=intensity.hemi*modifier.hemi;
-    this.hemi.diffuse=color(palette.hemi);
-    this.hemi.groundColor=color(palette.ground);
+    this.sun.intensity=profile.sunIntensity;
+    this.sun.diffuse=color(profile.sun);
 
-    this.sun.intensity=intensity.sun*modifier.sun;
-    this.sun.diffuse=color(palette.sun);
+    this.fill.intensity=profile.fillIntensity;
+    this.fill.diffuse=color(profile.fill);
 
-    this.fill.intensity=intensity.fill*modifier.fill;
-    this.fill.diffuse=color(palette.fill);
-
-    // Shadows still follow light strength rather than colour temperature. A cold
-    // storm therefore softens the same physical shadow map instead of inventing
-    // a second shadow system.
-    const shadowDarkness=Math.max(.10,Math.min(.36,(night?.12:.36)*modifier.sun));
+    // The shadow map stays one shared 1024px mobile-friendly map. Only its
+    // contrast follows the real lighting balance: hard direct sun produces a
+    // stronger shadow, while fog/storm/blizzard diffuse the scene and flatten it.
+    // This changes no collision, visibility or weather rule.
+    const shadowDarkness=Math.max(0,Math.min(.5,Number(profile.shadowDarkness||0)));
     if(this.shadowGenerator?.setDarkness)this.shadowGenerator.setDarkness(shadowDarkness);
     else if(this.shadowGenerator)this.shadowGenerator.darkness=shadowDarkness;
 
+    const diffuseLight=this.hemi.intensity+this.fill.intensity;
+    const directDiffuseRatio=this.sun.intensity/Math.max(.001,diffuseLight);
     this.lightingState={
       timeOfDay,
       weather,
-      colorTemperatureProfile:palette.label,
+      colorTemperatureProfile:profile.label,
+      lightBalanceProfile:profile.balance,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
       hemiColor:[this.hemi.diffuse.r,this.hemi.diffuse.g,this.hemi.diffuse.b],
       sunColor:[this.sun.diffuse.r,this.sun.diffuse.g,this.sun.diffuse.b],
@@ -292,6 +280,7 @@ export class BabylonRenderer{
       hemiIntensity:this.hemi.intensity,
       sunIntensity:this.sun.intensity,
       fillIntensity:this.fill.intensity,
+      directDiffuseRatio,
       shadowDarkness
     };
   }
@@ -351,6 +340,8 @@ export class BabylonRenderer{
       casters:casters.length,
       receivers,
       filtering:this.engine.webGLVersion>=2?"PCF_LOW":"POISSON",
+      darkness:Number(this.lightingState?.shadowDarkness||0),
+      lightBalanceProfile:this.lightingState?.lightBalanceProfile||null,
       billboardPolicy:"DO_NOT_CAST_RECTANGLE"
     };
   }
