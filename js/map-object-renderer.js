@@ -15,6 +15,7 @@ function hash01(value){
   for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}
   return(h>>>0)/4294967295;
 }
+function mixColor(a,b,t){const amount=clamp(Number(t||0),0,1);return a.map((v,i)=>clamp(v+(b[i]-v)*amount,0,1));}
 
 export class MapObjectRenderer{
   constructor(scene){
@@ -27,6 +28,7 @@ export class MapObjectRenderer{
       foliage:this.mat("prop-foliage",new BABYLON.Color3(.10,.34,.16)),
       bush:this.mat("prop-bush",new BABYLON.Color3(.13,.39,.18)),
       rock:this.mat("prop-rock",new BABYLON.Color3(.36,.38,.42)),
+      rubble:this.mat("prop-rubble",new BABYLON.Color3(.34,.33,.31)),
       generic:this.mat("prop-generic",new BABYLON.Color3(.38,.34,.28))
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
@@ -40,10 +42,11 @@ export class MapObjectRenderer{
   setNodeVisibility(node,value){node.getChildMeshes?.().forEach(mesh=>mesh.visibility=value);}
   root(object){const root=new BABYLON.TransformNode(`map-object-${object.id}`,this.scene);root.metadata={kind:"map-object",objectId:object.id,objectType:canonicalType(object)};return root;}
   mesh(root,mesh,material){mesh.parent=root;mesh.material=material;mesh.isPickable=false;mesh.receiveShadows=true;return mesh;}
+  markMaterial(mesh,role){mesh.metadata={...(mesh.metadata||{}),visualMaterialRole:role};return mesh;}
 
   createTree(object,dead=false){
     const root=this.root(object),seed=hash01(object.id),trunkMat=dead?this.materials.deadTrunk:this.materials.trunk;
-    const trunk=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`tree-trunk-${object.id}`,{height:1.25,diameter:.24,tessellation:7},this.scene),trunkMat);
+    const trunk=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`tree-trunk-${object.id}`,{height:1.25,diameter:.24,tessellation:7},this.scene),trunkMat),dead?"dead-wood":"live-bark");
     trunk.position.y=.625;
     if(!dead){
       const positions=[],indices=[],segments=7;
@@ -73,12 +76,12 @@ export class MapObjectRenderer{
       canopy.convertToFlatShadedMesh();
       const rest=new Float32Array(canopy.getVerticesData(BABYLON.VertexBuffer.PositionKind));
       const weights=Array.from({length:rest.length/3},(_,i)=>Math.pow(clamp((rest[i*3+1]-1)/1.2,0,1),1.5));
-      canopy.metadata={leafSway:{rest,positions:new Float32Array(rest),weights,phase:random()*Math.PI*2,amplitude:.04,speed:1.25}};
+      canopy.metadata={leafSway:{rest,positions:new Float32Array(rest),weights,phase:random()*Math.PI*2,amplitude:.04,speed:1.25},visualMaterialRole:"foliage"};
       const bounds=canopy.getBoundingInfo().boundingBox;
       canopy.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.42,0,.42)),bounds.maximum.add(new BABYLON.Vector3(.42,0,.42))));
     }else{
       for(let i=0;i<2;i++){
-        const branch=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`dead-branch-${object.id}-${i}`,{height:.62,diameter:.08,tessellation:6},this.scene),trunkMat);
+        const branch=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`dead-branch-${object.id}-${i}`,{height:.62,diameter:.08,tessellation:6},this.scene),trunkMat),"dead-wood");
         branch.position.set((i?-.16:.16),1.05,0);branch.rotation.z=(i?-.7:.7);
       }
     }
@@ -86,12 +89,12 @@ export class MapObjectRenderer{
   }
 
   createStump(object){
-    const root=this.root(object),stump=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`stump-${object.id}`,{height:.34,diameter:.48,tessellation:8},this.scene),this.materials.trunk);
+    const root=this.root(object),stump=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`stump-${object.id}`,{height:.34,diameter:.48,tessellation:8},this.scene),this.materials.trunk),"cut-wood");
     stump.position.y=.17;root.rotation.y=hash01(object.id)*Math.PI*2;return root;
   }
 
   createLog(object){
-    const root=this.root(object),log=this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`log-${object.id}`,{height:1.05,diameter:.30,tessellation:8},this.scene),this.materials.trunk);
+    const root=this.root(object),log=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`log-${object.id}`,{height:1.05,diameter:.30,tessellation:8},this.scene),this.materials.trunk),"cut-wood");
     log.rotation.z=Math.PI/2;log.position.y=.18;root.rotation.y=hash01(object.id)*Math.PI*2;return root;
   }
 
@@ -132,11 +135,11 @@ export class MapObjectRenderer{
     for(let i=0;i<normals.length;i+=3)if(normals[i+1]<0){normals[i]*=-1;normals[i+1]*=-1;normals[i+2]*=-1;}
     const leaves=this.mesh(root,new BABYLON.Mesh(`bush-leaves-${object.id}`,this.scene),this.materials.bush);
     const data=new BABYLON.VertexData();Object.assign(data,{positions,indices,normals});data.applyToMesh(leaves,true);
-    leaves.metadata={leafSway:{rest:new Float32Array(positions),positions:new Float32Array(positions),weights,phase:random()*Math.PI*2}};
+    leaves.metadata={leafSway:{rest:new Float32Array(positions),positions:new Float32Array(positions),weights,phase:random()*Math.PI*2},visualMaterialRole:"bush-leaf"};
     const bounds=leaves.getBoundingInfo().boundingBox;
     leaves.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.24,0,.24)),bounds.maximum.add(new BABYLON.Vector3(.24,0,.24))));
     const stemMesh=BABYLON.Mesh.MergeMeshes(stems,true,true);
-    if(stemMesh)this.mesh(root,stemMesh,this.materials.trunk);
+    if(stemMesh)this.markMaterial(this.mesh(root,stemMesh,this.materials.trunk),"live-bark");
     return root;
   }
 
@@ -167,12 +170,12 @@ export class MapObjectRenderer{
   }
 
   createBoulder(object){
-    const root=this.root(object),rock=this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`boulder-${object.id}`,{type:2,size:.72},this.scene),this.materials.rock),seed=hash01(object.id);
+    const root=this.root(object),rock=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`boulder-${object.id}`,{type:2,size:.72},this.scene),this.materials.rock),"boulder"),seed=hash01(object.id);
     rock.scaling.set(.95+seed*.28,.75+seed*.48,.9+(1-seed)*.32);rock.rotation.set(seed*.35,seed*Math.PI*2,(1-seed)*.22);rock.position.y=.58;return root;
   }
 
   createGeneric(object){
-    const root=this.root(object),mesh=this.mesh(root,BABYLON.MeshBuilder.CreateBox(`prop-${object.id}`,{width:.8,height:.8,depth:.8},this.scene),this.materials.generic);mesh.position.y=.4;return root;
+    const root=this.root(object),mesh=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateBox(`prop-${object.id}`,{width:.8,height:.8,depth:.8},this.scene),this.materials.generic),"generic");mesh.position.y=.4;return root;
   }
 
   createObject(object){
@@ -192,20 +195,34 @@ export class MapObjectRenderer{
     const root=this.root(object),pieces=[];
     for(let i=0;i<4;i++){
       const h=hash01(`${object.id}:chip:${i}`),a=i*2.4+h;
-      const chip=this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`rubble-${object.id}-${i}`,{type:2,size:.11+h*.08},this.scene),this.materials.rock);
+      const chip=this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`rubble-${object.id}-${i}`,{type:2,size:.11+h*.08},this.scene),this.materials.rubble);
       chip.position.set(Math.cos(a)*(.2+h*.27),.07,Math.sin(a)*(.2+h*.27));
       chip.scaling.set(1,.55+h*.2,.8);chip.rotation.y=a;pieces.push(chip);
     }
-    const merged=BABYLON.Mesh.MergeMeshes(pieces,true,true);if(merged){merged.parent=root;merged.isPickable=false;merged.receiveShadows=true;}
+    const merged=BABYLON.Mesh.MergeMeshes(pieces,true,true);
+    if(merged){merged.parent=root;merged.isPickable=false;merged.receiveShadows=true;merged.material=this.materials.rubble;this.markMaterial(merged,"rubble");}
     return root;
   }
 
+  fallbackMaterialRole(type){
+    if(type==="TREE")return"live-bark";
+    if(type==="DEAD_TREE")return"dead-wood";
+    if(type==="STUMP"||type==="LOG")return"cut-wood";
+    if(type==="BUSH")return"bush-leaf";
+    if(type==="BOULDER"||type==="ROCK")return"boulder";
+    if(type==="RUBBLE")return"rubble";
+    return"generic";
+  }
+
   createEntry(object){
-    const node=this.root(object),model=object.type==="RUBBLE"?this.createRubble(object):this.createObject(object);
+    const type=canonicalType(object),node=this.root(object),model=type==="RUBBLE"?this.createRubble(object):this.createObject(object);
     model.parent=node;
-    // Shared vertex material; retain each original part's colour for recolouring.
+    // One shared StandardMaterial remains the only draw material. Per-prop material
+    // character is encoded into deterministic vertex colours, so Stage 12I does
+    // not create texture requests or one material instance per object.
     for(const mesh of model.getChildMeshes()){
-      mesh.metadata={...(mesh.metadata||{}),baseColor:mesh.material.diffuseColor.asArray()};
+      const baseColor=mesh.material?.diffuseColor?.asArray?.()||this.materials.generic.diffuseColor.asArray();
+      mesh.metadata={...(mesh.metadata||{}),baseColor,visualMaterialRole:mesh.metadata?.visualMaterialRole||this.fallbackMaterialRole(type)};
       mesh.material=this.surfaceMaterial;mesh.useVertexColors=true;mesh.receiveShadows=true;
     }
     return{node,model,signature:this.signature(object),detail:null};
@@ -222,20 +239,75 @@ export class MapObjectRenderer{
       snow:clamp(Number(tile?.snowDepth||0)/.75,0,1),sample};
   }
 
+  materialColor(entry,mesh,base,point,normal,worldNormal,vertexIndex){
+    const role=mesh.metadata?.visualMaterialRole||"generic",objectId=entry.node.metadata?.objectId||"object";
+    const seed=hash01(`${objectId}:${mesh.name}:material`),noise=hash01(`${objectId}:${mesh.name}:${vertexIndex}`);
+    const angle=Math.atan2(point.z,point.x),up=clamp((worldNormal.y+1)*.5,0,1);
+    let color=base;
+
+    if(role==="live-bark"){
+      // Vertical furrows are tied to the cylinder angle, with a slower height
+      // modulation to keep trunks readable even on very low-poly geometry.
+      const grain=.5+.5*Math.sin(angle*7.0+point.y*1.65+seed*12.0);
+      const furrow=Math.pow(1-grain,1.7);
+      color=mixColor(color,[.16,.085,.040],.12+.25*furrow+.08*noise);
+      color=mixColor(color,[.38,.235,.115],.08+.13*grain);
+    }else if(role==="dead-wood"){
+      const split=.5+.5*Math.sin(angle*5.0+point.y*3.2+seed*9.0);
+      color=mixColor(color,[.18,.17,.15],.20+.20*(1-split));
+      color=mixColor(color,[.39,.36,.31],.08+.16*split+.06*noise);
+    }else if(role==="cut-wood"){
+      const cap=Math.abs(normal.y)>.72;
+      if(cap){
+        const radius=Math.sqrt(point.x*point.x+point.z*point.z),ring=.5+.5*Math.sin(radius*34+seed*10);
+        color=mixColor([.48,.315,.16],[.29,.17,.085],.20+.40*ring+.12*noise);
+        color=mixColor(color,[.62,.44,.24],.14*(1-ring));
+      }else{
+        const grain=.5+.5*Math.sin(angle*7.0+point.y*1.8+seed*11.0);
+        color=mixColor(color,[.15,.08,.035],.12+.24*(1-grain));
+        color=mixColor(color,[.38,.23,.11],.08+.12*grain);
+      }
+    }else if(role==="foliage"){
+      const heightBand=.5+.5*Math.sin(point.y*8.0+seed*8.0),facet=clamp(.35+.65*up,0,1);
+      color=mixColor(color,[.055,.235,.095],.12+.16*(1-facet)+.07*noise);
+      color=mixColor(color,[.18,.43,.18],.07+.13*heightBand*facet);
+    }else if(role==="bush-leaf"){
+      const variation=.45+.55*noise,tip=clamp(point.y/.95,0,1);
+      color=mixColor(color,[.07,.28,.10],.10+.13*(1-variation));
+      color=mixColor(color,[.20,.47,.19],.06+.14*tip*variation);
+    }else if(role==="boulder"){
+      const strata=.5+.5*Math.sin(point.y*8.5+point.x*4.0-point.z*3.0+seed*7.0);
+      const face=clamp(Math.abs(worldNormal.y)*.65+noise*.35,0,1);
+      color=mixColor(color,[.27,.285,.30],.10+.17*(1-strata));
+      color=mixColor(color,[.47,.455,.42],.06+.13*strata*face);
+      if(noise>.80)color=mixColor(color,[.29,.34,.27],.08);
+    }else if(role==="rubble"){
+      // Rubble is deliberately dustier and less coherent than an intact boulder.
+      const chunk=.35+.65*noise,face=clamp(.25+.75*up,0,1);
+      color=mixColor(color,[.26,.255,.245],.18+.18*(1-chunk));
+      color=mixColor(color,[.44,.415,.37],.08+.12*chunk*face);
+    }
+    return color.map(value=>clamp(value,0,1));
+  }
+
   tintModel(entry,profile){
-    const mix=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*clamp(t,0,1));
     for(const mesh of entry.model.getChildMeshes()){
       mesh.computeWorldMatrix(true);
       const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[],normals=mesh.getVerticesData(BABYLON.VertexBuffer.NormalKind)||[],colors=[];
       const base=mesh.metadata.baseColor,world=mesh.getWorldMatrix();
       for(let i=0;i<positions.length;i+=3){
-        const point=BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(positions[i],positions[i+1],positions[i+2]),world);
-        const normal=BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(normals[i]||0,normals[i+1]||0,normals[i+2]||0),world).normalize();
+        const localPoint=new BABYLON.Vector3(positions[i],positions[i+1],positions[i+2]);
+        const localNormal=new BABYLON.Vector3(normals[i]||0,normals[i+1]||0,normals[i+2]||0).normalize();
+        const point=BABYLON.Vector3.TransformCoordinates(localPoint,world);
+        const normal=BABYLON.Vector3.TransformNormal(localNormal,world).normalize();
         const height=point.y-entry.node.position.y,foot=clamp(1-height/.65,0,1);
-        let color=mix(base,[.18,.23,.20],profile.wet*(.18+foot*.40));
-        if(profile.forest)color=mix(color,[.20,.32,.12],foot*.55);
-        if(profile.mud)color=mix(color,[.30,.23,.14],foot*.72);
-        color=mix(color,[.87,.92,.94],profile.snow*clamp((normal.y-.15)/.55,0,1));
+        let color=this.materialColor(entry,mesh,base,localPoint,localNormal,normal,i/3);
+        // Environment colouring remains the final layer so wet soil, mud and snow
+        // still affect every material without changing gameplay/environment state.
+        color=mixColor(color,[.18,.23,.20],profile.wet*(.18+foot*.40));
+        if(profile.forest)color=mixColor(color,[.20,.32,.12],foot*.55);
+        if(profile.mud)color=mixColor(color,[.30,.23,.14],foot*.72);
+        color=mixColor(color,[.87,.92,.94],profile.snow*clamp((normal.y-.15)/.55,0,1));
         colors.push(...color,1);
       }
       mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,colors,true);
@@ -244,7 +316,7 @@ export class MapObjectRenderer{
 
   updateGroundDetail(entry,object,tile,byKey,profile,floating){
     entry.detail?.dispose();entry.detail=null;
-    if(floating||!tile||object.type==="RUBBLE")return;
+    if(floating||!tile||canonicalType(object)==="RUBBLE")return;
     // One low-poly, opaque mesh per prop: soft-coloured irregular contact region
     // and embedded chips/roots. It follows terrain, never changes gameplay tiles.
     const positions=[],indices=[],colors=[],normals=[],segments=12;
@@ -318,6 +390,6 @@ export class MapObjectRenderer{
 
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
-    return{total:this.nodes.size,byType,sharedSurfaceSampling:true,perObjectVisualCache:true,durabilityRebuild:false};
+    return{total:this.nodes.size,byType,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false};
   }
 }
