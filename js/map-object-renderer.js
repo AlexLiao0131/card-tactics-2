@@ -34,6 +34,10 @@ export class MapObjectRenderer{
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
     this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
+    // Stage 12J: keep a direct registry of the few meshes that actually sway.
+    // The old loop walked every map object and rebuilt an inverse world matrix
+    // for every tree/bush at 30 Hz even though those transforms only change on sync.
+    this.vegetationSways=new Set();
     this.vegetationObserver=scene.onBeforeRenderObservable.add(()=>this.updateVegetationWind(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
     scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.vegetationObserver));
   }
@@ -143,29 +147,37 @@ export class MapObjectRenderer{
     return root;
   }
 
+  cacheVegetationWindBasis(mesh){
+    const sway=mesh?.metadata?.leafSway;if(!sway)return;
+    // Mesh/model transforms are static between sync() calls. Cache the inverse
+    // XZ basis once after placement instead of allocating Matrix/Vector objects
+    // for every vegetation mesh on every animation tick.
+    const inverse=mesh.computeWorldMatrix(true).clone().invert(),m=inverse.m;
+    sway.localWindBasis={xx:m[0],xz:m[8],zx:m[2],zz:m[10]};
+  }
+
   updateVegetationWind(dt){
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
     const wind=this.vegetationWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength);
     if(strength===0&&this.vegetationWasCalm)return;
     this.vegetationWasCalm=strength===0;
-    const direction=new BABYLON.Vector3(Number(wind.x||0),0,Number(wind.y||0));
-    if(direction.lengthSquared()>0)direction.normalize();
-    for(const entry of this.nodes.values()){
-      if(entry.signature!=="BUSH"&&entry.signature!=="TREE")continue;
-      for(const mesh of entry.model.getChildMeshes()){
-        const sway=mesh.metadata?.leafSway;if(!sway)continue;
-        const local=BABYLON.Vector3.TransformNormal(direction,mesh.computeWorldMatrix(true).clone().invert());
-        local.y=0;if(local.lengthSquared()>0)local.normalize();
-        const primary=.58+.30*Math.sin(this.vegetationTime*((sway.speed??1.9)+strength*.16)+sway.phase),gust=.12*Math.sin(this.vegetationTime*(3.4+strength*.22)+sway.phase*1.73);
-        const bend=strength*(sway.amplitude??.022)*Math.max(.18,primary+gust);
-        for(let v=0;v<sway.weights.length;v++){
-          const offset=v*3,amount=bend*sway.weights[v];
-          sway.positions[offset]=sway.rest[offset]+local.x*amount;
-          sway.positions[offset+2]=sway.rest[offset+2]+local.z*amount;
-        }
-        mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
+    let wx=Number(wind.x||0),wz=Number(wind.y||0),length=Math.hypot(wx,wz);
+    if(length>0){wx/=length;wz/=length;}else{wx=0;wz=0;}
+    for(const mesh of this.vegetationSways){
+      if(mesh.isDisposed?.()||mesh.isEnabled?.()===false||Number(mesh.visibility??1)<=.001)continue;
+      const sway=mesh.metadata?.leafSway;if(!sway)continue;
+      const basis=sway.localWindBasis;
+      let lx=basis?wx*basis.xx+wz*basis.xz:wx,lz=basis?wx*basis.zx+wz*basis.zz:wz;
+      const localLength=Math.hypot(lx,lz);if(localLength>0){lx/=localLength;lz/=localLength;}
+      const primary=.58+.30*Math.sin(this.vegetationTime*((sway.speed??1.9)+strength*.16)+sway.phase),gust=.12*Math.sin(this.vegetationTime*(3.4+strength*.22)+sway.phase*1.73);
+      const bend=strength*(sway.amplitude??.022)*Math.max(.18,primary+gust);
+      for(let v=0;v<sway.weights.length;v++){
+        const offset=v*3,amount=bend*sway.weights[v];
+        sway.positions[offset]=sway.rest[offset]+lx*amount;
+        sway.positions[offset+2]=sway.rest[offset+2]+lz*amount;
       }
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
     }
   }
 
@@ -220,12 +232,19 @@ export class MapObjectRenderer{
     // One shared StandardMaterial remains the only draw material. Per-prop material
     // character is encoded into deterministic vertex colours, so Stage 12I does
     // not create texture requests or one material instance per object.
+    const swayMeshes=[];
     for(const mesh of model.getChildMeshes()){
       const baseColor=mesh.material?.diffuseColor?.asArray?.()||this.materials.generic.diffuseColor.asArray();
       mesh.metadata={...(mesh.metadata||{}),baseColor,visualMaterialRole:mesh.metadata?.visualMaterialRole||this.fallbackMaterialRole(type)};
       mesh.material=this.surfaceMaterial;mesh.useVertexColors=true;mesh.receiveShadows=true;
+      if(mesh.metadata?.leafSway){swayMeshes.push(mesh);this.vegetationSways.add(mesh);}
     }
-    return{node,model,signature:this.signature(object),detail:null};
+    return{node,model,signature:this.signature(object),detail:null,swayMeshes};
+  }
+
+  disposeEntry(entry){
+    for(const mesh of entry?.swayMeshes||[])this.vegetationSways.delete(mesh);
+    entry?.node?.dispose();
   }
 
   groundProfile(object,tile,byKey){
@@ -355,6 +374,7 @@ export class MapObjectRenderer{
     model.position.y=entry.node.position.y-bounds.min.y-height*(floating?.32:sink+(profile.mud?.025:0));
     entry.node.metadata={...entry.node.metadata,sinkRatio:sink,floating,groundHeight:profile.height};
     this.tintModel(entry,profile);this.updateGroundDetail(entry,object,tile,byKey,profile,floating);
+    for(const mesh of entry.swayMeshes||[])this.cacheVegetationWindBasis(mesh);
     this.setNodeVisibility(entry.node,tile?.fogged?.24:1);
   }
 
@@ -380,12 +400,12 @@ export class MapObjectRenderer{
     for(const object of objects){
       const key=`OBJECT:${object.id}`,signature=this.signature(object);alive.add(key);
       let entry=this.nodes.get(key);
-      if(!entry||entry.signature!==signature){entry?.node?.dispose();entry=this.createEntry(object);this.nodes.set(key,entry);}
+      if(!entry||entry.signature!==signature){this.disposeEntry(entry);entry=this.createEntry(object);this.nodes.set(key,entry);}
       const visualSignature=this.visualSignature(object,byKey);
       if(entry.visualSignature===visualSignature)continue;
       this.place(entry,object,byKey.get(tileKey(object.x,object.y)),byKey);entry.visualSignature=visualSignature;
     }
-    for(const[key,entry]of this.nodes){if(alive.has(key))continue;entry.node.dispose();this.nodes.delete(key);}
+    for(const[key,entry]of this.nodes){if(alive.has(key))continue;this.disposeEntry(entry);this.nodes.delete(key);}
   }
 
   diagnostics(){
