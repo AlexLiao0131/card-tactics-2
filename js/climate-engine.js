@@ -1,7 +1,7 @@
 export const ClimateEngine=(()=>{
   "use strict";
 
-  const WEATHER=Object.freeze({SNOW:"SNOW",BLIZZARD:"BLIZZARD",SCORCHING_SUN:"SCORCHING_SUN"});
+  const WEATHER=Object.freeze({SNOW:"SNOW",BLIZZARD:"BLIZZARD",SCORCHING_SUN:"SCORCHING_SUN",TYPHOON:"TYPHOON"});
   const SAFE_ICE=Object.freeze({LIGHT:.45,MEDIUM:.7,HEAVY:1,IMMOVABLE:1.2});
   const CFG=Object.freeze({
     SCORCHING_SUN:{temperature:28,snowRate:0,flow:.95,melt:1.15,evaporation:2.75,extraDrying:1.5},
@@ -10,6 +10,7 @@ export const ClimateEngine=(()=>{
     RAIN:{temperature:6,snowRate:0,flow:1.35,melt:.55},
     HEAVY_RAIN:{temperature:7,snowRate:0,flow:2,melt:.8},
     THUNDERSTORM:{temperature:8,snowRate:0,flow:2.2,melt:.9},
+    TYPHOON:{temperature:9,snowRate:0,flow:2.65,melt:1.0},
     SNOW:{temperature:-3,snowRate:.35,flow:.85,melt:0},
     BLIZZARD:{temperature:-8,snowRate:.75,flow:.65,melt:0}
   });
@@ -26,19 +27,19 @@ export const ClimateEngine=(()=>{
     const type=state?.climate?.precipitation?.type;
     if(type)return type;
     if(state?.weather===WEATHER.SNOW||state?.weather===WEATHER.BLIZZARD)return"SNOW";
-    if(state?.weather==="HEAVY_RAIN"||state?.weather==="THUNDERSTORM")return"HEAVY_RAIN";
+    if(state?.weather==="HEAVY_RAIN"||state?.weather==="THUNDERSTORM"||state?.weather==="TYPHOON")return"HEAVY_RAIN";
     if(state?.weather==="RAIN")return"RAIN";
     return"NONE";
   }
   function windStrength(state){return Math.max(0,Number(state?.climate?.wind?.strength??state?.wind?.strength??0));}
-  function thunderIntensity(state){return Math.max(0,Number(state?.climate?.thunder?.intensity??(state?.weather==="THUNDERSTORM"?1:0)));}
+  function thunderIntensity(state){return Math.max(0,Number(state?.climate?.thunder?.intensity??((state?.weather==="THUNDERSTORM"||state?.weather==="TYPHOON")?1:0)));}
   function fogIntensity(state){return Math.max(0,Number(state?.climate?.fog?.intensity??(state?.weather==="FOG"?1:0)));}
   const isSnowWeather=state=>precipitationType(state)==="SNOW";
   const isBlizzard=state=>isSnowWeather(state)&&windStrength(state)>=1.75;
   function config(state){
     const precipitation=precipitationType(state);
     if(precipitation==="SNOW")return isBlizzard(state)?CFG.BLIZZARD:CFG.SNOW;
-    if(precipitation==="HEAVY_RAIN")return thunderIntensity(state)>0?CFG.THUNDERSTORM:CFG.HEAVY_RAIN;
+    if(precipitation==="HEAVY_RAIN"){if(thunderIntensity(state)>0&&windStrength(state)>=5.5)return CFG.TYPHOON;return thunderIntensity(state)>0?CFG.THUNDERSTORM:CFG.HEAVY_RAIN;}
     if(precipitation==="RAIN")return CFG.RAIN;
     if(fogIntensity(state)>0)return CFG.FOG;
     if(Number(state?.climate?.heat?.intensity||0)>0)return CFG.SCORCHING_SUN;

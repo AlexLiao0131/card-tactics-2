@@ -233,7 +233,7 @@ export class TerrainRenderer{
     this.grassTime+=dt;this.grassFrameTime+=dt;
     if(!this.grassMesh||(!force&&this.grassFrameTime<1/30))return;
     this.grassFrameTime=0;
-    const wind=this.grassWind||{},strength=Math.max(0,Math.min(3,Number(wind.strength||0)));
+    const wind=this.grassWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength);
     // Calm really is calm; do not invent wind in the presentation layer.
     if(!force&&strength===0&&this.grassWasCalm)return;
     this.grassWasCalm=strength===0;
@@ -241,8 +241,8 @@ export class TerrainRenderer{
     const wx=Number(wind.x||0)/length,wz=Number(wind.y||0)/length;
     const out=this.grassPositions,rest=this.grassRest;
     for(const blade of this.grassBlades){
-      const wave=.62+.28*Math.sin(this.grassTime*(1.5+strength*.5)+blade.phase)+.1*Math.sin(this.grassTime*3.1+blade.phase*2);
-      const bend=blade.height*strength*.17*wave;
+      const wave=.62+.28*Math.sin(this.grassTime*(1.5+Math.min(strength,4)*.5)+blade.phase)+.1*Math.sin(this.grassTime*(3.1+Math.max(0,strength-3)*.4)+blade.phase*2);
+      const bend=blade.height*Math.min(.68,strength*.17)*wave;
       for(let vertex=2;vertex<5;vertex++){
         const offset=blade.base+vertex*3,weight=vertex===4?1:.3;
         out[offset]=rest[offset]+wx*bend*weight;

@@ -1,5 +1,5 @@
 export const TileInspectionPresentation=(()=>{
-  const ENV={NONE:"一般",GRASS:"草木",WATER:"水",STONE:"石質"},WEATHER={CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",SNOW:"降雪",BLIZZARD:"暴風雪",SCORCHING_SUN:"烈日"};
+  const ENV={NONE:"一般",GRASS:"草木",WATER:"水",STONE:"石質"},WEATHER={CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_RAIN:"豪大雨",THUNDERSTORM:"雷雨",TYPHOON:"颱風",SNOW:"降雪",BLIZZARD:"暴風雪",SCORCHING_SUN:"烈日"};
   const EFFECT={TORNADO:"龍捲風",BURNING:"燃燒",BOILING:"沸騰",STEAM:"蒸氣",SMOKE:"黑煙",FRAGMENTS:"岩石破片",FIRE_TORNADO:"火龍捲",ELECTRIFIED:"帶電",SNOW:"積雪",ICE:"結冰",CURRENT:"急流"};
   const fmt=n=>Math.round(Number(n||0)*100)/100;
   const windName=wind=>{const x=Math.sign(Number(wind?.x||0)),y=Math.sign(Number(wind?.y||0));return x===0&&y<0?"北":x>0&&y<0?"東北":x>0&&y===0?"東":x>0&&y>0?"東南":x===0&&y>0?"南":x<0&&y>0?"西南":x<0&&y===0?"西":x<0&&y<0?"西北":"無風";};
@@ -8,6 +8,7 @@ export const TileInspectionPresentation=(()=>{
     if(!environmentState)return["晴朗"];
     const climate=EnvironmentEngine.climateSnapshot?.(environmentState);
     if(!climate)return[WEATHER[environmentState.weather]||environmentState.weather||"晴朗"];
+    if(climate.legacyWeather==="TYPHOON")return[`颱風${turns(climate.precipitation?.turnsRemaining)}`];
     const out=[],p=climate.precipitation||{};
     if(p.type==="RAIN")out.push(`雨${turns(p.turnsRemaining)}`);
     else if(p.type==="HEAVY_RAIN")out.push(`豪大雨${turns(p.turnsRemaining)}`);
@@ -37,7 +38,7 @@ export const TileInspectionPresentation=(()=>{
     if(objects.length)details.push(`物件：${objects.map(o=>`${o.name||o.type||o.id}${o.destructible?`｜耐久 ${Math.round(Number(o.durability??o.maxDurability??0))}/${Math.round(Number(o.maxDurability??o.durability??0))}`:""}`).join("、")}`);
     details.push(`效果：${effects.length?effects.map(e=>`${EFFECT[e.type]||e.type}${e.duration==null?"":` ${e.duration}回合`}${e.type==="BOILING"?`｜Heat ${e.heat||1}`:e.type==="SMOKE"?`｜濃度 ${fmt(e.intensity||0)}`:""}`).join("、"):"無"}`);
     if(effects.some(e=>e.type==="SMOKE"))details.push("黑煙：由燃燒產生，會沿風向漂移並逐步消散；濃煙會遮斷視線。");
-    if(material==="WATER")details.push("互動：水體可導電；高熱先沸騰再蒸發；低溫可結冰。河道在豪雨／雷雨時會增強流速並可能沖走單位。");
+    if(material==="WATER")details.push("互動：水體可導電；高熱先沸騰再蒸發；低溫可結冰。河道在豪雨／雷雨／颱風時會增強流速並可能沖走單位。");
     else if(material==="GRASS")details.push(EnvironmentEngine.isRain(environmentState)?"互動：雨勢抑制草木持續燃燒；樹木與灌木提供根系固土。":"互動：草木可被火焰點燃；樹木與灌木提供根系固土，燒毀後坡面穩定會下降。");
     else if(material==="STONE")details.push("互動：爆炸可與石質物件／破片作用；高山積雪受到爆炸／衝擊可觸發雪崩。");
     if(tile.terrain==="MUD")details.push("互動：泥濘提高一般移動成本；泥地本身不是水體導體。");

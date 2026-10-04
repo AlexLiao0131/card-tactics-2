@@ -109,6 +109,7 @@ export class BabylonRenderer{
       RAIN:{sun:.72,fill:.90,hemi:.92,ambient:.96},
       HEAVY_RAIN:{sun:.52,fill:.82,hemi:.82,ambient:.90},
       THUNDERSTORM:{sun:.40,fill:.74,hemi:.74,ambient:.84},
+      TYPHOON:{sun:.32,fill:.68,hemi:.70,ambient:.80},
       SNOW:{sun:.80,fill:1.02,hemi:1.02,ambient:1.02},
       BLIZZARD:{sun:.56,fill:.92,hemi:.92,ambient:1.00}
     });
@@ -230,7 +231,7 @@ export class BabylonRenderer{
 
     // Visual subsystems are independent render clients of the same GridState.
     this.syncSubsystem("terrain",()=>this.terrain.sync(state));
-    this.syncSubsystem("water",()=>this.water.sync(state));
+    this.syncSubsystem("water",()=>this.water.sync(state,presentationEvents));
     this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
     this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
     this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));

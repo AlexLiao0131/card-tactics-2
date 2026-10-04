@@ -7,6 +7,7 @@ const WEATHER_LABEL=Object.freeze({
   RAIN:["🌧","雨"],
   HEAVY_RAIN:["🌧","豪大雨"],
   THUNDERSTORM:["⛈","雷雨"],
+  TYPHOON:["🌀","颱風"],
   SNOW:["🌨","降雪"],
   SCORCHING_SUN:["🌞","烈日"],
   BLIZZARD:["❄","暴風雪"]

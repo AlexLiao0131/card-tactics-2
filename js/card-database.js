@@ -11,6 +11,7 @@ export const CARDS={
   imperial_mage_card:{id:"imperial_mage_card",name:"帝國法師",type:"CHARACTER",characterId:"imperial_mage",loadoutId:"imperial_mage_default",faction:"IMPERIAL",unitType:"UNIT",cost:4},
   imperial_cavalry_card:{id:"imperial_cavalry_card",name:"帝國騎兵",type:"CHARACTER",characterId:"imperial_cavalry",loadoutId:"imperial_cavalry_default",faction:"IMPERIAL",unitType:"UNIT",cost:5},
   thunderstorm_card:{id:"thunderstorm_card",name:"雷雨",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:5,effect:{type:"WEATHER",weather:"THUNDERSTORM",lightning:true,durationTurns:2}},
+  typhoon_card:{id:"typhoon_card",name:"颱風",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:7,effect:{type:"WEATHER",weather:"TYPHOON",durationTurns:2}},
   wildfire_card:{id:"wildfire_card",name:"野火",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:4,effect:{type:"AREA_FIRE",radius:1,forces:["FIRE"]}},
   tornado_card:{id:"tornado_card",name:"龍捲風",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:5,effect:{type:"AREA_PUSH",radius:1,distance:2,lift:3,damage:20,resistAxes:{horizontal:false,vertical:true},forces:["WIND"],fireTornadoDamage:45}},
   miracle_card:{id:"miracle_card",name:"神跡",type:"SPELL",spellType:"HEAL",faction:"NEUTRAL",cost:6,effect:{type:"AREA_HEAL",radius:1,heal:80,team:"PLAYER"}},

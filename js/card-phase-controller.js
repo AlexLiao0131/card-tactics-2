@@ -5,9 +5,9 @@ function create(ctx){
   let resolvingPresentation=false,presentationGeneration=0;
   function waterRecheckUnits(units,reason){(units||[]).filter(unit=>unit?.alive).forEach(unit=>ctx.applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false}));}
   const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD"]);
-  function weatherName(weather){return weather==="SCORCHING_SUN"?"烈日":weather==="THUNDERSTORM"?"雷雨":weather==="HEAVY_RAIN"?"豪大雨":weather==="FOG"?"迷霧":weather==="SNOW"?"降雪":weather==="BLIZZARD"?"暴風雪":weather==="RAIN"?"雨":weather;}
+  function weatherName(weather){return weather==="TYPHOON"?"颱風":weather==="SCORCHING_SUN"?"烈日":weather==="THUNDERSTORM"?"雷雨":weather==="HEAVY_RAIN"?"豪大雨":weather==="FOG"?"迷霧":weather==="SNOW"?"降雪":weather==="BLIZZARD"?"暴風雪":weather==="RAIN"?"雨":weather;}
   function climateSummary(environmentState){
-    const c=EnvironmentEngine.climateSnapshot?.(environmentState);if(!c)return weatherName(environmentState?.weather||"CLEAR");const parts=[];
+    const c=EnvironmentEngine.climateSnapshot?.(environmentState);if(!c)return weatherName(environmentState?.weather||"CLEAR");if(c.legacyWeather==="TYPHOON")return"颱風";const parts=[];
     if(c.precipitation?.type==="RAIN")parts.push("雨");else if(c.precipitation?.type==="HEAVY_RAIN")parts.push("豪大雨");else if(c.precipitation?.type==="SNOW")parts.push(EnvironmentEngine.isBlizzard?.(environmentState)?"暴風雪":"降雪");
     if(Number(c.fog?.intensity||0)>0)parts.push("迷霧");if(Number(c.thunder?.intensity||0)>0)parts.push("雷暴");return parts.length?parts.join("＋"):"晴朗";
   }

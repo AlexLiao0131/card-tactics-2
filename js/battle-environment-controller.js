@@ -139,6 +139,17 @@ function create(ctx){
   }
   return count;
  }
+ function resolveRogueWave(event){
+  const s=state(),cells=event.cells||[],cellKeys=new Set(cells.map(point=>`${point.x},${point.y}`)),dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0));if(!cellKeys.size||(!dx&&!dy))return 0;
+  globalThis.UnitAnimationEngine?.emitPresentation?.("ROGUE_WAVE",{...event});
+  const initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
+  for(const unit of initial){
+    if(!unit.alive||window.VerticalMobilityEngine?.ignoresCurrent?.(unit))continue;
+    const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,window.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",event))continue;
+    applyForcedMovement({x:unit.x-dx,y:unit.y-dy},unit,Math.max(1,Number(event.forceDistance||2)),{name:"瘋狗浪",damage:Math.max(0,Number(event.damage||0)),damageType:"WATER"});count++;
+  }
+  return count;
+ }
  function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
@@ -148,6 +159,7 @@ function create(ctx){
   if(hasElectric)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHECK",includeElectric:true,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
   for(const tornado of list.filter(event=>event.type==="TORNADO_ADVANCED"))affected+=resolveTornadoAdvance(tornado);
+  for(const wave of list.filter(event=>event.type==="ROGUE_WAVE"))affected+=resolveRogueWave(wave);
   for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
   const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
   for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.BurialEngine?.state?.(unit)))BurialEngine.syncRenderPose(unit,s.map);
@@ -163,7 +175,7 @@ function create(ctx){
     if(EnvironmentEngine.isConductive(s.map,s.environmentState,event.x,event.y)){const conduction=[];EnvironmentEngine.conductThunder(s.map,s.environmentState,event.x,event.y,conduction,{damagedUnitIds:[unit.id]});conduction.forEach(logEnvironmentEvent);resolveEnvironmentEvents(conduction,{reason:"雷雨落雷引發水體傳導"});}
   }
  }
- function mudSourceLabel(event){const source=String(event?.source||"").toUpperCase();if(source.includes("SNOW")||source.includes("ICE")||source.includes("MELT"))return"融雪／積水";if(source.includes("RAIN")||source.includes("THUNDERSTORM"))return"降雨";if(source.includes("FLOOD"))return"洪水／積水";if(source.includes("MASS_FLOW"))return"土石流後積水";if(source.includes("ACCUMULATION")||source.includes("DRAIN")||source.includes("FLOW"))return"積水";return"土壤飽和／積水";}
+ function mudSourceLabel(event){const source=String(event?.source||"").toUpperCase();if(source.includes("SNOW")||source.includes("ICE")||source.includes("MELT"))return"融雪／積水";if(source.includes("RAIN")||source.includes("THUNDERSTORM")||source.includes("TYPHOON")||source.includes("TYPHOON"))return"降雨";if(source.includes("FLOOD"))return"洪水／積水";if(source.includes("MASS_FLOW"))return"土石流後積水";if(source.includes("ACCUMULATION")||source.includes("DRAIN")||source.includes("FLOW"))return"積水";return"土壤飽和／積水";}
  function logEnvironmentEvent(event){
   if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
   else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
@@ -182,13 +194,16 @@ function create(ctx){
   else if(event.type==="TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 形成龍捲風場。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 的燃燒區被風捲起，形成火龍捲。`,"SYSTEM");
   else if(event.type==="WATER_TORNADO_FORMED")ctx.pushLog(`🌊 龍捲風捲入水體，轉化為水龍捲｜規模 ${event.clusterSize||1} 格。`,"SYSTEM");
-  else if(event.type==="TORNADO_ADVANCED")ctx.pushLog(`${event.element==="FIRE"?"🔥 火龍捲":event.element==="WATER"?"🌊 水龍捲":"🌪️ 龍捲風"}${Number(event.moved||0)>0?`沿風向移動 ${event.moved} 格`:"原地盤旋"}｜融合規模 ${event.clusterSize||1}｜升力 ${event.lift||0}${event.carriedLogs?`｜捲帶樹幹 ${event.carriedLogs}`:""}。`,"DETAIL");
-  else if(event.type==="TORNADO_TREE_UPROOTED")ctx.pushLog(`🌪️ 龍捲風將 (${event.x},${event.y}) 的${event.objectType==="DEAD_TREE"?"枯木":"樹木"}連根拔起｜倒木 ${event.logId} 被捲入風柱。`,"SYSTEM");
+  else if(event.type==="TORNADO_ADVANCED")ctx.pushLog(`${event.element==="FIRE"?"🔥 火龍捲":event.element==="WATER"?"🌊 水龍捲":"🌪️ 龍捲風"}${Number(event.moved||0)>0?`沿風向移動 ${event.moved} 格`:"原地盤旋"}｜融合規模 ${event.clusterSize||1}｜局部風力 ${Number(event.windStrength||0).toFixed(1)}｜升力 ${event.lift||0}${event.carriedLogs?`｜捲帶樹幹 ${event.carriedLogs}`:""}。`,"DETAIL");
+  else if(event.type==="TREE_UPROOTED"&&String(event.reason||"").includes("WIND")){const tornado=String(event.reason||"").includes("TORNADO_WIND"),typhoon=String(event.reason||"").includes("TYPHOON_WIND");ctx.pushLog(`${tornado?"🌪️ 龍捲風":typhoon?"🌀 颱風":"💨 強風"}將 (${event.x},${event.y}) 的${event.from==="DEAD_TREE"?"枯木":"樹木"}連根拔起｜根系支撐 -${Number(event.rootStrengthLost||0).toFixed(2)}。`,"SYSTEM");}
+  else if(event.type==="TREE_FELLED"&&String(event.reason||"").includes("WIND")){const tornado=String(event.reason||"").includes("TORNADO_WIND"),typhoon=String(event.reason||"").includes("TYPHOON_WIND");ctx.pushLog(`${tornado?"🌪️ 龍捲風":typhoon?"🌀 颱風":"💨 強風"}折倒 (${event.x},${event.y}) 的${event.from==="DEAD_TREE"?"枯木":"樹木"}，留下樹樁與倒木。`,"SYSTEM");}
+  else if((event.type==="VEGETATION_UPROOTED"||event.type==="VEGETATION_BROKEN")&&String(event.reason||"").includes("WIND")){const label=event.objectType==="BUSH"?"灌木":event.objectType==="STUMP"?"樹樁":"植被";ctx.pushLog(`💨 (${event.x},${event.y}) 的${label}${event.type==="VEGETATION_UPROOTED"?"被拔除":"被吹毀"}｜根系支撐 -${Number(event.rootStrengthLost||0).toFixed(2)}。`,"DETAIL");}
   else if(event.type==="TORNADO_EXTINGUISHED_FIRE")ctx.pushLog(`🌊 水龍捲撲滅 (${event.x},${event.y}) 的火焰。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_STOKED")ctx.pushLog(`🔥 火龍捲使 (${event.x},${event.y}) 的火勢轉為猛烈燃燒。`,"DETAIL");
   else if(event.type==="TORNADO_DISSIPATED")ctx.pushLog(`龍捲風移出戰場並消散。`,"DETAIL");
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
-  else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
+  else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="TYPHOON"?"颱風":event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
+  else if(event.type==="ROGUE_WAVE")ctx.pushLog(`🌊 颱風風場與水域條件形成瘋狗浪｜風力 ${Number(event.windStrength||0).toFixed(1)}｜迎風距離 ${Number(event.fetch||0).toFixed(1)}｜推力 ${event.forceDistance||0}。`,"SYSTEM");
   else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
@@ -202,7 +217,7 @@ function create(ctx){
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
   else if(event.type==="AVALANCHE")ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜衝擊 ${event.damage||0}。`,"SYSTEM");
  }
- return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
+ return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveRogueWave,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
 window.BattleEnvironmentController=Object.freeze({create});
 })();

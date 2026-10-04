@@ -143,7 +143,7 @@ export class MapObjectRenderer{
   updateVegetationWind(dt){
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
-    const wind=this.vegetationWind||{},strength=clamp(Number(wind.strength||0),0,3);
+    const wind=this.vegetationWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength);
     if(strength===0&&this.vegetationWasCalm)return;
     this.vegetationWasCalm=strength===0;
     const direction=new BABYLON.Vector3(Number(wind.x||0),0,Number(wind.y||0));

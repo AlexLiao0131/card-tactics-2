@@ -42,6 +42,11 @@ const WEATHER_MIST_PROFILE=Object.freeze({
     emitRate:13,minSize:.66,maxSize:1.25,minLifeTime:.82,maxLifeTime:1.55,
     height:.64,boxHeight:.96,drift:.26,rise:.016,
     color1:Object.freeze([.42,.51,.58,.095]),color2:Object.freeze([.34,.43,.50,.045])
+  }),
+  TYPHOON:Object.freeze({
+    emitRate:18,minSize:.68,maxSize:1.38,minLifeTime:.78,maxLifeTime:1.48,
+    height:.68,boxHeight:1.04,drift:.34,rise:.014,
+    color1:Object.freeze([.35,.44,.51,.11]),color2:Object.freeze([.27,.36,.43,.055])
   })
 });
 const SCENE_FOG_PROFILE=Object.freeze({
@@ -49,7 +54,8 @@ const SCENE_FOG_PROFILE=Object.freeze({
   BLIZZARD:Object.freeze({density:.008,color:Object.freeze([.64,.69,.74])}),
   RAIN:Object.freeze({density:.0018,color:Object.freeze([.28,.34,.38])}),
   HEAVY_RAIN:Object.freeze({density:.0042,color:Object.freeze([.20,.26,.31])}),
-  THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.17,.22,.28])})
+  THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.17,.22,.28])}),
+  TYPHOON:Object.freeze({density:.0062,color:Object.freeze([.14,.19,.24])})
 });
 const VISIBILITY_HAZE_PROFILE=Object.freeze({
   FOG:Object.freeze({color:Object.freeze([.48,.53,.57]),alpha:.40,edgeFactor:.24,height:.42}),
@@ -263,12 +269,12 @@ export class EnvironmentRenderer{
 
   weatherSettings(state){
     const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),wind=environment.wind||{};
-    const raining=weather==="RAIN"||weather==="HEAVY_RAIN"||weather==="THUNDERSTORM";
+    const raining=weather==="RAIN"||weather==="HEAVY_RAIN"||weather==="THUNDERSTORM"||weather==="TYPHOON";
     const snowing=weather==="SNOW"||weather==="BLIZZARD";
     return{
       weather,wind,raining,snowing,blizzard:weather==="BLIZZARD",
-      heavy:weather==="HEAVY_RAIN"||weather==="THUNDERSTORM",
-      thunder:weather==="THUNDERSTORM",
+      heavy:weather==="HEAVY_RAIN"||weather==="THUNDERSTORM"||weather==="TYPHOON",
+      thunder:weather==="THUNDERSTORM"||weather==="TYPHOON",
       mist:WEATHER_MIST_PROFILE[weather]||NO_MIST
     };
   }
@@ -276,10 +282,10 @@ export class EnvironmentRenderer{
   syncWeatherParticles(state){
     const settings=this.weatherSettings(state),tiles=state?.map?.tiles||[],width=Math.max(1,Number(state?.map?.width||1)),height=Math.max(1,Number(state?.map?.height||1));
     const centerX=(width-1)*TILE_SIZE*.5,centerZ=(height-1)*TILE_SIZE*.5,maxSurface=tiles.length?Math.max(...tiles.map(tile=>surfaceOf(tile)*ELEVATION_HEIGHT)):0;
-    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),strength=Math.max(0,Number(settings.wind?.strength||0)),mist=settings.mist||NO_MIST;
+    const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),rawStrength=Math.max(0,Number(settings.wind?.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength),mist=settings.mist||NO_MIST;
     this.rainSystem.emitter.set(centerX,maxSurface+7.2,centerZ);this.rainSystem.minEmitBox.set(-width*TILE_SIZE*.56,0,-height*TILE_SIZE*.56);this.rainSystem.maxEmitBox.set(width*TILE_SIZE*.56,.5,height*TILE_SIZE*.56);
     const horizontal=.11+strength*.13;this.rainSystem.direction1.set(windX*horizontal,-1,windZ*horizontal);this.rainSystem.direction2.set(windX*horizontal*.82,-1,windZ*horizontal*.82);this.rainSystem.minEmitPower=10+strength*1.4;this.rainSystem.maxEmitPower=13+strength*1.8;
-    this.rainSystem.emitRate=settings.weather==="RAIN"?170:settings.weather==="HEAVY_RAIN"?390:settings.weather==="THUNDERSTORM"?470:0;
+    this.rainSystem.emitRate=settings.weather==="RAIN"?170:settings.weather==="HEAVY_RAIN"?390:settings.weather==="THUNDERSTORM"?470:settings.weather==="TYPHOON"?620:0;
 
     this.snowSystem.emitter.set(centerX,maxSurface+6.6,centerZ);
     this.snowSystem.minEmitBox.set(-width*TILE_SIZE*.56,0,-height*TILE_SIZE*.56);this.snowSystem.maxEmitBox.set(width*TILE_SIZE*.56,.7,height*TILE_SIZE*.56);
@@ -327,7 +333,7 @@ export class EnvironmentRenderer{
       mistType:this.mistSystem.emitRate>0?settings.weather:null,
       mistEmitRate:this.mistSystem.emitRate,
       globalSceneFog:false,
-      wind:{x:windX,y:windZ,strength}
+      wind:{x:windX,y:windZ,strength:rawStrength,visualStrength:strength}
     };
   }
 
@@ -342,7 +348,7 @@ export class EnvironmentRenderer{
   }
 
   updateRainImpacts(dt){
-    const settings=this.weatherSettings(this.lastState),rate=settings.weather==="RAIN"?5:settings.heavy?11:0;this.impactAccumulator+=dt*rate;
+    const settings=this.weatherSettings(this.lastState),rate=settings.weather==="RAIN"?5:settings.weather==="TYPHOON"?14:settings.heavy?11:0;this.impactAccumulator+=dt*rate;
     while(this.impactAccumulator>=1){this.impactAccumulator-=1;this.spawnRainImpact();}
     for(const slot of this.rainImpacts){if(!slot.active)continue;slot.age+=dt;const p=clamp(slot.age/Math.max(.01,slot.duration),0,1),visibility=1-p;if(slot.water){slot.ring.visibility=visibility*.78;slot.ring.scaling.setAll(.65+p*1.9);}else{slot.splash.visibility=visibility*.70;slot.splash.scaling.set(.75+p*.35,.75+p*.85,.75+p*.35);}if(p>=1){slot.active=false;slot.ring.visibility=0;slot.splash.visibility=0;}}
   }
@@ -640,7 +646,7 @@ export class EnvironmentRenderer{
     }
     const system=new BABYLON.ParticleSystem(`${key}-particles`,Math.min(520,SMOKE_PARTICLE_CAPACITY+group.length*24),this.scene);system.particleTexture=this.smokeTexture;
     system.emitter=new BABYLON.Vector3(centerX*TILE_SIZE,baseY+.28,centerY*TILE_SIZE);system.minEmitBox=new BABYLON.Vector3(-width*.48,0,-depth*.48);system.maxEmitBox=new BABYLON.Vector3(width*.48,.24,depth*.48);
-    const wind=state?.presentation?.environment?.wind||{},windX=Number(wind.x||0),windZ=Number(wind.y||0),strength=Math.max(0,Number(wind.strength||0)),drift=.06+strength*.085;
+    const wind=state?.presentation?.environment?.wind||{},windX=Number(wind.x||0),windZ=Number(wind.y||0),rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(4,rawStrength),drift=.06+strength*.085;
     system.direction1.set(windX*drift,.58,windZ*drift);system.direction2.set(windX*drift*1.55,1.08,windZ*drift*1.55);system.minEmitPower=.32+avgIntensity*.05;system.maxEmitPower=.72+maxIntensity*.08;
     system.color1=new BABYLON.Color4(.12,.13,.14,clamp(.30+avgIntensity*.10,.34,.58));system.color2=new BABYLON.Color4(.22,.23,.24,clamp(.18+avgIntensity*.08,.22,.44));system.colorDead=new BABYLON.Color4(.28,.29,.30,0);
     system.minSize=.34+avgIntensity*.06;system.maxSize=.78+maxIntensity*.18;system.minLifeTime=1.8;system.maxLifeTime=3.7;system.minAngularSpeed=-.55;system.maxAngularSpeed=.55;system.updateSpeed=.018;system.blendMode=BABYLON.ParticleSystem.BLENDMODE_STANDARD;
@@ -714,7 +720,7 @@ export class EnvironmentRenderer{
   tornadoSignature(state){
     return(state?.map?.tiles||[]).map(tile=>{
       const type=this.tornadoTypeAt(tile);if(!type)return null;const detail=this.tornadoDetailAt(tile);
-      return`${tile.x},${tile.y}:${type}:${this.tornadoElementAt(tile)}:${Number(detail?.clusterSize||1)}:${Number(detail?.clusterStrength||1).toFixed(2)}:${Number(detail?.carriedLogs||0)}:${surfaceOf(tile).toFixed(3)}`;
+      return`${tile.x},${tile.y}:${type}:${this.tornadoElementAt(tile)}:${Number(detail?.clusterSize||1)}:${Number(detail?.clusterStrength||1).toFixed(2)}:${Number(detail?.windStrength||7.5).toFixed(2)}:${Number(detail?.carriedLogs||0)}:${surfaceOf(tile).toFixed(3)}`;
     }).filter(Boolean).sort().join("|");
   }
 
@@ -752,7 +758,7 @@ export class EnvironmentRenderer{
     const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
     const centerX=(minX+maxX)/2,centerY=(minY+maxY)/2;
     const width=(maxX-minX+1)*TILE_SIZE,depth=(maxY-minY+1)*TILE_SIZE;
-    const span=Math.max(TILE_SIZE,Math.max(width,depth)),details=group.map(tile=>this.tornadoDetailAt(tile)).filter(Boolean),runtimeSize=Math.max(group.length,...details.map(detail=>Math.max(1,Number(detail?.clusterSize||1)))),strength=Math.max(1,...details.map(detail=>Number(detail?.clusterStrength||1))),carriedLogs=Math.max(0,...details.map(detail=>Number(detail?.carriedLogs||0)));
+    const span=Math.max(TILE_SIZE,Math.max(width,depth)),details=group.map(tile=>this.tornadoDetailAt(tile)).filter(Boolean),runtimeSize=Math.max(group.length,...details.map(detail=>Math.max(1,Number(detail?.clusterSize||1)))),strength=Math.max(1,...details.map(detail=>Number(detail?.clusterStrength||1))),windStrength=Math.max(7.5,...details.map(detail=>Number(detail?.windStrength||7.5))),carriedLogs=Math.max(0,...details.map(detail=>Number(detail?.carriedLogs||0)));
     const radius=Math.max(.55,span*.48)*(1+Math.min(.28,(strength-1)*.12));
     const height=2.25+Math.min(1.90,Math.sqrt(runtimeSize)*.48)+Math.min(.65,(strength-1)*.20);
     const baseY=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length;
@@ -791,7 +797,7 @@ export class EnvironmentRenderer{
       for(let i=0;i<3;i++){const spray=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(`${key}-water-${i}`,{diameter:radius*(.64+i*.34),thickness:.045,tessellation:24},this.scene),this.materials.waterWind);spray.position.y=.46+i*height*.24;spray.scaling.z=.66;spray.visibility=.78;rings.push(spray);ringSpeeds.push(6.2+i*.55);}
     }
     const visible=group.some(tile=>!tile.fogged);root.setEnabled(visible);
-    root.metadata={kind:"environment-cluster",effectType:type,tornadoElement:element,tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:runtimeSize,clusterStrength:strength,carriedLogs,visualRadius:radius,height};
+    root.metadata={kind:"environment-cluster",effectType:type,tornadoElement:element,tiles:group.map(tile=>({x:tile.x,y:tile.y})),clusterSize:runtimeSize,clusterStrength:strength,windStrength,carriedLogs,visualRadius:radius,height};
     const animated={node:root,spin:false,tornadoCluster:true,rings,ringSpeeds,orbiters,phase:hash01(key)*Math.PI*2,moveTarget:startPosition&&BABYLON.Vector3.DistanceSquared(startPosition,targetPosition)>.0004?targetPosition:null};
     this.animated.set(key,animated);
     return{key,root,light,animated,type,element};

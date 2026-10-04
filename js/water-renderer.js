@@ -24,7 +24,7 @@ const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
 const WATER_MURKY_COLOR=Object.freeze([.29,.31,.18]);
-const WATER_SHALLOW_ALPHA=.34;
+const WATER_SHALLOW_ALPHA=.46;
 const WATER_DEEP_ALPHA=.82;
 
 const DIRS=Object.freeze([
@@ -84,6 +84,8 @@ export class WaterRenderer{
     this.waveAccumulator=0;
     this.wind={x:0,z:0,strength:0};
     this.renderableWaterKeys=new Set();
+    this.rogueWaves=[];
+    this.seenRogueWaveSequences=new Set();
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
 
@@ -100,6 +102,7 @@ export class WaterRenderer{
         this.waveAccumulator=0;
         for(const entry of this.surfaceAnimations.values())this.animateSurface(entry,this.waveTime);
       }
+      this.rogueWaves=this.rogueWaves.filter(wave=>this.waveTime-wave.startedAt<=wave.duration+.25);
       this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
       for(const entry of this.cascades.values()){
         entry.foam.rotation.y+=dt*.7;
@@ -224,7 +227,7 @@ export class WaterRenderer{
   }
 
   setWind(value){
-    const strength=clamp(value?.strength||0,0,3);
+    const strength=clamp(value?.strength||0,0,8);
     let x=Number(value?.x||0),z=Number(value?.y??value?.z??0);
     const length=Math.hypot(x,z);
     if(strength<=EPSILON||length<=EPSILON){this.wind={x:0,z:0,strength:0};return this.wind;}
@@ -265,60 +268,49 @@ export class WaterRenderer{
   animateSurface(entry,time){
     const mesh=entry?.mesh;if(!mesh||mesh.isDisposed?.())return;
     const base=entry.basePositions,positions=entry.positions,normals=entry.normals,weights=entry.waveWeights;
-    const flowX=entry.flowX||[],flowZ=entry.flowZ||[],flowSpeeds=entry.flowSpeeds||[];
-    const wind=this.wind||{x:0,z:0,strength:0};
-    const windStrength=clamp(wind.strength||0,0,3),windUnit=windStrength/3;
-    const wx=Number(wind.x||0),wz=Number(wind.z||0),wpx=-wz,wpz=wx;
-    const windAmp=ELEVATION_HEIGHT*(.010*windUnit+.045*windUnit*windUnit);
-    const windK=(2.15+windStrength*.72)/TILE_SIZE;
-    const windRate=.75+windStrength*.82;
-    const calmAmp=ELEVATION_HEIGHT*.007;
-
+    const flowX=entry.flowX||[],flowZ=entry.flowZ||[],flowSpeeds=entry.flowSpeeds||[],wind=this.wind||{x:0,z:0,strength:0};
+    const rawWindStrength=clamp(wind.strength||0,0,8),windStrength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawWindStrength)??(rawWindStrength<=3?rawWindStrength:Math.min(4,3+(rawWindStrength-3)*.2)),windUnit=windStrength/3;
+    const wx=Number(wind.x||0),wz=Number(wind.z||0),wpx=-wz,wpz=wx,windPresence=smooth01(rawWindStrength/.8);
+    const windAmp=ELEVATION_HEIGHT*Math.min(.10,.010*windPresence+.020*windUnit+.035*windUnit*windUnit),windK=(2.15+windStrength*.72)/TILE_SIZE,windRate=.75+windStrength*.82,calmAmp=ELEVATION_HEIGHT*.009;
+    const rogueWaves=this.rogueWaves.filter(wave=>wave.surfaceIds.has(entry.id));
     for(let i=0;i<base.length/3;i++){
-      const o=i*3,x=base[o],z=base[o+2],w=Number(weights[i]||0);
-      let wave=0,dydx=0,dydz=0;
-
-      const fs=clamp(flowSpeeds[i]||0,0,3.2);
-      let fx=Number(flowX[i]||0),fz=Number(flowZ[i]||0),flen=Math.hypot(fx,fz);
+      const o=i*3,x=base[o],z=base[o+2],w=Number(weights[i]||0);let wave=0,dydx=0,dydz=0;
+      const fs=clamp(flowSpeeds[i]||0,0,3.2);let fx=Number(flowX[i]||0),fz=Number(flowZ[i]||0),flen=Math.hypot(fx,fz);
       if(fs>EPSILON&&flen>EPSILON){
-        fx/=flen;fz/=flen;
-        const fpx=-fz,fpz=fx;
-        const flowUnit=smooth01(fs/3.2);
-        const flowAmp=ELEVATION_HEIGHT*(.014+.026*flowUnit);
-        const flowK=(3.0+fs*1.25)/TILE_SIZE;
-        const crossK=(4.3+fs*.85)/TILE_SIZE;
-        const rate=.82+fs*.96;
-        const along=x*fx+z*fz,cross=x*fpx+z*fpz;
-        const p1=along*flowK-time*rate*2.8;
-        const p2=cross*crossK-time*rate*1.12;
-        wave+=flowAmp*(Math.sin(p1)+.28*Math.sin(p2));
-        dydx+=flowAmp*(Math.cos(p1)*flowK*fx+.28*Math.cos(p2)*crossK*fpx);
-        dydz+=flowAmp*(Math.cos(p1)*flowK*fz+.28*Math.cos(p2)*crossK*fpz);
-      }else if(windStrength<=EPSILON){
-        // Still water is not perfectly frozen, but calm motion stays subtle.
-        const p1=(x*.78+z*.42)*(2.0/TILE_SIZE)-time*.46;
-        const p2=(x*.31-z*.86)*(2.6/TILE_SIZE)+time*.31;
-        wave+=calmAmp*(Math.sin(p1)+.42*Math.sin(p2));
-        dydx+=calmAmp*(Math.cos(p1)*(2.0/TILE_SIZE)*.78+.42*Math.cos(p2)*(2.6/TILE_SIZE)*.31);
-        dydz+=calmAmp*(Math.cos(p1)*(2.0/TILE_SIZE)*.42-.42*Math.cos(p2)*(2.6/TILE_SIZE)*.86);
+        fx/=flen;fz/=flen;const fpx=-fz,fpz=fx,flowUnit=smooth01(fs/3.2),flowAmp=ELEVATION_HEIGHT*(.014+.026*flowUnit),flowK=(3+fs*1.25)/TILE_SIZE,crossK=(4.3+fs*.85)/TILE_SIZE,rate=.82+fs*.96,along=x*fx+z*fz,cross=x*fpx+z*fpz,p1=along*flowK-time*rate*2.8,p2=cross*crossK-time*rate*1.12;
+        wave+=flowAmp*(Math.sin(p1)+.28*Math.sin(p2));dydx+=flowAmp*(Math.cos(p1)*flowK*fx+.28*Math.cos(p2)*crossK*fpx);dydz+=flowAmp*(Math.cos(p1)*flowK*fz+.28*Math.cos(p2)*crossK*fpz);
+      }else if(rawWindStrength<=EPSILON){
+        const p1=(x*.78+z*.42)*(2/TILE_SIZE)-time*.46,p2=(x*.31-z*.86)*(2.6/TILE_SIZE)+time*.31;
+        wave+=calmAmp*(Math.sin(p1)+.42*Math.sin(p2));dydx+=calmAmp*(Math.cos(p1)*(2/TILE_SIZE)*.78+.42*Math.cos(p2)*(2.6/TILE_SIZE)*.31);dydz+=calmAmp*(Math.cos(p1)*(2/TILE_SIZE)*.42-.42*Math.cos(p2)*(2.6/TILE_SIZE)*.86);
       }
-
-      if(windStrength>EPSILON){
-        const along=x*wx+z*wz,cross=x*wpx+z*wpz;
-        const p1=along*windK-time*windRate*2.35;
-        const p2=cross*(windK*1.42)+time*windRate*.72;
-        wave+=windAmp*(Math.sin(p1)+.36*Math.sin(p2));
-        dydx+=windAmp*(Math.cos(p1)*windK*wx+.36*Math.cos(p2)*windK*1.42*wpx);
-        dydz+=windAmp*(Math.cos(p1)*windK*wz+.36*Math.cos(p2)*windK*1.42*wpz);
+      if(rawWindStrength>EPSILON){
+        const along=x*wx+z*wz,cross=x*wpx+z*wpz,p1=along*windK-time*windRate*2.35,p2=cross*(windK*1.42)+time*windRate*.72;
+        wave+=windAmp*(Math.sin(p1)+.36*Math.sin(p2));dydx+=windAmp*(Math.cos(p1)*windK*wx+.36*Math.cos(p2)*windK*1.42*wpx);dydz+=windAmp*(Math.cos(p1)*windK*wz+.36*Math.cos(p2)*windK*1.42*wpz);
       }
-
-      wave*=w;dydx*=w;dydz*=w;
-      positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;
-      const inv=1/Math.hypot(dydx,1,dydz);
-      normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
+      for(const rogue of rogueWaves){
+        const age=time-rogue.startedAt;if(age<0||age>rogue.duration)continue;
+        const progress=smooth01(age/rogue.duration),crest=rogue.startAlong+(rogue.endAlong-rogue.startAlong)*progress,along=x*rogue.dx+z*rogue.dz,perp=-x*rogue.dz+z*rogue.dx,edgeDistance=Math.min(perp-(rogue.minPerp-TILE_SIZE*.65),(rogue.maxPerp+TILE_SIZE*.65)-perp);
+        if(edgeDistance<=0)continue;
+        const edgeFade=smooth01(edgeDistance/(TILE_SIZE*.65)),delta=along-crest,width=TILE_SIZE*.38,troughWidth=width*.82,crestShape=Math.exp(-(delta*delta)/(2*width*width)),troughDelta=delta+TILE_SIZE*.58,troughShape=Math.exp(-(troughDelta*troughDelta)/(2*troughWidth*troughWidth));
+        wave+=rogue.amplitude*(crestShape-.18*troughShape)*edgeFade;const dAlong=rogue.amplitude*((-delta/(width*width))*crestShape+.18*(troughDelta/(troughWidth*troughWidth))*troughShape)*edgeFade;dydx+=dAlong*rogue.dx;dydz+=dAlong*rogue.dz;
+      }
+      wave*=w;dydx*=w;dydz*=w;positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;const inv=1/Math.hypot(dydx,1,dydz);normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
     }
-    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);
-    mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
+  }
+
+  syncRogueWaveEvents(events=[]){
+    for(const event of events||[]){
+      if(String(event?.type||"").toUpperCase()!=="ROGUE_WAVE")continue;
+      const token=String(event.sequence??`${event.windForce||0}:${event.cells?.length||0}:${event.dx||0},${event.dy||0}:${event.durationMs||0}`);
+      if(this.seenRogueWaveSequences.has(token))continue;
+      this.seenRogueWaveSequences.add(token);while(this.seenRogueWaveSequences.size>64)this.seenRogueWaveSequences.delete(this.seenRogueWaveSequences.values().next().value);
+      const cells=event.cells||[],dx=Number(event.dx||0),dz=Number(event.dy||0),length=Math.hypot(dx,dz);if(!cells.length||length<=EPSILON)continue;
+      const ux=dx/length,uz=dz/length,px=-uz,pz=ux,world=cells.map(cell=>({x:Number(cell.x)*TILE_SIZE,z:Number(cell.y)*TILE_SIZE})),along=world.map(point=>point.x*ux+point.z*uz),perp=world.map(point=>point.x*px+point.z*pz),cellKeys=new Set(cells.map(cell=>keyOf(cell.x,cell.y))),surfaceIds=new Set();
+      for(const[id,entry]of this.surfaceAnimations)if([...entry.tileKeys].some(tileKey=>cellKeys.has(tileKey)))surfaceIds.add(id);
+      if(!surfaceIds.size)continue;
+      this.rogueWaves.push({token,surfaceIds,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime});
+    }
   }
 
   cascadeTarget(tile){
@@ -642,6 +634,32 @@ export class WaterRenderer{
     };
   }
 
+  lerpWaterPoint(a,b,t){const q=clamp(Number(t||0),0,1);return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,level:Number(a.level)+(Number(b.level)-Number(a.level))*q,clipped:!!(a.clipped||b.clipped),relaxed:!!(a.relaxed||b.relaxed),mode:a.mode===b.mode?a.mode:"BLENDED"};}
+
+  edgeWaterPoint(a,mid,b,t){const q=clamp(Number(t||0),0,1);return q<=.5?this.lerpWaterPoint(a,mid,q*2):this.lerpWaterPoint(mid,b,(q-.5)*2);}
+
+  waterPatchGrid(tile,allMap){
+    const terrainRing=this.surfaceResolver.ringSamples(tile,allMap),ring=terrainRing.map((sample,index)=>this.shorelinePoint(tile,index,sample,allMap));
+    const steps=[0,1/3,2/3,1],nw=ring[0],ne=ring[2],se=ring[4],sw=ring[6],grid=[];
+    for(const t of steps){
+      const left=this.edgeWaterPoint(nw,ring[7],sw,t),right=this.edgeWaterPoint(ne,ring[3],se,t),row=[];
+      for(const q of steps){
+        const top=this.edgeWaterPoint(nw,ring[1],ne,q),bottom=this.edgeWaterPoint(sw,ring[5],se,q);
+        const bilinear=(field)=>(1-q)*(1-t)*Number(nw[field])+q*(1-t)*Number(ne[field])+(1-q)*t*Number(sw[field])+q*t*Number(se[field]);
+        row.push({
+          x:(1-t)*Number(top.x)+t*Number(bottom.x)+(1-q)*Number(left.x)+q*Number(right.x)-bilinear("x"),
+          z:(1-t)*Number(top.z)+t*Number(bottom.z)+(1-q)*Number(left.z)+q*Number(right.z)-bilinear("z"),
+          level:(1-t)*Number(top.level)+t*Number(bottom.level)+(1-q)*Number(left.level)+q*Number(right.level)-bilinear("level"),
+          clipped:(t===0&&top.clipped)||(t===1&&bottom.clipped)||(q===0&&left.clipped)||(q===1&&right.clipped),
+          relaxed:(t===0&&top.relaxed)||(t===1&&bottom.relaxed)||(q===0&&left.relaxed)||(q===1&&right.relaxed),
+          mode:"PATCH"
+        });
+      }
+      grid.push(row);
+    }
+    return{grid,ring};
+  }
+
   waterVertexVisual(point,allMap,turbidity=0){
     const terrain=this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
     const depth=Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
@@ -689,86 +707,24 @@ export class WaterRenderer{
 
   buildSurface(component,state){
     const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
-    const cache=new Map();
-    const allMap=this.allByKey(state);
-    const componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));
-    let clippedPoints=0;
-
+    const cache=new Map(),allMap=this.allByKey(state),componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));let clippedPoints=0;
     for(const tile of component.tiles){
-      const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-      const centerIndex=this.addVertex(out,cache,{x:cx,z:cz,level:visualSurface(tile)},allMap,componentTurbidity,tile);
-      const terrainRing=this.surfaceResolver.ringSamples(tile,allMap);
-      const ringPoints=terrainRing.map((sample,index)=>{
-        const point=this.shorelinePoint(tile,index,sample,allMap);
-        if(point.clipped)clippedPoints++;
-        return point;
-      });
-      const ringIndices=ringPoints.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile));
-
-      for(let i=0;i<ringIndices.length;i++){
-        this.pushTriangle(out,centerIndex,ringIndices[i],ringIndices[(i+1)%ringIndices.length]);
+      const patch=this.waterPatchGrid(tile,allMap);clippedPoints+=patch.ring.filter(point=>point.clipped).length;
+      const grid=patch.grid.map(row=>row.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile)));
+      for(let row=0;row<3;row++)for(let col=0;col<3;col++){
+        const nw=grid[row][col],ne=grid[row][col+1],sw=grid[row+1][col],se=grid[row+1][col+1],alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
+        if(alternate===0){this.pushTriangle(out,nw,ne,se);this.pushTriangle(out,nw,se,sw);}else{this.pushTriangle(out,nw,ne,sw);this.pushTriangle(out,ne,se,sw);}
       }
     }
-
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
-
-    const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
-    const data=new BABYLON.VertexData();
-    data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
-    data.applyToMesh(mesh,true);
-    mesh.material=this.surfaceMaterial;
-    mesh.alphaIndex=10;
-    mesh.useVertexColors=true;
-    mesh.hasVertexAlpha=true;
-    mesh.isPickable=false;
-    mesh.visibility=component.group==="fogged"?.22:1;
-    mesh.metadata={
-      kind:"water-surface",
-      tileCount:component.tiles.length,
-      sharedWetEdges:true,
-      hydrologySurface:true,
-      quantizedLevels:false,
-      clippedShorePoints:clippedPoints,
-      naturalShoreline:true,
-      topologyAwareShoreRelaxation:true,
-      ruggedNaturalShoreline:true,
-      ruggedRockBanks:true,
-      visualSurfaceResolver:true,
-      microRegionsPerTile:9,
-      stylizedWater:true,
-      depthGradient:true,
-      vertexAlpha:true,
-      alphaIndex:10,
-      componentTurbidity,
-      vertexCount:out.positions.length/3,
-      triangleCount:out.indices.length/3
-    };
-    const flow=this.componentFlow(component);
-    const vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[];
-    for(let i=0;i<out.positions.length/3;i++){
-      const count=Math.max(1,Number(out.flowSampleCount[i]||0));
-      let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;
-      const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);
-      if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}
-      vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);
-    }
-    this.surfaceAnimations.set(component.id,{
-      mesh,
-      basePositions:Float32Array.from(out.positions),
-      positions:Float32Array.from(out.positions),
-      normals:Float32Array.from(out.normals),
-      waveWeights:Float32Array.from(out.waveWeights),
-      flowX:Float32Array.from(vertexFlowX),
-      flowZ:Float32Array.from(vertexFlowZ),
-      flowSpeeds:Float32Array.from(vertexFlowSpeeds)
-    });
-    mesh.metadata.waterSurfaceWave=true;
-    mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;
-    mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;
-    mesh.metadata.localFlowSpeedWaves=true;
-    mesh.freezeWorldMatrix();
-    return mesh;
+    const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
+    mesh.material=this.surfaceMaterial;mesh.alphaIndex=10;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
+    mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,naturalShoreline:true,topologyAwareShoreRelaxation:true,ruggedNaturalShoreline:true,ruggedRockBanks:true,visualSurfaceResolver:true,microRegionsPerTile:9,patchVerticesPerTile:16,trianglesPerTile:18,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
+    const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[];
+    for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);}
+    this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds)});
+    mesh.metadata.waterSurfaceWave=true;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;mesh.freezeWorldMatrix();return mesh;
   }
 
   cascadeEdges(state,waterTiles){
@@ -892,7 +848,7 @@ export class WaterRenderer{
   }
 
 
-  sync(state){
+  sync(state,presentationEvents=[]){
     this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
@@ -907,6 +863,7 @@ export class WaterRenderer{
       }
       this.surfaceSignature=surfaceSignature;
     }
+    this.syncRogueWaveEvents(presentationEvents);
     for(const entry of this.surfaceAnimations.values()){
       if(!entry?.mesh?.metadata)continue;
       entry.mesh.metadata.windWaveStrength=this.wind.strength;
@@ -954,6 +911,10 @@ export class WaterRenderer{
       localFlowSpeedWaves:true,
       windDrivenWaves:true,
       windWaveStrength:Number(this.wind?.strength||0),
+      refinedWaterTopology:true,
+      waterSurfaceTrianglesPerTile:18,
+      rogueWavePresentation:true,
+      activeRogueWaves:this.rogueWaves.length,
       currentOverlay:false,
       reflectiveWaterMaterial:false,
       depthGradient:true,
