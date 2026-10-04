@@ -71,6 +71,10 @@ function mixSkyColor(a,b,t){
   const amount=Math.max(0,Math.min(1,Number(t||0)));
   return(a||[0,0,0]).map((value,index)=>value+((b?.[index]??0)-value)*amount);
 }
+function mixSkyNumber(a,b,t){
+  const amount=Math.max(0,Math.min(1,Number(t||0)));
+  return Number(a||0)+(Number(b||0)-Number(a||0))*amount;
+}
 
 export class BabylonRenderer{
   constructor(canvas,state,{onTilePicked}={}){
@@ -80,8 +84,15 @@ export class BabylonRenderer{
     this.scene.clearColor=new BABYLON.Color4(.035,.055,.08,1);
     this.subsystemErrors=new Map();
     this.skySignature="";
+    const initialNight=String(state?.presentation?.environment?.timeOfDay||"DAY").toUpperCase()==="NIGHT";
+    this.visualDayNightBlend=initialNight?1:0;
+    this.visualDayNightStart=this.visualDayNightBlend;
+    this.visualDayNightTarget=this.visualDayNightBlend;
+    this.visualDayNightElapsed=0;
+    this.visualDayNightDuration=1.6;
+    this.skyTransitionAccumulator=0;
     this.createSkyLayer();
-    this.syncSky(state);
+    this.syncSky(state,true);
 
     this.hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
     this.sun=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.6,-1,-.35),this.scene);
@@ -131,6 +142,8 @@ export class BabylonRenderer{
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
 
     this.engine.runRenderLoop(()=>{
+      const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
+      this.updateDayNightTransition(dt);
       this.units.updateFrame();
       this.scene.render();
       this.unitHud.updateFrame();
@@ -158,30 +171,75 @@ export class BabylonRenderer{
     this.skyLayer.isBackground=true;
   }
 
+  syncVisualTimeTarget(state){
+    const target=String(state?.presentation?.environment?.timeOfDay||"DAY").toUpperCase()==="NIGHT"?1:0;
+    if(target===this.visualDayNightTarget)return;
+    this.visualDayNightStart=this.visualDayNightBlend;
+    this.visualDayNightTarget=target;
+    this.visualDayNightElapsed=0;
+    this.skyTransitionAccumulator=0;
+  }
+
+  updateDayNightTransition(dt){
+    if(Math.abs(this.visualDayNightBlend-this.visualDayNightTarget)<1e-5)return;
+    this.visualDayNightElapsed+=Math.max(0,Number(dt||0));
+    const raw=Math.max(0,Math.min(1,this.visualDayNightElapsed/Math.max(.001,this.visualDayNightDuration)));
+    const eased=raw*raw*(3-2*raw);
+    this.visualDayNightBlend=this.visualDayNightStart+(this.visualDayNightTarget-this.visualDayNightStart)*eased;
+
+    // Lighting interpolation is cheap, so keep it visually smooth every frame.
+    // The 256px DynamicTexture is redrawn only ~15 fps during the short transition
+    // so a day/night fade cannot become a new mobile CPU hotspot.
+    if(this.lastState)this.syncLighting(this.lastState);
+    this.skyTransitionAccumulator+=Math.max(0,Number(dt||0));
+    if(this.lastState&&(this.skyTransitionAccumulator>=1/15||raw>=1)){
+      this.skyTransitionAccumulator=0;
+      this.syncSky(this.lastState,true);
+    }
+    if(raw>=1){
+      this.visualDayNightBlend=this.visualDayNightTarget;
+      this.visualDayNightStart=this.visualDayNightTarget;
+      this.visualDayNightElapsed=0;
+      if(this.lastState){this.syncLighting(this.lastState);this.syncSky(this.lastState,true);}
+    }
+  }
+
   skyProfile(state){
     const environment=state?.presentation?.environment||{};
     const weather=String(environment.weather||"CLEAR").toUpperCase();
-    const timeOfDay=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT"?"NIGHT":"DAY";
-    const table=SKY_PROFILES[timeOfDay];
-    return{weather,timeOfDay,profile:table[weather]||table.CLEAR};
+    const blend=Math.max(0,Math.min(1,Number(this.visualDayNightBlend||0)));
+    const day=SKY_PROFILES.DAY[weather]||SKY_PROFILES.DAY.CLEAR;
+    const night=SKY_PROFILES.NIGHT[weather]||SKY_PROFILES.NIGHT.CLEAR;
+    const profile={
+      zenith:mixSkyColor(day.zenith,night.zenith,blend),
+      upper:mixSkyColor(day.upper,night.upper,blend),
+      horizon:mixSkyColor(day.horizon,night.horizon,blend),
+      cloud:mixSkyNumber(day.cloud,night.cloud,blend),
+      cloudColor:mixSkyColor(day.cloudColor||day.upper,night.cloudColor||night.upper,blend),
+      stars:mixSkyNumber(day.stars||0,night.stars||0,blend)
+    };
+    const targetTimeOfDay=this.visualDayNightTarget>=.5?"NIGHT":"DAY";
+    return{weather,targetTimeOfDay,blend,profile};
   }
 
-  syncSky(state){
+  syncSky(state,force=false){
     if(!this.skyTexture)return;
-    const {weather,timeOfDay,profile}=this.skyProfile(state),signature=`${timeOfDay}:${weather}`;
-    if(signature===this.skySignature)return;
+    const {weather,targetTimeOfDay,blend,profile}=this.skyProfile(state),signature=`${weather}:${blend.toFixed(3)}`;
+    if(!force&&signature===this.skySignature)return;
     this.skySignature=signature;
 
     const context=this.skyTexture.getContext(),size=this.skyTexture.getSize(),width=Number(size.width||256),height=Number(size.height||256);
 
-    // The tactical map is viewed from above, so empty screen below the map must
-    // not look like a second patch of sky. Keep a real horizon band around the
-    // middle of the backdrop, then fade the lower half toward distant ground haze.
-    const night=timeOfDay==="NIGHT";
-    const lowerTarget=night?[.012,.020,.032]:weather==="SCORCHING_SUN"?[.30,.24,.17]:weather==="SNOW"||weather==="BLIZZARD"?[.31,.36,.38]:[.15,.22,.24];
-    const deepTarget=night?[.005,.010,.018]:weather==="SCORCHING_SUN"?[.12,.095,.070]:[.055,.085,.10];
-    const lower=mixSkyColor(profile.horizon,lowerTarget,night?.82:.70);
-    const deep=mixSkyColor(lower,deepTarget,night?.72:.62);
+    // Stage 13E blends the existing DAY and NIGHT presentation only. Gameplay
+    // timeOfDay still switches immediately inside EnvironmentEngine.
+    const dayLowerTarget=weather==="SCORCHING_SUN"?[.30,.24,.17]:weather==="SNOW"||weather==="BLIZZARD"?[.31,.36,.38]:[.15,.22,.24];
+    const nightLowerTarget=[.012,.020,.032];
+    const dayDeepTarget=weather==="SCORCHING_SUN"?[.12,.095,.070]:[.055,.085,.10];
+    const nightDeepTarget=[.005,.010,.018];
+    const lowerTarget=mixSkyColor(dayLowerTarget,nightLowerTarget,blend);
+    const deepTarget=mixSkyColor(dayDeepTarget,nightDeepTarget,blend);
+    const lower=mixSkyColor(profile.horizon,lowerTarget,mixSkyNumber(.70,.82,blend));
+    const deep=mixSkyColor(lower,deepTarget,mixSkyNumber(.62,.72,blend));
     const gradient=context.createLinearGradient(0,0,0,height);
     gradient.addColorStop(0,skyCss(profile.zenith));
     gradient.addColorStop(.42,skyCss(profile.upper));
@@ -191,9 +249,8 @@ export class BabylonRenderer{
     context.globalAlpha=1;context.fillStyle=gradient;context.fillRect(0,0,width,height);
     this.scene.clearColor=new BABYLON.Color4(deep[0],deep[1],deep[2],1);
 
-    // Static stylized cloud strata: weather chooses coverage, Climate still owns
-    // every actual weather rule. Clouds are clipped above the horizon so the
-    // lower screen can never read as "sky underneath the battlefield".
+    // Clouds stay above the horizon. Coverage/colour now blend with day/night so
+    // they do not pop when the Environment state switches.
     const cloud=Math.max(0,Math.min(1,Number(profile.cloud||0))),horizonStop=.58;
     if(cloud>.01){
       context.save();
@@ -212,8 +269,8 @@ export class BabylonRenderer{
       context.restore();
     }
 
-    // Clear nights get a tiny deterministic star field baked into the same 256px
-    // texture. It costs nothing per frame and vanishes naturally under bad weather.
+    // Stars fade in/out with the same visual blend; bad-weather night profiles
+    // still keep their existing zero-star coverage.
     const stars=Math.max(0,Math.min(1,Number(profile.stars||0)));
     if(stars>.01){
       let seed=0x51f15e;
@@ -226,42 +283,38 @@ export class BabylonRenderer{
       context.restore();
     }
 
-    // Canvas 2D uses a top-left origin while the Layer samples WebGL texture V
-    // in the opposite direction. Upload with invertY=true so the semantic layout
-    // stays intact: zenith/clouds above, horizon in the middle, atmosphere below.
     this.skyTexture.update(true);
-    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true,textureYCorrected:true};
+    this.skyState={weather,timeOfDay:targetTimeOfDay,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true,textureYCorrected:true};
+  }
+
+  lightingProfile(weather,blend){
+    const day=LIGHTING_PROFILES.DAY[weather]||LIGHTING_PROFILES.DAY.CLEAR;
+    const night=LIGHTING_PROFILES.NIGHT[weather]||LIGHTING_PROFILES.NIGHT.CLEAR;
+    const mixArray=(a,b)=>mixSkyColor(a,b,blend);
+    return{
+      label:blend<=.001?day.label:blend>=.999?night.label:`${day.label}_TO_${night.label}`,
+      balance:blend<=.001?day.balance:blend>=.999?night.balance:"DAY_NIGHT_TRANSITION",
+      sun:mixArray(day.sun,night.sun),hemi:mixArray(day.hemi,night.hemi),ground:mixArray(day.ground,night.ground),fill:mixArray(day.fill,night.fill),ambient:mixArray(day.ambient,night.ambient),
+      sunIntensity:mixSkyNumber(day.sunIntensity,night.sunIntensity,blend),hemiIntensity:mixSkyNumber(day.hemiIntensity,night.hemiIntensity,blend),fillIntensity:mixSkyNumber(day.fillIntensity,night.fillIntensity,blend),ambientScale:mixSkyNumber(day.ambientScale,night.ambientScale,blend),shadowDarkness:mixSkyNumber(day.shadowDarkness,night.shadowDarkness,blend)
+    };
   }
 
   syncLighting(state){
     const environment=state?.presentation?.environment||{};
     const weather=String(environment.weather||"CLEAR").toUpperCase();
-    const timeOfDay=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT"?"NIGHT":"DAY";
+    const blend=Math.max(0,Math.min(1,Number(this.visualDayNightBlend||0)));
+    const targetTimeOfDay=this.visualDayNightTarget>=.5?"NIGHT":"DAY";
 
-    // Stage 13C keeps one render profile per existing Environment state. The same
-    // profile owns colour temperature, direct/diffuse balance and shadow contrast,
-    // so weather cannot tint the light one way while leaving an unrelated shadow
-    // response behind. EnvironmentEngine still owns every gameplay rule.
-    const table=LIGHTING_PROFILES[timeOfDay];
-    const profile=table[weather]||table.CLEAR;
+    // Stage 13E leaves EnvironmentEngine as the sole time-rule owner. Only the
+    // presentation interpolates between the already-defined DAY/NIGHT profiles.
+    const profile=this.lightingProfile(weather,blend);
     const color=value=>new BABYLON.Color3(...value);
 
     this.scene.ambientColor=color(profile.ambient).scale(profile.ambientScale);
+    this.hemi.intensity=profile.hemiIntensity;this.hemi.diffuse=color(profile.hemi);this.hemi.groundColor=color(profile.ground);
+    this.sun.intensity=profile.sunIntensity;this.sun.diffuse=color(profile.sun);
+    this.fill.intensity=profile.fillIntensity;this.fill.diffuse=color(profile.fill);
 
-    this.hemi.intensity=profile.hemiIntensity;
-    this.hemi.diffuse=color(profile.hemi);
-    this.hemi.groundColor=color(profile.ground);
-
-    this.sun.intensity=profile.sunIntensity;
-    this.sun.diffuse=color(profile.sun);
-
-    this.fill.intensity=profile.fillIntensity;
-    this.fill.diffuse=color(profile.fill);
-
-    // The shadow map stays one shared 1024px mobile-friendly map. Only its
-    // contrast follows the real lighting balance: hard direct sun produces a
-    // stronger shadow, while fog/storm/blizzard diffuse the scene and flatten it.
-    // This changes no collision, visibility or weather rule.
     const shadowDarkness=Math.max(0,Math.min(.5,Number(profile.shadowDarkness||0)));
     if(this.shadowGenerator?.setDarkness)this.shadowGenerator.setDarkness(shadowDarkness);
     else if(this.shadowGenerator)this.shadowGenerator.darkness=shadowDarkness;
@@ -269,19 +322,11 @@ export class BabylonRenderer{
     const diffuseLight=this.hemi.intensity+this.fill.intensity;
     const directDiffuseRatio=this.sun.intensity/Math.max(.001,diffuseLight);
     this.lightingState={
-      timeOfDay,
-      weather,
-      colorTemperatureProfile:profile.label,
-      lightBalanceProfile:profile.balance,
+      timeOfDay:targetTimeOfDay,weather,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,
+      colorTemperatureProfile:profile.label,lightBalanceProfile:profile.balance,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
-      hemiColor:[this.hemi.diffuse.r,this.hemi.diffuse.g,this.hemi.diffuse.b],
-      sunColor:[this.sun.diffuse.r,this.sun.diffuse.g,this.sun.diffuse.b],
-      fillColor:[this.fill.diffuse.r,this.fill.diffuse.g,this.fill.diffuse.b],
-      hemiIntensity:this.hemi.intensity,
-      sunIntensity:this.sun.intensity,
-      fillIntensity:this.fill.intensity,
-      directDiffuseRatio,
-      shadowDarkness
+      hemiColor:[this.hemi.diffuse.r,this.hemi.diffuse.g,this.hemi.diffuse.b],sunColor:[this.sun.diffuse.r,this.sun.diffuse.g,this.sun.diffuse.b],fillColor:[this.fill.diffuse.r,this.fill.diffuse.g,this.fill.diffuse.b],
+      hemiIntensity:this.hemi.intensity,sunIntensity:this.sun.intensity,fillIntensity:this.fill.intensity,directDiffuseRatio,shadowDarkness
     };
   }
 
@@ -363,6 +408,7 @@ export class BabylonRenderer{
 
   sync(state,presentationEvents=[]){
     this.lastState=state;
+    this.syncVisualTimeTarget(state);
     this.syncSubsystem("sky",()=>this.syncSky(state));
     this.syncSubsystem("lighting",()=>this.syncLighting(state));
 
