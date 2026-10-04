@@ -200,8 +200,11 @@ export class BabylonRenderer{
       context.restore();
     }
 
-    this.skyTexture.update(false);
-    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true};
+    // Canvas 2D uses a top-left origin while the Layer samples WebGL texture V
+    // in the opposite direction. Upload with invertY=true so the semantic layout
+    // stays intact: zenith/clouds above, horizon in the middle, atmosphere below.
+    this.skyTexture.update(true);
+    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true,textureYCorrected:true};
   }
 
   syncLighting(state){
