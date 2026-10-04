@@ -49,17 +49,40 @@ const WEATHER_MIST_PROFILE=Object.freeze({
     color1:Object.freeze([.35,.44,.51,.11]),color2:Object.freeze([.27,.36,.43,.055])
   })
 });
+const WEATHER_MIST_PROFILE_NIGHT=Object.freeze({
+  FOG:Object.freeze({...WEATHER_MIST_PROFILE.FOG,color1:Object.freeze([.16,.19,.22,.15]),color2:Object.freeze([.10,.13,.16,.075])}),
+  BLIZZARD:Object.freeze({...WEATHER_MIST_PROFILE.BLIZZARD,color1:Object.freeze([.22,.27,.32,.13]),color2:Object.freeze([.15,.20,.25,.060])}),
+  HEAVY_RAIN:Object.freeze({...WEATHER_MIST_PROFILE.HEAVY_RAIN,color1:Object.freeze([.10,.14,.18,.085]),color2:Object.freeze([.07,.10,.14,.040])}),
+  THUNDERSTORM:Object.freeze({...WEATHER_MIST_PROFILE.THUNDERSTORM,color1:Object.freeze([.08,.12,.17,.095]),color2:Object.freeze([.055,.09,.13,.045])}),
+  TYPHOON:Object.freeze({...WEATHER_MIST_PROFILE.TYPHOON,color1:Object.freeze([.07,.12,.14,.11]),color2:Object.freeze([.045,.08,.10,.055])})
+});
 const SCENE_FOG_PROFILE=Object.freeze({
-  FOG:Object.freeze({density:.009,color:Object.freeze([.48,.53,.57])}),
-  BLIZZARD:Object.freeze({density:.008,color:Object.freeze([.64,.69,.74])}),
-  RAIN:Object.freeze({density:.0018,color:Object.freeze([.28,.34,.38])}),
-  HEAVY_RAIN:Object.freeze({density:.0042,color:Object.freeze([.20,.26,.31])}),
-  THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.17,.22,.28])}),
-  TYPHOON:Object.freeze({density:.0062,color:Object.freeze([.14,.19,.24])})
+  DAY:Object.freeze({
+    FOG:Object.freeze({density:.009,color:Object.freeze([.53,.59,.62])}),
+    BLIZZARD:Object.freeze({density:.008,color:Object.freeze([.42,.49,.55])}),
+    RAIN:Object.freeze({density:.0018,color:Object.freeze([.30,.39,.45])}),
+    HEAVY_RAIN:Object.freeze({density:.0042,color:Object.freeze([.21,.29,.35])}),
+    THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.14,.21,.29])}),
+    TYPHOON:Object.freeze({density:.0062,color:Object.freeze([.13,.21,.25])})
+  }),
+  NIGHT:Object.freeze({
+    FOG:Object.freeze({density:.009,color:Object.freeze([.070,.088,.110])}),
+    BLIZZARD:Object.freeze({density:.008,color:Object.freeze([.080,.095,.110])}),
+    RAIN:Object.freeze({density:.0018,color:Object.freeze([.040,.058,.078])}),
+    HEAVY_RAIN:Object.freeze({density:.0042,color:Object.freeze([.027,.040,.058])}),
+    THUNDERSTORM:Object.freeze({density:.0052,color:Object.freeze([.020,.032,.050])}),
+    TYPHOON:Object.freeze({density:.0062,color:Object.freeze([.020,.036,.046])})
+  })
 });
 const VISIBILITY_HAZE_PROFILE=Object.freeze({
-  FOG:Object.freeze({color:Object.freeze([.48,.53,.57]),alpha:.40,edgeFactor:.24,height:.42}),
-  BLIZZARD:Object.freeze({color:Object.freeze([.68,.73,.78]),alpha:.34,edgeFactor:.28,height:.48})
+  DAY:Object.freeze({
+    FOG:Object.freeze({color:Object.freeze([.53,.59,.62]),alpha:.40,edgeFactor:.24,height:.42}),
+    BLIZZARD:Object.freeze({color:Object.freeze([.58,.64,.69]),alpha:.34,edgeFactor:.28,height:.48})
+  }),
+  NIGHT:Object.freeze({
+    FOG:Object.freeze({color:Object.freeze([.10,.13,.16]),alpha:.34,edgeFactor:.24,height:.42}),
+    BLIZZARD:Object.freeze({color:Object.freeze([.14,.17,.20]),alpha:.28,edgeFactor:.28,height:.48})
+  })
 });
 
 function hash01(value){
@@ -268,14 +291,15 @@ export class EnvironmentRenderer{
   }
 
   weatherSettings(state){
-    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),wind=environment.wind||{};
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),wind=environment.wind||{},timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY";
     const raining=weather==="RAIN"||weather==="HEAVY_RAIN"||weather==="THUNDERSTORM"||weather==="TYPHOON";
     const snowing=weather==="SNOW"||weather==="BLIZZARD";
+    const mistTable=timeOfDay==="NIGHT"?WEATHER_MIST_PROFILE_NIGHT:WEATHER_MIST_PROFILE;
     return{
-      weather,wind,raining,snowing,blizzard:weather==="BLIZZARD",
+      weather,timeOfDay,wind,raining,snowing,blizzard:weather==="BLIZZARD",
       heavy:weather==="HEAVY_RAIN"||weather==="THUNDERSTORM"||weather==="TYPHOON",
       thunder:weather==="THUNDERSTORM"||weather==="TYPHOON",
-      mist:WEATHER_MIST_PROFILE[weather]||NO_MIST
+      mist:mistTable[weather]||NO_MIST
     };
   }
 
@@ -332,6 +356,8 @@ export class EnvironmentRenderer{
       mistActive:this.mistSystem.emitRate>0,
       mistType:this.mistSystem.emitRate>0?settings.weather:null,
       mistEmitRate:this.mistSystem.emitRate,
+      atmosphereTimeOfDay:settings.timeOfDay,
+      mistTone:settings.timeOfDay==="NIGHT"?"NIGHT_SKY_MATCHED":"DAY_SKY_MATCHED",
       globalSceneFog:false,
       wind:{x:windX,y:windZ,strength:rawStrength,visualStrength:strength}
     };
@@ -965,14 +991,14 @@ export class EnvironmentRenderer{
   }
 
   visibilityHazeProfile(state){
-    const weather=String(state?.presentation?.environment?.weather||"CLEAR").toUpperCase();
-    return VISIBILITY_HAZE_PROFILE[weather]||null;
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY";
+    return VISIBILITY_HAZE_PROFILE[timeOfDay]?.[weather]||null;
   }
 
   visibilityHazeStateSignature(state){
-    const profile=this.visibilityHazeProfile(state),weather=String(state?.presentation?.environment?.weather||"CLEAR").toUpperCase();
-    if(!profile)return`${weather}|OFF`;
-    return`${weather}|`+(state?.map?.tiles||[]).map(tile=>[
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY",profile=this.visibilityHazeProfile(state);
+    if(!profile)return`${timeOfDay}|${weather}|OFF`;
+    return`${timeOfDay}|${weather}|`+(state?.map?.tiles||[]).map(tile=>[
       tile.x,tile.y,tile.fogged?1:0,
       Number(tile.elevation||0).toFixed(3),
       tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3)
@@ -1052,14 +1078,13 @@ export class EnvironmentRenderer{
   }
 
   syncAtmosphere(state){
-    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),night=environment.timeOfDay==="NIGHT";
-    this.scene.clearColor=night?new BABYLON.Color4(.018,.027,.055,1):new BABYLON.Color4(.035,.055,.08,1);
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY";
 
-    // Atmosphere is allowed to tint the whole battlefield, but it no longer owns
-    // visibility. TacticalEngine/FOV decides what is visible; fogged tiles receive
-    // an additional soft haze mesh so the old thick-weather mood survives outside
-    // the player's sight without washing out the readable area around observers.
-    const profile=SCENE_FOG_PROFILE[weather]||null;
+    // Stage 13D: BabylonRenderer.syncSky owns the backdrop/clear colour. This
+    // renderer only applies atmospheric transmission on top of that same
+    // Environment weather state, so sky, fog and mist no longer fight over the
+    // background. TacticalEngine/FOV remains the sole gameplay visibility owner.
+    const profile=SCENE_FOG_PROFILE[timeOfDay]?.[weather]||null;
     if(profile){
       this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
       this.scene.fogDensity=Number(profile.density||0);
@@ -1070,8 +1095,12 @@ export class EnvironmentRenderer{
     }
     this.atmosphereState={
       weather,
+      timeOfDay,
       globalSceneFog:!!profile,
       sceneFogDensity:profile?Number(profile.density||0):0,
+      sceneFogColor:profile?[...profile.color]:null,
+      backdropOwner:"BabylonRenderer.syncSky",
+      atmosphereWeatherLinked:true,
       visibilityOwner:"FOV",
       layeredVisibilityHaze:!!this.visibilityHazeProfile(state)
     };
