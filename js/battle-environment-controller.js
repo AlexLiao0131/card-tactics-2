@@ -107,10 +107,10 @@ function create(ctx){
  function applyBoilingHazard(unit,effects,reason){if(!unit?.alive)return 0;const s=state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!HydrologyEngine.isWater(tile))return 0;const boiling=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BOILING);if(!boiling||!effectContacts(unit,tile,boiling))return 0;const damage=Math.max(0,Number(boiling.damage||EnvironmentEngine.HAZARD?.BOILING_DAMAGE||0));if(damage<=0)return 0;unit.hp=Math.max(0,unit.hp-damage);ctx.pushLog(`${unit.character.name} ${reason}｜沸騰水域 ${damage} 火焰傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被沸騰水域煮倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BOILING",source:"ENVIRONMENT",heat:boiling.heat||1});}return damage;}
  function applyFireHazard(unit,effects,reason){const burning=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING);if(!burning||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,burning))return 0;const damage=Math.max(0,Number(burning.damage||EnvironmentEngine.HAZARD?.BURNING_DAMAGE||0));if(damage<=0)return 0;unit.hp=Math.max(0,unit.hp-damage);ctx.pushLog(`${unit.character.name} ${reason}｜燃燒傷害 ${damage}｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被環境火焰擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BURNING",source:"ENVIRONMENT"});}return damage;}
  function applyEnvironmentHazardToUnit(unit,{reason="環境",waterTrigger="CHANGE",includeElectric=true,includeBoiling=true,includeFire=true}={}){const s=state();if(!unit?.alive)return 0;let total=0;const water=applyWaterInteraction(unit,{trigger:waterTrigger,reason});total+=Number(water?.damage||0);if(!unit.alive||!s.environmentState)return total;const effects=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y);if(includeElectric&&unit.alive)total+=applyElectricHazard(unit,effects,reason);if(includeBoiling&&unit.alive)total+=applyBoilingHazard(unit,effects,reason);if(includeFire&&unit.alive)total+=applyFireHazard(unit,effects,reason);return total;}
- function applyForcedMovement(source,target,distance,{name="強制位移",lift=0,damage=0,damageType="PHYSICAL",resistAxes=null}={}){
+ function applyForcedMovement(source,target,distance,{name="強制位移",lift=0,damage=0,damageType="PHYSICAL",resistAxes=null,type="KNOCKBACK"}={}){
   const s=state();if(damage>0&&target?.alive)ctx.damageUnitFlat(target,damage,name);if(!target?.alive)return{applied:false,defeated:true,steps:[],falls:[],fallDamage:0};
-  const result=PostEngagementEngine.forcedMove({map:s.map,units:s.units,source,target,effect:{type:"KNOCKBACK",distance,lift,force:{horizontal:distance,vertical:lift},...(resistAxes?{resistAxes}:{})},onCollision:resolveCollisionRuntime});
-  if(result.applied){if(result.airborne){const d=result.displacement;ctx.pushLog(`${target.character.name} 被${name}捲起至 Z${result.travelZ}，位移 ${result.steps.length} 格${d?`｜重量 ${d.weightClass}｜力 ${d.baseLift}→有效升空 ${d.lift}`:""}。`,"BATTLE");}else ctx.pushLog(`${target.character.name} 被${name}推離 ${result.steps.length} 格。`,"BATTLE");if(result.landing)ctx.pushLog(`${target.character.name} 落地 Z${result.landing.fromZ}→H${result.landing.toZ}${result.fallDamage?`｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}`:"｜無墜落傷害"}。`,result.fallDamage?"BATTLE":"DETAIL");if(target.alive)enterTile(target);}
+  const movementType=String(type||"KNOCKBACK").toUpperCase()==="PULL"?"PULL":"KNOCKBACK",result=PostEngagementEngine.forcedMove({map:s.map,units:s.units,source,target,effect:{type:movementType,distance,lift,force:{horizontal:distance,vertical:lift},...(resistAxes?{resistAxes}:{})},onCollision:resolveCollisionRuntime});
+  if(result.applied){if(result.airborne){const d=result.displacement;ctx.pushLog(`${target.character.name} 被${name}捲起至 Z${result.travelZ}，位移 ${result.steps.length} 格${d?`｜重量 ${d.weightClass}｜力 ${d.baseLift}→有效升空 ${d.lift}`:""}。`,"BATTLE");}else ctx.pushLog(`${target.character.name} 被${name}${movementType==="PULL"?"拉向中心":"推離"} ${result.steps.length} 格。`,"BATTLE");if(result.landing)ctx.pushLog(`${target.character.name} 落地 Z${result.landing.fromZ}→H${result.landing.toZ}${result.fallDamage?`｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}`:"｜無墜落傷害"}。`,result.fallDamage?"BATTLE":"DETAIL");if(target.alive)enterTile(target);}
   if(result.defeated)ctx.handleDefeated(target,source,{type:"ENVIRONMENT_FORCE",name,damageType});return result;
  }
  function applyCurrentToUnit(unit,{reason="水流"}={}){
@@ -180,6 +180,26 @@ function create(ctx){
   }
   return count;
  }
+ function resolveWhirlpool(event){
+  const s=state(),cells=event.cells||[],cellKeys=new Set(cells.map(point=>`${point.x},${point.y}`));if(!cellKeys.size)return 0;
+  globalThis.UnitAnimationEngine?.emitPresentation?.("WHIRLPOOL_PULSE",{...event});
+  const center={x:Number(event.centerX),y:Number(event.centerY)},initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
+  for(const unit of initial){
+    if(!unit.alive||window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
+    let tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=window.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";if(!profileContacts(unit,tile,profile,event))continue;
+    const distance=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y),pull=Math.max(0,Math.min(Number(event.pullDistance||1),Math.ceil(distance)));
+    if(pull>0&&distance>0)applyForcedMovement(center,unit,pull,{name:"漩渦",damage:Math.max(0,Number(event.damage||0)),damageType:"WATER",type:"PULL",resistAxes:{horizontal:true,vertical:true}});
+    if(!unit.alive){count++;continue;}
+    tile=TacticalEngine.tile(s.map,unit.x,unit.y);const atCore=unit.x===center.x&&unit.y===center.y,nearCore=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y)<=1;
+    if((atCore||nearCore)&&profileContacts(unit,tile,profile,event)){
+      const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
+      if(result?.applied)ctx.pushLog(`${unit.character.name} 被漩渦拖入水下｜進入沉沒狀態。`,"BATTLE");
+      else if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被捲入漩渦核心，但水生體質能維持水下姿態。`,"DETAIL");
+    }
+    count++;
+  }
+  return count;
+ }
  function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
@@ -190,6 +210,7 @@ function create(ctx){
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
   for(const tornado of list.filter(event=>event.type==="TORNADO_ADVANCED"))affected+=resolveTornadoAdvance(tornado);
   for(const wave of list.filter(event=>event.type==="ROGUE_WAVE"))affected+=resolveRogueWave(wave);
+  for(const vortex of list.filter(event=>event.type==="WHIRLPOOL_PULSE"))affected+=resolveWhirlpool(vortex);
   for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
   const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
   for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.BurialEngine?.state?.(unit)))BurialEngine.syncRenderPose(unit,s.map);
@@ -234,6 +255,9 @@ function create(ctx){
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
   else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="TYPHOON"?"颱風":event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="ROGUE_WAVE")ctx.pushLog(`🌊 颱風風場與水域條件形成瘋狗浪｜風力 ${Number(event.windStrength||0).toFixed(1)}｜迎風距離 ${Number(event.fetch||0).toFixed(1)}｜浪高 ${Number(event.waveHeight||0).toFixed(2)}｜會將接觸單位捲入水下。`,"SYSTEM");
+  else if(event.type==="WHIRLPOOL_CREATED")ctx.pushLog(`🌀 水域形成漩渦｜半徑 ${Number(event.radius||0).toFixed(1)}｜強度 ${Number(event.strength||0).toFixed(1)}。`,"SYSTEM");
+  else if(event.type==="WHIRLPOOL_PULSE")ctx.pushLog(`🌀 漩渦持續牽引周圍水域｜拉力 ${Number(event.pullDistance||0)}。`,"DETAIL");
+  else if(event.type==="WHIRLPOOL_FAILED")ctx.pushLog(`漩渦無法形成：目標必須是實際水域。`,"SYSTEM");
   else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM");
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
@@ -247,7 +271,7 @@ function create(ctx){
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
   else if(event.type==="AVALANCHE")ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜衝擊 ${event.damage||0}。`,"SYSTEM");
  }
- return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveRogueWave,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
+ return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveRogueWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
 window.BattleEnvironmentController=Object.freeze({create});
 })();

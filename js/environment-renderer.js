@@ -607,7 +607,7 @@ export class EnvironmentRenderer{
   desiredNodeTypes(tile){
     return new Set([...(tile.effects||[])].filter(type=>{
       const value=String(type);
-      return !SURFACE_TYPES.has(value)&&value!=="TORNADO"&&value!=="FIRE_TORNADO"&&value!=="SMOKE";
+      return !SURFACE_TYPES.has(value)&&value!=="TORNADO"&&value!=="FIRE_TORNADO"&&value!=="WHIRLPOOL"&&value!=="SMOKE";
     }));
   }
 

@@ -1,7 +1,7 @@
 export const EnvironmentEngine=(()=>{
   const ELEMENT={NONE:"NONE",GRASS:"GRASS",WATER:"WATER",STONE:"STONE"};
   const FORCE={FIRE:"FIRE",HEAVY_FIRE:"HEAVY_FIRE",EXPLOSION:"EXPLOSION",WIND:"WIND",THUNDER:"THUNDER",IMPACT:"IMPACT",AVALANCHE_TRIGGER:"AVALANCHE_TRIGGER"};
-  const EFFECT={BURNING:"BURNING",BOILING:"BOILING",STEAM:"STEAM",SMOKE:"SMOKE",FRAGMENTS:"FRAGMENTS",TORNADO:"TORNADO",FIRE_TORNADO:"FIRE_TORNADO",ELECTRIFIED:"ELECTRIFIED",SNOW:"SNOW",ICE:"ICE",CURRENT:"CURRENT",TRAP:"TRAP"};
+  const EFFECT={BURNING:"BURNING",BOILING:"BOILING",STEAM:"STEAM",SMOKE:"SMOKE",FRAGMENTS:"FRAGMENTS",TORNADO:"TORNADO",FIRE_TORNADO:"FIRE_TORNADO",WHIRLPOOL:"WHIRLPOOL",ELECTRIFIED:"ELECTRIFIED",SNOW:"SNOW",ICE:"ICE",CURRENT:"CURRENT",TRAP:"TRAP"};
   const WEATHER={CLEAR:"CLEAR",FOG:"FOG",RAIN:"RAIN",HEAVY_RAIN:"HEAVY_RAIN",THUNDERSTORM:"THUNDERSTORM",TYPHOON:"TYPHOON",SNOW:"SNOW",BLIZZARD:"BLIZZARD",SCORCHING_SUN:"SCORCHING_SUN"};
   const PRECIPITATION=Object.freeze({NONE:"NONE",RAIN:"RAIN",HEAVY_RAIN:"HEAVY_RAIN",SNOW:"SNOW"});
   const CLIMATE_CHANNEL=Object.freeze({PRECIPITATION:"PRECIPITATION",FOG:"FOG",THUNDER:"THUNDER",HEAT:"HEAT",TEMPERATURE:"TEMPERATURE",WIND:"WIND"});
@@ -448,7 +448,7 @@ export const EnvironmentEngine=(()=>{
   }
   function advanceEnvironmentTurn(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);weatherPulse(map,state,events);decrementClimate(state);
-    advanceTornadoes(map,state,events);windDrivenWaterEvents(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
+    advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];
@@ -496,6 +496,39 @@ export const EnvironmentEngine=(()=>{
       const force=profile.windForce,submergeTurns=force>=11?2:1,damage=Math.round(10+force*2),waveHeight=Math.max(.38,Math.min(.82,.38+(force-8.3)*.09)),durationMs=Math.round(Math.max(1200,Math.min(2600,900+profile.fetch*140)));
       const cells=group.map(tile=>({x:Number(tile.x),y:Number(tile.y)})).sort((a,b)=>(a.x*profile.ux+a.y*profile.uy)-(b.x*profile.ux+b.y*profile.uy));
       events.push({type:"ROGUE_WAVE",weather:WEATHER.TYPHOON,cells,dx:Math.sign(profile.ux),dy:Math.sign(profile.uy),windForce:Number(force.toFixed(2)),windStrength:Number(profile.wind.strength||0),fetch:Number(profile.fetch.toFixed(2)),crossSpan:Number(profile.crossSpan.toFixed(2)),averageDepth:Number(profile.avgDepth.toFixed(2)),averageFlow:Number(profile.avgFlow.toFixed(2)),submergeForce:Number(force.toFixed(2)),submergeTurns,damage,waveHeight:Number(waveHeight.toFixed(3)),durationMs,derivedFromWind:true,contactProfile:"WAVE_VOLUME"});
+    }
+    return events;
+  }
+  function nextWhirlpoolId(state){state.whirlpoolSerial=Math.max(0,Number(state.whirlpoolSerial||0))+1;return`whirlpool-${state.whirlpoolSerial}`;}
+  function whirlpoolGroups(map,state){
+    const byId=new Map();
+    for(const [k,list] of state?.effects?.entries?.()||[]){
+      const effect=list.find(item=>item.type===EFFECT.WHIRLPOOL);if(!effect)continue;
+      const [x,y]=k.split(",").map(Number),id=String(effect.vortexId||`${effect.centerX},${effect.centerY}`);
+      if(!byId.has(id))byId.set(id,[]);byId.get(id).push({x,y,effect});
+    }
+    return[...byId.entries()].map(([vortexId,cells])=>({vortexId,cells}));
+  }
+  function createWhirlpool(state,map,x,y,{duration=2,radius=2,strength=2.4,pullDistance=1,submergeTurns=1,damage=10}={}){
+    if(!state?.effects||!map)return[];const center=tileAt(map,x,y);
+    if(!center||!HydrologyEngine.isWater(center))return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NOT_WATER"}];
+    const vortexId=nextWhirlpoolId(state),r=Math.max(1,Number(radius||2)),connected=HydrologyEngine.connectedWaterBody?.(map,x,y)||waterComponents(map).find(group=>group.some(tile=>tile===center))||[center];
+    const cells=connected.filter(tile=>Math.hypot(Number(tile.x)-Number(x),Number(tile.y)-Number(y))<=r+.001).map(tile=>({x:Number(tile.x),y:Number(tile.y),depth:Number(waterDepth(tile)||0)}));
+    if(!cells.length)return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NO_CONNECTED_WATER"}];
+    const avgDepth=cells.reduce((sum,cell)=>sum+cell.depth,0)/cells.length,depthFactor=Math.max(.65,Math.min(1.45,.72+avgDepth*.42)),resolvedStrength=Math.max(.5,Number(strength||2.4))*depthFactor,resolvedPull=Math.max(1,Math.min(3,Math.round(Number(pullDistance||1)+(resolvedStrength>=3.2?1:0))));
+    for(const cell of cells)addEffect(state,cell.x,cell.y,{type:EFFECT.WHIRLPOOL,duration:Math.max(1,Number(duration||2)),vortexId,centerX:Number(x),centerY:Number(y),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true});
+    const pulse={type:"WHIRLPOOL_PULSE",vortexId,centerX:Number(x),centerY:Number(y),cells:cells.map(({x,y})=>({x,y})),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true};
+    return[{...pulse,type:"WHIRLPOOL_CREATED"},pulse];
+  }
+  function advanceWhirlpools(map,state,events=[]){
+    for(const group of whirlpoolGroups(map,state)){
+      const valid=[];let sample=null;
+      for(const entry of group.cells){
+        const tile=tileAt(map,entry.x,entry.y);if(!tile||!HydrologyEngine.isWater(tile)){removeEffect(state,entry.x,entry.y,EFFECT.WHIRLPOOL);continue;}
+        valid.push({x:entry.x,y:entry.y});sample??=entry.effect;
+      }
+      if(!sample||!valid.length)continue;
+      events.push({type:"WHIRLPOOL_PULSE",vortexId:group.vortexId,centerX:Number(sample.centerX),centerY:Number(sample.centerY),cells:valid,radius:Number(sample.radius||2),strength:Number(sample.strength||2.4),pullDistance:Number(sample.pullDistance||1),submergeTurns:Number(sample.submergeTurns||1),damage:Number(sample.damage||0),contactProfile:"WAVE_VOLUME",waterOnly:true});
     }
     return events;
   }
@@ -599,6 +632,6 @@ export const EnvironmentEngine=(()=>{
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
   function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);return range;}
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

@@ -14,6 +14,7 @@ export const CARDS={
   typhoon_card:{id:"typhoon_card",name:"颱風",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:7,effect:{type:"WEATHER",weather:"TYPHOON",durationTurns:2}},
   wildfire_card:{id:"wildfire_card",name:"野火",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:4,effect:{type:"AREA_FIRE",radius:1,forces:["FIRE"]}},
   tornado_card:{id:"tornado_card",name:"龍捲風",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:5,effect:{type:"AREA_PUSH",radius:1,distance:2,lift:3,damage:20,resistAxes:{horizontal:false,vertical:true},forces:["WIND"],fireTornadoDamage:45}},
+  whirlpool_card:{id:"whirlpool_card",name:"漩渦",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:5,effect:{type:"WHIRLPOOL",radius:2,durationTurns:2,strength:2.4,pullDistance:1,submergeTurns:1,damage:8,targetEnvironment:"WATER"}},
   miracle_card:{id:"miracle_card",name:"神跡",type:"SPELL",spellType:"HEAL",faction:"NEUTRAL",cost:6,effect:{type:"AREA_HEAL",radius:1,heal:80,team:"PLAYER"}},
   fog_card:{id:"fog_card",name:"迷霧",type:"SPELL",spellType:"WEATHER",faction:"NEUTRAL",cost:3,effect:{type:"WEATHER",weather:"FOG",durationTurns:2}},
   starfall_card:{id:"starfall_card",name:"星隕",type:"SPELL",spellType:"TACTICAL",faction:"NEUTRAL",cost:10,effect:{type:"AREA_DAMAGE",radius:2,damage:100,forces:["HEAVY_FIRE","EXPLOSION","IMPACT"],shockwave:{outerRadius:1,damage:35,distance:2,lift:2,damageType:"PHYSICAL",resistAxes:{horizontal:false,vertical:true}},presentation:{type:"METEOR_STRIKE",fallDuration:650,impactDuration:700}}},

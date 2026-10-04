@@ -3,7 +3,7 @@ export const STAGES={
     id:"prototype_battle",name:"Prototype Battle",mapId:"prototype_field",environment:{timeOfDay:"NIGHT"},
     playerSpawns:[],enemySpawns:[],
     enemyDeck:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card"],
-    battleDeck:["livia_card","ophi_card","nereia_card","leon_card","kahn_card","cassandra_card","thunderstorm_card","typhoon_card","scorching_sun_card","wildfire_card","tornado_card","miracle_card","fog_card","starfall_card","moon_goddess_blessing_card"],
+    battleDeck:["livia_card","ophi_card","nereia_card","leon_card","kahn_card","cassandra_card","thunderstorm_card","typhoon_card","scorching_sun_card","wildfire_card","tornado_card","whirlpool_card","miracle_card","fog_card","starfall_card","moon_goddess_blessing_card"],
     deploymentPoints:[
       {id:"player_base",name:"我方本陣",owner:"PLAYER",captureTiles:[{x:0,y:2}],area:[{x:0,y:0},{x:0,y:1},{x:0,y:2},{x:0,y:3},{x:0,y:4},{x:1,y:0},{x:1,y:1},{x:1,y:2},{x:1,y:3},{x:1,y:4}]},
       {id:"center_outpost",name:"中央中立據點",owner:"NEUTRAL",captureTiles:[{x:3,y:2}],area:[{x:2,y:2},{x:3,y:2},{x:3,y:1},{x:3,y:3}]},
@@ -34,7 +34,7 @@ export const STAGES={
     },
     playerSpawns:[],enemySpawns:[],
     enemyDeck:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card","leon_card"],
-    battleDeck:["livia_card","ophi_card","nereia_card","kahn_card","cassandra_card","thunderstorm_card","typhoon_card","scorching_sun_card","wildfire_card","tornado_card","miracle_card","fog_card","starfall_card"],
+    battleDeck:["livia_card","ophi_card","nereia_card","kahn_card","cassandra_card","thunderstorm_card","typhoon_card","scorching_sun_card","wildfire_card","tornado_card","whirlpool_card","miracle_card","fog_card","starfall_card"],
     coreRules:{hp:600,shield:0,defense:0},
     captureDamage:120,
     cardRules:{startingCrystals:4,maxCrystals:10,crystalGrowth:1,handSize:5},
