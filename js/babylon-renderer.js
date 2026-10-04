@@ -41,6 +41,11 @@ function skyCss(color,alpha=1){
   return`rgba(${c[0]},${c[1]},${c[2]},${Math.max(0,Math.min(1,Number(alpha||0)))})`;
 }
 
+function mixSkyColor(a,b,t){
+  const amount=Math.max(0,Math.min(1,Number(t||0)));
+  return(a||[0,0,0]).map((value,index)=>value+((b?.[index]??0)-value)*amount);
+}
+
 export class BabylonRenderer{
   constructor(canvas,state,{onTilePicked}={}){
     this.canvas=canvas;
@@ -109,9 +114,10 @@ export class BabylonRenderer{
   }
 
   createSkyLayer(){
-    // Stage 13A: one opaque screen-space sky layer. It is redrawn only when
-    // weather/day-night changes, so mobile pays one tiny background draw instead
-    // of a continuously simulated sky dome or volumetric cloud pass.
+    // Stage 13A: one opaque screen-space atmospheric background. The upper part
+    // is sky; below the horizon it fades into darker, low-saturation distant air
+    // instead of continuing blue sky underneath the battlefield. It is redrawn
+    // only when weather/day-night changes, so mobile still pays one tiny draw.
     this.skyTexture=new BABYLON.DynamicTexture(
       "battle-sky-texture",
       {width:256,height:256},
@@ -141,11 +147,23 @@ export class BabylonRenderer{
     this.skySignature=signature;
 
     const context=this.skyTexture.getContext(),size=this.skyTexture.getSize(),width=Number(size.width||256),height=Number(size.height||256);
+
+    // The tactical map is viewed from above, so empty screen below the map must
+    // not look like a second patch of sky. Keep a real horizon band around the
+    // middle of the backdrop, then fade the lower half toward distant ground haze.
+    const night=timeOfDay==="NIGHT";
+    const lowerTarget=night?[.012,.020,.032]:weather==="SCORCHING_SUN"?[.30,.24,.17]:weather==="SNOW"||weather==="BLIZZARD"?[.31,.36,.38]:[.15,.22,.24];
+    const deepTarget=night?[.005,.010,.018]:weather==="SCORCHING_SUN"?[.12,.095,.070]:[.055,.085,.10];
+    const lower=mixSkyColor(profile.horizon,lowerTarget,night?.82:.70);
+    const deep=mixSkyColor(lower,deepTarget,night?.72:.62);
     const gradient=context.createLinearGradient(0,0,0,height);
     gradient.addColorStop(0,skyCss(profile.zenith));
-    gradient.addColorStop(.54,skyCss(profile.upper));
-    gradient.addColorStop(1,skyCss(profile.horizon));
+    gradient.addColorStop(.42,skyCss(profile.upper));
+    gradient.addColorStop(.58,skyCss(profile.horizon));
+    gradient.addColorStop(.70,skyCss(lower));
+    gradient.addColorStop(1,skyCss(deep));
     context.globalAlpha=1;context.fillStyle=gradient;context.fillRect(0,0,width,height);
+    this.scene.clearColor=new BABYLON.Color4(deep[0],deep[1],deep[2],1);
 
     // Static stylized cloud strata: weather chooses coverage, Climate still owns
     // every actual weather rule. These are background decoration only.
@@ -171,14 +189,14 @@ export class BabylonRenderer{
       const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
       context.save();
       for(let i=0;i<58;i++){
-        const x=random()*width,y=random()*height*.62,r=.35+random()*.72,a=(.30+random()*.60)*stars;
+        const x=random()*width,y=random()*height*.48,r=.35+random()*.72,a=(.30+random()*.60)*stars;
         context.fillStyle=`rgba(226,236,255,${a})`;context.beginPath();context.arc(x,y,r,0,Math.PI*2);context.fill();
       }
       context.restore();
     }
 
     this.skyTexture.update(false);
-    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars};
+    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,lowerAtmosphere:true};
   }
 
   syncLighting(state){
