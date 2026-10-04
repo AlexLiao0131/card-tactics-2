@@ -303,63 +303,63 @@ export class WaterRenderer{
         const q=1-r/radius,mask=smooth01(q),strength=Math.max(.5,Number(whirl.strength||2.4)),dip=ELEVATION_HEIGHT*Math.min(.34,.045+.028*strength),ring=ELEVATION_HEIGHT*Math.min(.08,.012+.006*strength)*Math.sin(r*(5.2/TILE_SIZE)-time*(2.3+strength*.65));
         wave+=(-dip*mask*mask+ring*mask);const radial=(r>.001?1/r:0),slope=(2*dip*mask/radius-ring*(5.2/TILE_SIZE)*Math.cos(r*(5.2/TILE_SIZE)-time*(2.3+strength*.65)))*mask;dydx+=slope*rx*radial;dydz+=slope*rz*radial;
       }
+      let rogueShiftX=0,rogueShiftZ=0;
       for(const rogue of rogueWaves){
         const age=time-rogue.startedAt;if(age<0||age>rogue.duration)continue;
-        const t=clamp(age/rogue.duration,0,1),progress=smooth01(t),crest=rogue.startAlong+(rogue.endAlong-rogue.startAlong)*progress,along=x*rogue.dx+z*rogue.dz,perp=-x*rogue.dz+z*rogue.dx,edgeDistance=Math.min(perp-(rogue.minPerp-TILE_SIZE*.65),(rogue.maxPerp+TILE_SIZE*.65)-perp);
+        const t=clamp(age/rogue.duration,0,1),progress=smooth01(t),crestBase=rogue.startAlong+(rogue.endAlong-rogue.startAlong)*progress,along=x*rogue.dx+z*rogue.dz,perp=-x*rogue.dz+z*rogue.dx,edgeDistance=Math.min(perp-(rogue.minPerp-TILE_SIZE*.65),(rogue.maxPerp+TILE_SIZE*.65)-perp);
         if(edgeDistance<=0)continue;
-        const edgeFade=smooth01(edgeDistance/(TILE_SIZE*.65)),delta=along-crest,width=TILE_SIZE*.38,troughWidth=width*1.08,crestShape=Math.exp(-(delta*delta)/(2*width*width)),retreatDelta=delta-TILE_SIZE*.72,retreatShape=Math.exp(-(retreatDelta*retreatDelta)/(2*troughWidth*troughWidth)),curlDelta=delta+TILE_SIZE*.42,curlWidth=width*.72,curlShape=Math.exp(-(curlDelta*curlDelta)/(2*curlWidth*curlWidth));
-        const retreatGain=.12+.24*(1-smooth01(clamp((t-.18)/.30,0,1))),pushGain=.72+.28*smooth01(clamp((t-.16)/.34,0,1)),curlGain=.16*smooth01(clamp((t-.48)/.26,0,1));
-        wave+=rogue.amplitude*(pushGain*crestShape-retreatGain*retreatShape+curlGain*curlShape)*edgeFade;const dAlong=rogue.amplitude*((-delta/(width*width))*pushGain*crestShape+retreatGain*(retreatDelta/(troughWidth*troughWidth))*retreatShape-curlGain*(curlDelta/(curlWidth*curlWidth))*curlShape)*edgeFade;dydx+=dAlong*rogue.dx;dydz+=dAlong*rogue.dz;
+        const edgeFade=smooth01(edgeDistance/(TILE_SIZE*.65)),phase=Number(rogue.phase||0),frontWarp=TILE_SIZE*(.10*Math.sin(perp*(1.35/TILE_SIZE)+phase)+.045*Math.sin(perp*(3.8/TILE_SIZE)+phase*1.73)),crest=crestBase+frontWarp,delta=along-crest;
+        const width=TILE_SIZE*.46,troughWidth=width*1.18,curlWidth=width*.62;
+        const crestShape=Math.exp(-(delta*delta)/(2*width*width)),retreatDelta=delta-TILE_SIZE*.62,retreatShape=Math.exp(-(retreatDelta*retreatDelta)/(2*troughWidth*troughWidth)),curlDelta=delta+TILE_SIZE*.30,curlShape=Math.exp(-(curlDelta*curlDelta)/(2*curlWidth*curlWidth));
+        const retreatPhase=1-smooth01(clamp((t-.04)/.24,0,1)),pushPhase=smooth01(clamp((t-.14)/.28,0,1)),curlPhase=smooth01(clamp((t-.50)/.24,0,1)),lateFade=1-.32*smooth01(clamp((t-.84)/.16,0,1));
+        const crossVariation=clamp(.90+.10*Math.sin(perp*(1.8/TILE_SIZE)+phase*.71)+.05*Math.sin(perp*(4.6/TILE_SIZE)+phase*1.41),.76,1.12);
+        const pushGain=1.02*pushPhase*lateFade,curlGain=.30*curlPhase,retreatGain=.58*retreatPhase;
+        const height=rogue.amplitude*(pushGain*crestShape-retreatGain*retreatShape+curlGain*curlShape)*edgeFade*crossVariation;
+        wave+=height;
+        const dAlong=rogue.amplitude*((-delta/(width*width))*pushGain*crestShape+retreatGain*(retreatDelta/(troughWidth*troughWidth))*retreatShape-curlGain*(curlDelta/(curlWidth*curlWidth))*curlShape)*edgeFade*crossVariation;
+        dydx+=dAlong*rogue.dx;dydz+=dAlong*rogue.dz;
+        const surge=TILE_SIZE*(-.10*retreatPhase*retreatShape+.17*pushPhase*crestShape+.09*curlPhase*curlShape)*edgeFade*crossVariation;
+        rogueShiftX+=rogue.dx*surge;rogueShiftZ+=rogue.dz*surge;
       }
-      wave*=w;dydx*=w;dydz*=w;positions[o]=x;positions[o+1]=base[o+1]+wave;positions[o+2]=z;const inv=1/Math.hypot(dydx,1,dydz);normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
+      wave*=w;dydx*=w;dydz*=w;rogueShiftX*=w;rogueShiftZ*=w;positions[o]=x+rogueShiftX;positions[o+1]=base[o+1]+wave;positions[o+2]=z+rogueShiftZ;const inv=1/Math.hypot(dydx,1,dydz);normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
     }
     mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
   }
 
   createRogueWaveVisual(wave){
     if(!globalThis.BABYLON||!wave?.cells?.length)return null;
-    // A rogue-wave foam front belongs to the water volume, not to the map's
-    // perpendicular bounding span.  Keep a small pool of per-water-cell crest
-    // segments and move only those segments whose cells are currently crossed
-    // by the travelling front.  This prevents a rectangular white line from
-    // drawing across islands / banks / dry terrain inside the body's bounds.
-    const root=new BABYLON.TransformNode(`rogue-wave-${wave.token}`,this.scene);
-    const frontCapacity=Math.max(8,Math.min(40,Math.ceil((Number(wave.maxPerp-wave.minPerp)||0)/TILE_SIZE)+4)),segments=[];
-    const rotation=Math.atan2(wave.dx,wave.dz);
-    for(let i=0;i<frontCapacity;i++){
-      const crest=BABYLON.MeshBuilder.CreateGround(`rogue-wave-crest-${wave.token}-${i}`,{width:TILE_SIZE*.72,height:TILE_SIZE*.18,subdivisions:1},this.scene);
-      crest.parent=root;crest.material=this.rogueFoamMaterial;crest.isPickable=false;crest.rotation.y=rotation;crest.visibility=0;
-      const backwash=BABYLON.MeshBuilder.CreateGround(`rogue-wave-backwash-${wave.token}-${i}`,{width:TILE_SIZE*.62,height:TILE_SIZE*.08,subdivisions:1},this.scene);
-      backwash.parent=root;backwash.material=this.rogueFoamMaterial;backwash.isPickable=false;backwash.rotation.y=rotation;backwash.visibility=0;
-      const spray=BABYLON.MeshBuilder.CreateSphere(`rogue-wave-spray-${wave.token}-${i}`,{diameter:.09+(i%3)*.025,segments:4},this.scene);
-      spray.parent=root;spray.material=this.rogueFoamMaterial;spray.isPickable=false;spray.visibility=0;
-      segments.push({crest,backwash,spray,phase:hash01(`${wave.token}:spray:${i}`)*Math.PI*2});
+    // The rogue wave itself is the animated water mesh. Presentation meshes
+    // only provide sparse breaking spray after the crest starts to curl.
+    // No foam strip, ground ribbon, or tube is used to draw the wave front.
+    const root=new BABYLON.TransformNode(`rogue-wave-spray-${wave.token}`,this.scene),spray=[];
+    const capacity=Math.max(6,Math.min(18,Math.ceil((Number(wave.maxPerp-wave.minPerp)||0)/TILE_SIZE)+3));
+    for(let i=0;i<capacity;i++){
+      const droplet=BABYLON.MeshBuilder.CreateSphere(`rogue-wave-spray-${wave.token}-${i}`,{diameter:.07+(i%4)*.018,segments:4},this.scene);
+      droplet.parent=root;droplet.material=this.rogueFoamMaterial;droplet.isPickable=false;droplet.visibility=0;droplet.metadata={phase:hash01(`${wave.token}:spray:${i}`)*Math.PI*2};
+      spray.push(droplet);
     }
-    root.metadata={kind:"rogue-wave-foam",presentationOnly:true,waterCellClipped:true};
-    return{root,segments,dispose:()=>root.dispose(false,false)};
+    root.metadata={kind:"rogue-wave-spray",presentationOnly:true,waterMeshIsWaveBody:true,noFoamRibbon:true};
+    return{root,spray,dispose:()=>root.dispose(false,false)};
   }
 
   updateRogueWaveVisual(wave,age){
     const visual=wave?.visual;if(!visual)return;
-    const t=clamp(age/Math.max(.001,wave.duration),0,1),progress=smooth01(t),crestAlong=wave.startAlong+(wave.endAlong-wave.startAlong)*progress;
-    const fade=smooth01(Math.min(1,t*5))*smooth01(Math.min(1,(1-t)*5)),pushPhase=smooth01(clamp((t-.16)/.26,0,1)),curlPhase=smooth01(clamp((t-.52)/.24,0,1)),frontHalf=TILE_SIZE*.72;
-    let front=(wave.cells||[]).filter(cell=>Math.abs(Number(cell.along)-crestAlong)<=frontHalf).sort((a,b)=>Number(a.perp)-Number(b.perp));
-    // A very broad lake can cross more cells than the visual pool. Sample the
-    // entire water-only front evenly rather than extending a single strip over land.
-    if(front.length>visual.segments.length){
-      const sampled=[],last=front.length-1,count=visual.segments.length;
+    const t=clamp(age/Math.max(.001,wave.duration),0,1),progress=smooth01(t),crestBase=wave.startAlong+(wave.endAlong-wave.startAlong)*progress,curlPhase=smooth01(clamp((t-.50)/.24,0,1)),fade=smooth01(Math.min(1,t*5))*smooth01(Math.min(1,(1-t)*5)),phase=Number(wave.phase||0),frontHalf=TILE_SIZE*.62;
+    let front=(wave.cells||[]).filter(cell=>{
+      const warp=TILE_SIZE*(.10*Math.sin(Number(cell.perp)*(1.35/TILE_SIZE)+phase)+.045*Math.sin(Number(cell.perp)*(3.8/TILE_SIZE)+phase*1.73));
+      return Math.abs(Number(cell.along)-(crestBase+warp))<=frontHalf;
+    }).sort((a,b)=>Number(a.perp)-Number(b.perp));
+    if(front.length>visual.spray.length){
+      const sampled=[],last=front.length-1,count=visual.spray.length;
       for(let i=0;i<count;i++)sampled.push(front[Math.round(i*last/Math.max(1,count-1))]);
       front=sampled;
     }
-    for(let i=0;i<visual.segments.length;i++){
-      const segment=visual.segments[i],cell=front[i];
-      if(!cell){segment.crest.visibility=0;segment.backwash.visibility=0;segment.spray.visibility=0;continue;}
-      const delta=clamp(crestAlong-Number(cell.along),-TILE_SIZE*.42,TILE_SIZE*.42),x=Number(cell.x)+wave.dx*delta,z=Number(cell.z)+wave.dz*delta;
-      const y=Number(cell.surfaceY||wave.surfaceY||0)+wave.amplitude*(.72+.12*Math.sin(t*Math.PI))+.025;
-      segment.crest.position.set(x,y,z);segment.crest.visibility=.94*fade*pushPhase;segment.crest.scaling.z=.72+.38*pushPhase+.18*Math.sin(t*Math.PI);
-      const back=TILE_SIZE*(.16+.16*curlPhase);segment.backwash.position.set(x-wave.dx*back,y-wave.amplitude*(.06-.12*curlPhase),z-wave.dz*back);segment.backwash.visibility=.58*fade*curlPhase;segment.backwash.scaling.z=.68+.34*curlPhase;
-      const phase=Number(segment.phase||0),pulse=.5+.5*Math.sin(age*(7.2+(i%4)*.55)+phase),side=(hash01(`${wave.token}:side:${cell.key}`)-.5)*TILE_SIZE*.48;
-      segment.spray.position.set(x-wave.dz*side-wave.dx*TILE_SIZE*.03,y+.04+wave.amplitude*(.12+.32*pulse),z+wave.dx*side-wave.dz*TILE_SIZE*.03);segment.spray.visibility=fade*curlPhase*(.42+.58*pulse);
+    for(let i=0;i<visual.spray.length;i++){
+      const droplet=visual.spray[i],cell=front[i];
+      if(!cell||curlPhase<=.02){droplet.visibility=0;continue;}
+      const meta=droplet.metadata||{},localPhase=Number(meta.phase||0),warp=TILE_SIZE*(.10*Math.sin(Number(cell.perp)*(1.35/TILE_SIZE)+phase)+.045*Math.sin(Number(cell.perp)*(3.8/TILE_SIZE)+phase*1.73)),crest=crestBase+warp,delta=clamp(crest-Number(cell.along),-TILE_SIZE*.34,TILE_SIZE*.34),side=(hash01(`${wave.token}:side:${cell.key}`)-.5)*TILE_SIZE*.52;
+      const x=Number(cell.x)+wave.dx*delta-wave.dz*side,z=Number(cell.z)+wave.dz*delta+wave.dx*side,pulse=.5+.5*Math.sin(age*(7.6+(i%4)*.58)+localPhase),y=Number(cell.surfaceY||wave.surfaceY||0)+wave.amplitude*(.62+.28*pulse);
+      droplet.position.set(x-wave.dx*TILE_SIZE*(.02+.05*pulse),y,z-wave.dz*TILE_SIZE*(.02+.05*pulse));droplet.scaling.set(.72+.50*pulse,1+.85*pulse,.72+.50*pulse);droplet.visibility=fade*curlPhase*(.18+.48*pulse);
     }
   }
 
@@ -379,7 +379,7 @@ export class WaterRenderer{
         return{key:keyOf(cell.x,cell.y),x,z,along:x*ux+z*uz,perp:x*px+z*pz,surfaceY};
       });
       const along=world.map(point=>point.along),perp=world.map(point=>point.perp),surfaces=world.map(point=>point.surfaceY).filter(Number.isFinite),surfaceY=surfaces.length?average(surfaces):0;
-      const wave={token,surfaceIds,cells:world,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime,surfaceY};
+      const wave={token,surfaceIds,cells:world,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime,surfaceY,phase:hash01(token)*Math.PI*2};
       wave.visual=this.createRogueWaveVisual(wave);this.rogueWaves.push(wave);
     }
   }
@@ -1010,7 +1010,9 @@ export class WaterRenderer{
       refinedWaterTopology:true,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
-      rogueWaveFoamCrest:true,
+      rogueWaveWaterBodyDeformation:true,
+      rogueWaveFoamCrest:false,
+      rogueWaveSprayOnly:true,
       activeRogueWaves:this.rogueWaves.length,
       whirlpoolPresentation:true,
       activeWhirlpools:this.whirlpools.size,
