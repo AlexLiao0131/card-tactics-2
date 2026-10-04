@@ -11,6 +11,36 @@ import { GridPicker } from "./grid-picker.js";
 import { BattleInputController } from "./battle-input-controller.js";
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 
+const SKY_PROFILES=Object.freeze({
+  DAY:Object.freeze({
+    SCORCHING_SUN:Object.freeze({zenith:[.20,.45,.76],upper:[.48,.68,.88],horizon:[1.00,.72,.40],cloud:.04,cloudColor:[1.00,.88,.69]}),
+    CLEAR:Object.freeze({zenith:[.19,.43,.73],upper:[.46,.68,.88],horizon:[.82,.86,.82],cloud:.12,cloudColor:[.95,.96,.94]}),
+    FOG:Object.freeze({zenith:[.39,.47,.53],upper:[.53,.59,.62],horizon:[.69,.70,.67],cloud:.62,cloudColor:[.76,.78,.77]}),
+    RAIN:Object.freeze({zenith:[.19,.28,.36],upper:[.30,.39,.45],horizon:[.48,.52,.52],cloud:.70,cloudColor:[.55,.59,.61]}),
+    HEAVY_RAIN:Object.freeze({zenith:[.12,.19,.26],upper:[.21,.29,.35],horizon:[.38,.42,.43],cloud:.82,cloudColor:[.43,.47,.49]}),
+    THUNDERSTORM:Object.freeze({zenith:[.07,.11,.18],upper:[.14,.21,.29],horizon:[.29,.34,.38],cloud:.92,cloudColor:[.34,.39,.43]}),
+    TYPHOON:Object.freeze({zenith:[.07,.13,.17],upper:[.13,.21,.25],horizon:[.25,.31,.32],cloud:.96,cloudColor:[.31,.37,.39]}),
+    SNOW:Object.freeze({zenith:[.37,.53,.70],upper:[.59,.72,.83],horizon:[.86,.88,.86],cloud:.48,cloudColor:[.94,.95,.94]}),
+    BLIZZARD:Object.freeze({zenith:[.25,.33,.41],upper:[.42,.49,.55],horizon:[.71,.73,.72],cloud:.90,cloudColor:[.80,.82,.81]})
+  }),
+  NIGHT:Object.freeze({
+    SCORCHING_SUN:Object.freeze({zenith:[.012,.021,.060],upper:[.026,.052,.105],horizon:[.080,.105,.145],cloud:.05,cloudColor:[.18,.21,.27],stars:.90}),
+    CLEAR:Object.freeze({zenith:[.010,.018,.055],upper:[.024,.050,.105],horizon:[.075,.105,.150],cloud:.08,cloudColor:[.17,.21,.28],stars:1}),
+    FOG:Object.freeze({zenith:[.045,.058,.080],upper:[.070,.088,.110],horizon:[.120,.135,.145],cloud:.62,cloudColor:[.15,.17,.19],stars:0}),
+    RAIN:Object.freeze({zenith:[.020,.030,.050],upper:[.040,.058,.078],horizon:[.090,.105,.115],cloud:.72,cloudColor:[.12,.14,.17],stars:0}),
+    HEAVY_RAIN:Object.freeze({zenith:[.012,.020,.038],upper:[.027,.040,.058],horizon:[.065,.080,.092],cloud:.84,cloudColor:[.09,.11,.14],stars:0}),
+    THUNDERSTORM:Object.freeze({zenith:[.008,.014,.030],upper:[.020,.032,.050],horizon:[.055,.068,.083],cloud:.94,cloudColor:[.075,.09,.12],stars:0}),
+    TYPHOON:Object.freeze({zenith:[.008,.017,.027],upper:[.020,.036,.046],horizon:[.055,.075,.082],cloud:.97,cloudColor:[.075,.10,.11],stars:0}),
+    SNOW:Object.freeze({zenith:[.030,.045,.075],upper:[.060,.085,.120],horizon:[.125,.145,.160],cloud:.50,cloudColor:[.20,.23,.27],stars:.28}),
+    BLIZZARD:Object.freeze({zenith:[.022,.032,.050],upper:[.048,.062,.078],horizon:[.105,.118,.125],cloud:.92,cloudColor:[.15,.17,.19],stars:0})
+  })
+});
+
+function skyCss(color,alpha=1){
+  const c=(color||[0,0,0]).map(value=>Math.round(Math.max(0,Math.min(1,Number(value||0)))*255));
+  return`rgba(${c[0]},${c[1]},${c[2]},${Math.max(0,Math.min(1,Number(alpha||0)))})`;
+}
+
 export class BabylonRenderer{
   constructor(canvas,state,{onTilePicked}={}){
     this.canvas=canvas;
@@ -18,6 +48,9 @@ export class BabylonRenderer{
     this.scene=new BABYLON.Scene(this.engine);
     this.scene.clearColor=new BABYLON.Color4(.035,.055,.08,1);
     this.subsystemErrors=new Map();
+    this.skySignature="";
+    this.createSkyLayer();
+    this.syncSky(state);
 
     this.hemi=new BABYLON.HemisphericLight("hemi",new BABYLON.Vector3(0,1,0),this.scene);
     this.sun=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.6,-1,-.35),this.scene);
@@ -73,6 +106,79 @@ export class BabylonRenderer{
     });
 
     window.addEventListener("resize",()=>this.resize());
+  }
+
+  createSkyLayer(){
+    // Stage 13A: one opaque screen-space sky layer. It is redrawn only when
+    // weather/day-night changes, so mobile pays one tiny background draw instead
+    // of a continuously simulated sky dome or volumetric cloud pass.
+    this.skyTexture=new BABYLON.DynamicTexture(
+      "battle-sky-texture",
+      {width:256,height:256},
+      this.scene,
+      false,
+      BABYLON.Texture.BILINEAR_SAMPLINGMODE
+    );
+    this.skyTexture.hasAlpha=false;
+    this.skyTexture.wrapU=this.skyTexture.wrapV=BABYLON.Texture.CLAMP_ADDRESSMODE;
+    this.skyLayer=new BABYLON.Layer("battle-sky",null,this.scene,true);
+    this.skyLayer.texture=this.skyTexture;
+    this.skyLayer.isBackground=true;
+  }
+
+  skyProfile(state){
+    const environment=state?.presentation?.environment||{};
+    const weather=String(environment.weather||"CLEAR").toUpperCase();
+    const timeOfDay=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT"?"NIGHT":"DAY";
+    const table=SKY_PROFILES[timeOfDay];
+    return{weather,timeOfDay,profile:table[weather]||table.CLEAR};
+  }
+
+  syncSky(state){
+    if(!this.skyTexture)return;
+    const {weather,timeOfDay,profile}=this.skyProfile(state),signature=`${timeOfDay}:${weather}`;
+    if(signature===this.skySignature)return;
+    this.skySignature=signature;
+
+    const context=this.skyTexture.getContext(),size=this.skyTexture.getSize(),width=Number(size.width||256),height=Number(size.height||256);
+    const gradient=context.createLinearGradient(0,0,0,height);
+    gradient.addColorStop(0,skyCss(profile.zenith));
+    gradient.addColorStop(.54,skyCss(profile.upper));
+    gradient.addColorStop(1,skyCss(profile.horizon));
+    context.globalAlpha=1;context.fillStyle=gradient;context.fillRect(0,0,width,height);
+
+    // Static stylized cloud strata: weather chooses coverage, Climate still owns
+    // every actual weather rule. These are background decoration only.
+    const cloud=Math.max(0,Math.min(1,Number(profile.cloud||0)));
+    if(cloud>.01){
+      context.save();
+      context.fillStyle=skyCss(profile.cloudColor||profile.upper,.13+.28*cloud);
+      const bands=Math.round(2+cloud*6);
+      for(let i=0;i<bands;i++){
+        const phase=(i*73+29)%width,y=35+i*(112/Math.max(1,bands-1))+(i%2)*7;
+        const rx=38+cloud*34+(i%3)*9,ry=6+cloud*10+(i%2)*3;
+        context.beginPath();context.ellipse(phase,y,rx,ry,(i%2?-.08:.06),0,Math.PI*2);context.fill();
+        context.beginPath();context.ellipse((phase+92)%width,y+7,rx*.72,ry*.82,0,0,Math.PI*2);context.fill();
+      }
+      context.restore();
+    }
+
+    // Clear nights get a tiny deterministic star field baked into the same 256px
+    // texture. It costs nothing per frame and vanishes naturally under bad weather.
+    const stars=Math.max(0,Math.min(1,Number(profile.stars||0)));
+    if(stars>.01){
+      let seed=0x51f15e;
+      const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
+      context.save();
+      for(let i=0;i<58;i++){
+        const x=random()*width,y=random()*height*.62,r=.35+random()*.72,a=(.30+random()*.60)*stars;
+        context.fillStyle=`rgba(226,236,255,${a})`;context.beginPath();context.arc(x,y,r,0,Math.PI*2);context.fill();
+      }
+      context.restore();
+    }
+
+    this.skyTexture.update(false);
+    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars};
   }
 
   syncLighting(state){
@@ -220,6 +326,7 @@ export class BabylonRenderer{
 
   sync(state,presentationEvents=[]){
     this.lastState=state;
+    this.syncSubsystem("sky",()=>this.syncSky(state));
     this.syncSubsystem("lighting",()=>this.syncLighting(state));
 
     // Critical interaction/state surfaces go first. A visual subsystem failure must
@@ -289,6 +396,7 @@ export class BabylonRenderer{
       projection:this.camera.getViewState().projection,
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,
+      sky:this.skyState||null,
       lighting:this.lightingState||null,
       shadows:this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0},
       rendererErrors:Object.fromEntries(this.subsystemErrors),
