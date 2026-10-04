@@ -36,6 +36,32 @@ const SKY_PROFILES=Object.freeze({
   })
 });
 
+
+const LIGHT_COLOR_PROFILES=Object.freeze({
+  DAY:Object.freeze({
+    SCORCHING_SUN:Object.freeze({label:"WARM_HARSH_DAYLIGHT",sun:[1.00,.84,.60],hemi:[.92,.96,1.00],ground:[.29,.24,.15],fill:[.60,.73,.96],ambient:[.19,.18,.12]}),
+    CLEAR:Object.freeze({label:"NEUTRAL_WARM_DAYLIGHT",sun:[1.00,.95,.84],hemi:[.96,.98,1.00],ground:[.22,.27,.18],fill:[.66,.78,.94],ambient:[.18,.20,.15]}),
+    FOG:Object.freeze({label:"SOFT_COOL_OVERCAST",sun:[.84,.87,.89],hemi:[.87,.91,.94],ground:[.24,.27,.25],fill:[.73,.81,.85],ambient:[.18,.20,.20]}),
+    RAIN:Object.freeze({label:"COOL_OVERCAST",sun:[.72,.80,.88],hemi:[.78,.87,.94],ground:[.18,.22,.22],fill:[.62,.75,.88],ambient:[.14,.17,.18]}),
+    HEAVY_RAIN:Object.freeze({label:"COLD_OVERCAST",sun:[.60,.70,.80],hemi:[.68,.78,.86],ground:[.15,.19,.20],fill:[.54,.68,.82],ambient:[.12,.15,.17]}),
+    THUNDERSTORM:Object.freeze({label:"COLD_STORM",sun:[.48,.60,.76],hemi:[.58,.69,.82],ground:[.11,.15,.18],fill:[.42,.57,.76],ambient:[.09,.12,.16]}),
+    TYPHOON:Object.freeze({label:"COLD_TYPHOON",sun:[.44,.57,.70],hemi:[.54,.66,.74],ground:[.10,.15,.16],fill:[.38,.54,.66],ambient:[.08,.12,.14]}),
+    SNOW:Object.freeze({label:"COOL_WHITE_SNOW",sun:[.92,.96,1.00],hemi:[.94,.98,1.00],ground:[.30,.34,.36],fill:[.76,.86,1.00],ambient:[.20,.22,.23]}),
+    BLIZZARD:Object.freeze({label:"COLD_WHITE_BLIZZARD",sun:[.72,.82,.90],hemi:[.82,.90,.96],ground:[.22,.26,.28],fill:[.64,.76,.88],ambient:[.16,.18,.20]})
+  }),
+  NIGHT:Object.freeze({
+    SCORCHING_SUN:Object.freeze({label:"COOL_MOONLIGHT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095]}),
+    CLEAR:Object.freeze({label:"COOL_MOONLIGHT",sun:[.44,.55,.78],hemi:[.45,.58,.82],ground:[.055,.070,.105],fill:[.28,.38,.62],ambient:[.045,.060,.095]}),
+    FOG:Object.freeze({label:"MUTED_MOONLIGHT",sun:[.42,.49,.61],hemi:[.48,.56,.66],ground:[.065,.075,.085],fill:[.30,.36,.48],ambient:[.055,.065,.080]}),
+    RAIN:Object.freeze({label:"COLD_RAIN_NIGHT",sun:[.34,.45,.64],hemi:[.39,.51,.68],ground:[.045,.060,.080],fill:[.23,.34,.54],ambient:[.035,.050,.075]}),
+    HEAVY_RAIN:Object.freeze({label:"COLD_DARK_NIGHT",sun:[.28,.38,.56],hemi:[.33,.44,.60],ground:[.038,.050,.070],fill:[.19,.28,.46],ambient:[.028,.040,.064]}),
+    THUNDERSTORM:Object.freeze({label:"BLUE_STORM_NIGHT",sun:[.24,.34,.54],hemi:[.28,.40,.59],ground:[.030,.045,.065],fill:[.16,.25,.44],ambient:[.022,.034,.060]}),
+    TYPHOON:Object.freeze({label:"BLUE_TYPHOON_NIGHT",sun:[.23,.35,.50],hemi:[.27,.40,.54],ground:[.030,.045,.060],fill:[.15,.25,.40],ambient:[.022,.035,.054]}),
+    SNOW:Object.freeze({label:"PALE_SNOW_MOONLIGHT",sun:[.55,.64,.82],hemi:[.60,.70,.88],ground:[.085,.10,.13],fill:[.36,.47,.70],ambient:[.060,.075,.11]}),
+    BLIZZARD:Object.freeze({label:"COLD_WHITE_NIGHT",sun:[.42,.52,.68],hemi:[.48,.60,.74],ground:[.065,.080,.10],fill:[.29,.40,.58],ambient:[.045,.060,.085]})
+  })
+});
+
 function skyCss(color,alpha=1){
   const c=(color||[0,0,0]).map(value=>Math.round(Math.max(0,Math.min(1,Number(value||0)))*255));
   return`rgba(${c[0]},${c[1]},${c[2]},${Math.max(0,Math.min(1,Number(alpha||0)))})`;
@@ -211,28 +237,17 @@ export class BabylonRenderer{
     const environment=state?.presentation?.environment||{};
     const weather=String(environment.weather||"CLEAR").toUpperCase();
     const night=String(environment.timeOfDay||"DAY").toUpperCase()==="NIGHT";
+    const timeOfDay=night?"NIGHT":"DAY";
 
-    const base=night
-      ?{
-          ambient:new BABYLON.Color3(.045,.060,.095),
-          hemiIntensity:.27,
-          hemiDiffuse:new BABYLON.Color3(.46,.56,.78),
-          ground:new BABYLON.Color3(.055,.070,.105),
-          sunIntensity:.11,
-          sunDiffuse:new BABYLON.Color3(.48,.56,.76),
-          fillIntensity:.075,
-          fillDiffuse:new BABYLON.Color3(.28,.38,.62)
-        }
-      :{
-          ambient:new BABYLON.Color3(.18,.20,.15),
-          hemiIntensity:.72,
-          hemiDiffuse:new BABYLON.Color3(.96,.98,1.00),
-          ground:new BABYLON.Color3(.22,.27,.18),
-          sunIntensity:.78,
-          sunDiffuse:new BABYLON.Color3(1.00,.95,.84),
-          fillIntensity:.30,
-          fillDiffuse:new BABYLON.Color3(.66,.78,.94)
-        };
+    // Stage 13B deliberately consumes the existing DAY/NIGHT + Weather state.
+    // EnvironmentEngine remains the sole owner of time/weather rules; this layer
+    // only maps that state to physically coherent light colours.
+    const paletteTable=LIGHT_COLOR_PROFILES[timeOfDay];
+    const palette=paletteTable[weather]||paletteTable.CLEAR;
+    const color=value=>new BABYLON.Color3(...value);
+    const intensity=night
+      ?{hemi:.27,sun:.11,fill:.075}
+      :{hemi:.72,sun:.78,fill:.30};
 
     const WEATHER_LIGHT=Object.freeze({
       SCORCHING_SUN:{sun:1.16,fill:.9,hemi:.94,ambient:.96},
@@ -247,28 +262,33 @@ export class BabylonRenderer{
     });
     const modifier=WEATHER_LIGHT[weather]||WEATHER_LIGHT.CLEAR;
 
-    this.scene.ambientColor=base.ambient.scale(modifier.ambient);
+    this.scene.ambientColor=color(palette.ambient).scale(modifier.ambient);
 
-    this.hemi.intensity=base.hemiIntensity*modifier.hemi;
-    this.hemi.diffuse=base.hemiDiffuse;
-    this.hemi.groundColor=base.ground;
+    this.hemi.intensity=intensity.hemi*modifier.hemi;
+    this.hemi.diffuse=color(palette.hemi);
+    this.hemi.groundColor=color(palette.ground);
 
-    this.sun.intensity=base.sunIntensity*modifier.sun;
-    this.sun.diffuse=weather==="SCORCHING_SUN"&&!night?new BABYLON.Color3(1,.91,.75):base.sunDiffuse;
+    this.sun.intensity=intensity.sun*modifier.sun;
+    this.sun.diffuse=color(palette.sun);
 
-    this.fill.intensity=base.fillIntensity*modifier.fill;
-    this.fill.diffuse=base.fillDiffuse;
+    this.fill.intensity=intensity.fill*modifier.fill;
+    this.fill.diffuse=color(palette.fill);
 
-    // Shadows track the same physical sun strength. Overcast weather weakens them
-    // rather than leaving a hard dark stamp while the directional light is dim.
+    // Shadows still follow light strength rather than colour temperature. A cold
+    // storm therefore softens the same physical shadow map instead of inventing
+    // a second shadow system.
     const shadowDarkness=Math.max(.10,Math.min(.36,(night?.12:.36)*modifier.sun));
     if(this.shadowGenerator?.setDarkness)this.shadowGenerator.setDarkness(shadowDarkness);
     else if(this.shadowGenerator)this.shadowGenerator.darkness=shadowDarkness;
 
     this.lightingState={
-      timeOfDay:night?"NIGHT":"DAY",
+      timeOfDay,
       weather,
+      colorTemperatureProfile:palette.label,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
+      hemiColor:[this.hemi.diffuse.r,this.hemi.diffuse.g,this.hemi.diffuse.b],
+      sunColor:[this.sun.diffuse.r,this.sun.diffuse.g,this.sun.diffuse.b],
+      fillColor:[this.fill.diffuse.r,this.fill.diffuse.g,this.fill.diffuse.b],
       hemiIntensity:this.hemi.intensity,
       sunIntensity:this.sun.intensity,
       fillIntensity:this.fill.intensity,
