@@ -166,14 +166,19 @@ export class BabylonRenderer{
     this.scene.clearColor=new BABYLON.Color4(deep[0],deep[1],deep[2],1);
 
     // Static stylized cloud strata: weather chooses coverage, Climate still owns
-    // every actual weather rule. These are background decoration only.
-    const cloud=Math.max(0,Math.min(1,Number(profile.cloud||0)));
+    // every actual weather rule. Clouds are clipped above the horizon so the
+    // lower screen can never read as "sky underneath the battlefield".
+    const cloud=Math.max(0,Math.min(1,Number(profile.cloud||0))),horizonStop=.58;
     if(cloud>.01){
       context.save();
+      context.beginPath();
+      context.rect(0,0,width,height*horizonStop);
+      context.clip();
       context.fillStyle=skyCss(profile.cloudColor||profile.upper,.13+.28*cloud);
-      const bands=Math.round(2+cloud*6);
+      const bands=Math.round(2+cloud*6),cloudBottom=height*(horizonStop-.055);
       for(let i=0;i<bands;i++){
-        const phase=(i*73+29)%width,y=35+i*(112/Math.max(1,bands-1))+(i%2)*7;
+        const phase=(i*73+29)%width;
+        const t=bands<=1?0:i/(bands-1),y=35+t*Math.max(0,cloudBottom-42)+(i%2)*5;
         const rx=38+cloud*34+(i%3)*9,ry=6+cloud*10+(i%2)*3;
         context.beginPath();context.ellipse(phase,y,rx,ry,(i%2?-.08:.06),0,Math.PI*2);context.fill();
         context.beginPath();context.ellipse((phase+92)%width,y+7,rx*.72,ry*.82,0,0,Math.PI*2);context.fill();
@@ -196,7 +201,7 @@ export class BabylonRenderer{
     }
 
     this.skyTexture.update(false);
-    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,lowerAtmosphere:true};
+    this.skyState={weather,timeOfDay,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true};
   }
 
   syncLighting(state){
