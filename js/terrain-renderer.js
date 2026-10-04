@@ -291,14 +291,33 @@ export class TerrainRenderer{
     this.cliffDetailTexture=this.makeDetailTexture("cliff");
     material.AddUniform("cliffTexture","sampler2D",this.cliffDetailTexture);
     material.AddUniform("cliffTileSize","float",TILE_SIZE*1.5);
+    material.AddUniform("cliffElevationHeight","float",ELEVATION_HEIGHT);
     material.Fragment_Custom_Diffuse(`
-      vec3 cliffWeights=abs(normalW);
+      vec3 cliffNormal=normalize(normalW);
+      vec3 cliffWeights=abs(cliffNormal);
       cliffWeights*=cliffWeights;
       cliffWeights/=max(cliffWeights.x+cliffWeights.y+cliffWeights.z,0.0001);
       vec3 cliffX=texture2D(cliffTexture,vPositionW.zy/cliffTileSize).rgb;
       vec3 cliffY=texture2D(cliffTexture,vPositionW.xz/cliffTileSize).rgb;
       vec3 cliffZ=texture2D(cliffTexture,vPositionW.xy/cliffTileSize).rgb;
-      baseColor.rgb*=cliffX*cliffWeights.x+cliffY*cliffWeights.y+cliffZ*cliffWeights.z;
+      vec3 cliffDetail=cliffX*cliffWeights.x+cliffY*cliffWeights.y+cliffZ*cliffWeights.z;
+
+      // Continuous world-height strata: the same layer wraps around corners,
+      // including the wet/dry wall split. Reuse the three existing samples for
+      // irregularity instead of adding texture reads or per-frame CPU work.
+      float cliffHeight=vPositionW.y/cliffElevationHeight;
+      float cliffWarp=(cliffDetail.r-0.88)*3.0;
+      float cliffLayer=0.5+0.5*sin(cliffHeight*4.1+cliffWarp);
+      float cliffStrata=smoothstep(0.18,0.82,cliffLayer);
+      vec3 cliffLayerTint=mix(vec3(0.94,0.95,0.97),vec3(1.04,1.02,0.98),cliffStrata);
+      float cliffHeightTone=mix(0.97,1.04,smoothstep(-1.0,8.0,cliffHeight));
+
+      // A subtle mineral tone on sloping facets, not baked directional light.
+      // abs keeps front/back faces identical under two-sided lighting.
+      float cliffSlope=smoothstep(0.04,0.65,abs(cliffNormal.y));
+      vec3 cliffSlopeTint=mix(vec3(1.0),vec3(1.035,1.025,0.985),cliffSlope);
+      // Multiply the existing palette so wet bands and fog remain authoritative.
+      baseColor.rgb*=cliffDetail*cliffLayerTint*cliffHeightTone*cliffSlopeTint;
     `);
     material.maxSimultaneousLights=8;
     material.diffuseColor=BABYLON.Color3.White();
@@ -749,6 +768,8 @@ export class TerrainRenderer{
       sceneLightingPrimary:true,
       reducedBakedLighting:true,
       cliffTextureProjection:"triplanar-world-normal-blend",
+      cliffHeightStrata:true,
+      cliffSlopeTint:true,
       cliffTextureWorldSize:TILE_SIZE*1.5,
       cliffEdgeSegments:CLIFF_EDGE_SEGMENTS
     };
@@ -810,6 +831,8 @@ export class TerrainRenderer{
       vertexColorTransitions:true,
       wetCliffBands:true,
       cliffTextureProjection:"triplanar-world-normal-blend",
+      cliffHeightStrata:true,
+      cliffSlopeTint:true,
       cliffTextureWorldSize:TILE_SIZE*1.5,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
