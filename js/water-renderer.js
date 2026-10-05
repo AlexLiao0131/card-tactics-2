@@ -22,6 +22,7 @@ const SHORE_CONCAVE_OUTSET=.10;
 const SHORE_EDGE_RELAX=.38;
 const SHORE_SEARCH_STEPS=12;
 const SHORE_RUGGEDNESS=.11;
+const MAP_BOUNDARY_INSET=.08;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
@@ -720,13 +721,21 @@ export class WaterRenderer{
     const edgeDir=EDGE_DIR_BY_RING[index];
     if(edgeDir){
       const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
+      // A missing cardinal neighbour is the rectangular battlefield boundary, not
+      // an ordinary dry shore. Treat it explicitly so shoreline projection never
+      // samples beyond the map and invents terrain from the water tile itself.
+      if(!neighbor)return"MAP_BOUNDARY";
       if(this.continuousWaterEdge(tile,neighbor))return"INTERNAL";
-      if(neighbor&&hasAnyWater(neighbor)&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
+      if(hasAnyWater(neighbor)&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
       return"SHORE";
     }
 
     const context=this.cornerContext(tile,index,allMap);
-    if(!context)return"SHORE";
+    if(!context)return"MAP_BOUNDARY";
+    // Corners touching any missing slot also belong to the battlefield boundary.
+    // Boundary termination takes precedence over shoreline relaxation/cascade
+    // smoothing because there is no terrain outside the generated map.
+    if(context.slots.some(slot=>!slot.tile))return"MAP_BOUNDARY";
     if(context.cascade)return"CASCADE";
     return context.members.length===4?"INTERNAL":"SHORE";
   }
@@ -859,6 +868,16 @@ export class WaterRenderer{
       :this.edgeNaturalTarget(tile,index,sample,allMap);
   }
 
+  mapBoundaryTarget(tile,sample){
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const fullX=cx+Number(sample.ox||0)*TILE_SIZE;
+    const fullZ=cz+Number(sample.oz||0)*TILE_SIZE;
+    const dx=cx-fullX,dz=cz-fullZ,length=Math.hypot(dx,dz);
+    if(length<=EPSILON)return{x:fullX,z:fullZ};
+    const inset=TILE_SIZE*MAP_BOUNDARY_INSET;
+    return{x:fullX+dx/length*inset,z:fullZ+dz/length*inset};
+  }
+
   projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
     const clearance=t=>{
       const x=anchor.x+(target.x-anchor.x)*t;
@@ -895,8 +914,13 @@ export class WaterRenderer{
     const mode=this.ringMode(tile,index,allMap);
     const ringWater=this.ringWaterLevel(tile,index,allMap);
 
+    if(mode==="MAP_BOUNDARY"){
+      const target=this.mapBoundaryTarget(tile,sample);
+      return{x:target.x,z:target.z,level:ringWater,clipped:true,relaxed:false,boundary:true,mode};
+    }
+
     if(mode!=="SHORE"){
-      return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,mode};
+      return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,boundary:false,mode};
     }
 
     const target=this.naturalShoreTarget(tile,index,sample,allMap);
@@ -920,28 +944,34 @@ export class WaterRenderer{
     return{
       ...projected,
       relaxed:Math.hypot(target.x-fullX,target.z-fullZ)>EPSILON,
+      boundary:false,
       mode
     };
   }
 
-  lerpWaterPoint(a,b,t){const q=clamp(Number(t||0),0,1);return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,level:Number(a.level)+(Number(b.level)-Number(a.level))*q,clipped:!!(a.clipped||b.clipped),relaxed:!!(a.relaxed||b.relaxed),mode:a.mode===b.mode?a.mode:"BLENDED"};}
+  lerpWaterPoint(a,b,t){const q=clamp(Number(t||0),0,1);return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,level:Number(a.level)+(Number(b.level)-Number(a.level))*q,clipped:!!(a.clipped||b.clipped),relaxed:!!(a.relaxed||b.relaxed),boundary:!!(a.boundary&&b.boundary),mode:a.mode===b.mode?a.mode:"BLENDED"};}
 
   edgeWaterPoint(a,mid,b,t){const q=clamp(Number(t||0),0,1);return q<=.5?this.lerpWaterPoint(a,mid,q*2):this.lerpWaterPoint(mid,b,(q-.5)*2);}
 
   waterPatchGrid(tile,allMap){
     const terrainRing=this.surfaceResolver.ringSamples(tile,allMap),ring=terrainRing.map((sample,index)=>this.shorelinePoint(tile,index,sample,allMap));
     const steps=[0,1/3,2/3,1],nw=ring[0],ne=ring[2],se=ring[4],sw=ring[6],grid=[];
-    for(const t of steps){
+    const boundaryTop=ring[1].mode==="MAP_BOUNDARY",boundaryRight=ring[3].mode==="MAP_BOUNDARY",boundaryBottom=ring[5].mode==="MAP_BOUNDARY",boundaryLeft=ring[7].mode==="MAP_BOUNDARY";
+    for(let rowIndex=0;rowIndex<steps.length;rowIndex++){
+      const t=steps[rowIndex];
       const left=this.edgeWaterPoint(nw,ring[7],sw,t),right=this.edgeWaterPoint(ne,ring[3],se,t),row=[];
-      for(const q of steps){
+      for(let colIndex=0;colIndex<steps.length;colIndex++){
+        const q=steps[colIndex];
         const top=this.edgeWaterPoint(nw,ring[1],ne,q),bottom=this.edgeWaterPoint(sw,ring[5],se,q);
         const bilinear=(field)=>(1-q)*(1-t)*Number(nw[field])+q*(1-t)*Number(ne[field])+(1-q)*t*Number(sw[field])+q*t*Number(se[field]);
+        const mapBoundary=(rowIndex===0&&boundaryTop)||(rowIndex===steps.length-1&&boundaryBottom)||(colIndex===0&&boundaryLeft)||(colIndex===steps.length-1&&boundaryRight);
         row.push({
           x:(1-t)*Number(top.x)+t*Number(bottom.x)+(1-q)*Number(left.x)+q*Number(right.x)-bilinear("x"),
           z:(1-t)*Number(top.z)+t*Number(bottom.z)+(1-q)*Number(left.z)+q*Number(right.z)-bilinear("z"),
           level:(1-t)*Number(top.level)+t*Number(bottom.level)+(1-q)*Number(left.level)+q*Number(right.level)-bilinear("level"),
           clipped:(t===0&&top.clipped)||(t===1&&bottom.clipped)||(q===0&&left.clipped)||(q===1&&right.clipped),
           relaxed:(t===0&&top.relaxed)||(t===1&&bottom.relaxed)||(q===0&&left.relaxed)||(q===1&&right.relaxed),
+          boundaryFade:mapBoundary?0:1,
           mode:"PATCH"
         });
       }
@@ -980,8 +1010,9 @@ export class WaterRenderer{
     const index=out.positions.length/3;
     out.positions.push(point.x,y,point.z);
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
-    out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
-    out.waveWeights.push(smooth01(visual.depth/.34));
+    const boundaryFade=clamp(point.boundaryFade??1,0,1);
+    out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha*boundaryFade);
+    out.waveWeights.push(smooth01(visual.depth/.34)*boundaryFade);
     out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
     this.accumulateVertexMotion(out,index,tile);
     cache.set(cacheKey,index);
@@ -1206,6 +1237,9 @@ export class WaterRenderer{
       naturalShoreline:true,
       shorelineRenderClearance:SHORE_RENDER_CLEARANCE,
       shorelineAlphaFadeDepth:SHORE_FADE_DEPTH,
+      mapBoundaryTermination:true,
+      mapBoundaryInset:MAP_BOUNDARY_INSET,
+      mapBoundaryWaveFade:true,
       topologyAwareShoreRelaxation:true,
       ruggedNaturalShoreline:true,
       ruggedRockBanks:true,
