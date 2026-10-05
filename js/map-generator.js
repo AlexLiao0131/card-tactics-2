@@ -144,13 +144,11 @@ export const MapGenerator=(()=>{
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
     // Only the authored upstream basin seeds the generated river. Ford connector
     // branches are gameplay crossings, not magical tributary springs.
-    let sources=rivers.filter(tile=>tile?.hydrologyAuthoredSource===true&&!drainKeys.has(key(tile.x,tile.y)));
-    if(!sources.length){
-      const naturalLeaves=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y))&&tile?.ford!==true&&!tile?.routeId);
-      const pool=naturalLeaves.length?naturalLeaves:leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
-      const minY=pool.length?Math.min(...pool.map(tile=>Number(tile.y||0))):Math.min(...rivers.map(tile=>Number(tile.y||0)));
-      sources=pool.filter(tile=>Number(tile.y||0)===minY);
-    }
+    const sources=rivers.filter(tile=>tile?.hydrologyAuthoredSource===true&&!drainKeys.has(key(tile.x,tile.y)));
+    // Source ownership is explicit. Never promote an ordinary river leaf/ford/route
+    // into a hydrology source: generated rivers must already have one authored
+    // OFF_MAP_SOURCE or SPRING_SOURCE origin.
+    if(!sources.length)throw new Error("Generated river is missing its authored hydrology source");
 
     for(const tile of rivers){tile.hydrologySource=false;tile.hydrologyDrain=false;}
     for(const tile of sources)tile.hydrologySource=true;
