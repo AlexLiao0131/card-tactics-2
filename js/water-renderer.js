@@ -839,6 +839,68 @@ export class WaterRenderer{
       :this.edgeNaturalTarget(tile,index,sample,allMap);
   }
 
+  oppositeDirection(dir){
+    if(!dir)return null;
+    return{dx:-Number(dir.dx||0),dy:-Number(dir.dy||0),
+      id:dir.id==="N"?"S":dir.id==="S"?"N":dir.id==="E"?"W":dir.id==="W"?"E":null};
+  }
+
+  cliffShorePoint(tile,index,allMap){
+    if(!this.terrainRenderer)return null;
+    const edgeDir=EDGE_DIR_BY_RING[index];
+    const cornerDir=CORNER_DIR_BY_RING[index];
+    const candidates=[];
+    if(edgeDir)candidates.push({dir:edgeDir,t:.5});
+    else if(cornerDir){
+      if(cornerDir.dy<0)candidates.push({dir:{id:"N",dx:0,dy:-1},t:cornerDir.dx<0?0:1});
+      if(cornerDir.dx>0)candidates.push({dir:{id:"E",dx:1,dy:0},t:cornerDir.dy<0?0:1});
+      if(cornerDir.dy>0)candidates.push({dir:{id:"S",dx:0,dy:1},t:cornerDir.dx>0?0:1});
+      if(cornerDir.dx<0)candidates.push({dir:{id:"W",dx:-1,dy:0},t:cornerDir.dy>0?0:1});
+    }
+    const tileElevation=this.surfaceResolver.elevationOf(tile);
+    for(const candidate of candidates){
+      const neighbor=allMap.get(keyOf(tile.x+candidate.dir.dx,tile.y+candidate.dir.dy));
+      if(!neighbor)continue;
+      const neighborElevation=this.surfaceResolver.elevationOf(neighbor);
+      let owner=null,dir=null;
+      if(neighborElevation-tileElevation>this.surfaceResolver.maxVisualSlopeDelta){
+        owner=neighbor;dir=this.oppositeDirection(candidate.dir);
+      }else if(tileElevation-neighborElevation>this.surfaceResolver.maxVisualSlopeDelta){
+        owner=tile;dir=candidate.dir;
+      }else continue;
+      const profile=this.terrainRenderer.cliffFaceProfile?.(owner,dir,allMap);
+      const point=profile&&this.sampleCliffProfile(profile.points,candidate.t);
+      if(point)return{x:Number(point.x),z:Number(point.z)};
+    }
+    return null;
+  }
+
+  shoreSearchTarget(tile,index,sample,allMap,anchor,naturalTarget){
+    const edgeDir=EDGE_DIR_BY_RING[index];
+    let dryTarget=null;
+    if(edgeDir){
+      const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
+      if(neighbor&&!hasAnyWater(neighbor)){
+        dryTarget={x:Number(neighbor.x)*TILE_SIZE,z:Number(neighbor.y)*TILE_SIZE};
+      }
+    }else{
+      const context=this.cornerContext(tile,index,allMap);
+      const dry=(context?.drySlots||[]).filter(slot=>slot.tile&&!hasAnyWater(slot.tile)).map(slot=>slot.tile);
+      const centroid=this.centroidOfTiles(dry);
+      if(centroid)dryTarget={x:centroid.x,z:centroid.z};
+    }
+    if(!dryTarget)return naturalTarget;
+
+    const dx=Number(naturalTarget.x)-Number(anchor.x),dz=Number(naturalTarget.z)-Number(anchor.z);
+    const length=Math.hypot(dx,dz);
+    const dryDistance=Math.hypot(dryTarget.x-Number(anchor.x),dryTarget.z-Number(anchor.z));
+    if(length<=EPSILON||dryDistance<=EPSILON)return dryTarget;
+    return{
+      x:Number(anchor.x)+dx/length*dryDistance,
+      z:Number(anchor.z)+dz/length*dryDistance
+    };
+  }
+
   mapBoundaryTarget(tile,sample){
     // Open-map water terminates exactly on the battlefield edge. Geometry stays
     // watertight; only wave displacement is suppressed at the cut face. Insetting
@@ -915,24 +977,23 @@ export class WaterRenderer{
       return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,boundary:false,mode};
     }
 
-    const target=this.naturalShoreTarget(tile,index,sample,allMap);
+    const cliffPoint=this.cliffShorePoint(tile,index,allMap);
+    if(cliffPoint){
+      return{x:cliffPoint.x,z:cliffPoint.z,level:ringWater,clipped:true,relaxed:false,boundary:false,mode};
+    }
+
     let anchor={x:cx,z:cz};
     let anchorLevel=visualSurface(tile);
-
     if(CORNER_DIR_BY_RING[index]){
       const context=this.cornerContext(tile,index,allMap);
       const centroid=this.centroidOfTiles(context?.members||[]);
       if(centroid){anchor={x:centroid.x,z:centroid.z};anchorLevel=centroid.level;}
     }
 
+    const natural=this.naturalShoreTarget(tile,index,sample,allMap);
+    const target=this.shoreSearchTarget(tile,index,sample,allMap,anchor,natural);
     const projected=this.projectShoreline(
-      anchor,
-      target,
-      anchorLevel,
-      ringWater,
-      allMap,
-      Number(sample.height||0),
-      tile
+      anchor,target,anchorLevel,ringWater,allMap,Number(sample.height||0),tile
     );
     return{
       ...projected,
@@ -1048,7 +1109,7 @@ export class WaterRenderer{
   }
 
   pushTerrainClippedTriangle(out,a,b,c,allMap,tile){
-    const threshold=SHORE_EPSILON;
+    const threshold=0;
     let polygon=[a,b,c].map(index=>({index,clearance:this.surfaceClearance(out,index,allMap,tile)}));
     const clipped=[];
     for(let i=0;i<polygon.length;i++){
@@ -1134,57 +1195,73 @@ export class WaterRenderer{
     if(drop<WATERFALL_MIN_DROP)return;
     const topWaterY=topLevel*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const bottomWaterY=bottomLevel*ELEVATION_HEIGHT+SURFACE_OFFSET;
-    // This is only a render-depth separation. Width, lip, foot and landing all
-    // come from TerrainRenderer / waterPatchGrid data below.
-    const wallRenderOffset=SURFACE_OFFSET*.75;
     const dirX=Number(dir.dx),dirZ=Number(dir.dy);
-    const makeRow=(points,progress,worldYForPoint)=>points.slice(0,columns).map((point,index)=>
-      this.addCascadeVertex(out,{
-        x:Number(point.x),z:Number(point.z),drop,
-        worldY:worldYForPoint(point,index)
-      },turbidity,edge.tile,progress)
-    );
+    const wallRenderOffset=SURFACE_OFFSET*.75;
+
+    const pointRow=(points,progress,worldYForPoint)=>points.slice(0,columns).map((point,index)=>({
+      x:Number(point.x),z:Number(point.z),drop,progress,
+      worldY:Number(worldYForPoint(point,index))
+    }));
 
     const rows=[];
-    // Exact upstream water edge: the waterfall starts on the same coordinates as
-    // the actual water patch, so there is no guessed lip width and no top seam.
-    rows.push(makeRow(highEdge,0,()=>topWaterY));
+    const appendRow=points=>{
+      if(points.length!==columns)return;
+      const previous=rows[rows.length-1];
+      if(previous&&points.every((point,index)=>
+        Math.hypot(point.x-previous[index].x,point.z-previous[index].z,point.worldY-previous[index].worldY)<=1e-7
+      ))return;
+      rows.push(points);
+    };
 
-    // TerrainRenderer owns the real rugged cliff boundary. Bridge the water patch
-    // to that exact lip, then coat the wall itself just in front of the rock plane.
-    const wallTop=cliff.slice(0,columns).map(point=>({
+    appendRow(pointRow(highEdge,0,()=>topWaterY));
+
+    const wall=cliff.slice(0,columns).map(point=>({
       x:Number(point.x)+dirX*wallRenderOffset,
       z:Number(point.z)+dirZ*wallRenderOffset,
-      topY:Number(point.topY),bottomY:Number(point.bottomY)
+      topY:Number(point.topY),
+      bottomY:Number(point.bottomY)
     }));
-    rows.push(makeRow(wallTop,.04,()=>topWaterY));
+    appendRow(pointRow(wall,.04,()=>topWaterY));
 
-    const footY=wallTop.map(point=>Math.max(bottomWaterY,Number(point.bottomY)+SURFACE_OFFSET));
+    const footY=wall.map(point=>Math.max(bottomWaterY,Number(point.bottomY)+SURFACE_OFFSET));
     for(const progress of [.34,.67,.94]){
-      rows.push(makeRow(wallTop,progress,(point,index)=>
+      appendRow(pointRow(wall,progress,(point,index)=>
         topWaterY+(footY[index]-topWaterY)*(progress/.94)
       ));
     }
 
-    // After the wall, follow the receiver's *actual rendered terrain* using the
-    // same 4x4 water-patch coordinates. Where terrain remains above the downstream
-    // water level the sheet hugs the floor; the instant the real terrain dips below
-    // the water surface it lands exactly on the downstream river geometry.
-    for(let step=1;step<lowRows.length;step++){
-      const sourceRow=lowRows[step].slice(0,columns);
-      const progress=.94+(step/(lowRows.length-1))*.06;
-      rows.push(makeRow(sourceRow,progress,(point)=>{
+    for(let step=0;step<lowRows.length;step++){
+      const source=lowRows[step].slice(0,columns);
+      const progress=.94+(step+1)/lowRows.length*.06;
+      const landing=source.map((point,index)=>{
+        const wallPoint=wall[index];
+        const along=(Number(point.x)-wallPoint.x)*dirX+(Number(point.z)-wallPoint.z)*dirZ;
+        const x=along>0?Number(point.x):wallPoint.x;
+        const z=along>0?Number(point.z):wallPoint.z;
         const terrain=this.renderedTerrainHeightForTilePoint(
-          edge.receiver,point.x,point.z,allMap,Number(edge.receiver?.elevation||0)
+          edge.receiver,x,z,allMap,Number(edge.receiver?.elevation||0)
         );
         const groundY=Number(terrain??edge.receiver?.elevation??0)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-        return Math.max(bottomWaterY,groundY);
-      }));
+        return{x,z,drop,progress,worldY:Math.max(bottomWaterY,groundY)};
+      });
+      appendRow(landing);
     }
 
-    for(let r=0;r<rows.length-1;r++)for(let c=0;c<columns-1;c++){
-      const a=rows[r][c],b=rows[r][c+1],d=rows[r+1][c],e=rows[r+1][c+1];
-      out.indices.push(a,b,e,a,e,d);
+    if(rows.length<2)return;
+    const grid=rows.map(row=>row.map(point=>this.addCascadeVertex(
+      out,point,turbidity,edge.tile,point.progress
+    )));
+
+    const distance3=(a,b)=>{
+      const ax=out.positions[a*3],ay=out.positions[a*3+1],az=out.positions[a*3+2];
+      const bx=out.positions[b*3],by=out.positions[b*3+1],bz=out.positions[b*3+2];
+      return (ax-bx)**2+(ay-by)**2+(az-bz)**2;
+    };
+
+    for(let r=0;r<grid.length-1;r++)for(let c=0;c<columns-1;c++){
+      const a=grid[r][c],b=grid[r][c+1],d=grid[r+1][c],e=grid[r+1][c+1];
+      if(distance3(a,e)<=distance3(b,d))out.indices.push(a,b,e,a,e,d);
+      else out.indices.push(a,b,d,b,e,d);
     }
   }
 
