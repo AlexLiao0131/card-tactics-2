@@ -15,7 +15,6 @@ const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const SHORE_EPSILON=.002;
 const SHORE_RENDER_CLEARANCE=.035;
-const SHORE_FADE_DEPTH=.11;
 const SHORE_CONVEX_INSET=.10;
 const SHORE_PAIR_INSET=.05;
 const SHORE_CONCAVE_OUTSET=0;
@@ -76,6 +75,7 @@ function mixColor(a,b,t){
 export class WaterRenderer{
   constructor(scene,terrainRenderer=null){
     this.scene=scene;
+    this.terrainRenderer=terrainRenderer||null;
     this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.surfaceMeshes=new Map();
     this.surfaceAnimations=new Map();
@@ -913,6 +913,56 @@ export class WaterRenderer{
 
   edgeWaterPoint(a,mid,b,t){const q=clamp(Number(t||0),0,1);return q<=.5?this.lerpWaterPoint(a,mid,q*2):this.lerpWaterPoint(mid,b,(q-.5)*2);}
 
+  terrainDir(dx,dy){
+    if(dx===0&&dy<0)return{id:"N",dx:0,dy:-1};
+    if(dx>0&&dy===0)return{id:"E",dx:1,dy:0};
+    if(dx===0&&dy>0)return{id:"S",dx:0,dy:1};
+    if(dx<0&&dy===0)return{id:"W",dx:-1,dy:0};
+    return null;
+  }
+
+  cliffGuideForEdge(tile,edgeDir,allMap){
+    if(!tile||!edgeDir||!this.terrainRenderer?.cliffRoughPolyline)return null;
+    const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
+    if(!neighbor)return null;
+    const a=this.surfaceResolver.elevationOf(tile),b=this.surfaceResolver.elevationOf(neighbor);
+    if(Math.abs(a-b)<=this.surfaceResolver.maxVisualSlopeDelta)return null;
+    const high=a>b?tile:neighbor,low=high===tile?neighbor:tile;
+    const dx=Math.sign(Number(low.x)-Number(high.x)),dy=Math.sign(Number(low.y)-Number(high.y));
+    const dir=this.terrainDir(dx,dy);
+    if(!dir)return null;
+    const points=this.terrainRenderer.cliffRoughPolyline(high,dir)||[];
+    return points.length>1?{high,low,dir,points}:null;
+  }
+
+  closestPointOnPolyline(points,targetX,targetZ){
+    let best=null;
+    for(let i=0;i<points.length-1;i++){
+      const a=points[i],b=points[i+1],vx=Number(b.x)-Number(a.x),vz=Number(b.z)-Number(a.z);
+      const len2=vx*vx+vz*vz;
+      const t=len2>EPSILON?clamp(((targetX-Number(a.x))*vx+(targetZ-Number(a.z))*vz)/len2,0,1):0;
+      const x=Number(a.x)+vx*t,z=Number(a.z)+vz*t,d2=(x-targetX)*(x-targetX)+(z-targetZ)*(z-targetZ);
+      if(!best||d2<best.d2)best={x,z,d2};
+    }
+    return best?{x:best.x,z:best.z}:null;
+  }
+
+  alignPatchEdgeToCliff(tile,allMap,grid,edgeDir){
+    const guide=this.cliffGuideForEdge(tile,edgeDir,allMap);
+    if(!guide)return false;
+    const last=grid.length-1;
+    const entries=edgeDir.dy<0?grid[0]
+      :edgeDir.dy>0?grid[last]
+      :edgeDir.dx<0?grid.map(row=>row[0])
+      :grid.map(row=>row[last]);
+    for(const point of entries){
+      const matched=this.closestPointOnPolyline(guide.points,Number(point.x),Number(point.z));
+      if(!matched)continue;
+      point.x=matched.x;point.z=matched.z;point.boundaryWaveFade=0;point.cliffLocked=true;
+    }
+    return true;
+  }
+
   waterPatchGrid(tile,allMap){
     const terrainRing=this.surfaceResolver.ringSamples(tile,allMap),ring=terrainRing.map((sample,index)=>this.shorelinePoint(tile,index,sample,allMap));
     const steps=[0,1/3,2/3,1],nw=ring[0],ne=ring[2],se=ring[4],sw=ring[6],grid=[];
@@ -925,18 +975,30 @@ export class WaterRenderer{
         const top=this.edgeWaterPoint(nw,ring[1],ne,q),bottom=this.edgeWaterPoint(sw,ring[5],se,q);
         const bilinear=(field)=>(1-q)*(1-t)*Number(nw[field])+q*(1-t)*Number(ne[field])+(1-q)*t*Number(sw[field])+q*t*Number(se[field]);
         const mapBoundary=(rowIndex===0&&boundaryTop)||(rowIndex===steps.length-1&&boundaryBottom)||(colIndex===0&&boundaryLeft)||(colIndex===steps.length-1&&boundaryRight);
+        const topLocked=ring[1].mode!=="INTERNAL",rightLocked=ring[3].mode!=="INTERNAL",bottomLocked=ring[5].mode!=="INTERNAL",leftLocked=ring[7].mode!=="INTERNAL";
+        let edgeWaveFade=1;
+        if(topLocked)edgeWaveFade=Math.min(edgeWaveFade,smooth01(t*3));
+        if(bottomLocked)edgeWaveFade=Math.min(edgeWaveFade,smooth01((1-t)*3));
+        if(leftLocked)edgeWaveFade=Math.min(edgeWaveFade,smooth01(q*3));
+        if(rightLocked)edgeWaveFade=Math.min(edgeWaveFade,smooth01((1-q)*3));
         row.push({
           x:(1-t)*Number(top.x)+t*Number(bottom.x)+(1-q)*Number(left.x)+q*Number(right.x)-bilinear("x"),
           z:(1-t)*Number(top.z)+t*Number(bottom.z)+(1-q)*Number(left.z)+q*Number(right.z)-bilinear("z"),
           level:(1-t)*Number(top.level)+t*Number(bottom.level)+(1-q)*Number(left.level)+q*Number(right.level)-bilinear("level"),
           clipped:(t===0&&top.clipped)||(t===1&&bottom.clipped)||(q===0&&left.clipped)||(q===1&&right.clipped),
           relaxed:(t===0&&top.relaxed)||(t===1&&bottom.relaxed)||(q===0&&left.relaxed)||(q===1&&right.relaxed),
-          boundaryWaveFade:mapBoundary?0:1,
+          boundaryWaveFade:mapBoundary?0:edgeWaveFade,
           mode:"PATCH"
         });
       }
       grid.push(row);
     }
+    // Water and cliff must share one silhouette. Reuse TerrainRenderer's exact
+    // rugged cliff polyline instead of generating a second shoreline boundary.
+    this.alignPatchEdgeToCliff(tile,allMap,grid,{dx:0,dy:-1});
+    this.alignPatchEdgeToCliff(tile,allMap,grid,{dx:1,dy:0});
+    this.alignPatchEdgeToCliff(tile,allMap,grid,{dx:0,dy:1});
+    this.alignPatchEdgeToCliff(tile,allMap,grid,{dx:-1,dy:0});
     return{grid,ring};
   }
 
@@ -956,11 +1018,11 @@ export class WaterRenderer{
       WATER_SHALLOW_ALPHA,
       .88
     );
-    // The geometry already clips against the terrain. Fade the last few
-    // centimetres as well so the alpha-blended surface cannot read as a blue
-    // decal pasted over the dry bank while preserving visible shallow fords.
-    const shoreFade=smooth01(depth/SHORE_FADE_DEPTH);
-    const alpha=clamp(bodyAlpha*shoreFade,0,.88);
+    // Geometry owns the shoreline. Making alpha approach zero at the same edge
+    // exposes the terrain triangles underneath and creates dark X / hairline seams
+    // at cliffs on mobile. Once the vertex has been geometrically clipped, keep
+    // the water body alpha continuous up to that boundary.
+    const alpha=bodyAlpha;
     return{depth,color,alpha};
   }
 
@@ -1010,21 +1072,34 @@ export class WaterRenderer{
   }
 
   appendCascadeSheet(out,edge,turbidity){
-    // The waterfall is a thin curtain of the same water mesh on the authored
-    // shared edge. No separate ribbon object, no foam ring, and no forward strip
-    // crossing the receiving tile. A tiny downstream offset only prevents z-fight
-    // with the cliff face while visually reading as water coating that wall.
-    const dirX=Number(edge.dx||0),dirZ=Number(edge.dy||0),perpX=-dirZ,perpZ=dirX;
+    // The cascade coats the exact terrain cliff silhouette. The previous straight
+    // curtain lived on the logical grid edge while TerrainRenderer pushes the real
+    // cliff face outward, so most of the waterfall was literally buried inside rock.
+    const dx=Number(edge.dx||0),dy=Number(edge.dy||0),dir=this.terrainDir(dx,dy);
+    const rough=dir&&this.terrainRenderer?.cliffRoughPolyline
+      ?this.terrainRenderer.cliffRoughPolyline(edge.tile,dir)
+      :null;
     const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
     const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
-    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,drop=Math.max(0,Number(edge.drop||0));
-    const width=TILE_SIZE*.86,half=width*.5,offset=TILE_SIZE*.010;
-    const x=edgeX+dirX*offset,z=edgeZ+dirZ*offset;
-    const topLeft=this.addCascadeVertex(out,{x:x-perpX*half,z:z-perpZ*half,level:Number(edge.top),drop},turbidity,edge.tile,0);
-    const topRight=this.addCascadeVertex(out,{x:x+perpX*half,z:z+perpZ*half,level:Number(edge.top),drop},turbidity,edge.tile,0);
-    const bottomLeft=this.addCascadeVertex(out,{x:x-perpX*half,z:z-perpZ*half,level:Number(edge.bottom),drop},turbidity,edge.tile,1);
-    const bottomRight=this.addCascadeVertex(out,{x:x+perpX*half,z:z+perpZ*half,level:Number(edge.bottom),drop},turbidity,edge.tile,1);
-    out.indices.push(topLeft,topRight,bottomRight,topLeft,bottomRight,bottomLeft);
+    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,perpX=-dy,perpZ=dx,half=TILE_SIZE*.43;
+    const points=rough?.length>1?rough:[
+      {x:edgeX-perpX*half,z:edgeZ-perpZ*half},
+      {x:edgeX+perpX*half,z:edgeZ+perpZ*half}
+    ];
+    const drop=Math.max(0,Number(edge.drop||0)),offset=TILE_SIZE*.014;
+    const topLevel=Number(edge.top),bottomLevel=Number(edge.bottom);
+    let previous=null;
+    for(const point of points){
+      const fx=Number(point.x)+dx*offset,fz=Number(point.z)+dy*offset;
+      const shoulder=this.addCascadeVertex(out,{x:Number(point.x),z:Number(point.z),level:topLevel,drop},turbidity,edge.tile,0);
+      const top=this.addCascadeVertex(out,{x:fx,z:fz,level:topLevel,drop},turbidity,edge.tile,0);
+      const bottom=this.addCascadeVertex(out,{x:fx,z:fz,level:bottomLevel,drop},turbidity,edge.tile,1);
+      if(previous){
+        out.indices.push(previous.shoulder,shoulder,top,previous.shoulder,top,previous.top);
+        out.indices.push(previous.top,top,bottom,previous.top,bottom,previous.bottom);
+      }
+      previous={shoulder,top,bottom};
+    }
   }
 
   buildSurface(component,state,cascades=[]){
