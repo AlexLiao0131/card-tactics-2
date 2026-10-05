@@ -891,13 +891,27 @@ export class WaterRenderer{
     }
     if(!dryTarget)return naturalTarget;
 
-    const dx=Number(naturalTarget.x)-Number(anchor.x),dz=Number(naturalTarget.z)-Number(anchor.z);
-    const length=Math.hypot(dx,dz);
-    const dryDistance=Math.hypot(dryTarget.x-Number(anchor.x),dryTarget.z-Number(anchor.z));
-    if(length<=EPSILON||dryDistance<=EPSILON)return dryTarget;
+    // Geometry owns the shoreline normal: search from the wet anchor toward the
+    // actual dry neighbour / dry-corner centroid. Natural shoreline styling is
+    // allowed to perturb only along the bank tangent. It must never rotate the
+    // search ray away from the real dry terrain, which was the source of wedges
+    // and gaps after rugged/convex offsets were treated as the geometry target.
+    const dryDx=Number(dryTarget.x)-Number(anchor.x);
+    const dryDz=Number(dryTarget.z)-Number(anchor.z);
+    const dryDistance=Math.hypot(dryDx,dryDz);
+    if(dryDistance<=EPSILON)return dryTarget;
+    const nx=dryDx/dryDistance,nz=dryDz/dryDistance;
+    const tx=-nz,tz=nx;
+
+    const baseX=Number(tile.x)*TILE_SIZE+Number(sample?.ox||0)*TILE_SIZE;
+    const baseZ=Number(tile.y)*TILE_SIZE+Number(sample?.oz||0)*TILE_SIZE;
+    const visualDx=Number(naturalTarget.x)-baseX;
+    const visualDz=Number(naturalTarget.z)-baseZ;
+    const tangentOffset=visualDx*tx+visualDz*tz;
+
     return{
-      x:Number(anchor.x)+dx/length*dryDistance,
-      z:Number(anchor.z)+dz/length*dryDistance
+      x:Number(anchor.x)+nx*dryDistance+tx*tangentOffset,
+      z:Number(anchor.z)+nz*dryDistance+tz*tangentOffset
     };
   }
 
