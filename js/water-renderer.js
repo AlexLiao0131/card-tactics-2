@@ -14,14 +14,12 @@ const EPSILON=.001;
 const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const SHORE_EPSILON=.002;
-const SHORE_RENDER_CLEARANCE=.035;
-const SHORE_FADE_DEPTH=.11;
-const SHORE_CONVEX_INSET=.10;
-const SHORE_PAIR_INSET=.05;
-const SHORE_CONCAVE_OUTSET=0;
-const SHORE_EDGE_RELAX=.28;
+const SHORE_CONVEX_INSET=.20;
+const SHORE_PAIR_INSET=.08;
+const SHORE_CONCAVE_OUTSET=.10;
+const SHORE_EDGE_RELAX=.38;
 const SHORE_SEARCH_STEPS=12;
-const SHORE_RUGGEDNESS=.045;
+const SHORE_RUGGEDNESS=.11;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
@@ -214,24 +212,16 @@ export class WaterRenderer{
         waterWaveValue=waterAmbientWave(vec3(waterBaseXZ.x,positionUpdated.y,waterBaseXZ.y),waterAnim);
         positionUpdated.y+=waterWaveValue.x*waterAnim.w;
       `);
-      m.Vertex_MainEnd(`
-        vWaterCascade=waterCascade;
-      `);
-      m.Fragment_Definitions(`
-        varying vec2 vWaterCascade;
-      `);
+      m.Vertex_MainEnd(`vWaterCascade=waterCascade;`);
+      m.Fragment_Definitions(`varying vec2 vWaterCascade;`);
       m.Fragment_Custom_Diffuse(`
-        if(vWaterCascade.x>.5){
-          float waterfallP=clamp(vWaterCascade.y,0.0,1.0);
-          // Bands travel toward larger progress values, i.e. from the lip down
-          // the cliff. This is presentation only; the hydrology surface is unchanged.
-          float fallBand=.5+.5*sin(waterfallP*34.0-waterTime*8.5);
-          float fallBand2=.5+.5*sin(waterfallP*55.0-waterTime*12.0+2.1);
-          float streak=pow(max(fallBand,fallBand2*.82),5.0);
-          float lipFoam=1.0-smoothstep(.0,.11,waterfallP);
-          float landingFoam=smoothstep(.82,1.0,waterfallP);
-          float brighten=clamp(streak*.34+lipFoam*.20+landingFoam*.30,0.0,.58);
-          baseColor.rgb=mix(baseColor.rgb,vec3(.82,.95,1.0),brighten);
+        if(vWaterCascade.y>.5){
+          float cascadePhase=vWaterCascade.x*18.0-waterTime*5.2;
+          float cascadeStreak=.5+.5*sin(cascadePhase);
+          float cascadeFine=.5+.5*sin(cascadePhase*1.87+vPositionW.x*2.6+vPositionW.z*2.2);
+          float cascadeFoam=smoothstep(.70,1.0,cascadeStreak)*.22+smoothstep(.76,1.0,cascadeFine)*.10;
+          float lipFoam=(1.0-smoothstep(.0,.13,vWaterCascade.x))+smoothstep(.87,1.0,vWaterCascade.x);
+          baseColor.rgb=mix(baseColor.rgb,vec3(.86,.96,1.0),clamp(cascadeFoam+lipFoam*.12,0.0,.38));
         }
       `);
       m.Vertex_Before_NormalUpdated(`
@@ -585,17 +575,12 @@ export class WaterRenderer{
     const aSurface=visualSurface(a),bSurface=visualSurface(b),delta=aSurface-bSurface,drop=Math.abs(delta);
     const ab=this.cascadeMatches(a,b),ba=this.cascadeMatches(b,a);
 
-    // A waterfall exists only on a real downhill water path. Authored cascade
-    // metadata is preferred, but generated rivers already carry canonical flow
-    // direction; if that flow crosses a real water-surface drop, render the fall
-    // even when the generator omitted the redundant cascade marker. This avoids
-    // turning unrelated neighbouring water levels into fake waterfalls.
-    if(ab&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:a,low:b,authored:true,flowDerived:false};
-    if(ba&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:b,low:a,authored:true,flowDerived:false};
-    const abFlow=a?.river===true&&b?.river===true&&delta>0&&this.flowMatches(a,b);
-    const baFlow=a?.river===true&&b?.river===true&&delta<0&&this.flowMatches(b,a);
-    if(drop>=WATERFALL_MIN_DROP&&abFlow)return{type:"CASCADE",drop,high:a,low:b,authored:false,flowDerived:true};
-    if(drop>=WATERFALL_MIN_DROP&&baFlow)return{type:"CASCADE",drop,high:b,low:a,authored:false,flowDerived:true};
+    // Geometry separation and waterfall rendering are intentionally different
+    // concepts. A real surface break must stop two water meshes from stitching
+    // into one giant sloped sheet, but only an authored Hydrology cascade whose
+    // flow actually points at the lower receiver may create a waterfall ribbon.
+    if(ab&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:a,low:b,authored:true};
+    if(ba&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:b,low:a,authored:true};
     if(drop>=WATERFALL_MIN_DROP){
       return delta>=0
         ?{type:"LEVEL_BREAK",drop,high:a,low:b,authored:false}
@@ -871,37 +856,19 @@ export class WaterRenderer{
       return{value:level-Number(resolved||0),x,z,level};
     };
 
-    // A shoreline vertex must remain slightly inside real water. Ending exactly
-    // where water and terrain are coplanar leaves a translucent blue sheet on top
-    // of the bank (especially obvious in Safari). Wet-bank colour belongs to the
-    // terrain renderer; the water mesh stops before that visual contact band.
     const end=clearance(1);
-    if(end.value>SHORE_RENDER_CLEARANCE)return{x:end.x,z:end.z,level:end.level,clipped:false};
+    if(end.value>=-SHORE_EPSILON)return{x:end.x,z:end.z,level:end.level,clipped:false};
 
     const start=clearance(0);
-    if(start.value<=SHORE_RENDER_CLEARANCE+SHORE_EPSILON)return{x:start.x,z:start.z,level:start.level,clipped:true};
+    if(start.value<=SHORE_EPSILON)return{x:start.x,z:start.z,level:start.level,clipped:true};
 
     let low=0,high=1;
     for(let i=0;i<SHORE_SEARCH_STEPS;i++){
       const mid=(low+high)/2;
-      if(clearance(mid).value>=SHORE_RENDER_CLEARANCE)low=mid;else high=mid;
+      if(clearance(mid).value>=0)low=mid;else high=mid;
     }
-    const hit=clearance(low);
+    const hit=clearance((low+high)/2);
     return{x:hit.x,z:hit.z,level:hit.level,clipped:true};
-  }
-
-  hardBankAtRing(tile,index,allMap,mode){
-    if(mode==="MAP_BOUNDARY"||mode==="CASCADE"||mode==="LEVEL_BREAK")return true;
-    if(mode!=="SHORE")return false;
-    const edgeDir=EDGE_DIR_BY_RING[index];
-    if(edgeDir){
-      const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
-      return !!neighbor&&!hasAnyWater(neighbor)&&!this.surfaceResolver.canSlope(tile,neighbor);
-    }
-    const context=this.cornerContext(tile,index,allMap);
-    if(!context)return false;
-    const dry=context.drySlots.filter(slot=>slot.tile).map(slot=>slot.tile);
-    return (context.members||[]).some(wet=>dry.some(bank=>!this.surfaceResolver.canSlope(wet,bank)));
   }
 
   shorelinePoint(tile,index,sample,allMap){
@@ -913,12 +880,11 @@ export class WaterRenderer{
 
     if(mode==="MAP_BOUNDARY"){
       const target=this.mapBoundaryTarget(tile,sample);
-      return{x:target.x,z:target.z,level:ringWater,clipped:true,relaxed:false,boundary:true,hardBank:true,shoreFade:false,mode};
+      return{x:target.x,z:target.z,level:ringWater,clipped:true,relaxed:false,boundary:true,mode};
     }
 
     if(mode!=="SHORE"){
-      const hardBank=this.hardBankAtRing(tile,index,allMap,mode);
-      return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,boundary:false,hardBank,shoreFade:false,mode};
+      return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,boundary:false,mode};
     }
 
     const target=this.naturalShoreTarget(tile,index,sample,allMap);
@@ -939,23 +905,15 @@ export class WaterRenderer{
       allMap,
       Number(sample.height||0)
     );
-    const half=TILE_SIZE*.5;
-    // Shore geometry belongs to this wet tile. Never let smoothing/ruggedness push
-    // a water triangle across the shared edge onto a dry or higher terrain tile.
-    projected.x=clamp(projected.x,cx-half,cx+half);
-    projected.z=clamp(projected.z,cz-half,cz+half);
-    const hardBank=this.hardBankAtRing(tile,index,allMap,mode);
     return{
       ...projected,
       relaxed:Math.hypot(target.x-fullX,target.z-fullZ)>EPSILON,
       boundary:false,
-      hardBank,
-      shoreFade:!hardBank,
       mode
     };
   }
 
-  lerpWaterPoint(a,b,t){const q=clamp(Number(t||0),0,1);return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,level:Number(a.level)+(Number(b.level)-Number(a.level))*q,clipped:!!(a.clipped||b.clipped),relaxed:!!(a.relaxed||b.relaxed),boundary:!!(a.boundary&&b.boundary),hardBank:!!(a.hardBank||b.hardBank),shoreFade:!!(a.shoreFade||b.shoreFade),mode:a.mode===b.mode?a.mode:"BLENDED"};}
+  lerpWaterPoint(a,b,t){const q=clamp(Number(t||0),0,1);return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,level:Number(a.level)+(Number(b.level)-Number(a.level))*q,clipped:!!(a.clipped||b.clipped),relaxed:!!(a.relaxed||b.relaxed),boundary:!!(a.boundary&&b.boundary),mode:a.mode===b.mode?a.mode:"BLENDED"};}
 
   edgeWaterPoint(a,mid,b,t){const q=clamp(Number(t||0),0,1);return q<=.5?this.lerpWaterPoint(a,mid,q*2):this.lerpWaterPoint(mid,b,(q-.5)*2);}
 
@@ -978,8 +936,6 @@ export class WaterRenderer{
           clipped:(t===0&&top.clipped)||(t===1&&bottom.clipped)||(q===0&&left.clipped)||(q===1&&right.clipped),
           relaxed:(t===0&&top.relaxed)||(t===1&&bottom.relaxed)||(q===0&&left.relaxed)||(q===1&&right.relaxed),
           boundaryWaveFade:mapBoundary?0:1,
-          hardBank:!!((rowIndex===0&&top.hardBank)||(rowIndex===steps.length-1&&bottom.hardBank)||(colIndex===0&&left.hardBank)||(colIndex===steps.length-1&&right.hardBank)),
-          shoreFade:!!((rowIndex===0&&top.shoreFade)||(rowIndex===steps.length-1&&bottom.shoreFade)||(colIndex===0&&left.shoreFade)||(colIndex===steps.length-1&&right.shoreFade)),
           mode:"PATCH"
         });
       }
@@ -999,17 +955,11 @@ export class WaterRenderer{
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
     const murky=clamp(Number(turbidity||0),0,1);
     if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
-    const bodyAlpha=clamp(
+    const alpha=clamp(
       WATER_SHALLOW_ALPHA+(WATER_DEEP_ALPHA-WATER_SHALLOW_ALPHA)*t+murky*.06,
       WATER_SHALLOW_ALPHA,
       .88
     );
-    // Transparency belongs to the actual soft shoreline only. Applying a depth
-    // fade to every shallow vertex exposes the triangle grid and creates the dark
-    // seams seen on iPhone. Cliff lips, level breaks and map boundaries stay solid.
-    const softShore=point?.shoreFade===true&&point?.hardBank!==true;
-    const shoreFactor=softShore?(.30+.70*smooth01(depth/.16)):1;
-    const alpha=clamp(bodyAlpha*shoreFactor,WATER_SHALLOW_ALPHA*.30,.88);
     return{depth,color,alpha};
   }
 
@@ -1056,30 +1006,32 @@ export class WaterRenderer{
     out.colors.push(color[0],color[1],color[2],alpha);
     out.waveWeights.push(0);
     out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
-    out.cascadeData.push(1,clamp(progress,0,1));
+    out.cascadeData.push(clamp(progress,0,1),1);
     return index;
   }
 
   appendCascadeSheet(out,edge,turbidity){
-    // The waterfall remains part of the same water mesh. A short top lip overlaps
-    // the upper surface, the middle sections coat the cliff face, and a short
-    // landing overlaps the lower surface. No second renderer, foam object or ring.
+    // Cascade geometry is part of the same water mesh. It approaches the cliff lip,
+    // coats the rock face just outside the depth plane, then reconnects to the lower
+    // water surface. This prevents the terrain wall from depth-occluding the fall.
     const dirX=Number(edge.dx||0),dirZ=Number(edge.dy||0),perpX=-dirZ,perpZ=dirX;
     const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
     const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
     const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,drop=Math.max(0,Number(edge.drop||0));
-    const width=TILE_SIZE*.86,half=width*.5;
+    const width=TILE_SIZE*.68,half=width*.5;
+    const faceOffset=TILE_SIZE*.032;
     const sections=[
-      {forward:-TILE_SIZE*.035,level:Number(edge.top),p:0},
-      {forward:TILE_SIZE*.004,level:Number(edge.top),p:.06},
-      {forward:TILE_SIZE*.006,level:Number(edge.bottom),p:.94},
-      {forward:TILE_SIZE*.055,level:Number(edge.bottom),p:1}
+      {forward:-TILE_SIZE*.10,level:Number(edge.top),p:0},
+      {forward: faceOffset,level:Number(edge.top)-Math.min(drop*.025,.025),p:.08},
+      {forward: faceOffset,level:Number(edge.top)-drop*.50,p:.50},
+      {forward: faceOffset,level:Number(edge.bottom)+Math.min(drop*.025,.025),p:.92},
+      {forward: TILE_SIZE*.13,level:Number(edge.bottom),p:1}
     ];
     let previous=null;
     for(const section of sections){
-      const x=edgeX+dirX*section.forward,z=edgeZ+dirZ*section.forward;
-      const left=this.addCascadeVertex(out,{x:x-perpX*half,z:z-perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
-      const right=this.addCascadeVertex(out,{x:x+perpX*half,z:z+perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
+      const centerX=edgeX+dirX*section.forward,centerZ=edgeZ+dirZ*section.forward;
+      const left=this.addCascadeVertex(out,{x:centerX-perpX*half,z:centerZ-perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
+      const right=this.addCascadeVertex(out,{x:centerX+perpX*half,z:centerZ+perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
       if(previous)out.indices.push(previous.left,previous.right,right,previous.left,right,left);
       previous={left,right};
     }
@@ -1202,8 +1154,8 @@ export class WaterRenderer{
       shorelineSkirts:false,
       terrainClippedShoreline:true,
       naturalShoreline:true,
-      shorelineRenderClearance:SHORE_RENDER_CLEARANCE,
-      shorelineAlphaFadeDepth:SHORE_FADE_DEPTH,
+      shorelineRenderClearance:0,
+      shorelineAlphaFadeDepth:0,
       mapBoundaryTermination:true,
       mapBoundaryInset:0,
       mapBoundaryWaveFade:true,
@@ -1239,8 +1191,7 @@ export class WaterRenderer{
       transparentDepthPrePass:false,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       cascadesRequireHydrologyDirection:true,
-      cascadesRequireHydrologyMetadata:false,
-      cascadesAcceptDirectedRiverSurfaceDrop:true,
+      cascadesRequireHydrologyMetadata:true,
       cascadesRequireDownstreamWater:true
     };
   }
