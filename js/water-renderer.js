@@ -583,6 +583,15 @@ export class WaterRenderer{
     if(ab&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:a,low:b,authored:true};
     if(ba&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:b,low:a,authored:true};
     if(drop>=WATERFALL_MIN_DROP){
+      // A hydrology surface difference is not automatically a vertical break.
+      // When the terrain resolver says the two cells form a traversable slope,
+      // they belong to one continuous water sheet: their shared edge gets one
+      // common level in ringWaterLevel(), and waterPatchGrid() interpolates the
+      // upstream/downstream levels across the existing mesh. Only a real terrain
+      // break may split the surface and become a waterfall.
+      if(this.surfaceResolver.canSlope(a,b)){
+        return{type:"CONTINUOUS",drop,high:null,low:null,authored:false,slope:true};
+      }
       return delta>=0
         ?{type:"LEVEL_BREAK",drop,high:a,low:b,authored:false}
         :{type:"LEVEL_BREAK",drop,high:b,low:a,authored:false};
@@ -1317,6 +1326,8 @@ export class WaterRenderer{
       windWaveStrength:Number(this.wind?.strength||0),
       refinedWaterTopology:true,
       edgeTopologyFromHydrologySurface:true,
+      slopeWaterUsesSharedEdgeLevels:true,
+      slopeWaterContinuousByTerrainResolver:true,
       implicitLevelBreaksRenderedAsCascades:false,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
