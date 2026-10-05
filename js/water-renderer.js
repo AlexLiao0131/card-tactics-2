@@ -16,13 +16,12 @@ const WATERFALL_MIN_DROP=.18;
 const SHORE_EPSILON=.002;
 const SHORE_RENDER_CLEARANCE=.035;
 const SHORE_FADE_DEPTH=.11;
-const SHORE_CONVEX_INSET=.20;
-const SHORE_PAIR_INSET=.08;
-const SHORE_CONCAVE_OUTSET=.10;
-const SHORE_EDGE_RELAX=.38;
+const SHORE_CONVEX_INSET=.10;
+const SHORE_PAIR_INSET=.05;
+const SHORE_CONCAVE_OUTSET=0;
+const SHORE_EDGE_RELAX=.28;
 const SHORE_SEARCH_STEPS=12;
-const SHORE_RUGGEDNESS=.11;
-const MAP_BOUNDARY_INSET=.08;
+const SHORE_RUGGEDNESS=.045;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
@@ -80,9 +79,8 @@ export class WaterRenderer{
     this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.surfaceMeshes=new Map();
     this.surfaceAnimations=new Map();
-    this.cascades=new Map();
     this.surfaceSignature="";
-    this.cascadeSignature="";
+    this.embeddedCascadeCount=0;
     this.waveTime=0;
     this.waveAccumulator=0;
     this.wind={x:0,z:0,strength:0};
@@ -92,11 +90,6 @@ export class WaterRenderer{
     this.whirlpools=new Map();
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
-
-    const cascade=this.makeCascadeMaterial();
-    this.cascadeMaterial=cascade.material;
-    this.cascadeTexture=cascade.texture;
-    this.foamMaterial=this.makeSideMaterial("water-foam",new BABYLON.Color3(.78,.93,1),.52);
     this.rogueFoamMaterial=this.makeSideMaterial("rogue-wave-foam",new BABYLON.Color3(.90,.98,1),.86);
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
@@ -131,19 +124,6 @@ export class WaterRenderer{
         }
       }
       for(const whirl of this.whirlpools.values())this.updateWhirlpoolVisual(whirl,dt);
-      this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
-      for(const entry of this.cascades.values()){
-        entry.foam.rotation.y+=dt*.7;
-        const p=1+Math.sin(this.waveTime*3.2+entry.phase)*.07;
-        entry.foam.scaling.set(1.05*p,.30,.56*p);
-        for(let i=0;i<(entry.ripples||[]).length;i++){
-          const ripple=entry.ripples[i];
-          const q=(this.waveTime*.72+entry.phase*.07+i*.46)%1;
-          const scale=.55+q*.95;
-          ripple.scaling.set(scale,.22,scale*.68);
-          ripple.visibility=entry.baseVisibility*(1-q)*.72;
-        }
-      }
     });
   }
 
@@ -232,14 +212,16 @@ export class WaterRenderer{
         positionUpdated.y+=waterWaveValue.x*waterAnim.w;
       `);
       m.Vertex_Before_NormalUpdated(`
-        if(waterSpecialActive>.5){
-          normalUpdated=normalize(vec3(
-            normalUpdated.x-waterWaveValue.y*waterAnim.w,
-            max(.18,normalUpdated.y),
-            normalUpdated.z-waterWaveValue.z*waterAnim.w
-          ));
-        }else{
-          normalUpdated=normalize(vec3(-waterWaveValue.y*waterAnim.w,1.0,-waterWaveValue.z*waterAnim.w));
+        if(waterAnim.w>.001){
+          if(waterSpecialActive>.5){
+            normalUpdated=normalize(vec3(
+              normalUpdated.x-waterWaveValue.y*waterAnim.w,
+              max(.18,normalUpdated.y),
+              normalUpdated.z-waterWaveValue.z*waterAnim.w
+            ));
+          }else{
+            normalUpdated=normalize(vec3(-waterWaveValue.y*waterAnim.w,1.0,-waterWaveValue.z*waterAnim.w));
+          }
         }
       `);
       m.onBindObservable.add(mesh=>{
@@ -279,42 +261,6 @@ export class WaterRenderer{
     m.backFaceCulling=false;
     m.needDepthPrePass=true;
     return m;
-  }
-
-  makeCascadeMaterial(){
-    const texture=new BABYLON.DynamicTexture("cascade-flow-texture",{width:96,height:256},this.scene,true);
-    texture.hasAlpha=true;
-    const ctx=texture.getContext();
-    ctx.clearRect(0,0,96,256);
-    const gradient=ctx.createLinearGradient(0,0,96,0);
-    gradient.addColorStop(0,"rgba(170,225,255,0.18)");
-    gradient.addColorStop(.5,"rgba(225,248,255,0.62)");
-    gradient.addColorStop(1,"rgba(150,215,250,0.16)");
-    ctx.fillStyle=gradient;
-    ctx.fillRect(0,0,96,256);
-    ctx.strokeStyle="rgba(255,255,255,0.55)";
-    ctx.lineWidth=3;
-    for(let y=8;y<256;y+=34){
-      ctx.beginPath();
-      ctx.moveTo(8,y);
-      ctx.bezierCurveTo(30,y+8,62,y-8,88,y+2);
-      ctx.stroke();
-    }
-    texture.update();
-    texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
-    texture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
-
-    const material=new BABYLON.StandardMaterial("cascade-water",this.scene);
-    material.diffuseTexture=texture;
-    material.diffuseColor=new BABYLON.Color3(.46,.79,.96);
-    material.emissiveColor=new BABYLON.Color3(.025,.075,.095);
-    material.alpha=.78;
-    material.specularColor=new BABYLON.Color3(.58,.76,.90);
-    material.specularPower=34;
-    material.backFaceCulling=false;
-    material.needDepthPrePass=false;
-    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
-    return{material,texture};
   }
 
   surfaceGroup(tile){return tile?.fogged?"fogged":"visible";}
@@ -440,7 +386,7 @@ export class WaterRenderer{
         const surge=TILE_SIZE*(-.10*retreatPhase*retreatShape+.17*pushPhase*crestShape+.09*curlPhase*curlShape)*edgeFade*crossVariation;
         rogueShiftX+=rogue.dx*surge;rogueShiftZ+=rogue.dz*surge;
       }
-      wave*=w;dydx*=w;dydz*=w;rogueShiftX*=w;rogueShiftZ*=w;positions[o]=x+rogueShiftX;positions[o+1]=base[o+1]+wave;positions[o+2]=z+rogueShiftZ;const inv=1/Math.hypot(dydx,1,dydz);normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;
+      wave*=w;dydx*=w;dydz*=w;rogueShiftX*=w;rogueShiftZ*=w;positions[o]=x+rogueShiftX;positions[o+1]=base[o+1]+wave;positions[o+2]=z+rogueShiftZ;if(w<=EPSILON){normals[o]=entry.baseNormals[o];normals[o+1]=entry.baseNormals[o+1];normals[o+2]=entry.baseNormals[o+2];}else{const inv=1/Math.hypot(dydx,1,dydz);normals[o]=-dydx*inv;normals[o+1]=inv;normals[o+2]=-dydz*inv;}
     }
     mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
   }
@@ -495,7 +441,8 @@ export class WaterRenderer{
         }
       }
       positions[o]=x+shiftX*w;positions[o+1]=base[o+1]+wave*w;positions[o+2]=z+shiftZ*w;
-      const inv=1/Math.hypot(dydx*w,1,dydz*w);normals[o]=-dydx*w*inv;normals[o+1]=inv;normals[o+2]=-dydz*w*inv;
+      if(w<=EPSILON){normals[o]=entry.baseNormals[o];normals[o+1]=entry.baseNormals[o+1];normals[o+2]=entry.baseNormals[o+2];}
+      else{const inv=1/Math.hypot(dydx*w,1,dydz*w);normals[o]=-dydx*w*inv;normals[o+1]=inv;normals[o+2]=-dydz*w*inv;}
     }
     mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);
     mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
@@ -877,13 +824,11 @@ export class WaterRenderer{
   }
 
   mapBoundaryTarget(tile,sample){
+    // Open-map water terminates exactly on the battlefield edge. Geometry stays
+    // watertight; only wave displacement is suppressed at the cut face. Insetting
+    // the mesh or fading its alpha creates the visible cracks seen on Safari.
     const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-    const fullX=cx+Number(sample.ox||0)*TILE_SIZE;
-    const fullZ=cz+Number(sample.oz||0)*TILE_SIZE;
-    const dx=cx-fullX,dz=cz-fullZ,length=Math.hypot(dx,dz);
-    if(length<=EPSILON)return{x:fullX,z:fullZ};
-    const inset=TILE_SIZE*MAP_BOUNDARY_INSET;
-    return{x:fullX+dx/length*inset,z:fullZ+dz/length*inset};
+    return{x:cx+Number(sample.ox||0)*TILE_SIZE,z:cz+Number(sample.oz||0)*TILE_SIZE};
   }
 
   projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
@@ -979,7 +924,7 @@ export class WaterRenderer{
           level:(1-t)*Number(top.level)+t*Number(bottom.level)+(1-q)*Number(left.level)+q*Number(right.level)-bilinear("level"),
           clipped:(t===0&&top.clipped)||(t===1&&bottom.clipped)||(q===0&&left.clipped)||(q===1&&right.clipped),
           relaxed:(t===0&&top.relaxed)||(t===1&&bottom.relaxed)||(q===0&&left.relaxed)||(q===1&&right.relaxed),
-          boundaryFade:mapBoundary?0:1,
+          boundaryWaveFade:mapBoundary?0:1,
           mode:"PATCH"
         });
       }
@@ -1018,9 +963,9 @@ export class WaterRenderer{
     const index=out.positions.length/3;
     out.positions.push(point.x,y,point.z);
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
-    const boundaryFade=clamp(point.boundaryFade??1,0,1);
-    out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha*boundaryFade);
-    out.waveWeights.push(smooth01(visual.depth/.34)*boundaryFade);
+    const boundaryWaveFade=clamp(point.boundaryWaveFade??1,0,1);
+    out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
+    out.waveWeights.push(smooth01(visual.depth/.34)*boundaryWaveFade);
     out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
     this.accumulateVertexMotion(out,index,tile);
     cache.set(cacheKey,index);
@@ -1039,7 +984,45 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
-  buildSurface(component,state){
+  addCascadeVertex(out,point,turbidity,tile,progress=0){
+    const index=out.positions.length/3;
+    const depthTone=smooth01((.28+Math.max(0,Number(point.drop||0))*.18)/WATER_DEPTH_RANGE);
+    let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,depthTone);
+    const murky=clamp(Number(turbidity||0),0,1);if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
+    const alpha=clamp(.68+Math.sin(clamp(progress,0,1)*Math.PI)*.08+murky*.04,.62,.82);
+    out.positions.push(Number(point.x),Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET+.004,Number(point.z));
+    out.uvs.push(Number(point.x)/(TILE_SIZE*3.25),Number(point.z)/(TILE_SIZE*3.25));
+    out.colors.push(color[0],color[1],color[2],alpha);
+    out.waveWeights.push(0);
+    out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
+    return index;
+  }
+
+  appendCascadeSheet(out,edge,turbidity){
+    // A waterfall is not a second renderer object. It is a thin continuation of
+    // the same water surface mesh across one authored hydrology cascade edge.
+    const dirX=Number(edge.dx||0),dirZ=Number(edge.dy||0),perpX=-dirZ,perpZ=dirX;
+    const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
+    const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
+    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,drop=Math.max(0,Number(edge.drop||0));
+    const width=TILE_SIZE*.94,half=width*.5;
+    const sections=[
+      {forward:-TILE_SIZE*.085,level:Number(edge.top),p:0},
+      {forward:-TILE_SIZE*.010,level:Number(edge.top)-drop*.08,p:.18},
+      {forward:TILE_SIZE*.018,level:Number(edge.bottom)+drop*.12,p:.78},
+      {forward:TILE_SIZE*.105,level:Number(edge.bottom),p:1}
+    ];
+    let previous=null;
+    for(const section of sections){
+      const centerX=edgeX+dirX*section.forward,centerZ=edgeZ+dirZ*section.forward;
+      const left=this.addCascadeVertex(out,{x:centerX-perpX*half,z:centerZ-perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
+      const right=this.addCascadeVertex(out,{x:centerX+perpX*half,z:centerZ+perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
+      if(previous){out.indices.push(previous.left,previous.right,right,previous.left,right,left);}
+      previous={left,right};
+    }
+  }
+
+  buildSurface(component,state,cascades=[]){
     const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
     const cache=new Map(),allMap=this.allByKey(state),componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));let clippedPoints=0;
     for(const tile of component.tiles){
@@ -1050,11 +1033,14 @@ export class WaterRenderer{
         if(alternate===0){this.pushTriangle(out,nw,ne,se);this.pushTriangle(out,nw,se,sw);}else{this.pushTriangle(out,nw,ne,sw);this.pushTriangle(out,ne,se,sw);}
       }
     }
+    const componentKeys=new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y)));
+    const componentCascades=(cascades||[]).filter(edge=>componentKeys.has(keyOf(edge.tile.x,edge.tile.y)));
+    for(const edge of componentCascades)this.appendCascadeSheet(out,edge,componentTurbidity);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=10;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
-    mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,naturalShoreline:true,topologyAwareShoreRelaxation:true,ruggedNaturalShoreline:true,ruggedRockBanks:true,visualSurfaceResolver:true,microRegionsPerTile:9,patchVerticesPerTile:16,trianglesPerTile:18,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
+    mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,naturalShoreline:true,topologyAwareShoreRelaxation:true,ruggedNaturalShoreline:true,ruggedRockBanks:true,visualSurfaceResolver:true,microRegionsPerTile:9,patchVerticesPerTile:16,trianglesPerTile:18,embeddedCascadeSheets:componentCascades.length,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);}
@@ -1089,86 +1075,6 @@ export class WaterRenderer{
     return out;
   }
 
-  buildCascade(edge){
-    const dirX=edge.dx,dirZ=edge.dy;
-    const perpX=-dirZ,perpZ=dirX;
-    const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
-    const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
-    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5;
-    const topY=edge.top*ELEVATION_HEIGHT+SURFACE_OFFSET;
-    const bottomY=edge.bottom*ELEVATION_HEIGHT+SURFACE_OFFSET;
-    const approach=TILE_SIZE*.075,landing=TILE_SIZE*.20;
-    const topWidth=TILE_SIZE*.64,bottomWidth=TILE_SIZE*.72;
-
-    // The fall now begins and ends on the exact shared gameplay edge. The old
-    // ribbon started deep inside both tiles, which overlapped cliff geometry and
-    // produced the broken black wedges visible at the lip and landing.
-    const sections=[
-      {x:edgeX-dirX*approach,z:edgeZ-dirZ*approach,y:topY,width:topWidth},
-      {x:edgeX-dirX*.012,z:edgeZ-dirZ*.012,y:topY,width:topWidth},
-      {x:edgeX+dirX*.018,z:edgeZ+dirZ*.018,y:topY-(topY-bottomY)*.34,width:topWidth*.98},
-      {x:edgeX+dirX*.050,z:edgeZ+dirZ*.050,y:bottomY+.025,width:bottomWidth*.94},
-      {x:edgeX+dirX*landing,z:edgeZ+dirZ*landing,y:bottomY,width:bottomWidth}
-    ];
-
-    const positions=[],indices=[],normals=[],uvs=[];
-    let distance=0;
-    for(let i=0;i<sections.length;i++){
-      if(i){
-        const a=sections[i-1],b=sections[i];
-        distance+=Math.hypot(b.x-a.x,b.y-a.y,b.z-a.z);
-      }
-      const sec=sections[i],half=sec.width*.5;
-      for(const side of [-1,1]){
-        positions.push(sec.x+perpX*half*side,sec.y,sec.z+perpZ*half*side);
-        uvs.push(side<0?0:1,distance/(TILE_SIZE*.48));
-        normals.push(0,0,0);
-      }
-      if(i<sections.length-1){
-        const b=i*2,n=(i+1)*2;
-        indices.push(b,n+1,n,b,b+1,n+1);
-      }
-    }
-    BABYLON.VertexData.ComputeNormals(positions,indices,normals);
-
-    const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene);
-    const data=new BABYLON.VertexData();
-    data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;
-    data.applyToMesh(mesh,false);
-    mesh.material=this.cascadeMaterial;
-    mesh.alphaIndex=12;
-    mesh.isPickable=false;
-    mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,sharedEdgeLanding:true};
-
-    const impactX=edgeX+dirX*TILE_SIZE*.13,impactZ=edgeZ+dirZ*TILE_SIZE*.13;
-    const foam=BABYLON.MeshBuilder.CreateTorus(
-      `cascade-foam-${edge.id}`,
-      {diameter:TILE_SIZE*.34,thickness:.038,tessellation:20},
-      this.scene
-    );
-    foam.material=this.foamMaterial;foam.alphaIndex=13;foam.isPickable=false;
-    foam.position.set(impactX,bottomY+.020,impactZ);
-    foam.visibility=mesh.visibility;
-
-    const ripples=[];
-    for(let i=0;i<2;i++){
-      const ripple=BABYLON.MeshBuilder.CreateTorus(
-        `cascade-ripple-${i}-${edge.id}`,
-        {diameter:TILE_SIZE*(.32+i*.12),thickness:.024,tessellation:18},
-        this.scene
-      );
-      ripple.material=this.foamMaterial;ripple.alphaIndex=13;ripple.isPickable=false;
-      ripple.position.set(impactX+dirX*TILE_SIZE*.04,bottomY+.012+i*.002,impactZ+dirZ*TILE_SIZE*.04);
-      ripple.visibility=0;
-      ripples.push(ripple);
-    }
-
-    const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);
-    mesh.parent=root;foam.parent=root;for(const ripple of ripples)ripple.parent=root;
-    return{root,mesh,foam,ripples,baseVisibility:mesh.visibility,phase:(edge.tile.x*13+edge.tile.y*7)%17};
-  }
-
   surfaceSignatureFor(components,state){
     const terrain=tilesOf(state).map(tile=>[
       keyOf(tile.x,tile.y),
@@ -1185,22 +1091,18 @@ export class WaterRenderer{
     return`${groups}#${terrain}`;
   }
 
-  cascadeSignatureFor(edges){
-    return edges.map(e=>`${e.id}:${e.top.toFixed(4)}:${e.bottom.toFixed(4)}:${e.speed.toFixed(2)}`).sort().join("|");
-  }
-
-
   sync(state,presentationEvents=[]){
     this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
+    this.embeddedCascadeCount=cascades.length;
 
     const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
       this.disposeSurfaceMeshes();
       for(const component of components){
-        const mesh=this.buildSurface(component,state);
+        const mesh=this.buildSurface(component,state,cascades);
         if(mesh)this.surfaceMeshes.set(component.id,mesh);
       }
       this.surfaceSignature=surfaceSignature;
@@ -1213,16 +1115,9 @@ export class WaterRenderer{
       entry.mesh.metadata.windWaveDirection=this.wind.strength>EPSILON?{x:this.wind.x,z:this.wind.z}:null;
     }
 
-    const cascadeSignature=this.cascadeSignatureFor(cascades);
-    if(cascadeSignature!==this.cascadeSignature){
-      this.disposeMap(this.cascades);
-      for(const edge of cascades)this.cascades.set(edge.id,this.buildCascade(edge));
-      this.cascadeSignature=cascadeSignature;
-    }
-
     if(!waterTiles.length){
-      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);
-      this.surfaceSignature=this.cascadeSignature="";
+      this.disposeSurfaceMeshes();
+      this.surfaceSignature="";this.embeddedCascadeCount=0;
     }
   }
 
@@ -1230,14 +1125,15 @@ export class WaterRenderer{
     return{
       surfaceMeshes:this.surfaceMeshes.size,
       sideMeshes:0,
-      cascades:this.cascades.size,
+      cascades:this.embeddedCascadeCount,
       separatedWaterLevels:false,
       hydrologyContinuousSurface:true,
       sharedWetEdges:true,
       quantizedLevels:false,
       thinCascadeRibbon:false,
+      embeddedCascadeSheet:true,
       sharedEdgeCascade:true,
-      cascadeImpactRipples:true,
+      cascadeImpactRipples:false,
       perTileWaterBoxes:false,
       minVisibleWaterDepth:MIN_WATER_DEPTH,
       shorelineSkirts:false,
@@ -1246,8 +1142,9 @@ export class WaterRenderer{
       shorelineRenderClearance:SHORE_RENDER_CLEARANCE,
       shorelineAlphaFadeDepth:SHORE_FADE_DEPTH,
       mapBoundaryTermination:true,
-      mapBoundaryInset:MAP_BOUNDARY_INSET,
+      mapBoundaryInset:0,
       mapBoundaryWaveFade:true,
+      mapBoundaryAlphaFade:false,
       topologyAwareShoreRelaxation:true,
       ruggedNaturalShoreline:true,
       ruggedRockBanks:true,
@@ -1263,7 +1160,7 @@ export class WaterRenderer{
       windWaveStrength:Number(this.wind?.strength||0),
       refinedWaterTopology:true,
       edgeTopologyFromHydrologySurface:true,
-      implicitLevelBreaksRenderedAsCascades:true,
+      implicitLevelBreaksRenderedAsCascades:false,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
       rogueWaveWaterBodyDeformation:true,
