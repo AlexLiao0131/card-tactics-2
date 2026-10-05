@@ -686,12 +686,14 @@ export class WaterRenderer{
 
     const context=this.cornerContext(tile,index,allMap);
     if(!context)return"MAP_BOUNDARY";
-    // Corners touching any missing slot also belong to the battlefield boundary.
-    // Boundary termination takes precedence over shoreline relaxation/cascade
-    // smoothing because there is no terrain outside the generated map.
-    if(context.slots.some(slot=>!slot.tile))return"MAP_BOUNDARY";
+    // A corner can touch both the map edge and a real dry bank. The dry bank must
+    // win, otherwise the corner is forced to the rectangular map edge while the
+    // adjacent cardinal edge is clipped as SHORE, producing the visible wedge/crack.
     if(context.cascade)return"CASCADE";
     if(context.levelBreak)return"LEVEL_BREAK";
+    const existingDry=context.drySlots.filter(slot=>slot.tile);
+    if(existingDry.length)return"SHORE";
+    if(context.slots.some(slot=>!slot.tile))return"MAP_BOUNDARY";
     return context.members.length===4?"INTERNAL":"SHORE";
   }
 
@@ -894,6 +896,11 @@ export class WaterRenderer{
       allMap,
       Number(sample.height||0)
     );
+    const half=TILE_SIZE*.5;
+    // Shore geometry belongs to this wet tile. Never let smoothing/ruggedness push
+    // a water triangle across the shared edge onto a dry or higher terrain tile.
+    projected.x=clamp(projected.x,cx-half,cx+half);
+    projected.z=clamp(projected.z,cz-half,cz+half);
     return{
       ...projected,
       relaxed:Math.hypot(target.x-fullX,target.z-fullZ)>EPSILON,
@@ -933,9 +940,13 @@ export class WaterRenderer{
     return{grid,ring};
   }
 
-  waterVertexVisual(point,allMap,turbidity=0){
+  waterVertexVisual(point,allMap,turbidity=0,tile=null){
     const terrain=this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
-    const depth=Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
+    // At an exact east/south map cut, Math.round() legitimately resolves outside
+    // the map. That is not zero-depth water: use this water tile's bed for the
+    // boundary vertex so alpha stays continuous all the way to the cut face.
+    const resolvedTerrain=terrain==null&&tile?Number(tile.elevation||0):terrain;
+    const depth=Math.max(0,Number(point.level)-(resolvedTerrain==null?Number(point.level):Number(resolvedTerrain)));
     const t=smooth01(depth/WATER_DEPTH_RANGE);
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
     const murky=clamp(Number(turbidity||0),0,1);
@@ -959,7 +970,7 @@ export class WaterRenderer{
     const existing=cache.get(cacheKey);
     if(existing!=null){this.accumulateVertexMotion(out,existing,tile);return existing;}
 
-    const visual=this.waterVertexVisual(point,allMap,turbidity);
+    const visual=this.waterVertexVisual(point,allMap,turbidity,tile);
     const index=out.positions.length/3;
     out.positions.push(point.x,y,point.z);
     out.uvs.push(point.x/(TILE_SIZE*3.25),point.z/(TILE_SIZE*3.25));
@@ -999,27 +1010,21 @@ export class WaterRenderer{
   }
 
   appendCascadeSheet(out,edge,turbidity){
-    // A waterfall is not a second renderer object. It is a thin continuation of
-    // the same water surface mesh across one authored hydrology cascade edge.
+    // The waterfall is a thin curtain of the same water mesh on the authored
+    // shared edge. No separate ribbon object, no foam ring, and no forward strip
+    // crossing the receiving tile. A tiny downstream offset only prevents z-fight
+    // with the cliff face while visually reading as water coating that wall.
     const dirX=Number(edge.dx||0),dirZ=Number(edge.dy||0),perpX=-dirZ,perpZ=dirX;
     const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
     const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
     const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,drop=Math.max(0,Number(edge.drop||0));
-    const width=TILE_SIZE*.94,half=width*.5;
-    const sections=[
-      {forward:-TILE_SIZE*.085,level:Number(edge.top),p:0},
-      {forward:-TILE_SIZE*.010,level:Number(edge.top)-drop*.08,p:.18},
-      {forward:TILE_SIZE*.018,level:Number(edge.bottom)+drop*.12,p:.78},
-      {forward:TILE_SIZE*.105,level:Number(edge.bottom),p:1}
-    ];
-    let previous=null;
-    for(const section of sections){
-      const centerX=edgeX+dirX*section.forward,centerZ=edgeZ+dirZ*section.forward;
-      const left=this.addCascadeVertex(out,{x:centerX-perpX*half,z:centerZ-perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
-      const right=this.addCascadeVertex(out,{x:centerX+perpX*half,z:centerZ+perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
-      if(previous){out.indices.push(previous.left,previous.right,right,previous.left,right,left);}
-      previous={left,right};
-    }
+    const width=TILE_SIZE*.86,half=width*.5,offset=TILE_SIZE*.010;
+    const x=edgeX+dirX*offset,z=edgeZ+dirZ*offset;
+    const topLeft=this.addCascadeVertex(out,{x:x-perpX*half,z:z-perpZ*half,level:Number(edge.top),drop},turbidity,edge.tile,0);
+    const topRight=this.addCascadeVertex(out,{x:x+perpX*half,z:z+perpZ*half,level:Number(edge.top),drop},turbidity,edge.tile,0);
+    const bottomLeft=this.addCascadeVertex(out,{x:x-perpX*half,z:z-perpZ*half,level:Number(edge.bottom),drop},turbidity,edge.tile,1);
+    const bottomRight=this.addCascadeVertex(out,{x:x+perpX*half,z:z+perpZ*half,level:Number(edge.bottom),drop},turbidity,edge.tile,1);
+    out.indices.push(topLeft,topRight,bottomRight,topLeft,bottomRight,bottomLeft);
   }
 
   buildSurface(component,state,cascades=[]){
