@@ -607,13 +607,29 @@ export class WaterRenderer{
     return !!dir&&from.x+dir.dx===to.x&&from.y+dir.dy===to.y;
   }
 
+  waterEdgeRelation(a,b){
+    if(!hasAnyWater(a)||!hasAnyWater(b))return{type:"SHORE",drop:0,high:null,low:null,authored:false};
+    const aSurface=visualSurface(a),bSurface=visualSurface(b),delta=aSurface-bSurface,drop=Math.abs(delta);
+    const authored=this.cascadeMatches(a,b)||this.cascadeMatches(b,a);
+
+    // Water topology follows the real hydrology surfaces, not only one authored
+    // cascade pointer. River bends/branches can touch a different reach along a
+    // side edge; stitching those vertices when the levels differ creates a giant
+    // sloped sheet of water. Any real level break is a cascade boundary.
+    if(drop>=WATERFALL_MIN_DROP){
+      return delta>=0
+        ?{type:"CASCADE",drop,high:a,low:b,authored}
+        :{type:"CASCADE",drop,high:b,low:a,authored};
+    }
+    return{type:"CONTINUOUS",drop,high:null,low:null,authored};
+  }
+
   isCascadeBoundary(a,b){
-    if(!hasAnyWater(a)||!hasAnyWater(b))return false;
-    return this.cascadeMatches(a,b)||this.cascadeMatches(b,a);
+    return this.waterEdgeRelation(a,b).type==="CASCADE";
   }
 
   continuousWaterEdge(a,b){
-    return !!a&&!!b&&this.isRenderableWater(a)&&this.isRenderableWater(b)&&!this.isCascadeBoundary(a,b);
+    return !!a&&!!b&&this.isRenderableWater(a)&&this.isRenderableWater(b)&&this.waterEdgeRelation(a,b).type==="CONTINUOUS";
   }
 
   surfaceComponents(waterTiles){
@@ -998,20 +1014,27 @@ export class WaterRenderer{
 
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[];
+    const visible=new Set(waterTiles.map(tile=>keyOf(tile.x,tile.y)));
+    const pairs=[[1,0],[0,1]];
     for(const tile of waterTiles){
-      const target=this.cascadeTarget(tile);
-      if(!target)continue;
-      const receiver=allMap.get(keyOf(target.x,target.y));
-      if(!receiver||!hasAnyWater(receiver)||!this.cascadeMatches(tile,receiver))continue;
-
-      const top=visualSurface(tile),bottom=visualSurface(receiver),drop=top-bottom;
-      if(drop<=EPSILON)continue;
-      out.push({
-        id:`${tile.x},${tile.y}->${receiver.x},${receiver.y}`,
-        tile,receiver,dx:Math.sign(receiver.x-tile.x),dy:Math.sign(receiver.y-tile.y),top,bottom,drop,
-        authoredDrop:target.drop,
-        speed:Math.max(.6,Number(tile.flowSpeed||0)+drop*.55)
-      });
+      for(const[dx,dy]of pairs){
+        const neighbor=allMap.get(keyOf(tile.x+dx,tile.y+dy));
+        if(!neighbor||!visible.has(keyOf(neighbor.x,neighbor.y)))continue;
+        const relation=this.waterEdgeRelation(tile,neighbor);
+        if(relation.type!=="CASCADE")continue;
+        const high=relation.high,low=relation.low;
+        const top=visualSurface(high),bottom=visualSurface(low),drop=top-bottom;
+        if(drop<WATERFALL_MIN_DROP)continue;
+        out.push({
+          id:`${high.x},${high.y}->${low.x},${low.y}`,
+          tile:high,receiver:low,
+          dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y),
+          top,bottom,drop,
+          authoredDrop:relation.authored?Number(high.hydrologyCascadeDrop||low.hydrologyCascadeDrop||drop):null,
+          inferredFromSurface:!relation.authored,
+          speed:Math.max(.6,Number(high.flowSpeed||0)+drop*.55)
+        });
+      }
     }
     return out;
   }
@@ -1184,6 +1207,8 @@ export class WaterRenderer{
       windDrivenWaves:true,
       windWaveStrength:Number(this.wind?.strength||0),
       refinedWaterTopology:true,
+      edgeTopologyFromHydrologySurface:true,
+      implicitLevelBreaksRenderedAsCascades:true,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
       rogueWaveWaterBodyDeformation:true,

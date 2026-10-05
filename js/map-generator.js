@@ -243,6 +243,30 @@ export const MapGenerator=(()=>{
     return map.generatedRiverProfile;
   }
 
+  function settleGeneratedWaterBanks(map){
+    const tiles=map?.tiles||[],by=new Map(tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const generated=tile=>!!tile&&Number(tile.waterDepth||0)>0&&(tile.river===true||tile.sourcePool===true);
+    const surface=tile=>tile?.waterSurfaceZ==null?Number(tile?.elevation||0)+Number(tile?.waterDepth||0):Number(tile.waterSurfaceZ);
+    const lower=(tile,next)=>{if(!generated(tile)||!Number.isFinite(next)||next>=surface(tile)-.0001)return false;const depth=Math.max(.1,Number(tile.waterDepth||0));tile.waterSurfaceZ=next;tile.elevation=next-depth;return true;};
+    let changed=true,passes=0;
+    while(changed&&passes++<tiles.length){
+      changed=false;
+      for(const tile of tiles){
+        if(!generated(tile))continue;let cap=Infinity;
+        for(const[dx,dy]of DIRS){const neighbor=by.get(key(tile.x+dx,tile.y+dy));if(!neighbor||neighbor.terrain==="WALL"||Number(neighbor.waterDepth||0)>0)continue;cap=Math.min(cap,Number(neighbor.elevation||0));}
+        if(Number.isFinite(cap)&&lower(tile,cap))changed=true;
+      }
+      for(const tile of tiles){
+        if(tile?.river!==true)continue;const dx=Math.sign(Number(tile.flowX||0)),dy=Math.sign(Number(tile.flowY||0));if(!dx&&!dy)continue;const downstream=by.get(key(tile.x+dx,tile.y+dy));if(!generated(downstream))continue;const here=surface(tile),there=surface(downstream);if(there>here+.0001&&lower(downstream,here))changed=true;
+      }
+    }
+    const cascades=[];
+    for(const tile of tiles){
+      if(tile?.river!==true)continue;const tx=Number(tile.hydrologyCascadeToX),ty=Number(tile.hydrologyCascadeToY);if(!Number.isFinite(tx)||!Number.isFinite(ty))continue;const downstream=by.get(key(tx,ty));if(!downstream)continue;const drop=surface(tile)-surface(downstream);if(drop>=.18){tile.hydrologyCascadeDrop=drop;cascades.push({x:tile.x,y:tile.y,toX:downstream.x,toY:downstream.y,drop});}else{delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;}
+    }
+    if(map.generatedRiverProfile)map.generatedRiverProfile.cascades=cascades;
+  }
+
   function createRiver(map,routes,protectedKeys,rand){
     const xBase=clamp(Math.round(map.width*(.42+rand()*.16)),4,map.width-5);
     const river=[],riverKeys=new Set(),routeCrossings=new Map();
@@ -629,6 +653,31 @@ export const MapGenerator=(()=>{
       for(let n=1;n<route.length;n++){const a=tileAt(map,route[n-1].x,route[n-1].y),b=tileAt(map,route[n].x,route[n].y);if(!a||!b||Math.abs(movementHeight(a)-movementHeight(b))>1.0001){errors.push(`ROUTE_${i}_CLIMB`);break;}}
       const crossing=river.crossings.find(c=>c.routeIndex===i),ford=crossing&&tileAt(map,crossing.x,crossing.y);if(!ford?.river||!ford?.ford||Number(ford.waterDepth||0)>.6)errors.push(`ROUTE_${i}_FORD`);
     });
+
+    // Generated water must already be physically consistent before the battle
+    // starts. Do not leave an impossible profile for WaterRenderer to disguise.
+    const by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
+    let bankOvertop=0,uphillFlow=0;
+    for(const tile of map?.tiles||[]){
+      const depth=Math.max(0,Number(tile.waterDepth||0));
+      if(depth<=0)continue;
+      const surface=Number(tile.waterSurfaceZ??(Number(tile.elevation||0)+depth));
+      for(const[dx,dy]of DIRS){
+        const neighbor=by.get(key(tile.x+dx,tile.y+dy));
+        if(!neighbor||neighbor.terrain==="WALL")continue;
+        const neighborDepth=Math.max(0,Number(neighbor.waterDepth||0));
+        if(neighborDepth<=0&&surface>Number(neighbor.elevation||0)+.0001)bankOvertop++;
+      }
+      if(tile.river===true&&(Number(tile.flowX||0)||Number(tile.flowY||0))){
+        const downstream=by.get(key(tile.x+Math.sign(Number(tile.flowX||0)),tile.y+Math.sign(Number(tile.flowY||0))));
+        if(downstream&&Number(downstream.waterDepth||0)>0){
+          const downstreamSurface=Number(downstream.waterSurfaceZ??(Number(downstream.elevation||0)+Number(downstream.waterDepth||0)));
+          if(downstreamSurface>surface+.0001)uphillFlow++;
+        }
+      }
+    }
+    if(bankOvertop)errors.push(`WATER_BANK_OVERTOP_${bankOvertop}`);
+    if(uphillFlow)errors.push(`RIVER_UPHILL_FLOW_${uphillFlow}`);
     return{ok:errors.length===0,errors};
   }
 
@@ -644,6 +693,7 @@ export const MapGenerator=(()=>{
     const capturePoints=createCapturePoints(map,routes,protectedKeys),river=createRiver(map,routes,protectedKeys,rand);
     addForests(map,cfg,rand,protectedKeys);
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
+    settleGeneratedWaterBanks(map);
     const rocks=addRocks(map,cfg,rand,protectedKeys);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
