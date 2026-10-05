@@ -855,12 +855,31 @@ export class WaterRenderer{
     return this.surfaceResolver.sampleRenderedHeight(tile,allMap,ox,oz);
   }
 
-  projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
+  renderedTerrainHeightForTilePoint(owner,worldX,worldZ,allMap,fallback=null){
+    if(!owner)return this.renderedTerrainHeightAtWorld(worldX,worldZ,allMap,fallback);
+    let tx=Number(owner.x),ty=Number(owner.y);
+    let ox=(Number(worldX||0)-tx*TILE_SIZE)/TILE_SIZE;
+    let oz=(Number(worldZ||0)-ty*TILE_SIZE)/TILE_SIZE;
+    // Exact shared-edge samples belong to the water tile that is currently being
+    // tessellated. Only a point that truly crossed an edge switches to the neighbour.
+    // This removes Math.round() ambiguity at cliff/shore edges without inventing a
+    // second height field.
+    const edgeEpsilon=1e-7;
+    if(ox>.5+edgeEpsilon)tx+=1;else if(ox<-.5-edgeEpsilon)tx-=1;
+    if(oz>.5+edgeEpsilon)ty+=1;else if(oz<-.5-edgeEpsilon)ty-=1;
+    const tile=allMap?.get(keyOf(tx,ty));
+    if(!tile)return fallback==null?null:Number(fallback);
+    ox=(Number(worldX||0)-tx*TILE_SIZE)/TILE_SIZE;
+    oz=(Number(worldZ||0)-ty*TILE_SIZE)/TILE_SIZE;
+    return this.surfaceResolver.sampleRenderedHeight(tile,allMap,ox,oz);
+  }
+
+  projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain,ownerTile=null){
     const clearance=t=>{
       const x=anchor.x+(target.x-anchor.x)*t;
       const z=anchor.z+(target.z-anchor.z)*t;
       const level=anchorLevel+(targetLevel-anchorLevel)*t;
-      const terrain=this.renderedTerrainHeightAtWorld(x,z,allMap,fallbackTerrain);
+      const terrain=this.renderedTerrainHeightForTilePoint(ownerTile,x,z,allMap,fallbackTerrain);
       const resolved=terrain==null?fallbackTerrain:terrain;
       return{value:level-Number(resolved||0),x,z,level};
     };
@@ -912,7 +931,8 @@ export class WaterRenderer{
       anchorLevel,
       ringWater,
       allMap,
-      Number(sample.height||0)
+      Number(sample.height||0),
+      tile
     );
     return{
       ...projected,
@@ -954,7 +974,7 @@ export class WaterRenderer{
   }
 
   waterVertexVisual(point,allMap,turbidity=0,tile=null){
-    const terrain=this.renderedTerrainHeightAtWorld(point.x,point.z,allMap,tile?Number(tile.elevation||0):null);
+    const terrain=this.renderedTerrainHeightForTilePoint(tile,point.x,point.z,allMap,tile?Number(tile.elevation||0):null);
     // Water colour/depth and clipping sample the exact 4x4 terrain triangles that
     // TerrainRenderer draws. A second interpolated height field is what caused
     // water to paste through/downhill terrain even when both systems looked valid alone.
@@ -1006,7 +1026,7 @@ export class WaterRenderer{
 
   surfaceClearance(out,index,allMap,tile){
     const x=Number(out.positions[index*3]),y=Number(out.positions[index*3+1]),z=Number(out.positions[index*3+2]);
-    const terrain=this.renderedTerrainHeightAtWorld(x,z,allMap,Number(tile?.elevation||0));
+    const terrain=this.renderedTerrainHeightForTilePoint(tile,x,z,allMap,Number(tile?.elevation||0));
     const resolved=terrain==null?Number(tile?.elevation||0):Number(terrain);
     const level=(y-SURFACE_OFFSET)/ELEVATION_HEIGHT;
     return level-resolved;
@@ -1052,7 +1072,10 @@ export class WaterRenderer{
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,depthTone);
     const murky=clamp(Number(turbidity||0),0,1);if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
     const alpha=clamp(.68+Math.sin(clamp(progress,0,1)*Math.PI)*.08+murky*.04,.62,.82);
-    out.positions.push(Number(point.x),Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET+.004,Number(point.z));
+    const worldY=Number.isFinite(Number(point.worldY))
+      ?Number(point.worldY)
+      :Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    out.positions.push(Number(point.x),worldY,Number(point.z));
     out.uvs.push(Number(point.x)/(TILE_SIZE*3.25),Number(point.z)/(TILE_SIZE*3.25));
     out.colors.push(color[0],color[1],color[2],alpha);
     out.waveWeights.push(0);
@@ -1070,59 +1093,97 @@ export class WaterRenderer{
     return null;
   }
 
-  sampleCliffProfile(points,t){
-    if(!points?.length)return null;
-    const q=clamp(t,0,1);
-    for(let i=0;i<points.length-1;i++){
-      const a=points[i],b=points[i+1],at=Number(a.t??i/(points.length-1)),bt=Number(b.t??(i+1)/(points.length-1));
-      if(q>bt&&i<points.length-2)continue;
-      const local=bt-at>1e-9?clamp((q-at)/(bt-at),0,1):0;
-      return{
-        x:Number(a.x)+(Number(b.x)-Number(a.x))*local,
-        z:Number(a.z)+(Number(b.z)-Number(a.z))*local,
-        topY:Number(a.topY)+(Number(b.topY)-Number(a.topY))*local,
-        bottomY:Number(a.bottomY)+(Number(b.bottomY)-Number(a.bottomY))*local
-      };
+  waterGridEdgePoints(tile,dir,allMap){
+    const patch=this.waterPatchGrid(tile,allMap)?.grid;
+    if(!patch?.length)return[];
+    if(dir.id==="N")return [...patch[0]];
+    if(dir.id==="E")return patch.map(row=>row[3]);
+    if(dir.id==="S")return [...patch[3]].reverse();
+    if(dir.id==="W")return [...patch].reverse().map(row=>row[0]);
+    return[];
+  }
+
+  waterGridFlowRows(tile,dir,allMap){
+    const patch=this.waterPatchGrid(tile,allMap)?.grid;
+    if(!patch?.length)return[];
+    const rows=[];
+    if(dir.id==="E"){
+      for(let step=0;step<4;step++)rows.push(patch.map(row=>row[step]));
+    }else if(dir.id==="W"){
+      for(let step=0;step<4;step++)rows.push([...patch].reverse().map(row=>row[3-step]));
+    }else if(dir.id==="S"){
+      for(let step=0;step<4;step++)rows.push([...patch[step]].reverse());
+    }else if(dir.id==="N"){
+      for(let step=0;step<4;step++)rows.push([...patch[3-step]]);
     }
-    return points[points.length-1];
+    return rows;
   }
 
   appendCascadeSheet(out,edge,turbidity,allMap){
-    // The waterfall uses TerrainRenderer's canonical cliff profile. Water and rock
-    // therefore share the same rugged wall instead of two independently guessed planes.
     const dir=this.cascadeDirection(edge);
     const profile=dir&&this.terrainRenderer?.cliffFaceProfile?.(edge.tile,dir,allMap);
     if(!profile?.points?.length)return;
 
-    const dirX=Number(dir.dx),dirZ=Number(dir.dy);
+    const highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
+    const lowRows=this.waterGridFlowRows(edge.receiver,dir,allMap);
+    const cliff=profile.points;
+    const columns=Math.min(highEdge.length,cliff.length,...lowRows.map(row=>row.length));
+    if(columns<2)return;
+
     const topLevel=Number(edge.top),bottomLevel=Number(edge.bottom),drop=Math.max(0,topLevel-bottomLevel);
     if(drop<WATERFALL_MIN_DROP)return;
+    const topWaterY=topLevel*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const bottomWaterY=bottomLevel*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    // This is only a render-depth separation. Width, lip, foot and landing all
+    // come from TerrainRenderer / waterPatchGrid data below.
+    const wallRenderOffset=SURFACE_OFFSET*.75;
+    const dirX=Number(dir.dx),dirZ=Number(dir.dy);
+    const makeRow=(points,progress,worldYForPoint)=>points.slice(0,columns).map((point,index)=>
+      this.addCascadeVertex(out,{
+        x:Number(point.x),z:Number(point.z),drop,
+        worldY:worldYForPoint(point,index)
+      },turbidity,edge.tile,progress)
+    );
 
-    const lateral=[.16,.33,.50,.67,.84].map(t=>this.sampleCliffProfile(profile.points,t)).filter(Boolean);
-    if(lateral.length<2)return;
-    const wallOffset=TILE_SIZE*.010,approach=TILE_SIZE*.065,landing=TILE_SIZE*.085;
-    const rows=[
-      {shift:-approach,level:topLevel,p:0},
-      {shift: wallOffset,level:topLevel,p:.05},
-      {shift: wallOffset,level:topLevel-drop*.33,p:.34},
-      {shift: wallOffset,level:topLevel-drop*.66,p:.66},
-      {shift: wallOffset,level:bottomLevel,p:.95},
-      {shift: wallOffset+landing,level:bottomLevel,p:1}
-    ];
-    const grid=[];
-    for(const row of rows){
-      const indices=[];
-      for(const point of lateral){
-        indices.push(this.addCascadeVertex(out,{
-          x:Number(point.x)+dirX*row.shift,
-          z:Number(point.z)+dirZ*row.shift,
-          level:row.level,drop
-        },turbidity,edge.tile,row.p));
-      }
-      grid.push(indices);
+    const rows=[];
+    // Exact upstream water edge: the waterfall starts on the same coordinates as
+    // the actual water patch, so there is no guessed lip width and no top seam.
+    rows.push(makeRow(highEdge,0,()=>topWaterY));
+
+    // TerrainRenderer owns the real rugged cliff boundary. Bridge the water patch
+    // to that exact lip, then coat the wall itself just in front of the rock plane.
+    const wallTop=cliff.slice(0,columns).map(point=>({
+      x:Number(point.x)+dirX*wallRenderOffset,
+      z:Number(point.z)+dirZ*wallRenderOffset,
+      topY:Number(point.topY),bottomY:Number(point.bottomY)
+    }));
+    rows.push(makeRow(wallTop,.04,()=>topWaterY));
+
+    const footY=wallTop.map(point=>Math.max(bottomWaterY,Number(point.bottomY)+SURFACE_OFFSET));
+    for(const progress of [.34,.67,.94]){
+      rows.push(makeRow(wallTop,progress,(point,index)=>
+        topWaterY+(footY[index]-topWaterY)*(progress/.94)
+      ));
     }
-    for(let r=0;r<grid.length-1;r++)for(let c=0;c<grid[r].length-1;c++){
-      const a=grid[r][c],b=grid[r][c+1],d=grid[r+1][c],e=grid[r+1][c+1];
+
+    // After the wall, follow the receiver's *actual rendered terrain* using the
+    // same 4x4 water-patch coordinates. Where terrain remains above the downstream
+    // water level the sheet hugs the floor; the instant the real terrain dips below
+    // the water surface it lands exactly on the downstream river geometry.
+    for(let step=1;step<lowRows.length;step++){
+      const sourceRow=lowRows[step].slice(0,columns);
+      const progress=.94+(step/(lowRows.length-1))*.06;
+      rows.push(makeRow(sourceRow,progress,(point)=>{
+        const terrain=this.renderedTerrainHeightForTilePoint(
+          edge.receiver,point.x,point.z,allMap,Number(edge.receiver?.elevation||0)
+        );
+        const groundY=Number(terrain??edge.receiver?.elevation??0)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+        return Math.max(bottomWaterY,groundY);
+      }));
+    }
+
+    for(let r=0;r<rows.length-1;r++)for(let c=0;c<columns-1;c++){
+      const a=rows[r][c],b=rows[r][c+1],d=rows[r+1][c],e=rows[r+1][c+1];
       out.indices.push(a,b,e,a,e,d);
     }
   }
