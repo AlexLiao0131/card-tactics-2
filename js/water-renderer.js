@@ -14,6 +14,8 @@ const EPSILON=.001;
 const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const SHORE_EPSILON=.002;
+const SHORE_RENDER_CLEARANCE=.035;
+const SHORE_FADE_DEPTH=.11;
 const SHORE_CONVEX_INSET=.20;
 const SHORE_PAIR_INSET=.08;
 const SHORE_CONCAVE_OUTSET=.10;
@@ -867,18 +869,22 @@ export class WaterRenderer{
       return{value:level-Number(resolved||0),x,z,level};
     };
 
+    // A shoreline vertex must remain slightly inside real water. Ending exactly
+    // where water and terrain are coplanar leaves a translucent blue sheet on top
+    // of the bank (especially obvious in Safari). Wet-bank colour belongs to the
+    // terrain renderer; the water mesh stops before that visual contact band.
     const end=clearance(1);
-    if(end.value>=-SHORE_EPSILON)return{x:end.x,z:end.z,level:end.level,clipped:false};
+    if(end.value>SHORE_RENDER_CLEARANCE)return{x:end.x,z:end.z,level:end.level,clipped:false};
 
     const start=clearance(0);
-    if(start.value<=SHORE_EPSILON)return{x:start.x,z:start.z,level:start.level,clipped:true};
+    if(start.value<=SHORE_RENDER_CLEARANCE+SHORE_EPSILON)return{x:start.x,z:start.z,level:start.level,clipped:true};
 
     let low=0,high=1;
     for(let i=0;i<SHORE_SEARCH_STEPS;i++){
       const mid=(low+high)/2;
-      if(clearance(mid).value>=0)low=mid;else high=mid;
+      if(clearance(mid).value>=SHORE_RENDER_CLEARANCE)low=mid;else high=mid;
     }
-    const hit=clearance((low+high)/2);
+    const hit=clearance(low);
     return{x:hit.x,z:hit.z,level:hit.level,clipped:true};
   }
 
@@ -951,11 +957,16 @@ export class WaterRenderer{
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
     const murky=clamp(Number(turbidity||0),0,1);
     if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
-    const alpha=clamp(
+    const bodyAlpha=clamp(
       WATER_SHALLOW_ALPHA+(WATER_DEEP_ALPHA-WATER_SHALLOW_ALPHA)*t+murky*.06,
       WATER_SHALLOW_ALPHA,
       .88
     );
+    // The geometry already clips against the terrain. Fade the last few
+    // centimetres as well so the alpha-blended surface cannot read as a blue
+    // decal pasted over the dry bank while preserving visible shallow fords.
+    const shoreFade=smooth01(depth/SHORE_FADE_DEPTH);
+    const alpha=clamp(bodyAlpha*shoreFade,0,.88);
     return{depth,color,alpha};
   }
 
@@ -1193,6 +1204,8 @@ export class WaterRenderer{
       shorelineSkirts:false,
       terrainClippedShoreline:true,
       naturalShoreline:true,
+      shorelineRenderClearance:SHORE_RENDER_CLEARANCE,
+      shorelineAlphaFadeDepth:SHORE_FADE_DEPTH,
       topologyAwareShoreRelaxation:true,
       ruggedNaturalShoreline:true,
       ruggedRockBanks:true,
