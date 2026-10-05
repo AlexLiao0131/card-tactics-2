@@ -74,6 +74,7 @@ function mixColor(a,b,t){
 export class WaterRenderer{
   constructor(scene,terrainRenderer=null){
     this.scene=scene;
+    this.terrainRenderer=terrainRenderer||null;
     this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.surfaceMeshes=new Map();
     this.surfaceAnimations=new Map();
@@ -846,12 +847,20 @@ export class WaterRenderer{
     return{x:cx+Number(sample.ox||0)*TILE_SIZE,z:cz+Number(sample.oz||0)*TILE_SIZE};
   }
 
+  renderedTerrainHeightAtWorld(worldX,worldZ,allMap,fallback=null){
+    const tx=Math.round(Number(worldX||0)/TILE_SIZE),ty=Math.round(Number(worldZ||0)/TILE_SIZE);
+    const tile=allMap?.get(keyOf(tx,ty));
+    if(!tile)return fallback==null?null:Number(fallback);
+    const ox=(Number(worldX||0)-tx*TILE_SIZE)/TILE_SIZE,oz=(Number(worldZ||0)-ty*TILE_SIZE)/TILE_SIZE;
+    return this.surfaceResolver.sampleRenderedHeight(tile,allMap,ox,oz);
+  }
+
   projectShoreline(anchor,target,anchorLevel,targetLevel,allMap,fallbackTerrain){
     const clearance=t=>{
       const x=anchor.x+(target.x-anchor.x)*t;
       const z=anchor.z+(target.z-anchor.z)*t;
       const level=anchorLevel+(targetLevel-anchorLevel)*t;
-      const terrain=this.surfaceResolver.sampleHeightAtWorld(x,z,allMap);
+      const terrain=this.renderedTerrainHeightAtWorld(x,z,allMap,fallbackTerrain);
       const resolved=terrain==null?fallbackTerrain:terrain;
       return{value:level-Number(resolved||0),x,z,level};
     };
@@ -945,10 +954,10 @@ export class WaterRenderer{
   }
 
   waterVertexVisual(point,allMap,turbidity=0,tile=null){
-    const terrain=this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
-    // At an exact east/south map cut, Math.round() legitimately resolves outside
-    // the map. That is not zero-depth water: use this water tile's bed for the
-    // boundary vertex so alpha stays continuous all the way to the cut face.
+    const terrain=this.renderedTerrainHeightAtWorld(point.x,point.z,allMap,tile?Number(tile.elevation||0):null);
+    // Water colour/depth and clipping sample the exact 4x4 terrain triangles that
+    // TerrainRenderer draws. A second interpolated height field is what caused
+    // water to paste through/downhill terrain even when both systems looked valid alone.
     const resolvedTerrain=terrain==null&&tile?Number(tile.elevation||0):terrain;
     const depth=Math.max(0,Number(point.level)-(resolvedTerrain==null?Number(point.level):Number(resolvedTerrain)));
     const t=smooth01(depth/WATER_DEPTH_RANGE);
@@ -995,6 +1004,48 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
+  surfaceClearance(out,index,allMap,tile){
+    const x=Number(out.positions[index*3]),y=Number(out.positions[index*3+1]),z=Number(out.positions[index*3+2]);
+    const terrain=this.renderedTerrainHeightAtWorld(x,z,allMap,Number(tile?.elevation||0));
+    const resolved=terrain==null?Number(tile?.elevation||0):Number(terrain);
+    const level=(y-SURFACE_OFFSET)/ELEVATION_HEIGHT;
+    return level-resolved;
+  }
+
+  interpolateSurfaceVertex(out,a,b,t){
+    const q=clamp(t,0,1),index=out.positions.length/3;
+    const lerpArray=(array,stride)=>{
+      for(let i=0;i<stride;i++)array.push(Number(array[a*stride+i])+(Number(array[b*stride+i])-Number(array[a*stride+i]))*q);
+    };
+    lerpArray(out.positions,3);lerpArray(out.uvs,2);lerpArray(out.colors,4);
+    out.waveWeights.push(Number(out.waveWeights[a])+(Number(out.waveWeights[b])-Number(out.waveWeights[a]))*q);
+    out.flowXSum.push(Number(out.flowXSum[a])+(Number(out.flowXSum[b])-Number(out.flowXSum[a]))*q);
+    out.flowZSum.push(Number(out.flowZSum[a])+(Number(out.flowZSum[b])-Number(out.flowZSum[a]))*q);
+    out.flowSpeedSum.push(Number(out.flowSpeedSum[a])+(Number(out.flowSpeedSum[b])-Number(out.flowSpeedSum[a]))*q);
+    out.flowSampleCount.push(Number(out.flowSampleCount[a])+(Number(out.flowSampleCount[b])-Number(out.flowSampleCount[a]))*q);
+    out.cascadeData.push(0,0);
+    return index;
+  }
+
+  pushTerrainClippedTriangle(out,a,b,c,allMap,tile){
+    const threshold=SHORE_EPSILON;
+    let polygon=[a,b,c].map(index=>({index,clearance:this.surfaceClearance(out,index,allMap,tile)}));
+    const clipped=[];
+    for(let i=0;i<polygon.length;i++){
+      const current=polygon[i],next=polygon[(i+1)%polygon.length];
+      const currentInside=current.clearance>=threshold,nextInside=next.clearance>=threshold;
+      if(currentInside)clipped.push(current);
+      if(currentInside!==nextInside){
+        const denom=next.clearance-current.clearance;
+        const q=Math.abs(denom)<=1e-9?.5:(threshold-current.clearance)/denom;
+        const index=this.interpolateSurfaceVertex(out,current.index,next.index,q);
+        clipped.push({index,clearance:threshold});
+      }
+    }
+    if(clipped.length<3)return;
+    for(let i=1;i<clipped.length-1;i++)this.pushTriangle(out,clipped[0].index,clipped[i].index,clipped[i+1].index);
+  }
+
   addCascadeVertex(out,point,turbidity,tile,progress=0){
     const index=out.positions.length/3;
     const depthTone=smooth01((.28+Math.max(0,Number(point.drop||0))*.18)/WATER_DEPTH_RANGE);
@@ -1010,30 +1061,69 @@ export class WaterRenderer{
     return index;
   }
 
-  appendCascadeSheet(out,edge,turbidity){
-    // Cascade geometry is part of the same water mesh. It approaches the cliff lip,
-    // coats the rock face just outside the depth plane, then reconnects to the lower
-    // water surface. This prevents the terrain wall from depth-occluding the fall.
-    const dirX=Number(edge.dx||0),dirZ=Number(edge.dy||0),perpX=-dirZ,perpZ=dirX;
-    const cx=Number(edge.tile.x)*TILE_SIZE,cz=Number(edge.tile.y)*TILE_SIZE;
-    const rx=Number(edge.receiver.x)*TILE_SIZE,rz=Number(edge.receiver.y)*TILE_SIZE;
-    const edgeX=(cx+rx)*.5,edgeZ=(cz+rz)*.5,drop=Math.max(0,Number(edge.drop||0));
-    const width=TILE_SIZE*.68,half=width*.5;
-    const faceOffset=TILE_SIZE*.032;
-    const sections=[
-      {forward:-TILE_SIZE*.10,level:Number(edge.top),p:0},
-      {forward: faceOffset,level:Number(edge.top)-Math.min(drop*.025,.025),p:.08},
-      {forward: faceOffset,level:Number(edge.top)-drop*.50,p:.50},
-      {forward: faceOffset,level:Number(edge.bottom)+Math.min(drop*.025,.025),p:.92},
-      {forward: TILE_SIZE*.13,level:Number(edge.bottom),p:1}
+  cascadeDirection(edge){
+    const dx=Math.sign(Number(edge?.dx||0)),dy=Math.sign(Number(edge?.dy||0));
+    if(dx===1&&dy===0)return{id:"E",dx:1,dy:0};
+    if(dx===-1&&dy===0)return{id:"W",dx:-1,dy:0};
+    if(dx===0&&dy===1)return{id:"S",dx:0,dy:1};
+    if(dx===0&&dy===-1)return{id:"N",dx:0,dy:-1};
+    return null;
+  }
+
+  sampleCliffProfile(points,t){
+    if(!points?.length)return null;
+    const q=clamp(t,0,1);
+    for(let i=0;i<points.length-1;i++){
+      const a=points[i],b=points[i+1],at=Number(a.t??i/(points.length-1)),bt=Number(b.t??(i+1)/(points.length-1));
+      if(q>bt&&i<points.length-2)continue;
+      const local=bt-at>1e-9?clamp((q-at)/(bt-at),0,1):0;
+      return{
+        x:Number(a.x)+(Number(b.x)-Number(a.x))*local,
+        z:Number(a.z)+(Number(b.z)-Number(a.z))*local,
+        topY:Number(a.topY)+(Number(b.topY)-Number(a.topY))*local,
+        bottomY:Number(a.bottomY)+(Number(b.bottomY)-Number(a.bottomY))*local
+      };
+    }
+    return points[points.length-1];
+  }
+
+  appendCascadeSheet(out,edge,turbidity,allMap){
+    // The waterfall uses TerrainRenderer's canonical cliff profile. Water and rock
+    // therefore share the same rugged wall instead of two independently guessed planes.
+    const dir=this.cascadeDirection(edge);
+    const profile=dir&&this.terrainRenderer?.cliffFaceProfile?.(edge.tile,dir,allMap);
+    if(!profile?.points?.length)return;
+
+    const dirX=Number(dir.dx),dirZ=Number(dir.dy);
+    const topLevel=Number(edge.top),bottomLevel=Number(edge.bottom),drop=Math.max(0,topLevel-bottomLevel);
+    if(drop<WATERFALL_MIN_DROP)return;
+
+    const lateral=[.16,.33,.50,.67,.84].map(t=>this.sampleCliffProfile(profile.points,t)).filter(Boolean);
+    if(lateral.length<2)return;
+    const wallOffset=TILE_SIZE*.010,approach=TILE_SIZE*.065,landing=TILE_SIZE*.085;
+    const rows=[
+      {shift:-approach,level:topLevel,p:0},
+      {shift: wallOffset,level:topLevel,p:.05},
+      {shift: wallOffset,level:topLevel-drop*.33,p:.34},
+      {shift: wallOffset,level:topLevel-drop*.66,p:.66},
+      {shift: wallOffset,level:bottomLevel,p:.95},
+      {shift: wallOffset+landing,level:bottomLevel,p:1}
     ];
-    let previous=null;
-    for(const section of sections){
-      const centerX=edgeX+dirX*section.forward,centerZ=edgeZ+dirZ*section.forward;
-      const left=this.addCascadeVertex(out,{x:centerX-perpX*half,z:centerZ-perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
-      const right=this.addCascadeVertex(out,{x:centerX+perpX*half,z:centerZ+perpZ*half,level:section.level,drop},turbidity,edge.tile,section.p);
-      if(previous)out.indices.push(previous.left,previous.right,right,previous.left,right,left);
-      previous={left,right};
+    const grid=[];
+    for(const row of rows){
+      const indices=[];
+      for(const point of lateral){
+        indices.push(this.addCascadeVertex(out,{
+          x:Number(point.x)+dirX*row.shift,
+          z:Number(point.z)+dirZ*row.shift,
+          level:row.level,drop
+        },turbidity,edge.tile,row.p));
+      }
+      grid.push(indices);
+    }
+    for(let r=0;r<grid.length-1;r++)for(let c=0;c<grid[r].length-1;c++){
+      const a=grid[r][c],b=grid[r][c+1],d=grid[r+1][c],e=grid[r+1][c+1];
+      out.indices.push(a,b,e,a,e,d);
     }
   }
 
@@ -1045,12 +1135,12 @@ export class WaterRenderer{
       const grid=patch.grid.map(row=>row.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile)));
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
         const nw=grid[row][col],ne=grid[row][col+1],sw=grid[row+1][col],se=grid[row+1][col+1],alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
-        if(alternate===0){this.pushTriangle(out,nw,ne,se);this.pushTriangle(out,nw,se,sw);}else{this.pushTriangle(out,nw,ne,sw);this.pushTriangle(out,ne,se,sw);}
+        if(alternate===0){this.pushTerrainClippedTriangle(out,nw,ne,se,allMap,tile);this.pushTerrainClippedTriangle(out,nw,se,sw,allMap,tile);}else{this.pushTerrainClippedTriangle(out,nw,ne,sw,allMap,tile);this.pushTerrainClippedTriangle(out,ne,se,sw,allMap,tile);}
       }
     }
     const componentKeys=new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y)));
     const componentCascades=(cascades||[]).filter(edge=>componentKeys.has(keyOf(edge.tile.x,edge.tile.y)));
-    for(const edge of componentCascades)this.appendCascadeSheet(out,edge,componentTurbidity);
+    for(const edge of componentCascades)this.appendCascadeSheet(out,edge,componentTurbidity,allMap);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
@@ -1065,15 +1155,26 @@ export class WaterRenderer{
 
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[];
-    const visible=new Set(waterTiles.map(tile=>keyOf(tile.x,tile.y)));
+    const rendered=new Set(waterTiles.map(tile=>keyOf(tile.x,tile.y)));
     const pairs=[[1,0],[0,1]];
     for(const tile of waterTiles){
       for(const[dx,dy]of pairs){
         const neighbor=allMap.get(keyOf(tile.x+dx,tile.y+dy));
-        if(!neighbor||!visible.has(keyOf(neighbor.x,neighbor.y)))continue;
+        if(!neighbor||!hasAnyWater(neighbor))continue;
         const relation=this.waterEdgeRelation(tile,neighbor);
-        if(relation.type!=="CASCADE")continue;
-        const high=relation.high,low=relation.low;
+        let high=null,low=null,authored=false,derivedFromFlowCliff=false;
+        if(relation.type==="CASCADE"){
+          high=relation.high;low=relation.low;authored=true;
+        }else if(relation.type==="LEVEL_BREAK"){
+          high=relation.high;low=relation.low;
+          const fx=Math.sign(Number(high?.flowX||0)),fy=Math.sign(Number(high?.flowY||0));
+          const flowsToLow=high&&low&&high.river===true&&fx===Math.sign(low.x-high.x)&&fy===Math.sign(low.y-high.y);
+          const dir=flowsToLow?this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y}):null;
+          const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap);
+          if(!flowsToLow||!cliff)continue;
+          derivedFromFlowCliff=true;
+        }else continue;
+
         const top=visualSurface(high),bottom=visualSurface(low),drop=top-bottom;
         if(drop<WATERFALL_MIN_DROP)continue;
         out.push({
@@ -1081,9 +1182,11 @@ export class WaterRenderer{
           tile:high,receiver:low,
           dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y),
           top,bottom,drop,
-          authoredDrop:relation.authored?Number(high.hydrologyCascadeDrop||low.hydrologyCascadeDrop||drop):null,
-          inferredFromSurface:!relation.authored,
-          speed:Math.max(.6,Number(high.flowSpeed||0)+drop*.55)
+          authoredDrop:authored?Number(high.hydrologyCascadeDrop||low.hydrologyCascadeDrop||drop):null,
+          inferredFromSurface:false,
+          derivedFromFlowCliff,
+          speed:Math.max(.6,Number(high.flowSpeed||0)+drop*.55),
+          receiverRendered:rendered.has(keyOf(low.x,low.y))
         });
       }
     }
