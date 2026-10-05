@@ -839,72 +839,6 @@ export class WaterRenderer{
       :this.edgeNaturalTarget(tile,index,sample,allMap);
   }
 
-  oppositeDirection(dir){
-    if(!dir)return null;
-    return{dx:-Number(dir.dx||0),dy:-Number(dir.dy||0),
-      id:dir.id==="N"?"S":dir.id==="S"?"N":dir.id==="E"?"W":dir.id==="W"?"E":null};
-  }
-
-  cliffShorePoint(tile,index,allMap){
-    if(!this.terrainRenderer)return null;
-    const edgeDir=EDGE_DIR_BY_RING[index];
-    const cornerDir=CORNER_DIR_BY_RING[index];
-    const candidates=[];
-    if(edgeDir)candidates.push({dir:edgeDir,t:.5});
-    else if(cornerDir){
-      if(cornerDir.dy<0)candidates.push({dir:{id:"N",dx:0,dy:-1},t:cornerDir.dx<0?0:1});
-      if(cornerDir.dx>0)candidates.push({dir:{id:"E",dx:1,dy:0},t:cornerDir.dy<0?0:1});
-      if(cornerDir.dy>0)candidates.push({dir:{id:"S",dx:0,dy:1},t:cornerDir.dx>0?0:1});
-      if(cornerDir.dx<0)candidates.push({dir:{id:"W",dx:-1,dy:0},t:cornerDir.dy>0?0:1});
-    }
-    const tileElevation=this.surfaceResolver.elevationOf(tile);
-    for(const candidate of candidates){
-      const neighbor=allMap.get(keyOf(tile.x+candidate.dir.dx,tile.y+candidate.dir.dy));
-      if(!neighbor)continue;
-      const neighborElevation=this.surfaceResolver.elevationOf(neighbor);
-      let owner=null,dir=null;
-      if(neighborElevation-tileElevation>this.surfaceResolver.maxVisualSlopeDelta){
-        owner=neighbor;dir=this.oppositeDirection(candidate.dir);
-      }else if(tileElevation-neighborElevation>this.surfaceResolver.maxVisualSlopeDelta){
-        owner=tile;dir=candidate.dir;
-      }else continue;
-      const profile=this.terrainRenderer.cliffFaceProfile?.(owner,dir,allMap);
-      const point=profile&&this.sampleCliffProfile(profile.points,candidate.t);
-      if(point)return{x:Number(point.x),z:Number(point.z)};
-    }
-    return null;
-  }
-
-  shoreSearchTarget(tile,index,sample,allMap,anchor,naturalTarget){
-    const edgeDir=EDGE_DIR_BY_RING[index];
-    let dryTarget=null;
-    if(edgeDir){
-      const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
-      if(neighbor&&!hasAnyWater(neighbor)){
-        dryTarget={x:Number(neighbor.x)*TILE_SIZE,z:Number(neighbor.y)*TILE_SIZE};
-      }
-    }else{
-      const context=this.cornerContext(tile,index,allMap);
-      const dry=(context?.drySlots||[]).filter(slot=>slot.tile&&!hasAnyWater(slot.tile)).map(slot=>slot.tile);
-      const centroid=this.centroidOfTiles(dry);
-      if(centroid)dryTarget={x:centroid.x,z:centroid.z};
-    }
-    if(!dryTarget)return naturalTarget;
-
-    // Keep the natural shoreline ray authored by the existing shoreline topology,
-    // and use the dry terrain only to decide how far that ray must search. Geometry
-    // clipping happens once at projectShoreline(); do not rotate the bank normal or
-    // perform a second per-triangle cut later in buildSurface().
-    const dx=Number(naturalTarget.x)-Number(anchor.x),dz=Number(naturalTarget.z)-Number(anchor.z);
-    const length=Math.hypot(dx,dz);
-    const dryDistance=Math.hypot(dryTarget.x-Number(anchor.x),dryTarget.z-Number(anchor.z));
-    if(length<=EPSILON||dryDistance<=EPSILON)return dryTarget;
-    return{
-      x:Number(anchor.x)+dx/length*dryDistance,
-      z:Number(anchor.z)+dz/length*dryDistance
-    };
-  }
-
   mapBoundaryTarget(tile,sample){
     // Open-map water terminates exactly on the battlefield edge. Geometry stays
     // watertight; only wave displacement is suppressed at the cut face. Insetting
@@ -981,23 +915,28 @@ export class WaterRenderer{
       return{x:fullX,z:fullZ,level:ringWater,clipped:false,relaxed:false,boundary:false,mode};
     }
 
-    const cliffPoint=this.cliffShorePoint(tile,index,allMap);
-    if(cliffPoint){
-      return{x:cliffPoint.x,z:cliffPoint.z,level:ringWater,clipped:true,relaxed:false,boundary:false,mode};
-    }
-
+    // Shore geometry has one source of truth again: the natural shoreline target
+    // is intersected with the exact rendered terrain. Cliff profiles belong to
+    // waterfall/cliff rendering only; they must not pull the whole water patch
+    // inward or replace this shoreline topology.
+    const target=this.naturalShoreTarget(tile,index,sample,allMap);
     let anchor={x:cx,z:cz};
     let anchorLevel=visualSurface(tile);
+
     if(CORNER_DIR_BY_RING[index]){
       const context=this.cornerContext(tile,index,allMap);
       const centroid=this.centroidOfTiles(context?.members||[]);
       if(centroid){anchor={x:centroid.x,z:centroid.z};anchorLevel=centroid.level;}
     }
 
-    const natural=this.naturalShoreTarget(tile,index,sample,allMap);
-    const target=this.shoreSearchTarget(tile,index,sample,allMap,anchor,natural);
     const projected=this.projectShoreline(
-      anchor,target,anchorLevel,ringWater,allMap,Number(sample.height||0),tile
+      anchor,
+      target,
+      anchorLevel,
+      ringWater,
+      allMap,
+      Number(sample.height||0),
+      tile
     );
     return{
       ...projected,
