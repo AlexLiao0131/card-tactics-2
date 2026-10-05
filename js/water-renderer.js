@@ -147,6 +147,7 @@ export class WaterRenderer{
       m.Vertex_Definitions(`
         attribute vec4 waterAnim;
         attribute vec2 waterBaseXZ;
+        varying vec3 vWaterCascade;
         vec3 waterWaveValue;
         float waterSmooth01(float value){
           float t=clamp(value,0.0,1.0);
@@ -223,6 +224,30 @@ export class WaterRenderer{
             normalUpdated=normalize(vec3(-waterWaveValue.y*waterAnim.w,1.0,-waterWaveValue.z*waterAnim.w));
           }
         }
+      `);
+      // Waterfall sheets are tagged by waterAnim.z<0 (x=down-progress, y=distance along the lip).
+      m.Vertex_MainEnd(`vWaterCascade=vec3(waterAnim.z<-.5?1.0:0.0,waterAnim.x,waterAnim.y);`);
+      m.Fragment_Definitions(`varying vec3 vWaterCascade;`);
+      m.Fragment_Custom_Diffuse(`
+        if(vWaterCascade.x>.5){
+          float fallV=vWaterCascade.y;
+          float fallU=vWaterCascade.z;
+          // Streaks scroll DOWN the face (v grows downward, so subtract time).
+          float s1=sin(fallU*9.0+sin(fallU*3.1)*1.6);
+          float s2=sin(fallU*17.0+1.7);
+          float lane=.5+.5*(s1*.65+s2*.35);
+          float scroll=fract(fallV*2.6-waterTime*1.35+lane*.45);
+          float streak=smoothstep(.0,.16,scroll)*(1.0-smoothstep(.34,.62,scroll));
+          float scroll2=fract(fallV*4.4-waterTime*2.1+fallU*.7);
+          float streak2=smoothstep(.0,.10,scroll2)*(1.0-smoothstep(.16,.32,scroll2));
+          float foam=clamp(streak*(.30+.30*lane)+streak2*.22,0.,.62);
+          baseColor.rgb=mix(baseColor.rgb*.90,vec3(.90,.97,1.0),foam);
+          // Slight foaming at the lip (top) and splash zone (bottom).
+          baseColor.rgb=mix(baseColor.rgb,vec3(.92,.98,1.0),(1.0-smoothstep(.0,.10,fallV))*.35+smoothstep(.86,1.0,fallV)*.30);
+        }
+      `);
+      m.Fragment_Custom_Alpha(`
+        if(vWaterCascade.x>.5){alpha=clamp(alpha+.10,0.,.92);}
       `);
       m.onBindObservable.add(mesh=>{
         const effect=m.getEffect?.();if(!effect)return;
@@ -1022,7 +1047,13 @@ export class WaterRenderer{
     // exposes the terrain triangles underneath and creates dark X / hairline seams
     // at cliffs on mobile. Once the vertex has been geometrically clipped, keep
     // the water body alpha continuous up to that boundary.
-    const alpha=bodyAlpha;
+    // Soft fade only on genuinely shallow shore vertices. Cliff-locked rim points
+    // stay at full body alpha (their silhouette is shared with the rock wall), and
+    // a floor keeps the terrain beneath from showing hairline cracks.
+    const shoreFade=point.cliffLocked||point.boundaryWaveFade===0&&point.mode==="PATCH"&&depth>=MIN_WATER_DEPTH
+      ?1
+      :.30+.70*smooth01(depth/.16);
+    const alpha=bodyAlpha*shoreFade;
     return{depth,color,alpha};
   }
 
@@ -1057,8 +1088,9 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
-  addCascadeVertex(out,point,turbidity,tile,progress=0){
+  addCascadeVertex(out,point,turbidity,tile,progress=0,along=0){
     const index=out.positions.length/3;
+    out.cascade.set(index,{v:clamp(progress,0,1),u:Number(along||0)});
     const depthTone=smooth01((.28+Math.max(0,Number(point.drop||0))*.18)/WATER_DEPTH_RANGE);
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,depthTone);
     const murky=clamp(Number(turbidity||0),0,1);if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
@@ -1088,12 +1120,14 @@ export class WaterRenderer{
     ];
     const drop=Math.max(0,Number(edge.drop||0)),offset=TILE_SIZE*.014;
     const topLevel=Number(edge.top),bottomLevel=Number(edge.bottom);
-    let previous=null;
+    let previous=null,along=0,lastPoint=null;
     for(const point of points){
+      if(lastPoint)along+=Math.hypot(Number(point.x)-Number(lastPoint.x),Number(point.z)-Number(lastPoint.z));
+      lastPoint=point;
       const fx=Number(point.x)+dx*offset,fz=Number(point.z)+dy*offset;
-      const shoulder=this.addCascadeVertex(out,{x:Number(point.x),z:Number(point.z),level:topLevel,drop},turbidity,edge.tile,0);
-      const top=this.addCascadeVertex(out,{x:fx,z:fz,level:topLevel,drop},turbidity,edge.tile,0);
-      const bottom=this.addCascadeVertex(out,{x:fx,z:fz,level:bottomLevel,drop},turbidity,edge.tile,1);
+      const shoulder=this.addCascadeVertex(out,{x:Number(point.x),z:Number(point.z),level:topLevel,drop},turbidity,edge.tile,0,along);
+      const top=this.addCascadeVertex(out,{x:fx,z:fz,level:topLevel,drop},turbidity,edge.tile,0,along);
+      const bottom=this.addCascadeVertex(out,{x:fx,z:fz,level:bottomLevel,drop},turbidity,edge.tile,1,along);
       if(previous){
         out.indices.push(previous.shoulder,shoulder,top,previous.shoulder,top,previous.top);
         out.indices.push(previous.top,top,bottom,previous.top,bottom,previous.bottom);
@@ -1103,7 +1137,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state,cascades=[]){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[],cascade:new Map()};
     const cache=new Map(),allMap=this.allByKey(state),componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));let clippedPoints=0;
     for(const tile of component.tiles){
       const patch=this.waterPatchGrid(tile,allMap);clippedPoints+=patch.ring.filter(point=>point.clipped).length;
@@ -1122,7 +1156,7 @@ export class WaterRenderer{
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=10;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,naturalShoreline:true,topologyAwareShoreRelaxation:true,ruggedNaturalShoreline:true,ruggedRockBanks:true,visualSurfaceResolver:true,microRegionsPerTile:9,patchVerticesPerTile:16,trianglesPerTile:18,embeddedCascadeSheets:componentCascades.length,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[];
-    for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));}
+    for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);const cas=out.cascade.get(i);if(cas)waterAnim.push(cas.v,cas.u,-1,0);else waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);}
     this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),specialActive:false});
     mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;mesh.freezeWorldMatrix();return mesh;
