@@ -891,27 +891,17 @@ export class WaterRenderer{
     }
     if(!dryTarget)return naturalTarget;
 
-    // Geometry owns the shoreline normal: search from the wet anchor toward the
-    // actual dry neighbour / dry-corner centroid. Natural shoreline styling is
-    // allowed to perturb only along the bank tangent. It must never rotate the
-    // search ray away from the real dry terrain, which was the source of wedges
-    // and gaps after rugged/convex offsets were treated as the geometry target.
-    const dryDx=Number(dryTarget.x)-Number(anchor.x);
-    const dryDz=Number(dryTarget.z)-Number(anchor.z);
-    const dryDistance=Math.hypot(dryDx,dryDz);
-    if(dryDistance<=EPSILON)return dryTarget;
-    const nx=dryDx/dryDistance,nz=dryDz/dryDistance;
-    const tx=-nz,tz=nx;
-
-    const baseX=Number(tile.x)*TILE_SIZE+Number(sample?.ox||0)*TILE_SIZE;
-    const baseZ=Number(tile.y)*TILE_SIZE+Number(sample?.oz||0)*TILE_SIZE;
-    const visualDx=Number(naturalTarget.x)-baseX;
-    const visualDz=Number(naturalTarget.z)-baseZ;
-    const tangentOffset=visualDx*tx+visualDz*tz;
-
+    // Keep the natural shoreline ray authored by the existing shoreline topology,
+    // and use the dry terrain only to decide how far that ray must search. Geometry
+    // clipping happens once at projectShoreline(); do not rotate the bank normal or
+    // perform a second per-triangle cut later in buildSurface().
+    const dx=Number(naturalTarget.x)-Number(anchor.x),dz=Number(naturalTarget.z)-Number(anchor.z);
+    const length=Math.hypot(dx,dz);
+    const dryDistance=Math.hypot(dryTarget.x-Number(anchor.x),dryTarget.z-Number(anchor.z));
+    if(length<=EPSILON||dryDistance<=EPSILON)return dryTarget;
     return{
-      x:Number(anchor.x)+nx*dryDistance+tx*tangentOffset,
-      z:Number(anchor.z)+nz*dryDistance+tz*tangentOffset
+      x:Number(anchor.x)+dx/length*dryDistance,
+      z:Number(anchor.z)+dz/length*dryDistance
     };
   }
 
@@ -1099,48 +1089,6 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
-  surfaceClearance(out,index,allMap,tile){
-    const x=Number(out.positions[index*3]),y=Number(out.positions[index*3+1]),z=Number(out.positions[index*3+2]);
-    const terrain=this.renderedTerrainHeightForTilePoint(tile,x,z,allMap,Number(tile?.elevation||0));
-    const resolved=terrain==null?Number(tile?.elevation||0):Number(terrain);
-    const level=(y-SURFACE_OFFSET)/ELEVATION_HEIGHT;
-    return level-resolved;
-  }
-
-  interpolateSurfaceVertex(out,a,b,t){
-    const q=clamp(t,0,1),index=out.positions.length/3;
-    const lerpArray=(array,stride)=>{
-      for(let i=0;i<stride;i++)array.push(Number(array[a*stride+i])+(Number(array[b*stride+i])-Number(array[a*stride+i]))*q);
-    };
-    lerpArray(out.positions,3);lerpArray(out.uvs,2);lerpArray(out.colors,4);
-    out.waveWeights.push(Number(out.waveWeights[a])+(Number(out.waveWeights[b])-Number(out.waveWeights[a]))*q);
-    out.flowXSum.push(Number(out.flowXSum[a])+(Number(out.flowXSum[b])-Number(out.flowXSum[a]))*q);
-    out.flowZSum.push(Number(out.flowZSum[a])+(Number(out.flowZSum[b])-Number(out.flowZSum[a]))*q);
-    out.flowSpeedSum.push(Number(out.flowSpeedSum[a])+(Number(out.flowSpeedSum[b])-Number(out.flowSpeedSum[a]))*q);
-    out.flowSampleCount.push(Number(out.flowSampleCount[a])+(Number(out.flowSampleCount[b])-Number(out.flowSampleCount[a]))*q);
-    out.cascadeData.push(0,0);
-    return index;
-  }
-
-  pushTerrainClippedTriangle(out,a,b,c,allMap,tile){
-    const threshold=0;
-    let polygon=[a,b,c].map(index=>({index,clearance:this.surfaceClearance(out,index,allMap,tile)}));
-    const clipped=[];
-    for(let i=0;i<polygon.length;i++){
-      const current=polygon[i],next=polygon[(i+1)%polygon.length];
-      const currentInside=current.clearance>=threshold,nextInside=next.clearance>=threshold;
-      if(currentInside)clipped.push(current);
-      if(currentInside!==nextInside){
-        const denom=next.clearance-current.clearance;
-        const q=Math.abs(denom)<=1e-9?.5:(threshold-current.clearance)/denom;
-        const index=this.interpolateSurfaceVertex(out,current.index,next.index,q);
-        clipped.push({index,clearance:threshold});
-      }
-    }
-    if(clipped.length<3)return;
-    for(let i=1;i<clipped.length-1;i++)this.pushTriangle(out,clipped[0].index,clipped[i].index,clipped[i+1].index);
-  }
-
   addCascadeVertex(out,point,turbidity,tile,progress=0){
     const index=out.positions.length/3;
     const depthTone=smooth01((.28+Math.max(0,Number(point.drop||0))*.18)/WATER_DEPTH_RANGE);
@@ -1287,7 +1235,7 @@ export class WaterRenderer{
       const grid=patch.grid.map(row=>row.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile)));
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
         const nw=grid[row][col],ne=grid[row][col+1],sw=grid[row+1][col],se=grid[row+1][col+1],alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
-        if(alternate===0){this.pushTerrainClippedTriangle(out,nw,ne,se,allMap,tile);this.pushTerrainClippedTriangle(out,nw,se,sw,allMap,tile);}else{this.pushTerrainClippedTriangle(out,nw,ne,sw,allMap,tile);this.pushTerrainClippedTriangle(out,ne,se,sw,allMap,tile);}
+        if(alternate===0){this.pushTriangle(out,nw,ne,se);this.pushTriangle(out,nw,se,sw);}else{this.pushTriangle(out,nw,ne,sw);this.pushTriangle(out,ne,se,sw);}
       }
     }
     const componentKeys=new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y)));
