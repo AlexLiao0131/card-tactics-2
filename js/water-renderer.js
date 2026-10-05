@@ -613,18 +613,20 @@ export class WaterRenderer{
   waterEdgeRelation(a,b){
     if(!hasAnyWater(a)||!hasAnyWater(b))return{type:"SHORE",drop:0,high:null,low:null,authored:false};
     const aSurface=visualSurface(a),bSurface=visualSurface(b),delta=aSurface-bSurface,drop=Math.abs(delta);
-    const authored=this.cascadeMatches(a,b)||this.cascadeMatches(b,a);
+    const ab=this.cascadeMatches(a,b),ba=this.cascadeMatches(b,a);
 
-    // Water topology follows the real hydrology surfaces, not only one authored
-    // cascade pointer. River bends/branches can touch a different reach along a
-    // side edge; stitching those vertices when the levels differ creates a giant
-    // sloped sheet of water. Any real level break is a cascade boundary.
+    // Geometry separation and waterfall rendering are intentionally different
+    // concepts. A real surface break must stop two water meshes from stitching
+    // into one giant sloped sheet, but only an authored Hydrology cascade whose
+    // flow actually points at the lower receiver may create a waterfall ribbon.
+    if(ab&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:a,low:b,authored:true};
+    if(ba&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:b,low:a,authored:true};
     if(drop>=WATERFALL_MIN_DROP){
       return delta>=0
-        ?{type:"CASCADE",drop,high:a,low:b,authored}
-        :{type:"CASCADE",drop,high:b,low:a,authored};
+        ?{type:"LEVEL_BREAK",drop,high:a,low:b,authored:false}
+        :{type:"LEVEL_BREAK",drop,high:b,low:a,authored:false};
     }
-    return{type:"CONTINUOUS",drop,high:null,low:null,authored};
+    return{type:"CONTINUOUS",drop,high:null,low:null,authored:false};
   }
 
   isCascadeBoundary(a,b){
@@ -700,17 +702,18 @@ export class WaterRenderer{
 
     const memberKeys=new Set(members.map(member=>keyOf(member.x,member.y)));
     const drySlots=slots.filter(slot=>!memberKeys.has(keyOf(slot.x,slot.y)));
-    let cascade=false;
+    let cascade=false,levelBreak=false;
     for(const member of members){
       for(const dir of DIRS){
         const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
         if(!next||memberKeys.has(keyOf(next.x,next.y))||!hasAnyWater(next))continue;
-        if(this.isCascadeBoundary(member,next)){cascade=true;break;}
+        const relation=this.waterEdgeRelation(member,next);
+        if(relation.type==="CASCADE")cascade=true;
+        else if(relation.type==="LEVEL_BREAK")levelBreak=true;
       }
-      if(cascade)break;
     }
 
-    return{gx,gy,slots,members,drySlots,memberKeys,cascade};
+    return{gx,gy,slots,members,drySlots,memberKeys,cascade,levelBreak};
   }
 
   cornerMembers(tile,index,allMap){
@@ -726,7 +729,11 @@ export class WaterRenderer{
       // samples beyond the map and invents terrain from the water tile itself.
       if(!neighbor)return"MAP_BOUNDARY";
       if(this.continuousWaterEdge(tile,neighbor))return"INTERNAL";
-      if(hasAnyWater(neighbor)&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
+      if(hasAnyWater(neighbor)){
+        const relation=this.waterEdgeRelation(tile,neighbor);
+        if(relation.type==="CASCADE")return"CASCADE";
+        if(relation.type==="LEVEL_BREAK")return"LEVEL_BREAK";
+      }
       return"SHORE";
     }
 
@@ -737,6 +744,7 @@ export class WaterRenderer{
     // smoothing because there is no terrain outside the generated map.
     if(context.slots.some(slot=>!slot.tile))return"MAP_BOUNDARY";
     if(context.cascade)return"CASCADE";
+    if(context.levelBreak)return"LEVEL_BREAK";
     return context.members.length===4?"INTERNAL":"SHORE";
   }
 
@@ -755,7 +763,7 @@ export class WaterRenderer{
   }
 
   cornerCanRelax(context){
-    if(!context||context.cascade)return false;
+    if(!context||context.cascade||context.levelBreak)return false;
     const members=context.members||[];
     const memberKeys=context.memberKeys||new Set();
     const slotTiles=new Map(context.slots.filter(slot=>slot.tile).map(slot=>[keyOf(slot.x,slot.y),slot.tile]));

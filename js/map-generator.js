@@ -13,6 +13,9 @@ export const MapGenerator=(()=>{
   const RIVER_CASCADE_BED_DROP=1.0001;
   const SOURCE_POOL_EXTRA_TILES=3;
   const SOURCE_GENTLE_REACH=3;
+  const SPRING_SOURCE_CHANCE=.50;
+  const SPRING_MIN_ELEVATION=2;
+  const SOURCE_KIND=Object.freeze({OFF_MAP:"OFF_MAP_SOURCE",SPRING:"SPRING_SOURCE"});
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   const inBounds=(w,h,x,y)=>x>=0&&y>=0&&x<w&&y<h;
   const tileAt=(map,x,y)=>map.tiles.find(t=>t.x===x&&t.y===y)||null;
@@ -57,7 +60,7 @@ export const MapGenerator=(()=>{
   function setDry(tile,elevation=0,terrain=null){
     if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||(tile.elevation>=2?"HIGH_GROUND":"PLAIN");tile.waterDepth=0;tile.waterSurfaceZ=null;
     delete tile.dryTerrain;delete tile.soilMoisture;delete tile.river;delete tile.ford;delete tile.flowX;delete tile.flowY;delete tile.baseFlowSpeed;delete tile.flowSpeed;delete tile.discharge;delete tile.baseDischarge;
-    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.sourcePool;
+    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceNaturalElevation;delete tile.sourceObjectId;delete tile.sourceKind;delete tile.sourcePool;
   }
   function setWater(tile,{bed=-1,depth=1,river=false,ford=false,flowX=0,flowY=1,flowSpeed=.6,discharge=1}={}){
     if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";tile.soilMoisture=1;
@@ -252,7 +255,7 @@ export const MapGenerator=(()=>{
     // keeps this topology while still owning discharge, capacity, flooding and flow.
     map.hydrology={...(map.hydrology||{}),preserveRiverProfile:true,generatedRiverProfile:true};
     map.generatedRiverProfile={
-      sources:sources.map(tile=>({x:tile.x,y:tile.y})),
+      sources:sources.map(tile=>({x:tile.x,y:tile.y,kind:tile.sourceKind||SOURCE_KIND.OFF_MAP,active:true,naturalElevation:Number(tile.hydrologySourceNaturalElevation??0),objectId:tile.sourceObjectId||null})),
       drains:drains.map(tile=>({x:tile.x,y:tile.y})),
       cascades
     };
@@ -352,68 +355,69 @@ export const MapGenerator=(()=>{
       return !!tile&&tile.captureZone!==true&&!protectedKeys.has(key(tile.x,tile.y))&&tile.terrain!=="WALL";
     }
 
-    function chooseUpstreamSource(){
-      const maxY=clamp(Math.round(map.height*.24),2,map.height-3);
-      const candidates=[];
-      for(let y=1;y<=maxY;y++)for(let x=2;x<=map.width-3;x++){
-        const tile=getTile(x,y);
-        if(!sourcePoolCandidate(tile))continue;
+    function chooseOffMapSource(){
+      const y=0,candidates=[];
+      for(let x=3;x<=map.width-4;x++){
+        const tile=getTile(x,y);if(!tile||tile.captureZone===true)continue;
+        candidates.push({tile,score:Math.abs(x-xBase)+rand()*.35});
+      }
+      candidates.sort((a,b)=>a.score-b.score||a.tile.x-b.tile.x);
+      return candidates[0]?.tile||getTile(clamp(xBase,2,map.width-3),0)||null;
+    }
+
+    function chooseSpringSource(){
+      const maxY=clamp(Math.round(map.height*.52),3,map.height-4),candidates=[];
+      for(let y=2;y<=maxY;y++)for(let x=2;x<=map.width-3;x++){
+        const tile=getTile(x,y);if(!sourcePoolCandidate(tile))continue;
+        const elevation=Number(tile.elevation||0);if(elevation<SPRING_MIN_ELEVATION)continue;
         const local=DIRS.map(([dx,dy])=>getTile(x+dx,y+dy)).filter(Boolean);
-        const poolSlots=local.filter(sourcePoolCandidate).length;
-        if(poolSlots<2)continue;
-        // Prefer an existing natural basin first, then a genuine local depression.
-        // This keeps permanent inflow visually anchored to water instead of an
-        // arbitrary high-ground river tile.
-        const localMean=local.length?local.reduce((sum,t)=>sum+Number(t.elevation||0),0)/local.length:Number(tile.elevation||0);
-        const basinBonus=Math.max(0,localMean-Number(tile.elevation||0));
-        const naturalWater=Number(tile.waterDepth||0)>.12?1:0;
-        const score=(naturalWater?-18:0)+Number(tile.elevation||0)*6+Math.abs(x-xBase)*.55+y*.08-basinBonus*2.8;
+        if(local.length<4)continue;
+        const heights=local.map(entry=>Number(entry.elevation||0));
+        const highSides=heights.filter(value=>value>=elevation).length;
+        const downhill=heights.filter(value=>value<=elevation-1).length;
+        if(highSides<2||downhill<1)continue;
+        const localMean=heights.reduce((sum,value)=>sum+value,0)/heights.length;
+        const basinBonus=Math.max(0,localMean-elevation);
+        const relief=Math.max(...heights)-Math.min(...heights);
+        const score=-elevation*5-basinBonus*3-relief*.7+Math.abs(x-xBase)*.28+y*.06+rand()*.18;
         candidates.push({tile,score});
       }
       candidates.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
       return candidates[0]?.tile||null;
     }
 
-    function buildSourcePool(profile){
+    function buildSpringBasin(profile,sourceObjects){
       for(const ref of profile?.sources||[]){
-        const source=getTile(ref.x,ref.y);
-        if(!source)continue;
+        if(ref.kind!==SOURCE_KIND.SPRING)continue;
+        const source=getTile(ref.x,ref.y);if(!source)continue;
         const surface=Number(source.waterSurfaceZ??(Number(source.elevation||0)+Number(source.waterDepth||0)));
         source.sourcePool=true;
         protectedKeys.add(key(source.x,source.y));
 
-        // Grow a small cardinally connected spring basin. The old version selected
-        // the three lowest cells in a 3x3 box, which could leave diagonal puddles
-        // that were not connected to the permanent hydrology source at all.
         const selected=[],seen=new Set([key(source.x,source.y)]),frontier=[];
         const enqueue=(origin,distance)=>{
           for(const[dx,dy]of DIRS){
             const tile=getTile(origin.x+dx,origin.y+dy),k=tile&&key(tile.x,tile.y);
-            if(!tile||seen.has(k)||tile.river===true||!sourcePoolCandidate(tile))continue;
-            seen.add(k);
-            frontier.push({tile,distance,score:Number(tile.elevation||0)+distance*.16});
+            if(!tile||seen.has(k)||!sourcePoolCandidate(tile))continue;
+            seen.add(k);frontier.push({tile,distance,score:Number(tile.elevation||0)+(tile.river===true?.28:0)+distance*.16});
           }
         };
         enqueue(source,1);
         while(frontier.length&&selected.length<SOURCE_POOL_EXTRA_TILES){
           frontier.sort((a,b)=>a.distance-b.distance||a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
-          const current=frontier.shift(),tile=current.tile;
-          const natural=Number(tile.elevation||0);
-          const minDepth=.30+selected.length*.04;
-          const bed=Math.min(natural,surface-minDepth);
-          const depth=Math.max(minDepth,surface-bed);
-          setWater(tile,{bed,depth,river:false});
-          tile.waterSurfaceZ=surface;
-          tile.sourcePool=true;
-          protectedKeys.add(key(tile.x,tile.y));
-          selected.push(tile);
-          enqueue(tile,current.distance+1);
+          const current=frontier.shift(),tile=current.tile,natural=Number(tile.elevation||0),minDepth=.30+selected.length*.04;
+          if(tile.river!==true){
+            const bed=Math.min(natural,surface-minDepth),depth=Math.max(minDepth,surface-bed);
+            setWater(tile,{bed,depth,river:false});tile.waterSurfaceZ=surface;
+          }
+          tile.sourcePool=true;protectedKeys.add(key(tile.x,tile.y));selected.push(tile);enqueue(tile,current.distance+1);
         }
 
-        if(profile){
-          profile.sourcePools=profile.sourcePools||[];
-          profile.sourcePools.push({x:source.x,y:source.y,tiles:[{x:source.x,y:source.y},...selected.map(tile=>({x:tile.x,y:tile.y}))]});
-        }
+        const objectId=`spring_source_${source.x}_${source.y}`;
+        source.sourceObjectId=objectId;ref.objectId=objectId;
+        profile.sourcePools=profile.sourcePools||[];
+        profile.sourcePools.push({x:source.x,y:source.y,kind:SOURCE_KIND.SPRING,tiles:[{x:source.x,y:source.y},...selected.map(tile=>({x:tile.x,y:tile.y}))]});
+        sourceObjects.push({id:objectId,type:"SPRING",x:source.x,y:source.y,sourceKind:SOURCE_KIND.SPRING,hydrologySourceX:source.x,hydrologySourceY:source.y,floatOnWater:true,destructible:true,blocksMovement:false});
       }
     }
 
@@ -459,15 +463,22 @@ export const MapGenerator=(()=>{
       return path.length?path[path.length-1]:null;
     }
 
-    // Main river starts in an actual low upstream basin instead of materialising
-    // on the map boundary. The source tile is authored explicitly so later ford
-    // connector branches can never become fake springs.
-    const sourceSeed=chooseUpstreamSource();
-    if(!sourceSeed)throw new Error("River source basin generation failed");
-    let targetX=sourceSeed.x;
-    let last={x:sourceSeed.x,y:sourceSeed.y};
+    // One canonical river-source contract supports two authored origins. An
+    // OFF_MAP source enters at the battlefield boundary; a SPRING source begins at
+    // a visible highland depression inside the map. Both feed the same Hydrology
+    // graph and the same downstream river profile.
+    const requestedKind=rand()<SPRING_SOURCE_CHANCE?SOURCE_KIND.SPRING:SOURCE_KIND.OFF_MAP;
+    let sourceSeed=requestedKind===SOURCE_KIND.SPRING?chooseSpringSource():chooseOffMapSource();
+    let sourceKind=requestedKind;
+    if(!sourceSeed&&sourceKind===SOURCE_KIND.SPRING){sourceKind=SOURCE_KIND.OFF_MAP;sourceSeed=chooseOffMapSource();}
+    if(!sourceSeed)throw new Error("River source generation failed");
+    const sourceNaturalElevation=Number(sourceSeed.elevation||0);
+    let targetX=sourceSeed.x,last={x:sourceSeed.x,y:sourceSeed.y};
     const authoredSource=placeRiverTile(last.x,last.y);
-    if(authoredSource)authoredSource.hydrologyAuthoredSource=true;
+    if(authoredSource){
+      authoredSource.hydrologyAuthoredSource=true;authoredSource.hydrologySourceActive=true;
+      authoredSource.sourceKind=sourceKind;authoredSource.hydrologySourceNaturalElevation=sourceNaturalElevation;
+    }
 
     for(let y=sourceSeed.y+1;y<map.height;y++){
       if(rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
@@ -516,9 +527,9 @@ export const MapGenerator=(()=>{
       }
     });
 
-    const profile=finalizeGeneratedRiverProfile(map);
-    buildSourcePool(profile);
-    return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile};
+    const profile=finalizeGeneratedRiverProfile(map),sourceObjects=[];
+    buildSpringBasin(profile,sourceObjects);
+    return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile,objects:sourceObjects,sourceKind};
   }
 
   function zoneTiles(map,x0,y0,w=2,h=2){const out=[];for(let y=y0;y<y0+h;y++)for(let x=x0;x<x0+w;x++){const t=tileAt(map,x,y);if(t)out.push(t);}return out;}
@@ -720,25 +731,29 @@ export const MapGenerator=(()=>{
     if(bankOvertop)errors.push(`WATER_BANK_OVERTOP_${bankOvertop}`);
     if(uphillFlow)errors.push(`RIVER_UPHILL_FLOW_${uphillFlow}`);
 
-    // Permanent generated inflow must have a visible connected basin and a short
-    // non-cascade reach before the first waterfall. This prevents a hidden source
-    // flag from creating an infinite waterfall out of an isolated high tile.
-    let sourcePoolFailures=0,sourceCascadeFailures=0;
+    // Source contracts are explicit: off-map inflow must enter on the boundary;
+    // on-map springs must remain visible, destructible highland basins. Every
+    // source also keeps a short authored non-cascade reach before any waterfall.
+    let sourceDefinitionFailures=0,sourceCascadeFailures=0;
     for(const source of (map?.tiles||[]).filter(tile=>tile?.hydrologySource===true)){
-      const adjacentWater=DIRS.map(([dx,dy])=>by.get(key(source.x+dx,source.y+dy)))
-        .filter(tile=>Number(tile?.waterDepth||0)>0);
-      const authoredPool=map.generatedRiverProfile?.sourcePools?.find(pool=>pool.x===source.x&&pool.y===source.y);
-      const livePoolTiles=(authoredPool?.tiles||[]).map(ref=>by.get(key(ref.x,ref.y))).filter(tile=>Number(tile?.waterDepth||0)>0);
-      if(source.sourcePool!==true||adjacentWater.length<2||livePoolTiles.length<3)sourcePoolFailures++;
+      const kind=source.sourceKind||SOURCE_KIND.OFF_MAP;
+      const boundary=source.x===0||source.y===0||source.x===map.width-1||source.y===map.height-1;
+      if(kind===SOURCE_KIND.OFF_MAP){
+        if(!boundary)sourceDefinitionFailures++;
+      }else if(kind===SOURCE_KIND.SPRING){
+        const authoredPool=map.generatedRiverProfile?.sourcePools?.find(pool=>pool.x===source.x&&pool.y===source.y&&pool.kind===SOURCE_KIND.SPRING);
+        const livePoolTiles=(authoredPool?.tiles||[]).map(ref=>by.get(key(ref.x,ref.y))).filter(tile=>Number(tile?.waterDepth||0)>0);
+        const springObject=(map.objects||[]).find(object=>object?.type==="SPRING"&&object.id===source.sourceObjectId);
+        if(boundary||Number(source.hydrologySourceNaturalElevation||0)<SPRING_MIN_ELEVATION||source.sourcePool!==true||livePoolTiles.length<3||!springObject)sourceDefinitionFailures++;
+      }else sourceDefinitionFailures++;
       let cursor=source;
       for(let step=0;step<SOURCE_GENTLE_REACH&&cursor;step++){
         if(Number.isFinite(Number(cursor.hydrologyCascadeToX))&&Number.isFinite(Number(cursor.hydrologyCascadeToY))){sourceCascadeFailures++;break;}
         const dx=Math.sign(Number(cursor.flowX||0)),dy=Math.sign(Number(cursor.flowY||0));
-        if(!dx&&!dy)break;
-        cursor=by.get(key(cursor.x+dx,cursor.y+dy))||null;
+        if(!dx&&!dy)break;cursor=by.get(key(cursor.x+dx,cursor.y+dy))||null;
       }
     }
-    if(sourcePoolFailures)errors.push(`RIVER_SOURCE_POOL_${sourcePoolFailures}`);
+    if(sourceDefinitionFailures)errors.push(`RIVER_SOURCE_DEFINITION_${sourceDefinitionFailures}`);
     if(sourceCascadeFailures)errors.push(`RIVER_SOURCE_CASCADE_${sourceCascadeFailures}`);
     return{ok:errors.length===0,errors};
   }
@@ -763,15 +778,15 @@ export const MapGenerator=(()=>{
       {id:"player_core",name:"我方 Core",owner:"PLAYER",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,hp,maxHp:hp,shield,maxShield:shield,defense},
       {id:"enemy_core",name:"敵方 Core",owner:"ENEMY",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,hp,maxHp:hp,shield,maxShield:shield,defense}
     ];
-    map.objects=[{id:"player_core_object",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},{id:"enemy_core_object",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},...rocks];
+    map.objects=[{id:"player_core_object",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},{id:"enemy_core_object",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},...(river.objects||[]),...rocks];
     const deploymentPoints=[{id:"player_base",name:"我方本陣",owner:"PLAYER",capturable:false,captureTiles:[],area:baseArea(map,"PLAYER",baseInfo)},...capturePoints,{id:"enemy_base",name:"敵方本陣",owner:"ENEMY",capturable:false,captureTiles:[],area:baseArea(map,"ENEMY",baseInfo)}];
 
     const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river);
     if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
     const summary=stats(map);
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,validation:"PASS",...summary}};
+    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,riverSourceKind:river.sourceKind,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,validation:"PASS",...summary}};
   }
 
-  return Object.freeze({SIZE_PRESETS,preset,randomSeed,generateVersus,validateBattlefield});
+  return Object.freeze({SIZE_PRESETS,SOURCE_KIND,preset,randomSeed,generateVersus,validateBattlefield});
 })();
 globalThis.MapGenerator=MapGenerator;
