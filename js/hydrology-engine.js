@@ -33,38 +33,36 @@ export const HydrologyEngine=(()=>{
     if(!wetA&&!wetB)return{type:"NONE",high:null,low:null,drop:0,rate:0,reason:"DRY"};
 
     const terrainDelta=elevation(a)-elevation(b);
-    const cascadeThreshold=Math.max(0,Number(minCascadeDrop||0));
-    const authoredAB=Number(a.hydrologyCascadeToX)===Number(b.x)&&Number(a.hydrologyCascadeToY)===Number(b.y)&&Number(a.hydrologyCascadeDrop||0)>=cascadeThreshold;
-    const authoredBA=Number(b.hydrologyCascadeToX)===Number(a.x)&&Number(b.hydrologyCascadeToY)===Number(a.y)&&Number(b.hydrologyCascadeDrop||0)>=cascadeThreshold;
-    // Explicit generated/runtime cascade metadata identifies the directed edge.
-    // Terrain height is not allowed to reverse that authored hydrology relation.
-    const high=authoredAB?a:authoredBA?b:(terrainDelta>=0?a:b);
-    const low=high===a?b:a;
+    const traversable=Math.abs(terrainDelta)<=Math.max(0,Number(maxSlopeDelta||0));
+    if(traversable){
+      return{type:wetA&&wetB?"CONTINUOUS":"SHORE",high:null,low:null,drop:0,rate:0,reason:"TRAVERSABLE"};
+    }
+
+    const high=terrainDelta>=0?a:b,low=terrainDelta>=0?b:a;
     const highSurface=waterSurfaceZ(high);
     const lowSurface=waterSurfaceZ(low)??elevation(low);
     const drop=Math.max(0,Number(highSurface??elevation(high))-Number(lowSurface));
-    const authored=authoredAB||authoredBA;
+    if(!isWater(high)||drop<Math.max(0,Number(minCascadeDrop||0))){
+      return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_HEAD"};
+    }
+
     const primary=edgeFlowDirectionMatches(high,low);
+    const authored=Number(high.hydrologyCascadeToX)===Number(low.x)&&
+      Number(high.hydrologyCascadeToY)===Number(low.y)&&
+      Number(high.hydrologyCascadeDrop||0)>=Math.max(0,Number(minCascadeDrop||0));
     const overflowRate=Math.max(0,Number(high.hydrologyOverflowRate||0));
     const routedRate=Math.max(0,Number(high.hydrologyOutflowRate??high.discharge??0));
 
-    // Authored cascade metadata is already the canonical cross-edge topology and
-    // must not disappear merely because flowX/flowY is stale for one presentation
-    // frame. Non-authored falls still require the actual routed direction.
-    if(isWater(high)&&drop>=cascadeThreshold&&(authored||(primary&&(routedRate>FLOW_EPSILON||overflowRate>FLOW_EPSILON)))){
-      return{type:"CASCADE",high,low,drop,rate:clean(Math.max(routedRate,overflowRate)),reason:authored?"AUTHORED_CASCADE":overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored};
+    // A cliff is a waterfall only when Hydrology says water crosses this exact
+    // edge: the routed downstream edge, or a real over-bank overflow. Merely
+    // being wet beside a cliff never creates a cascade.
+    if((primary&&routedRate>FLOW_EPSILON)||(authored&&primary)||overflowRate>FLOW_EPSILON){
+      return{
+        type:"CASCADE",high,low,drop,
+        rate:clean(primary?Math.max(routedRate,overflowRate):overflowRate),
+        reason:primary?"ROUTED_FLOW":"OVERFLOW",authored
+      };
     }
-
-    // Equal/near-equal free surfaces are one body of water even when the bed
-    // underneath contains a cliff. Bed geometry must not split a lake surface.
-    const aSurface=waterSurfaceZ(a),bSurface=waterSurfaceZ(b);
-    if(wetA&&wetB&&aSurface!=null&&bSurface!=null&&Math.abs(aSurface-bSurface)<cascadeThreshold){
-      return{type:"CONTINUOUS",high:null,low:null,drop:Math.abs(aSurface-bSurface),rate:0,reason:"FREE_SURFACE_CONTINUOUS"};
-    }
-
-    const traversable=Math.abs(terrainDelta)<=Math.max(0,Number(maxSlopeDelta||0));
-    if(traversable)return{type:wetA&&wetB?"CONTINUOUS":"SHORE",high:null,low:null,drop:0,rate:0,reason:"TRAVERSABLE"};
-    if(!isWater(high)||drop<cascadeThreshold)return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_HEAD"};
     return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_EDGE_FLOW"};
   }
   const canHoldWater=t=>!!t&&t.terrain!=="WALL";
@@ -162,19 +160,18 @@ export const HydrologyEngine=(()=>{
     }
 
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
-    const sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
-    // A river channel is not a permanent water source. If a legacy/custom map has
-    // no authored source, preserve its current state instead of silently promoting
-    // a leaf tile into an infinite spring. Generated maps author OFF_MAP/SPRING
-    // sources before Hydrology initializes them.
+    let sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
     if(!sources.length){
-      return{
-        tiles:component.length,sources:[],drains:drains.map(tile=>({x:tile.x,y:tile.y})),
-        skipped:true,reason:"MISSING_AUTHORED_SOURCE"
-      };
+      // Every upstream dead-end is a tributary/source. This makes branches physically
+      // valid instead of creating an unexplained local water-surface hump.
+      sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
+      if(!sources.length){
+        const minProjection=Math.min(...component.map(project));
+        sources=component.filter(tile=>Math.abs(project(tile)-minProjection)<=EPSILON&&!drainKeys.has(key(tile.x,tile.y)));
+      }
     }
 
-    // Rebuild explicit source/drain markers deterministically.
+    // Rebuild inferred source/drain markers deterministically.
     for(const tile of component){
       tile.hydrologySource=false;
       tile.hydrologyDrain=false;
