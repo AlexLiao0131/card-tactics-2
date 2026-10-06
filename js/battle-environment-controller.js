@@ -241,8 +241,6 @@ function create(ctx){
   else if(event.type==="STEAM_CREATED")ctx.pushLog(`高熱與水分作用，(${event.x},${event.y}) 產生蒸氣迷霧。`,"SYSTEM");
   else if(event.type==="STEAM_DISPERSED")ctx.pushLog(`風力吹散 (${event.x},${event.y}) 的蒸氣迷霧。`,"SYSTEM");
   else if(event.type==="HYDROLOGY_REBALANCED"&&event.changedTiles>0)ctx.pushLog(`水體重新分配｜${event.changedTiles} 格水位改變｜Water Volume ${Number(event.afterVolume||0).toFixed(2)}。`,"DETAIL");
-  else if(event.type==="HYDROLOGY_SOURCE_DISABLED")ctx.pushLog(`💧 (${event.x},${event.y}) 的泉眼被破壞｜上游補水停止，既有河水將逐回合退去。`,"SYSTEM");
-  else if(event.type==="RIVER_SOURCE_RECESSION_ENDED")ctx.pushLog(`斷源河道的殘留水已完成退水。`,"DETAIL");
   else if(event.type==="STONE_FRAGMENT")ctx.pushLog(`爆炸擊中石質物件，(${event.x},${event.y}) 產生破片${event.destroyed?"並炸開道路":""}。`,"SYSTEM");
   else if(event.type==="TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 形成龍捲風場。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 的燃燒區被風捲起，形成火龍捲。`,"SYSTEM");

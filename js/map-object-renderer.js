@@ -29,7 +29,6 @@ export class MapObjectRenderer{
       bush:this.mat("prop-bush",new BABYLON.Color3(.13,.39,.18)),
       rock:this.mat("prop-rock",new BABYLON.Color3(.36,.38,.42)),
       rubble:this.mat("prop-rubble",new BABYLON.Color3(.34,.33,.31)),
-      spring:this.mat("prop-spring",new BABYLON.Color3(.18,.58,.66)),
       generic:this.mat("prop-generic",new BABYLON.Color3(.38,.34,.28))
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
@@ -187,20 +186,6 @@ export class MapObjectRenderer{
     rock.scaling.set(.95+seed*.28,.75+seed*.48,.9+(1-seed)*.32);rock.rotation.set(seed*.35,seed*Math.PI*2,(1-seed)*.22);rock.position.y=.58;return root;
   }
 
-  createSpring(object){
-    const root=this.root(object),seed=hash01(object.id),stones=[];
-    for(let i=0;i<7;i++){
-      const a=i/7*Math.PI*2+seed*.45,r=.29+hash01(`${object.id}:spring-rock:${i}`)*.055;
-      const stone=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`spring-rock-${object.id}-${i}`,{type:2,size:.105+hash01(`${object.id}:spring-size:${i}`)*.035},this.scene),this.materials.rock),"boulder");
-      stone.position.set(Math.cos(a)*r,.055,Math.sin(a)*r);stone.scaling.y=.62;stone.rotation.y=a;stones.push(stone);
-    }
-    const pool=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`spring-pool-${object.id}`,{height:.028,diameter:.47,tessellation:14},this.scene),this.materials.spring),"spring-water");
-    pool.position.y=.018;
-    const vent=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateTorus(`spring-vent-${object.id}`,{diameter:.22,thickness:.028,tessellation:14},this.scene),this.materials.spring),"spring-water");
-    vent.position.y=.038;
-    root.rotation.y=seed*Math.PI*2;return root;
-  }
-
   createGeneric(object){
     const root=this.root(object),mesh=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateBox(`prop-${object.id}`,{width:.8,height:.8,depth:.8},this.scene),this.materials.generic),"generic");mesh.position.y=.4;return root;
   }
@@ -214,7 +199,6 @@ export class MapObjectRenderer{
       case"BUSH":return this.createBush(object);
       case"BOULDER":
       case"ROCK":return this.createBoulder(object);
-      case"SPRING":return this.createSpring(object);
       default:return this.createGeneric(object);
     }
   }
@@ -238,7 +222,6 @@ export class MapObjectRenderer{
     if(type==="STUMP"||type==="LOG")return"cut-wood";
     if(type==="BUSH")return"bush-leaf";
     if(type==="BOULDER"||type==="ROCK")return"boulder";
-    if(type==="SPRING")return"spring-water";
     if(type==="RUBBLE")return"rubble";
     return"generic";
   }
@@ -322,10 +305,6 @@ export class MapObjectRenderer{
       const chunk=.35+.65*noise,face=clamp(.25+.75*up,0,1);
       color=mixColor(color,[.26,.255,.245],.18+.18*(1-chunk));
       color=mixColor(color,[.44,.415,.37],.08+.12*chunk*face);
-    }else if(role==="spring-water"){
-      const ripple=.5+.5*Math.sin((point.x+point.z)*18+seed*8);
-      color=mixColor(color,[.10,.46,.58],.12+.18*ripple);
-      color=mixColor(color,[.48,.84,.82],.08+.12*up);
     }
     return color.map(value=>clamp(value,0,1));
   }

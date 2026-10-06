@@ -655,37 +655,6 @@ export class TerrainRenderer{
   }
 
 
-  cliffFaceProfile(tile,dir,byKey,{boundaryBase=null}={}){
-    if(!tile||!dir)return null;
-    const top=this.surfaceResolver.elevationOf(tile);
-    const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
-    const fallback=Number.isFinite(Number(boundaryBase))?Number(boundaryBase):top-.75;
-    const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):fallback;
-    const drop=top-lower;
-    if(drop<=this.surfaceResolver.maxVisualSlopeDelta)return null;
-
-    const topEdge=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
-    const rough=this.cliffRoughPolyline(tile,dir);
-    const EH=ELEVATION_HEIGHT;
-    const points=rough.map((point,index)=>{
-      const topY=Number(topEdge[index]?.y??top*EH);
-      const bottomY=Math.min(
-        neighbor
-          ?this.surfaceResolver.sampleRenderedHeight(
-            neighbor,byKey,
-            point.x/TILE_SIZE-Number(neighbor.x),
-            point.z/TILE_SIZE-Number(neighbor.y)
-          )*EH
-          :lower*EH,
-        topY
-      );
-      return{x:Number(point.x),z:Number(point.z),t:Number(point.t??index/Math.max(1,rough.length-1)),topY,bottomY};
-    });
-
-    return{tile,neighbor,dir,drop,top,lower,points};
-  }
-
-
   pushCliffTriangle(out,a,b,c,color){
     const geometric=faceNormal(a,b,c);
     if(!geometric)return false;
@@ -742,11 +711,12 @@ export class TerrainRenderer{
         const drop=top-lower;
         if(drop<=this.surfaceResolver.maxVisualSlopeDelta)continue;
 
-        // One canonical visible-cliff profile is shared with WaterRenderer, so
-        // waterfalls coat the exact rugged wall instead of guessing a second plane.
-        const profile=this.cliffFaceProfile(tile,dir,byKey,{boundaryBase});
-        if(!profile)continue;
-        const rough=profile.points;
+        // The wall top uses the same 4x4 VisualSurface edge heights as the
+        // surface-owned rugged shoulder. Its bottom samples the actual rendered
+        // lower surface at the outward rough position, so no apron overlay is needed.
+        const topEdge=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
+
+        const rough=this.cliffRoughPolyline(tile,dir);
         out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
         out.waterContact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
         const {wallColor,wetWallColor,wetWallFactor}=out.palette;
@@ -755,10 +725,28 @@ export class TerrainRenderer{
 
         for(let i=0;i<rough.length-1;i++){
           const a=rough[i],b=rough[i+1];
-          const aTop=a.topY;
-          const bTop=b.topY;
-          const aBot=a.bottomY;
-          const bBot=b.bottomY;
+          const aTop=topEdge[i].y;
+          const bTop=topEdge[i+1].y;
+          const aBot=Math.min(
+            neighbor
+              ?this.surfaceResolver.sampleRenderedHeight(
+                neighbor,byKey,
+                a.x/TILE_SIZE-Number(neighbor.x),
+                a.z/TILE_SIZE-Number(neighbor.y)
+              )*EH
+              :lower*EH,
+            aTop
+          );
+          const bBot=Math.min(
+            neighbor
+              ?this.surfaceResolver.sampleRenderedHeight(
+                neighbor,byKey,
+                b.x/TILE_SIZE-Number(neighbor.x),
+                b.z/TILE_SIZE-Number(neighbor.y)
+              )*EH
+              :lower*EH,
+            bTop
+          );
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way

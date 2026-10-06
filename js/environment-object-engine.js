@@ -7,8 +7,7 @@ export const EnvironmentObjectEngine=(()=>{
     STUMP:"STUMP",
     LOG:"LOG",
     BOULDER:"BOULDER",
-    BUSH:"BUSH",
-    SPRING:"SPRING"
+    BUSH:"BUSH"
   });
 
   const ALIASES=Object.freeze({ROCK:TYPE.BOULDER});
@@ -54,13 +53,6 @@ export const EnvironmentObjectEngine=(()=>{
       flammable:true,burnDamage:26,mass:.3,rootStrength:.04,erosionResistance:.035,
       flowResistance:.07,flowBreakThreshold:.38,carryThreshold:.45,floatOnWater:false,
       windBreakThreshold:5.00,windUprootThreshold:5.60,windResistanceVariance:.40,windWetSoilPenalty:.60,windFrozenSoilBonus:.25
-    }),
-    [TYPE.SPRING]:Object.freeze({
-      name:"泉眼",environment:"WATER",destructible:true,maxDurability:72,blocksMovement:false,
-      collisionHeight:.32,hardness:2.2,collisionResponse:"BREAK",impactMultiplier:.8,
-      flammable:false,burnDamage:0,mass:3.2,rootStrength:0,erosionResistance:.18,
-      flowResistance:0,flowBreakThreshold:99,carryThreshold:99,floatOnWater:true,
-      windBreakThreshold:99,windUprootThreshold:99,windCarryThreshold:99
     })
   });
 
@@ -181,14 +173,10 @@ export const EnvironmentObjectEngine=(()=>{
 
   function destroy(map,object,{events=[],reason="DESTROYED",debris=0}={}){
     if(!object||object.destroyed)return false;object.destroyed=true;
-    const type=normalizeType(object.type);
     const tile=globalThis.HydrologyEngine?.tileAt?.(map,object.x,object.y)||map?.tiles?.find(t=>t.x===object.x&&t.y===object.y);
     if(tile&&debris>0)tile.debrisMass=clean(Number(tile.debrisMass||0)+debris);
     if(tile&&object.breaksIntoTerrain){const from=tile.terrain;tile.terrain=object.breaksIntoTerrain;if(from!==tile.terrain)events.push({type:"TERRAIN_CHANGED",x:tile.x,y:tile.y,from,to:tile.terrain,source:reason,objectId:object.id});}
-    events.push({type:"ENV_OBJECT_DESTROYED",objectId:object.id,objectType:type,x:object.x,y:object.y,reason,debris:clean(debris)});
-    if(type===TYPE.SPRING&&globalThis.HydrologyEngine?.deactivateSource){
-      globalThis.HydrologyEngine.deactivateSource(map,Number(object.hydrologySourceX??object.x),Number(object.hydrologySourceY??object.y),{events,reason:"SPRING_DESTROYED",objectId:object.id});
-    }
+    events.push({type:"ENV_OBJECT_DESTROYED",objectId:object.id,objectType:normalizeType(object.type),x:object.x,y:object.y,reason,debris:clean(debris)});
     sortObjects(map);return true;
   }
 

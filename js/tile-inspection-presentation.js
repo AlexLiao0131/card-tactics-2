@@ -35,9 +35,6 @@ export const TileInspectionPresentation=(()=>{
     if(snow>0)details.push(`積雪深度：${fmt(snow)}｜深雪會增加移動成本。`);
     if(ice>0)details.push(`冰厚：${fmt(ice)}｜重量越大需要越厚冰面；踩裂後重新進入水域判定。`);
     if(tile.river)details.push(`河流：流速 ${fmt(flow)}｜流量 ${fmt(tile.discharge||0)}${tile.ford?"｜此格為淺灘／渡口":""}`);
-    if(tile.sourceKind==="OFF_MAP_SOURCE")details.push(`水源：地圖外上游流入${tile.hydrologySource===true?"｜供水中":"｜已停止"}`);
-    else if(tile.sourceKind==="SPRING_SOURCE")details.push(`水源：場內泉眼${tile.hydrologySource===true?"｜供水中":"｜已破壞／斷源"}`);
-    if(depth>0&&Number.isFinite(Number(tile.hydrologyCascadeToX))&&Number.isFinite(Number(tile.hydrologyCascadeToY))&&Number(tile.hydrologyCascadeDrop||0)>=.18)details.push(`瀑布：→ (${Number(tile.hydrologyCascadeToX)},${Number(tile.hydrologyCascadeToY)})｜落差 ${fmt(tile.hydrologyCascadeDrop)}`);
     if(objects.length)details.push(`物件：${objects.map(o=>`${o.name||o.type||o.id}${o.destructible?`｜耐久 ${Math.round(Number(o.durability??o.maxDurability??0))}/${Math.round(Number(o.maxDurability??o.durability??0))}`:""}`).join("、")}`);
     details.push(`效果：${effects.length?effects.map(e=>`${EFFECT[e.type]||e.type}${e.duration==null?"":` ${e.duration}回合`}${e.type==="BOILING"?`｜Heat ${e.heat||1}`:e.type==="SMOKE"?`｜濃度 ${fmt(e.intensity||0)}`:""}`).join("、"):"無"}`);
     if(effects.some(e=>e.type==="SMOKE"))details.push("黑煙：由燃燒產生，會沿風向漂移並逐步消散；濃煙會遮斷視線。");
