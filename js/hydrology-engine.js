@@ -33,36 +33,35 @@ export const HydrologyEngine=(()=>{
     if(!wetA&&!wetB)return{type:"NONE",high:null,low:null,drop:0,rate:0,reason:"DRY"};
 
     const terrainDelta=elevation(a)-elevation(b);
-    const traversable=Math.abs(terrainDelta)<=Math.max(0,Number(maxSlopeDelta||0));
-    if(traversable){
-      return{type:wetA&&wetB?"CONTINUOUS":"SHORE",high:null,low:null,drop:0,rate:0,reason:"TRAVERSABLE"};
-    }
-
     const high=terrainDelta>=0?a:b,low=terrainDelta>=0?b:a;
     const highSurface=waterSurfaceZ(high);
     const lowSurface=waterSurfaceZ(low)??elevation(low);
     const drop=Math.max(0,Number(highSurface??elevation(high))-Number(lowSurface));
-    if(!isWater(high)||drop<Math.max(0,Number(minCascadeDrop||0))){
-      return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_HEAD"};
-    }
-
-    const primary=edgeFlowDirectionMatches(high,low);
+    const cascadeThreshold=Math.max(0,Number(minCascadeDrop||0));
     const authored=Number(high.hydrologyCascadeToX)===Number(low.x)&&
       Number(high.hydrologyCascadeToY)===Number(low.y)&&
-      Number(high.hydrologyCascadeDrop||0)>=Math.max(0,Number(minCascadeDrop||0));
+      Number(high.hydrologyCascadeDrop||0)>=cascadeThreshold;
+    const primary=edgeFlowDirectionMatches(high,low);
     const overflowRate=Math.max(0,Number(high.hydrologyOverflowRate||0));
     const routedRate=Math.max(0,Number(high.hydrologyOutflowRate??high.discharge??0));
 
-    // A cliff is a waterfall only when Hydrology says water crosses this exact
-    // edge: the routed downstream edge, or a real over-bank overflow. Merely
-    // being wet beside a cliff never creates a cascade.
-    if(primary&&(routedRate>FLOW_EPSILON||authored||overflowRate>FLOW_EPSILON)){
-      return{
-        type:"CASCADE",high,low,drop,
-        rate:clean(primary?Math.max(routedRate,overflowRate):overflowRate),
-        reason:overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored
-      };
+    // Authored/routed cross-edge flow is hydrology topology and must be resolved
+    // before terrain slope classification. Otherwise a real waterfall can be
+    // swallowed as an ordinary traversable slope.
+    if(isWater(high)&&drop>=cascadeThreshold&&primary&&(authored||routedRate>FLOW_EPSILON||overflowRate>FLOW_EPSILON)){
+      return{type:"CASCADE",high,low,drop,rate:clean(Math.max(routedRate,overflowRate)),reason:overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored};
     }
+
+    // Equal/near-equal free surfaces are one body of water even when the bed
+    // underneath contains a cliff. Bed geometry must not split a lake surface.
+    const aSurface=waterSurfaceZ(a),bSurface=waterSurfaceZ(b);
+    if(wetA&&wetB&&aSurface!=null&&bSurface!=null&&Math.abs(aSurface-bSurface)<cascadeThreshold){
+      return{type:"CONTINUOUS",high:null,low:null,drop:Math.abs(aSurface-bSurface),rate:0,reason:"FREE_SURFACE_CONTINUOUS"};
+    }
+
+    const traversable=Math.abs(terrainDelta)<=Math.max(0,Number(maxSlopeDelta||0));
+    if(traversable)return{type:wetA&&wetB?"CONTINUOUS":"SHORE",high:null,low:null,drop:0,rate:0,reason:"TRAVERSABLE"};
+    if(!isWater(high)||drop<cascadeThreshold)return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_HEAD"};
     return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_EDGE_FLOW"};
   }
   const canHoldWater=t=>!!t&&t.terrain!=="WALL";
