@@ -15,6 +15,56 @@ export const HydrologyEngine=(()=>{
   const waterDepth=t=>Math.max(0,Number(t?.waterDepth||0));
   const waterSurfaceZ=t=>waterDepth(t)>EPSILON?elevation(t)+waterDepth(t):null;
   const isWater=t=>!!t&&waterDepth(t)>EPSILON;
+
+  // Canonical per-edge water topology. Hydrology owns whether water actually
+  // crosses an edge; renderers consume this result and never invent cascades.
+  function edgeFlowDirectionMatches(from,to){
+    if(!from||!to)return false;
+    const fx=Number(from.flowX||0),fy=Number(from.flowY||0);
+    if(Math.abs(fx)<=EPSILON&&Math.abs(fy)<=EPSILON)return false;
+    const dx=Math.abs(fx)>=Math.abs(fy)?Math.sign(fx):0;
+    const dy=Math.abs(fx)>=Math.abs(fy)?0:Math.sign(fy);
+    return Number(from.x)+dx===Number(to.x)&&Number(from.y)+dy===Number(to.y);
+  }
+
+  function edgeFlowState(a,b,{maxSlopeDelta=1.0001,minCascadeDrop=.18}={}){
+    if(!a||!b)return{type:"NONE",high:null,low:null,drop:0,rate:0,reason:"MISSING_TILE"};
+    const wetA=isWater(a),wetB=isWater(b);
+    if(!wetA&&!wetB)return{type:"NONE",high:null,low:null,drop:0,rate:0,reason:"DRY"};
+
+    const terrainDelta=elevation(a)-elevation(b);
+    const traversable=Math.abs(terrainDelta)<=Math.max(0,Number(maxSlopeDelta||0));
+    if(traversable){
+      return{type:wetA&&wetB?"CONTINUOUS":"SHORE",high:null,low:null,drop:0,rate:0,reason:"TRAVERSABLE"};
+    }
+
+    const high=terrainDelta>=0?a:b,low=terrainDelta>=0?b:a;
+    const highSurface=waterSurfaceZ(high);
+    const lowSurface=waterSurfaceZ(low)??elevation(low);
+    const drop=Math.max(0,Number(highSurface??elevation(high))-Number(lowSurface));
+    if(!isWater(high)||drop<Math.max(0,Number(minCascadeDrop||0))){
+      return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_HEAD"};
+    }
+
+    const primary=edgeFlowDirectionMatches(high,low);
+    const authored=Number(high.hydrologyCascadeToX)===Number(low.x)&&
+      Number(high.hydrologyCascadeToY)===Number(low.y)&&
+      Number(high.hydrologyCascadeDrop||0)>=Math.max(0,Number(minCascadeDrop||0));
+    const overflowRate=Math.max(0,Number(high.hydrologyOverflowRate||0));
+    const routedRate=Math.max(0,Number(high.hydrologyOutflowRate??high.discharge??0));
+
+    // A cliff is a waterfall only when Hydrology says water crosses this exact
+    // edge: the routed downstream edge, or a real over-bank overflow. Merely
+    // being wet beside a cliff never creates a cascade.
+    if((primary&&routedRate>FLOW_EPSILON)||(authored&&primary)||overflowRate>FLOW_EPSILON){
+      return{
+        type:"CASCADE",high,low,drop,
+        rate:clean(primary?Math.max(routedRate,overflowRate):overflowRate),
+        reason:primary?"ROUTED_FLOW":"OVERFLOW",authored
+      };
+    }
+    return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_EDGE_FLOW"};
+  }
   const canHoldWater=t=>!!t&&t.terrain!=="WALL";
   const clean=value=>Math.max(0,Math.round(Number(value||0)*10000)/10000);
   const roundSigned=value=>Math.round(Number(value||0)*10000)/10000;
@@ -1094,6 +1144,7 @@ export const HydrologyEngine=(()=>{
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
     initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,deactivateSource,sourceRecessionActive,advanceSourceRecession,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
+    edgeFlowState,edgeFlowDirectionMatches,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();

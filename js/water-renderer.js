@@ -545,56 +545,16 @@ export class WaterRenderer{
     for(const[id,data]of next){const surfaceIds=new Set(),cellKeys=new Set(data.cells.map(cell=>keyOf(cell.x,cell.y)));for(const[surfaceId,entry]of this.surfaceAnimations)if([...entry.tileKeys].some(k=>cellKeys.has(k)))surfaceIds.add(surfaceId);if(!surfaceIds.size){const stale=this.whirlpools.get(id);stale?.visual?.root?.dispose?.();this.whirlpools.delete(id);continue;}const cx=data.centerX*TILE_SIZE,cz=data.centerY*TILE_SIZE,radiusWorld=Math.max(TILE_SIZE*.75,data.radius*TILE_SIZE),surfaceY=data.cells.length?average(data.cells.map(c=>c.surfaceY)):0;let entry=this.whirlpools.get(id);if(!entry){entry={...data,cx,cz,radiusWorld,surfaceY,surfaceIds};entry.visual=this.createWhirlpoolVisual(entry);this.whirlpools.set(id,entry);}else Object.assign(entry,data,{cx,cz,radiusWorld,surfaceY,surfaceIds});entry.visual.root.position.set(cx,surfaceY+.018,cz);}
   }
 
-  cascadeTarget(tile){
-    const x=Number(tile?.hydrologyCascadeToX),y=Number(tile?.hydrologyCascadeToY),drop=Number(tile?.hydrologyCascadeDrop||0);
-    if(!Number.isFinite(x)||!Number.isFinite(y)||drop<WATERFALL_MIN_DROP)return null;
-    return{x,y,drop};
-  }
-
-  cascadeMatches(from,to){
-    if(!from||!to)return false;
-    const target=this.cascadeTarget(from);
-    return !!target&&target.x===Number(to.x)&&target.y===Number(to.y)&&this.flowMatches(from,to);
-  }
-
-  flowDirection(tile){
-    const fx=Number(tile?.flowX||0),fy=Number(tile?.flowY||0);
-    if(Math.abs(fx)<=EPSILON&&Math.abs(fy)<=EPSILON)return null;
-    return Math.abs(fx)>=Math.abs(fy)
-      ?{dx:Math.sign(fx),dy:0}
-      :{dx:0,dy:Math.sign(fy)};
-  }
-
-  flowMatches(from,to){
-    if(!from||!to)return false;
-    const dir=this.flowDirection(from);
-    return !!dir&&from.x+dir.dx===to.x&&from.y+dir.dy===to.y;
-  }
-
   waterEdgeRelation(a,b){
+    const state=globalThis.HydrologyEngine?.edgeFlowState?.(a,b,{
+      maxSlopeDelta:this.surfaceResolver.maxVisualSlopeDelta,
+      minCascadeDrop:WATERFALL_MIN_DROP
+    });
+    if(state)return{...state,authored:state.authored===true,slope:state.type==="CONTINUOUS"&&state.reason==="TRAVERSABLE"};
+    // HydrologyEngine is part of the battle runtime. This fallback keeps the
+    // renderer inert rather than inventing a waterfall if it is unavailable.
     if(!hasAnyWater(a)||!hasAnyWater(b))return{type:"SHORE",drop:0,high:null,low:null,authored:false};
-    const aSurface=visualSurface(a),bSurface=visualSurface(b),delta=aSurface-bSurface,drop=Math.abs(delta);
-    const ab=this.cascadeMatches(a,b),ba=this.cascadeMatches(b,a);
-
-    // Geometry separation and waterfall rendering are intentionally different
-    // concepts. A real surface break must stop two water meshes from stitching
-    // into one giant sloped sheet, but only an authored Hydrology cascade whose
-    // flow actually points at the lower receiver may create a waterfall ribbon.
-    if(drop>=WATERFALL_MIN_DROP){
-      // Terrain geometry is authoritative for whether this edge is a slope or a
-      // vertical fall. Hydrology cascade metadata may describe downstream flow,
-      // but it must never turn a traversable slope into a waterfall. This check
-      // intentionally happens before authored cascade metadata is accepted.
-      if(this.surfaceResolver.canSlope(a,b)){
-        return{type:"CONTINUOUS",drop,high:null,low:null,authored:false,slope:true};
-      }
-      if(ab)return{type:"CASCADE",drop,high:a,low:b,authored:true};
-      if(ba)return{type:"CASCADE",drop,high:b,low:a,authored:true};
-      return delta>=0
-        ?{type:"LEVEL_BREAK",drop,high:a,low:b,authored:false}
-        :{type:"LEVEL_BREAK",drop,high:b,low:a,authored:false};
-    }
-    return{type:"CONTINUOUS",drop,high:null,low:null,authored:false};
+    return{type:"LEVEL_BREAK",drop:Math.abs(visualSurface(a)-visualSurface(b)),high:null,low:null,authored:false};
   }
 
   isCascadeBoundary(a,b){
@@ -1206,37 +1166,25 @@ export class WaterRenderer{
     for(const tile of waterTiles){
       for(const[dx,dy]of pairs){
         const neighbor=allMap.get(keyOf(tile.x+dx,tile.y+dy));
-        if(!neighbor||!hasAnyWater(neighbor))continue;
+        if(!neighbor)continue;
         const relation=this.waterEdgeRelation(tile,neighbor);
-        let high=null,low=null,authored=false,derivedFromFlowCliff=false,derivedFromCliffSpill=false;
-        if(relation.type==="CASCADE"){
-          high=relation.high;low=relation.low;authored=true;
-        }else if(relation.type==="LEVEL_BREAK"){
-          high=relation.high;low=relation.low;
-          // LEVEL_BREAK already means this edge is not a traversable slope. Confirm
-          // that TerrainRenderer owns a real cliff face on this exact edge. Water
-          // may then spill over that face even when the river's primary flow points
-          // along the slope instead of sideways. This lets one sloped river tile be
-          // CONTINUOUS on its downhill edge and a CASCADE on a lateral cliff edge.
-          const dir=this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y});
-          const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap);
-          if(!cliff)continue;
-          const flowsToLow=this.flowMatches(high,low);
-          derivedFromFlowCliff=flowsToLow;
-          derivedFromCliffSpill=!flowsToLow;
-        }else continue;
-
-        const top=visualSurface(high),bottom=visualSurface(low),drop=top-bottom;
+        if(relation.type!=="CASCADE"||!relation.high||!relation.low)continue;
+        const high=relation.high,low=relation.low;
+        const dir=this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y});
+        const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap);
+        if(!cliff)continue;
+        const top=visualSurface(high),bottom=hasAnyWater(low)?visualSurface(low):Number(low.elevation||0);
+        const drop=top-bottom;
         if(drop<WATERFALL_MIN_DROP)continue;
         out.push({
           id:`${high.x},${high.y}->${low.x},${low.y}`,
           tile:high,receiver:low,
           dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y),
           top,bottom,drop,
-          authoredDrop:authored?Number(high.hydrologyCascadeDrop||low.hydrologyCascadeDrop||drop):null,
+          authoredDrop:relation.authored?Number(high.hydrologyCascadeDrop||drop):null,
+          hydrologyEdgeReason:relation.reason||null,
+          hydrologyEdgeRate:Number(relation.rate||0),
           inferredFromSurface:false,
-          derivedFromFlowCliff,
-          derivedFromCliffSpill,
           speed:Math.max(.6,Number(high.flowSpeed||0)+drop*.55),
           receiverRendered:rendered.has(keyOf(low.x,low.y))
         });
@@ -1348,8 +1296,10 @@ export class WaterRenderer{
       transparentDepthPrePass:false,
       visualSurfaceResolver:this.surfaceResolver.diagnostics(),
       cascadesRequireHydrologyDirection:true,
-      cascadesRequireHydrologyMetadata:true,
-      cascadesRequireDownstreamWater:true
+      cascadesRequireHydrologyMetadata:false,
+      cascadesRequireDownstreamWater:false,
+      cascadeAuthority:"HydrologyEngine.edgeFlowState",
+      rendererCascadeInference:false
     };
   }
 }
