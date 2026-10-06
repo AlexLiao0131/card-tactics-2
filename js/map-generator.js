@@ -183,26 +183,35 @@ export const MapGenerator=(()=>{
     // Tributaries and the reach upstream of the first ford may still preserve real
     // geological drops as cascades before they join the low-gradient trunk.
     const gentleTrunkEdges=new Set();
-    for(const ford of rivers.filter(tile=>tile?.ford===true)){
-      let cursor=ford,guard=0;
-      while(cursor&&cursor.hydrologyDrain!==true&&guard++<=rivers.length){
-        const downstream=downstreamByKey.get(key(cursor.x,cursor.y));
-        if(!downstream)break;
-        gentleTrunkEdges.add(`${key(cursor.x,cursor.y)}>${key(downstream.x,downstream.y)}`);
-        cursor=downstream;
+    // Only the ford itself is a deliberately shallow / low-gradient crossing.
+    // The previous implementation marked the *entire downstream trunk* gentle
+    // after every ford. That erased real geological drops farther downstream:
+    // a 2-4 level cliff still carried river water but lost its CASCADE metadata,
+    // so Babylon correctly had no waterfall to render. Keep the exception local
+    // to the crossing edge(s); the rest of the river must follow the terrain.
+    for(const tile of rivers){
+      if(tile.hydrologyDrain===true)continue;
+      const downstream=downstreamByKey.get(key(tile.x,tile.y));
+      if(!downstream)continue;
+      if(tile.ford===true||downstream.ford===true){
+        gentleTrunkEdges.add(`${key(tile.x,tile.y)}>${key(downstream.x,downstream.y)}`);
       }
     }
 
-    // A generated river must visibly exist before it can fall. Keep the first few
-    // reaches downstream of every real source gentle, so a permanent source never
-    // reads as one high tile magically pouring over a cliff. Cascades may begin
-    // only after a short, visible upstream pool/stream reach has formed.
+    // Do not hide a real cliff merely to manufacture a gentle first reach. A
+    // source may keep its first edge gentle only when that edge is already a
+    // naturally gentle bed transition. If the terrain actually drops by more than
+    // the cascade threshold, Hydrology must receive a real authored CASCADE.
     for(const source of sources){
       let cursor=source;
       for(let step=0;step<SOURCE_GENTLE_REACH&&cursor&&cursor.hydrologyDrain!==true;step++){
         const downstream=downstreamByKey.get(key(cursor.x,cursor.y));
         if(!downstream)break;
-        gentleTrunkEdges.add(`${key(cursor.x,cursor.y)}>${key(downstream.x,downstream.y)}`);
+        const upstreamBase=Number(cursor.hydrologyChannelBaseElevation??cursor.elevation??0);
+        const downstreamBase=Number(downstream.hydrologyChannelBaseElevation??downstream.elevation??0);
+        if(upstreamBase-downstreamBase<=RIVER_CASCADE_BED_DROP){
+          gentleTrunkEdges.add(`${key(cursor.x,cursor.y)}>${key(downstream.x,downstream.y)}`);
+        }
         cursor=downstream;
       }
     }
@@ -342,7 +351,15 @@ export const MapGenerator=(()=>{
         for(const[dx,dy]of DIRS){
           const neighbor=by.get(key(tile.x+dx,tile.y+dy));
           if(!neighbor||neighbor.terrain==="WALL"||Number(neighbor.waterDepth||0)>0)continue;
-          cap=Math.min(cap,Number(neighbor.elevation||0));
+          // A lower tile across a real terrain cliff is not this water cell's
+          // containing bank. Treating the cliff foot as a bank used to pull the
+          // upper river surface down to the lower plateau, erasing the authored
+          // head/drop and therefore the waterfall. Only same-level / traversable
+          // dry neighbours can cap the local waterline.
+          const channelBase=Number(tile.hydrologyChannelBaseElevation??tile.elevation??0);
+          const neighborElevation=Number(neighbor.elevation||0);
+          if(channelBase-neighborElevation>MAX_ROUTE_STEP)continue;
+          cap=Math.min(cap,neighborElevation);
         }
         if(Number.isFinite(cap)&&lowerWater(tile,cap))changed=true;
       }
@@ -814,7 +831,12 @@ export const MapGenerator=(()=>{
         const neighbor=by.get(key(tile.x+dx,tile.y+dy));
         if(!neighbor||neighbor.terrain==="WALL")continue;
         const neighborDepth=Math.max(0,Number(neighbor.waterDepth||0));
-        if(neighborDepth<=0&&surface>Number(neighbor.elevation||0)+.0001)bankOvertop++;
+        if(neighborDepth<=0){
+          const channelBase=Number(tile.hydrologyChannelBaseElevation??tile.elevation??0);
+          const neighborElevation=Number(neighbor.elevation||0);
+          const cliffFoot=channelBase-neighborElevation>1.0001;
+          if(!cliffFoot&&surface>neighborElevation+.0001)bankOvertop++;
+        }
       }
       if(tile.river===true&&(Number(tile.flowX||0)||Number(tile.flowY||0))){
         const downstream=by.get(key(tile.x+Math.sign(Number(tile.flowX||0)),tile.y+Math.sign(Number(tile.flowY||0))));
