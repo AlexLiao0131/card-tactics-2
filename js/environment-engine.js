@@ -448,6 +448,9 @@ export const EnvironmentEngine=(()=>{
   }
   function advanceEnvironmentTurn(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);weatherPulse(map,state,events);decrementClimate(state);
+    if(window.HydrologyEngine?.sourceRecessionActive?.(map)&&!events.some(event=>event?.type==="HYDROLOGY_REBALANCED")){
+      HydrologyEngine.advanceSourceRecession(map,{events,source:"SPRING_SOURCE_RECESSION"});
+    }
     advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true}={}){

@@ -29,6 +29,7 @@ export class MapObjectRenderer{
       bush:this.mat("prop-bush",new BABYLON.Color3(.13,.39,.18)),
       rock:this.mat("prop-rock",new BABYLON.Color3(.36,.38,.42)),
       rubble:this.mat("prop-rubble",new BABYLON.Color3(.34,.33,.31)),
+      spring:this.mat("prop-spring",new BABYLON.Color3(.13,.50,.62)),
       generic:this.mat("prop-generic",new BABYLON.Color3(.38,.34,.28))
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
@@ -186,6 +187,17 @@ export class MapObjectRenderer{
     rock.scaling.set(.95+seed*.28,.75+seed*.48,.9+(1-seed)*.32);rock.rotation.set(seed*.35,seed*Math.PI*2,(1-seed)*.22);rock.position.y=.58;return root;
   }
 
+  createSpring(object){
+    const root=this.root(object);
+    const basin=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateCylinder(`spring-basin-${object.id}`,{height:.08,diameter:.62,tessellation:18},this.scene),this.materials.spring),"spring-water");
+    basin.position.y=.02;
+    for(let i=0;i<6;i++){
+      const a=i/6*Math.PI*2+hash01(`${object.id}:spring`)*.35,r=.36,stone=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`spring-stone-${object.id}-${i}`,{type:2,size:.12+(i%2)*.025},this.scene),this.materials.rock),"boulder");
+      stone.position.set(Math.cos(a)*r,.08,Math.sin(a)*r);stone.scaling.y=.65;stone.rotation.y=a;
+    }
+    return root;
+  }
+
   createGeneric(object){
     const root=this.root(object),mesh=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateBox(`prop-${object.id}`,{width:.8,height:.8,depth:.8},this.scene),this.materials.generic),"generic");mesh.position.y=.4;return root;
   }
@@ -199,6 +211,7 @@ export class MapObjectRenderer{
       case"BUSH":return this.createBush(object);
       case"BOULDER":
       case"ROCK":return this.createBoulder(object);
+      case"SPRING":return this.createSpring(object);
       default:return this.createGeneric(object);
     }
   }
@@ -222,6 +235,7 @@ export class MapObjectRenderer{
     if(type==="STUMP"||type==="LOG")return"cut-wood";
     if(type==="BUSH")return"bush-leaf";
     if(type==="BOULDER"||type==="ROCK")return"boulder";
+    if(type==="SPRING")return"spring-water";
     if(type==="RUBBLE")return"rubble";
     return"generic";
   }
@@ -300,6 +314,10 @@ export class MapObjectRenderer{
       color=mixColor(color,[.27,.285,.30],.10+.17*(1-strata));
       color=mixColor(color,[.47,.455,.42],.06+.13*strata*face);
       if(noise>.80)color=mixColor(color,[.29,.34,.27],.08);
+    }else if(role==="spring-water"){
+      const ripple=.5+.5*Math.sin((point.x+point.z)*18+seed*8);
+      color=mixColor(color,[.08,.42,.54],.10+.18*ripple);
+      color=mixColor(color,[.46,.82,.84],.08+.14*up);
     }else if(role==="rubble"){
       // Rubble is deliberately dustier and less coherent than an intact boulder.
       const chunk=.35+.65*noise,face=clamp(.25+.75*up,0,1);

@@ -111,7 +111,8 @@ export const HydrologyEngine=(()=>{
 
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
     let sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
-    if(!sources.length){
+    const sourceWasDisabled=component.some(tile=>tile?.hydrologySourceDisabled===true);
+    if(!sources.length&&!sourceWasDisabled){
       // Every upstream dead-end is a tributary/source. This makes branches physically
       // valid instead of creating an unexplained local water-surface hump.
       sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
@@ -613,6 +614,40 @@ export const HydrologyEngine=(()=>{
   }
 
 
+  function sourceRecessionActive(map){
+    return riverComponents(map).some(component=>
+      component.some(tile=>waterDepth(tile)>EPSILON)&&
+      !component.some(tile=>tile?.hydrologySource===true)
+    );
+  }
+
+  function deactivateSource(map,x,y,{events=[],reason="SOURCE_DISABLED",objectId=null}={}){
+    const tile=tileAt(map,x,y);
+    if(!tile||tile.hydrologySource!==true)return false;
+    tile.hydrologySource=false;
+    tile.hydrologySourceDisabled=true;
+    tile.hydrologySourceInflow=0;
+    tile.hydrologyRequestedSourceInflow=0;
+
+    const component=riverComponents(map).find(group=>group.includes(tile))||[];
+    if(component.length&&!component.some(entry=>entry?.hydrologySource===true)){
+      for(const entry of component)entry.hydrologyBaseWaterDepth=0;
+    }
+
+    const ref=(map?.generatedRiverProfile?.sources||[]).find(source=>Number(source.x)===Number(x)&&Number(source.y)===Number(y));
+    if(ref)ref.active=false;
+    reconcileRiverDischarge(map,{events,applyOverflow:false,source:reason});
+    events.push({type:"HYDROLOGY_SOURCE_DISABLED",x:Number(x),y:Number(y),reason,objectId});
+    return true;
+  }
+
+  function advanceSourceRecession(map,{events=[],source="SOURCE_RECESSION"}={}){
+    if(!sourceRecessionActive(map))return events;
+    redistribute(map,{source,events,riverPulse:false});
+    if(!sourceRecessionActive(map))events.push({type:"RIVER_SOURCE_RECESSION_ENDED",source});
+    return events;
+  }
+
   const baselineDepth=t=>Math.max(0,Number(t?.hydrologyBaseWaterDepth||0));
   function captureSourceBaselines(map){
     const fed=sourceFedWaterKeys(map);
@@ -1060,7 +1095,7 @@ export const HydrologyEngine=(()=>{
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,sourceRecessionActive,deactivateSource,advanceSourceRecession,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
