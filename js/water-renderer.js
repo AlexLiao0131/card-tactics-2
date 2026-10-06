@@ -609,36 +609,47 @@ export class WaterRenderer{
     }
 
     const slotTiles=new Map(slots.filter(slot=>slot.tile).map(slot=>[keyOf(slot.x,slot.y),slot.tile]));
-    const start=slotTiles.get(keyOf(tile.x,tile.y));
     const members=[];
     const seen=new Set();
-    const queue=start&&this.isRenderableWater(start)?[start]:[];
+    const addMember=value=>{
+      if(!value||!this.isRenderableWater(value))return false;
+      const k=keyOf(value.x,value.y);
+      if(seen.has(k))return true;
+      seen.add(k);members.push(value);return true;
+    };
 
-    while(queue.length){
-      const current=queue.shift();
-      const currentKey=keyOf(current.x,current.y);
-      if(seen.has(currentKey))continue;
-      seen.add(currentKey);
-      members.push(current);
+    // A corner is owned by this tile and the two cardinal edges that physically
+    // meet at it. Do not flood-fill around the 2x2 block: that can walk around a
+    // LEVEL_BREAK and make unrelated water heights share one corner vertex.
+    addMember(tile);
+    const sideX=slotTiles.get(keyOf(tile.x+dir.dx,tile.y));
+    const sideY=slotTiles.get(keyOf(tile.x,tile.y+dir.dy));
+    const joinsX=sideX&&this.continuousWaterEdge(tile,sideX);
+    const joinsY=sideY&&this.continuousWaterEdge(tile,sideY);
+    if(joinsX)addMember(sideX);
+    if(joinsY)addMember(sideY);
 
-      for(const dir of DIRS){
-        const next=slotTiles.get(keyOf(current.x+dir.dx,current.y+dir.dy));
-        if(!next||seen.has(keyOf(next.x,next.y)))continue;
-        if(this.continuousWaterEdge(current,next))queue.push(next);
-      }
-    }
+    // Diagonal water is shared only when BOTH cardinal paths across this corner
+    // are continuous. This preserves a single watertight corner for real slopes
+    // while keeping cliff/level-break sectors completely separate.
+    const diagonal=slotTiles.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
+    if(diagonal&&joinsX&&joinsY&&
+      this.continuousWaterEdge(sideX,diagonal)&&
+      this.continuousWaterEdge(sideY,diagonal))addMember(diagonal);
 
     const memberKeys=new Set(members.map(member=>keyOf(member.x,member.y)));
     const drySlots=slots.filter(slot=>!memberKeys.has(keyOf(slot.x,slot.y)));
     let cascade=false,levelBreak=false;
-    for(const member of members){
-      for(const dir of DIRS){
-        const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
-        if(!next||memberKeys.has(keyOf(next.x,next.y))||!hasAnyWater(next))continue;
-        const relation=this.waterEdgeRelation(member,next);
-        if(relation.type==="CASCADE")cascade=true;
-        else if(relation.type==="LEVEL_BREAK")levelBreak=true;
-      }
+
+    // Corner boundary type is owner-local. Looking at every edge in the 2x2
+    // neighbourhood lets an unrelated cliff on the far side contaminate this
+    // tile's corner and is another form of cross-break topology leakage.
+    for(const sideDir of [{dx:dir.dx,dy:0},{dx:0,dy:dir.dy}]){
+      const next=allMap.get(keyOf(tile.x+sideDir.dx,tile.y+sideDir.dy));
+      if(!next||!hasAnyWater(next))continue;
+      const relation=this.waterEdgeRelation(tile,next);
+      if(relation.type==="CASCADE")cascade=true;
+      else if(relation.type==="LEVEL_BREAK")levelBreak=true;
     }
 
     return{gx,gy,slots,members,drySlots,memberKeys,cascade,levelBreak};
