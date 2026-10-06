@@ -72,10 +72,54 @@ export const MapGenerator=(()=>{
   }
 
   function applyTerrain(map,field){
+    // Terrain generation is land-only. A negative elevation is a depression, not
+    // permission to create water. Water is seeded only after gameplay land geometry
+    // is final, so low ground can remain dry and later collect real Hydrology input.
     for(const tile of map.tiles){
-      const e=field[tile.y][tile.x];
-      if(e<0)setWater(tile,{bed:e,depth:Math.abs(e)});else setDry(tile,e,e>=2?"HIGH_GROUND":"PLAIN");
+      const raw=Number(field[tile.y][tile.x]||0),e=Math.max(0,raw);
+      setDry(tile,e,e>=2?"HIGH_GROUND":"PLAIN");
+      // Negative noise is only basin potential. Keep the finalized land surface dry
+      // and non-negative; selected natural basins carve their own bed later.
+      tile.naturalBasinCandidate=raw<0;
+      if(raw<0)tile.naturalBasinDepth=Math.abs(raw);else delete tile.naturalBasinDepth;
     }
+  }
+
+  function seedNaturalBasins(map,protectedKeys,rand){
+    const tiles=map?.tiles||[],by=new Map(tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const candidates=new Set(tiles
+      .filter(tile=>tile?.naturalBasinCandidate===true&&!protectedKeys.has(key(tile.x,tile.y))&&tile.captureZone!==true&&!tile.routeId&&tile.river!==true&&DIRS.every(([dx,dy])=>tileAt(map,tile.x+dx,tile.y+dy)?.river!==true))
+      .map(tile=>key(tile.x,tile.y)));
+    const components=[];
+    while(candidates.size){
+      const first=candidates.values().next().value;candidates.delete(first);
+      const queue=[by.get(first)],component=[];let touchesBoundary=false;
+      while(queue.length){
+        const tile=queue.shift();if(!tile)continue;component.push(tile);
+        if(tile.x===0||tile.y===0||tile.x===map.width-1||tile.y===map.height-1)touchesBoundary=true;
+        for(const[dx,dy]of DIRS){const k=key(tile.x+dx,tile.y+dy);if(!candidates.has(k))continue;candidates.delete(k);queue.push(by.get(k));}
+      }
+      if(!touchesBoundary&&component.length>=2)components.push(component);
+    }
+    const budget=Math.max(0,Math.floor(tiles.length*.08));
+    let remaining=budget,seeded=0,basins=0;
+    const ranked=components.map(component=>({component,score:Math.max(...component.map(tile=>Number(tile.naturalBasinDepth||0)))*2+Math.min(component.length,8)+rand()*.5}))
+      .sort((a,b)=>b.score-a.score);
+    for(const entry of ranked){
+      if(remaining<=0)break;if(rand()>.55)continue;
+      const maxDepth=Math.max(...entry.component.map(tile=>Number(tile.naturalBasinDepth||0)));
+      const wet=entry.component.filter(tile=>Number(tile.naturalBasinDepth||0)>=Math.max(1,maxDepth-1));
+      if(!wet.length||wet.length>remaining)continue;
+      basins++;
+      for(const tile of wet){
+        const depth=Math.min(1.25,.35+Number(tile.naturalBasinDepth||1)*.22);
+        const surface=Math.max(0,Number(tile.elevation||0))-.05;
+        setWater(tile,{bed:surface-depth,depth});
+        tile.naturalWaterSeed=true;tile.naturalWaterKind="BASIN";
+        delete tile.naturalBasinCandidate;seeded++;remaining--;
+      }
+    }
+    return{basins,tiles:seeded,budget};
   }
 
   function routeYs(map){return [Math.round(map.height*.23),Math.round(map.height*.5),Math.round(map.height*.77)].map(y=>clamp(y,2,map.height-3));}
@@ -865,6 +909,15 @@ export const MapGenerator=(()=>{
       }else sourceDefinitionFailures++;
     }
     if(sourceDefinitionFailures)errors.push(`RIVER_SOURCE_DEFINITION_${sourceDefinitionFailures}`);
+
+    // Initial non-river water must have explicit provenance. Depression height alone
+    // is never a water source, and natural basin seeding is hard-capped to prevent
+    // water-world maps.
+    const nonRiverWater=(map?.tiles||[]).filter(tile=>Number(tile?.waterDepth||0)>0&&tile?.river!==true);
+    const unownedInitialWater=nonRiverWater.filter(tile=>tile?.naturalWaterSeed!==true);
+    if(unownedInitialWater.length)errors.push(`UNOWNED_INITIAL_WATER_${unownedInitialWater.length}`);
+    const naturalWaterLimit=Math.floor((map?.tiles?.length||0)*.08);
+    if(nonRiverWater.length>naturalWaterLimit)errors.push(`NATURAL_WATER_BUDGET_${nonRiverWater.length}`);
     return{ok:errors.length===0,errors};
   }
 
@@ -877,10 +930,18 @@ export const MapGenerator=(()=>{
 
     const protectedKeys=new Set(),baseInfo=carveBaseZones(map,protectedKeys),ys=routeYs(map),routes=ys.map((y,i)=>carveStrategicRoute(map,y,i,protectedKeys,rand));
     connectRoutesToBases(map,routes,baseInfo,protectedKeys);
-    const capturePoints=createCapturePoints(map,routes,protectedKeys),river=createRiver(map,routes,protectedKeys,rand);
+    // Finalize all gameplay land geometry before authoring the generated river.
+    // Hydrology seeding must read the terrain that will actually ship into battle;
+    // mountain-access carving after river authoring used to invalidate source heads,
+    // routed drops and CASCADE edges. Natural depression water from applyTerrain() is
+    // an initial world condition and remains intact; only generated river/source
+    // topology is deferred until the land is final.
+    const capturePoints=createCapturePoints(map,routes,protectedKeys);
     addForests(map,cfg,rand,protectedKeys);
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
+    const river=createRiver(map,routes,protectedKeys,rand);
     const waterSettlement=settleGeneratedWaterBanks(map,routes);
+    const naturalWater=seedNaturalBasins(map,protectedKeys,rand);
     const rocks=addRocks(map,cfg,rand,protectedKeys);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
@@ -894,7 +955,7 @@ export const MapGenerator=(()=>{
     const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river,protectedKeys);
     if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
     const summary=stats(map);
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,riverSourceKind:river.sourceKind,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,routeGradeTiles:waterSettlement.routeGradeTiles,waterSettlementPasses:waterSettlement.passes,validation:"PASS",...summary}};
+    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,riverSourceKind:river.sourceKind,naturalWaterBasins:naturalWater.basins,naturalWaterTiles:naturalWater.tiles,naturalWaterBudget:naturalWater.budget,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,routeGradeTiles:waterSettlement.routeGradeTiles,waterSettlementPasses:waterSettlement.passes,validation:"PASS",...summary}};
   }
 
   return Object.freeze({SIZE_PRESETS,SOURCE_KIND,preset,randomSeed,generateVersus,validateBattlefield});
