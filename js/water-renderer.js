@@ -580,18 +580,16 @@ export class WaterRenderer{
     // concepts. A real surface break must stop two water meshes from stitching
     // into one giant sloped sheet, but only an authored Hydrology cascade whose
     // flow actually points at the lower receiver may create a waterfall ribbon.
-    if(ab&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:a,low:b,authored:true};
-    if(ba&&drop>=WATERFALL_MIN_DROP)return{type:"CASCADE",drop,high:b,low:a,authored:true};
     if(drop>=WATERFALL_MIN_DROP){
-      // A hydrology surface difference is not automatically a vertical break.
-      // When the terrain resolver says the two cells form a traversable slope,
-      // they belong to one continuous water sheet: their shared edge gets one
-      // common level in ringWaterLevel(), and waterPatchGrid() interpolates the
-      // upstream/downstream levels across the existing mesh. Only a real terrain
-      // break may split the surface and become a waterfall.
+      // Terrain geometry is authoritative for whether this edge is a slope or a
+      // vertical fall. Hydrology cascade metadata may describe downstream flow,
+      // but it must never turn a traversable slope into a waterfall. This check
+      // intentionally happens before authored cascade metadata is accepted.
       if(this.surfaceResolver.canSlope(a,b)){
         return{type:"CONTINUOUS",drop,high:null,low:null,authored:false,slope:true};
       }
+      if(ab)return{type:"CASCADE",drop,high:a,low:b,authored:true};
+      if(ba)return{type:"CASCADE",drop,high:b,low:a,authored:true};
       return delta>=0
         ?{type:"LEVEL_BREAK",drop,high:a,low:b,authored:false}
         :{type:"LEVEL_BREAK",drop,high:b,low:a,authored:false};
