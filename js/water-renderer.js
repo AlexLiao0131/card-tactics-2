@@ -611,31 +611,25 @@ export class WaterRenderer{
     const slotTiles=new Map(slots.filter(slot=>slot.tile).map(slot=>[keyOf(slot.x,slot.y),slot.tile]));
     const members=[];
     const seen=new Set();
-    const addMember=value=>{
-      if(!value||!this.isRenderableWater(value))return false;
-      const k=keyOf(value.x,value.y);
-      if(seen.has(k))return true;
-      seen.add(k);members.push(value);return true;
-    };
+    const ownerKey=keyOf(tile.x,tile.y);
+    const queue=[];
+    if(this.isRenderableWater(tile)){seen.add(ownerKey);queue.push(tile);}
 
-    // A corner is owned by this tile and the two cardinal edges that physically
-    // meet at it. Do not flood-fill around the 2x2 block: that can walk around a
-    // LEVEL_BREAK and make unrelated water heights share one corner vertex.
-    addMember(tile);
-    const sideX=slotTiles.get(keyOf(tile.x+dir.dx,tile.y));
-    const sideY=slotTiles.get(keyOf(tile.x,tile.y+dir.dy));
-    const joinsX=sideX&&this.continuousWaterEdge(tile,sideX);
-    const joinsY=sideY&&this.continuousWaterEdge(tile,sideY);
-    if(joinsX)addMember(sideX);
-    if(joinsY)addMember(sideY);
-
-    // Diagonal water is shared only when BOTH cardinal paths across this corner
-    // are continuous. This preserves a single watertight corner for real slopes
-    // while keeping cliff/level-break sectors completely separate.
-    const diagonal=slotTiles.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-    if(diagonal&&joinsX&&joinsY&&
-      this.continuousWaterEdge(sideX,diagonal)&&
-      this.continuousWaterEdge(sideY,diagonal))addMember(diagonal);
+    // All water patches meeting at one geometric corner must derive that corner
+    // from the same connected set. Flood only inside this 2x2 corner block and
+    // only across Hydrology CONTINUOUS edges; LEVEL_BREAK/CASCADE edges remain
+    // hard boundaries. This restores shared vertices without leaking around cliffs.
+    while(queue.length){
+      const current=queue.shift();
+      members.push(current);
+      for(const step of DIRS){
+        const nx=Number(current.x)+step.dx,ny=Number(current.y)+step.dy;
+        const next=slotTiles.get(keyOf(nx,ny));
+        if(!next||!this.isRenderableWater(next)||seen.has(keyOf(nx,ny)))continue;
+        if(!this.continuousWaterEdge(current,next))continue;
+        seen.add(keyOf(nx,ny));queue.push(next);
+      }
+    }
 
     const memberKeys=new Set(members.map(member=>keyOf(member.x,member.y)));
     const drySlots=slots.filter(slot=>!memberKeys.has(keyOf(slot.x,slot.y)));

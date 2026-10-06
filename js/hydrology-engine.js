@@ -56,11 +56,11 @@ export const HydrologyEngine=(()=>{
     // A cliff is a waterfall only when Hydrology says water crosses this exact
     // edge: the routed downstream edge, or a real over-bank overflow. Merely
     // being wet beside a cliff never creates a cascade.
-    if((primary&&routedRate>FLOW_EPSILON)||(authored&&primary)||overflowRate>FLOW_EPSILON){
+    if(primary&&(routedRate>FLOW_EPSILON||authored||overflowRate>FLOW_EPSILON)){
       return{
         type:"CASCADE",high,low,drop,
         rate:clean(primary?Math.max(routedRate,overflowRate):overflowRate),
-        reason:primary?"ROUTED_FLOW":"OVERFLOW",authored
+        reason:overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored
       };
     }
     return{type:wetA&&wetB?"LEVEL_BREAK":"SHORE",high,low,drop,rate:0,reason:"NO_EDGE_FLOW"};
@@ -160,18 +160,19 @@ export const HydrologyEngine=(()=>{
     }
 
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
-    let sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
+    const sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
+    // A river channel is not a permanent water source. If a legacy/custom map has
+    // no authored source, preserve its current state instead of silently promoting
+    // a leaf tile into an infinite spring. Generated maps author OFF_MAP/SPRING
+    // sources before Hydrology initializes them.
     if(!sources.length){
-      // Every upstream dead-end is a tributary/source. This makes branches physically
-      // valid instead of creating an unexplained local water-surface hump.
-      sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
-      if(!sources.length){
-        const minProjection=Math.min(...component.map(project));
-        sources=component.filter(tile=>Math.abs(project(tile)-minProjection)<=EPSILON&&!drainKeys.has(key(tile.x,tile.y)));
-      }
+      return{
+        tiles:component.length,sources:[],drains:drains.map(tile=>({x:tile.x,y:tile.y})),
+        skipped:true,reason:"MISSING_AUTHORED_SOURCE"
+      };
     }
 
-    // Rebuild inferred source/drain markers deterministically.
+    // Rebuild explicit source/drain markers deterministically.
     for(const tile of component){
       tile.hydrologySource=false;
       tile.hydrologyDrain=false;
