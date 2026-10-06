@@ -655,11 +655,17 @@ export class TerrainRenderer{
   }
 
 
-  cliffFaceProfile(tile,dir,byKey,{boundaryBase=null}={}){
+  cliffFaceProfile(tile,dir,byKey,{boundaryBase=null,topElevationOverride=null}={}){
     if(!tile||!dir)return null;
-    const top=this.surfaceResolver.elevationOf(tile);
+    const terrainTop=this.surfaceResolver.elevationOf(tile);
+    // A Hydrology CASCADE can start at a free-water surface above a carved river
+    // bed. Terrain cliffs still use terrainTop; WaterRenderer may supply the
+    // authoritative cascade lip elevation so the shared cliff profile is not
+    // rejected merely because the wet tile's bed was carved to a traversable step.
+    const hasTopOverride=Number.isFinite(Number(topElevationOverride));
+    const top=hasTopOverride?Number(topElevationOverride):terrainTop;
     const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
-    const fallback=Number.isFinite(Number(boundaryBase))?Number(boundaryBase):top-.75;
+    const fallback=Number.isFinite(Number(boundaryBase))?Number(boundaryBase):terrainTop-.75;
     const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):fallback;
     const drop=top-lower;
     if(drop<=this.surfaceResolver.maxVisualSlopeDelta)return null;
@@ -668,7 +674,8 @@ export class TerrainRenderer{
     const rough=this.cliffRoughPolyline(tile,dir);
     const EH=ELEVATION_HEIGHT;
     const points=rough.map((point,index)=>{
-      const topY=Number(topEdge[index]?.y??top*EH);
+      const terrainTopY=Number(topEdge[index]?.y??terrainTop*EH);
+      const topY=hasTopOverride?Math.max(terrainTopY,top*EH):terrainTopY;
       const bottomY=Math.min(
         neighbor
           ?this.surfaceResolver.sampleRenderedHeight(

@@ -1033,7 +1033,7 @@ export class WaterRenderer{
 
   appendCascadeSheet(out,edge,turbidity,allMap){
     const dir=this.cascadeDirection(edge);
-    const profile=dir&&this.terrainRenderer?.cliffFaceProfile?.(edge.tile,dir,allMap);
+    const profile=dir&&this.terrainRenderer?.cliffFaceProfile?.(edge.tile,dir,allMap,{topElevationOverride:Number(edge.top)});
     if(!profile?.points?.length)return;
 
     // Waterfalls use the same restored shared-ring water topology as the horizontal
@@ -1145,9 +1145,13 @@ export class WaterRenderer{
         if(relation.type!=="CASCADE"||!relation.high||!relation.low)continue;
         const high=relation.high,low=relation.low;
         const dir=this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y});
-        const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap);
-        if(!cliff)continue;
         const top=visualSurface(high),bottom=hasAnyWater(low)?visualSurface(low):Number(low.elevation||0);
+        // Hydrology owns whether this edge is a CASCADE. The terrain renderer owns
+        // the rugged wall shape, but its ordinary terrain-only cliff test must not
+        // veto a real waterfall just because the river bed was carved shallower
+        // than the free-water head. Supply the authoritative water lip elevation.
+        const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap,{topElevationOverride:top});
+        if(!cliff)continue;
         const drop=top-bottom;
         if(drop<WATERFALL_MIN_DROP)continue;
         out.push({
