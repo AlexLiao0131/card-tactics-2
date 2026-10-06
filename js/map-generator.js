@@ -59,18 +59,16 @@ export const MapGenerator=(()=>{
       }
     }
 
-    // Land-first generation: the procedural noise describes terrain shape only.
-    // Normalize the complete field into the playable dry-land elevation range
-    // instead of using negative values as hidden "future water". This preserves
-    // valleys/ridges without either flattening every low tile to H0 or exposing
-    // the old below-water pits as giant dry holes.
-    const shaped=f.map(row=>row.map(v=>v*2.15+.65));
-    const values=shaped.flat(),min=Math.min(...values),max=Math.max(...values),span=Math.max(.0001,max-min);
-    return shaped.map(row=>row.map(value=>{
-      const t=(value-min)/span;
-      // Slight lowland bias keeps broad valleys while retaining mountain relief.
-      const eased=Math.pow(clamp(t,0,1),1.08);
-      return clamp(Math.round(eased*Number(cfg.maxElevation||4)),0,Number(cfg.maxElevation||4));
+    // Terrain shape stays seed-dependent. Do NOT normalize each generated map by
+    // its own min/max: that forced every seed into the same 0..max height histogram
+    // and made different battlefields converge visually. First quantize with the
+    // original fixed preset bounds, then remap those bounds into the dry-land range.
+    // This is a monotonic fixed transform, so valleys/ridges keep their relative
+    // shape without treating old negative "below-water" values as missing terrain.
+    const min=Number(cfg.minElevation||0),max=Number(cfg.maxElevation||4),span=Math.max(1,max-min);
+    return f.map(row=>row.map(v=>{
+      const raw=clamp(Math.round(v*2.15+.65),min,max);
+      return Math.round(((raw-min)/span)*max);
     }));
   }
 
@@ -202,32 +200,47 @@ export const MapGenerator=(()=>{
     const tileMap=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const getTile=(x,y)=>tileMap.get(key(x,y))||null;
     const elevationOf=tile=>Number(tile?.elevation||0);
-    const canRoute=tile=>!!tile&&tile.captureZone!==true&&tile.terrain!=="WALL";
+    const boundary=tile=>!!tile&&(tile.x===0||tile.y===0||tile.x===map.width-1||tile.y===map.height-1);
+    const sideDefs=[
+      {id:"N",dx:0,dy:1,tiles:()=>Array.from({length:Math.max(0,map.width-4)},(_,i)=>getTile(i+2,0))},
+      {id:"E",dx:-1,dy:0,tiles:()=>Array.from({length:Math.max(0,map.height-4)},(_,i)=>getTile(map.width-1,i+2))},
+      {id:"S",dx:0,dy:-1,tiles:()=>Array.from({length:Math.max(0,map.width-4)},(_,i)=>getTile(i+2,map.height-1))},
+      {id:"W",dx:1,dy:0,tiles:()=>Array.from({length:Math.max(0,map.height-4)},(_,i)=>getTile(0,i+2))}
+    ];
+    const sideOf=tile=>{
+      if(!tile)return null;
+      if(tile.y===0)return"N";
+      if(tile.x===map.width-1)return"E";
+      if(tile.y===map.height-1)return"S";
+      if(tile.x===0)return"W";
+      return null;
+    };
+    const routeProtected=tile=>protectedKeys.has(key(tile.x,tile.y))&&!tile.routeId;
+    const canRoute=tile=>!!tile&&tile.captureZone!==true&&tile.terrain!=="WALL"&&!routeProtected(tile);
 
-    // Compute one canonical drainage field from the finalized dry land toward the
-    // bottom map edge. Each tile stores the lowest spill elevation required to
-    // reach an outlet and a parent tile that points downstream. This is generation
-    // planning only; runtime water remains owned by HydrologyEngine.
-    function buildDrainageField(){
+    // Final-land drainage field. It does not create water or alter terrain.
+    // Records point to the lowest-cost outlet path and explicitly track any uphill
+    // climb that water would have to make.
+    function buildDrainageField(excludedSide=null){
       const records=new Map(),open=[],visited=new Set();
       const better=(a,b)=>{
         if(!b)return true;
-        if(a.spill<b.spill-.0001)return true;
-        if(a.spill>b.spill+.0001)return false;
         if(a.uphill<b.uphill-.0001)return true;
         if(a.uphill>b.uphill+.0001)return false;
+        if(a.spill<b.spill-.0001)return true;
+        if(a.spill>b.spill+.0001)return false;
         return a.steps<b.steps;
       };
-      for(let x=2;x<=map.width-3;x++){
-        const tile=getTile(x,map.height-1);
-        if(!canRoute(tile))continue;
+      for(const tile of map.tiles){
+        if(!boundary(tile)||!canRoute(tile))continue;
+        if(excludedSide&&sideOf(tile)===excludedSide)continue;
         const rec={spill:elevationOf(tile),uphill:0,steps:0,parent:null};
         records.set(key(tile.x,tile.y),rec);open.push(tile);
       }
       while(open.length){
         open.sort((a,b)=>{
           const ra=records.get(key(a.x,a.y)),rb=records.get(key(b.x,b.y));
-          return ra.spill-rb.spill||ra.uphill-rb.uphill||ra.steps-rb.steps||a.y-b.y||a.x-b.x;
+          return ra.uphill-rb.uphill||ra.spill-rb.spill||ra.steps-rb.steps||a.y-b.y||a.x-b.x;
         });
         const current=open.shift(),ck=key(current.x,current.y);
         if(visited.has(ck))continue;
@@ -236,10 +249,11 @@ export const MapGenerator=(()=>{
         for(const[dx,dy]of DIRS){
           const next=getTile(current.x+dx,current.y+dy);
           if(!canRoute(next))continue;
-          // Keep generated river inside the playable interior except for the top
-          // source row and bottom drain row.
-          if(next.x<2||next.x>map.width-3)continue;
+          if(excludedSide&&boundary(next)&&sideOf(next)===excludedSide)continue;
           const nk=key(next.x,next.y);
+          // Route direction is next -> current. A positive current-next difference
+          // would require water to climb uphill and is tracked as invalid for
+          // generated source rivers.
           const stepUphill=Math.max(0,elevationOf(current)-elevationOf(next));
           const candidate={
             spill:Math.max(elevationOf(next),Number(cr.spill)),
@@ -254,55 +268,74 @@ export const MapGenerator=(()=>{
       return records;
     }
 
-    const drainage=buildDrainageField();
-
-    function sourcePoolCandidate(tile){
-      return !!tile&&canRoute(tile)&&Number(tile.waterDepth||0)<=0&&drainage.has(key(tile.x,tile.y));
-    }
-
-    function chooseOffMapSource(){
-      const y=0,candidates=[];
-      for(let x=3;x<=map.width-4;x++){
-        const tile=getTile(x,y);if(!sourcePoolCandidate(tile))continue;
-        const rec=drainage.get(key(x,y));
-        const requiredHead=Math.max(0,Number(rec.spill)-elevationOf(tile));
-        candidates.push({tile,score:requiredHead*12+Number(rec.uphill)*2+Number(rec.steps)*.03+rand()*.25});
-      }
-      candidates.sort((a,b)=>a.score-b.score||a.tile.x-b.tile.x);
-      return candidates[0]?.tile||null;
-    }
-
-    function chooseSpringSource(){
-      const candidates=[];
-      for(let y=1;y<=map.height-2;y++)for(let x=2;x<=map.width-3;x++){
-        const tile=getTile(x,y);
-        if(!sourcePoolCandidate(tile)||protectedKeys.has(key(x,y)))continue;
-        const e=elevationOf(tile);if(e<SPRING_MIN_ELEVATION)continue;
-        const rec=drainage.get(key(x,y));
-        const requiredHead=Math.max(0,Number(rec.spill)-e);
-        candidates.push({tile,requiredHead,score:-e*8+requiredHead*18+Number(rec.uphill)*1.5+y*.02+rand()*.2});
-      }
-      if(!candidates.length)return null;
-      const maxElevation=Math.max(...candidates.map(entry=>elevationOf(entry.tile)));
-      const highest=candidates.filter(entry=>Math.abs(elevationOf(entry.tile)-maxElevation)<=.0001);
-      highest.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
-      const best=highest[0];
-      return{tile:best.tile,maxElevation};
-    }
-
-    function routeFrom(source){
+    function routeFrom(source,drainage){
       const out=[],seen=new Set();let cursor=source,guard=0;
       while(cursor&&guard++<=map.tiles.length){
         const k=key(cursor.x,cursor.y);
         if(seen.has(k))throw new Error("Terrain drainage route looped");
         seen.add(k);out.push(cursor);
-        if(cursor.y===map.height-1)break;
-        const parent=drainage.get(k)?.parent;
-        if(!parent)throw new Error(`No terrain drainage outlet from ${cursor.x},${cursor.y}`);
+        const parent=drainage.get(k)?.parent||null;
+        if(!parent)break;
         cursor=parent;
       }
-      if(!out.length||out[out.length-1].y!==map.height-1)throw new Error("Terrain drainage route did not reach map outlet");
+      if(!out.length||!boundary(out[out.length-1]))throw new Error("Terrain drainage route did not reach map outlet");
       return out;
+    }
+
+    const springDrainage=buildDrainageField(null);
+
+    function chooseSpringSource(){
+      const viable=[];
+      for(let y=1;y<=map.height-2;y++)for(let x=1;x<=map.width-2;x++){
+        const tile=getTile(x,y);if(!canRoute(tile)||protectedKeys.has(key(x,y)))continue;
+        const e=elevationOf(tile);if(e<SPRING_MIN_ELEVATION)continue;
+        const rec=springDrainage.get(key(x,y));if(!rec)continue;
+        if(Number(rec.uphill||0)>.0001||Number(rec.steps||0)<3)continue;
+        viable.push({tile,steps:Number(rec.steps||0),score:-e*8-Math.min(20,Number(rec.steps||0))*.08+rand()*.8});
+      }
+      if(!viable.length)return null;
+      const maxElevation=Math.max(...viable.map(entry=>elevationOf(entry.tile)));
+      const highest=viable.filter(entry=>Math.abs(elevationOf(entry.tile)-maxElevation)<=.0001);
+      highest.sort((a,b)=>a.score-b.score||b.steps-a.steps||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+      const shortlist=highest.slice(0,Math.min(6,highest.length));
+      const best=shortlist[Math.floor(rand()*shortlist.length)]||highest[0];
+      return best?{tile:best.tile,maxElevation,route:routeFrom(best.tile,springDrainage)}:null;
+    }
+
+    function offMapPlans(){
+      const plans=[];
+      for(const side of sideDefs){
+        const drainage=buildDrainageField(side.id),candidates=[];
+        for(const tile of side.tiles()){
+          if(!tile||!canRoute(tile))continue;
+          const inward=getTile(tile.x+side.dx,tile.y+side.dy);
+          if(!inward||!canRoute(inward))continue;
+          const rec=drainage.get(key(inward.x,inward.y));if(!rec)continue;
+          // OFF_MAP inflow may enter flat/downhill, but never climbs into the map.
+          if(elevationOf(inward)>elevationOf(tile)+.0001)continue;
+          if(Number(rec.uphill||0)>.0001||Number(rec.steps||0)<2)continue;
+          let route;try{route=routeFrom(inward,drainage);}catch{continue;}
+          const drain=route[route.length-1];
+          if(!drain||sideOf(drain)===side.id)continue;
+          candidates.push({
+            tile,route,side,drainage,
+            score:-Math.min(20,Number(rec.steps||0))*.08+Math.abs(elevationOf(tile)-elevationOf(inward))*.4+rand()*.9
+          });
+        }
+        if(candidates.length){
+          candidates.sort((a,b)=>a.score-b.score);
+          plans.push({side,candidates:candidates.slice(0,Math.min(5,candidates.length))});
+        }
+      }
+      return plans;
+    }
+
+    function chooseOffMapSource(){
+      const plans=offMapPlans();if(!plans.length)return null;
+      // Choose the entry side seed-randomly among physically valid sides. The old
+      // implementation hard-wired north->south and made every map read the same.
+      const plan=plans[Math.floor(rand()*plans.length)];
+      return plan.candidates[Math.floor(rand()*plan.candidates.length)]||plan.candidates[0]||null;
     }
 
     function buildSpringSource(source){
@@ -317,37 +350,48 @@ export const MapGenerator=(()=>{
 
     const requestedKind=rand()<SPRING_SOURCE_CHANCE?SOURCE_KIND.SPRING:SOURCE_KIND.OFF_MAP;
     const springPlan=requestedKind===SOURCE_KIND.SPRING?chooseSpringSource():null;
-    const sourceKind=springPlan?SOURCE_KIND.SPRING:SOURCE_KIND.OFF_MAP;
-    const sourceSeed=springPlan?.tile||chooseOffMapSource();
-    if(!sourceSeed)throw new Error("Terrain-driven water source generation failed");
-    const path=routeFrom(sourceSeed),pathKeys=new Set(path.map(tile=>key(tile.x,tile.y)));
+    const offMapPlan=springPlan?null:chooseOffMapSource();
+    const fallbackSpring=!springPlan&&!offMapPlan?chooseSpringSource():null;
+    const sourceKind=(springPlan||fallbackSpring)?SOURCE_KIND.SPRING:SOURCE_KIND.OFF_MAP;
+    const selectedSpring=springPlan||fallbackSpring;
+    const selectedOffMap=sourceKind===SOURCE_KIND.OFF_MAP?offMapPlan:null;
+    const sourceSeed=selectedSpring?.tile||selectedOffMap?.tile||null;
+    if(!sourceSeed)throw new Error("No downhill hydrology source route exists on generated land");
+
+    let path,drainage,entrySide=null;
+    if(selectedSpring){
+      path=selectedSpring.route;drainage=springDrainage;
+    }else{
+      path=[selectedOffMap.tile,...selectedOffMap.route];
+      drainage=selectedOffMap.drainage;entrySide=selectedOffMap.side.id;
+    }
+    const uniquePath=[],pathSeen=new Set();
+    for(const tile of path){
+      const k=key(tile.x,tile.y);if(pathSeen.has(k))continue;
+      pathSeen.add(k);uniquePath.push(tile);
+    }
+    path=uniquePath;
+    if(path.length<2)throw new Error("Terrain-driven river route is too short");
+
+    // Enforce the architectural invariant: generated source water is never allowed
+    // to climb. Closed depressions remain dry initial terrain and may later fill
+    // through real Hydrology input (rain, flood, overflow, cards, etc.).
+    for(let i=1;i<path.length;i++){
+      if(elevationOf(path[i])>elevationOf(path[i-1])+.0001)throw new Error("Generated river route attempted uphill flow");
+    }
+
     const sourceNaturalElevation=elevationOf(sourceSeed);
+    // One shallow free surface per routed tile, derived directly from final land.
+    // No per-map lake budget, no raised ribbon, no implicit basin flooding.
+    const routedSurface=path.map(tile=>elevationOf(tile)-RIVER_SURFACE_INSET);
 
-    // Derive the free-water profile from the finalized terrain. Each routed reach
-    // sits slightly below its local land surface; scanning from the outlet back to
-    // the source fills only real downstream depressions up to their controlling
-    // spill saddle. This guarantees a non-uphill river profile without inventing
-    // arbitrary water areas.
-    const localSurface=path.map(tile=>elevationOf(tile)-RIVER_SURFACE_INSET);
-    const routedSurface=[...localSurface];
-    for(let i=routedSurface.length-2;i>=0;i--)routedSurface[i]=Math.max(localSurface[i],routedSurface[i+1]);
-
-    const basinVisited=new Set();
-
-    // Author the river channel on top of that water profile. Only the channel bed
-    // is incised by the configured shallow depth; the surrounding finalized land
-    // is never rewritten.
     for(let i=0;i<path.length;i++){
       const tile=path[i],next=path[i+1]||null;
       const originalElevation=elevationOf(tile);
       const routeIndex=typeof tile.routeId==="string"?Number(tile.routeId.split("_")[1]):null;
       const isRoute=Number.isInteger(routeIndex);
-      const existingDepth=Math.max(0,Number(tile.waterDepth||0));
-      const existingSurface=existingDepth>0
-        ?Number(tile.waterSurfaceZ??(Number(tile.elevation||0)+existingDepth))
-        :-Infinity;
-      const desiredSurface=Math.max(routedSurface[i],existingSurface);
-      const desiredDepth=Math.max(RIVER_CHANNEL_DEPTH,existingDepth);
+      const desiredSurface=Number(routedSurface[i]);
+      const desiredDepth=isRoute?.35:RIVER_CHANNEL_DEPTH;
       const channelBed=desiredSurface-desiredDepth;
       const dryTerrain=tile.terrain==="WATER"?(tile.dryTerrain||"PLAIN"):tile.terrain;
       setWater(tile,{
@@ -381,9 +425,9 @@ export const MapGenerator=(()=>{
     authoredSource.sourceKind=sourceKind;
     authoredSource.hydrologySourceNaturalElevation=sourceNaturalElevation;
     authoredSource.hydrologySourceSelectionMaxElevation=sourceKind===SOURCE_KIND.SPRING
-      ?Number(springPlan?.maxElevation??sourceNaturalElevation)
+      ?Number(selectedSpring?.maxElevation??sourceNaturalElevation)
       :sourceNaturalElevation;
-    authoredSource.hydrologySourceSpillSurface=Number(drainage.get(key(authoredSource.x,authoredSource.y))?.spill??authoredSource.waterSurfaceZ);
+    authoredSource.hydrologySourceSpillSurface=Number(routedSurface[0]);
 
     if(sourceKind===SOURCE_KIND.SPRING)buildSpringSource(authoredSource);
 
@@ -391,14 +435,17 @@ export const MapGenerator=(()=>{
     const profileSource=profile.sources?.[0];
     if(profileSource&&authoredSource.sourceObjectId)profileSource.objectId=authoredSource.sourceObjectId;
 
+    const drain=path[path.length-1];
     return{
       tiles:river,
       crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),
       profile,
       objects:sourceObjects,
       sourceKind,
-      basinTiles:basinVisited.size,
-      routeLength:path.length
+      basinTiles:0,
+      routeLength:path.length,
+      entrySide,
+      drainSide:sideOf(drain)
     };
   }
 
@@ -666,33 +713,77 @@ export const MapGenerator=(()=>{
   function stats(map){const e=map.tiles.map(t=>Number(t.elevation||0));return{minElevation:Math.min(...e),maxElevation:Math.max(...e),waterTiles:map.tiles.filter(t=>t.waterDepth>0).length,riverTiles:map.tiles.filter(t=>t.river).length,fordTiles:map.tiles.filter(t=>t.ford).length,forestTiles:map.tiles.filter(t=>t.terrain==="FOREST").length,highGroundTiles:map.tiles.filter(t=>t.terrain==="HIGH_GROUND").length};}
 
   function generateVersus({size="MEDIUM",seed=randomSeed(),coreRules={}}={}){
-    const cfg=preset(size),resolvedSeed=Number(seed)>>>0,rand=createRandom(resolvedSeed),map={id:`generated_versus_${cfg.id.toLowerCase()}_${resolvedSeed}`,name:`Generated ${cfg.label}`,width:cfg.width,height:cfg.height,tiles:[],objects:[],generated:true,seed:resolvedSeed,size:cfg.id};
-    for(let y=0;y<map.height;y++)for(let x=0;x<map.width;x++)map.tiles.push({x,y,terrain:"PLAIN",elevation:0,waterDepth:0,waterSurfaceZ:null});
-    applyTerrain(map,elevationField(map.width,map.height,cfg,rand));
+    const cfg=preset(size),resolvedSeed=Number(seed)>>>0,MAX_TERRAIN_ATTEMPTS=6;
+    let lastSourceError=null;
 
-    const protectedKeys=new Set(),baseInfo=carveBaseZones(map,protectedKeys),ys=routeYs(map),routes=ys.map((y,i)=>carveStrategicRoute(map,y,i,protectedKeys,rand));
-    connectRoutesToBases(map,routes,baseInfo,protectedKeys);
-    // Finalize all gameplay land geometry before authoring water. The generated
-    // source then drains through that final terrain; reached depressions fill to
-    // their real spill elevation before flow continues downstream.
-    const capturePoints=createCapturePoints(map,routes,protectedKeys);
-    addForests(map,cfg,rand,protectedKeys);
-    const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
-    const river=createRiver(map,routes,protectedKeys,rand);
-    const rocks=addRocks(map,cfg,rand,protectedKeys);
+    for(let attempt=0;attempt<MAX_TERRAIN_ATTEMPTS;attempt++){
+      const attemptSeed=attempt===0?resolvedSeed:hashSeed(`${resolvedSeed}|MAP_ATTEMPT|${attempt}`);
+      const rand=createRandom(attemptSeed);
+      const map={
+        id:`generated_versus_${cfg.id.toLowerCase()}_${resolvedSeed}`,
+        name:`Generated ${cfg.label}`,
+        width:cfg.width,height:cfg.height,tiles:[],objects:[],
+        generated:true,seed:resolvedSeed,size:cfg.id,generationAttempt:attempt
+      };
+      for(let y=0;y<map.height;y++)for(let x=0;x<map.width;x++)map.tiles.push({x,y,terrain:"PLAIN",elevation:0,waterDepth:0,waterSurfaceZ:null});
+      applyTerrain(map,elevationField(map.width,map.height,cfg,rand));
 
-    const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
-    const cores=[
-      {id:"player_core",name:"我方 Core",owner:"PLAYER",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,hp,maxHp:hp,shield,maxShield:shield,defense},
-      {id:"enemy_core",name:"敵方 Core",owner:"ENEMY",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,hp,maxHp:hp,shield,maxShield:shield,defense}
-    ];
-    map.objects=[{id:"player_core_object",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},{id:"enemy_core_object",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},...(river.objects||[]),...rocks];
-    const deploymentPoints=[{id:"player_base",name:"我方本陣",owner:"PLAYER",capturable:false,captureTiles:[],area:baseArea(map,"PLAYER",baseInfo)},...capturePoints,{id:"enemy_base",name:"敵方本陣",owner:"ENEMY",capturable:false,captureTiles:[],area:baseArea(map,"ENEMY",baseInfo)}];
+      const protectedKeys=new Set(),baseInfo=carveBaseZones(map,protectedKeys),ys=routeYs(map),routes=ys.map((y,i)=>carveStrategicRoute(map,y,i,protectedKeys,rand));
+      connectRoutesToBases(map,routes,baseInfo,protectedKeys);
 
-    const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river,protectedKeys);
-    if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
-    const summary=stats(map);
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,riverSourceKind:river.sourceKind,sourceFedBasinTiles:river.basinTiles,riverRouteLength:river.routeLength,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,validation:"PASS",...summary}};
+      // Land is finalized first. A source is accepted only when that final land has
+      // a real flat/downhill drainage route to another boundary. If a procedural
+      // terrain sample has no physically valid source route, resample the WORLD,
+      // not the water: never force water uphill or cut the whole map apart.
+      const capturePoints=createCapturePoints(map,routes,protectedKeys);
+      addForests(map,cfg,rand,protectedKeys);
+      const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
+
+      let river;
+      try{
+        river=createRiver(map,routes,protectedKeys,rand);
+      }catch(error){
+        if(String(error?.message||error).includes("No downhill hydrology source route")){
+          lastSourceError=error;
+          continue;
+        }
+        throw error;
+      }
+
+      const rocks=addRocks(map,cfg,rand,protectedKeys);
+      const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
+      const cores=[
+        {id:"player_core",name:"我方 Core",owner:"PLAYER",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,hp,maxHp:hp,shield,maxShield:shield,defense},
+        {id:"enemy_core",name:"敵方 Core",owner:"ENEMY",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,hp,maxHp:hp,shield,maxShield:shield,defense}
+      ];
+      map.objects=[
+        {id:"player_core_object",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},
+        {id:"enemy_core_object",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},
+        ...(river.objects||[]),...rocks
+      ];
+      const deploymentPoints=[
+        {id:"player_base",name:"我方本陣",owner:"PLAYER",capturable:false,captureTiles:[],area:baseArea(map,"PLAYER",baseInfo)},
+        ...capturePoints,
+        {id:"enemy_base",name:"敵方本陣",owner:"ENEMY",capturable:false,captureTiles:[],area:baseArea(map,"ENEMY",baseInfo)}
+      ];
+
+      const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river,protectedKeys);
+      if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
+      const summary=stats(map);
+      return{
+        map,cores,deploymentPoints,
+        meta:{
+          generated:true,seed:resolvedSeed,terrainAttempt:attempt,size:cfg.id,label:cfg.label,
+          width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,
+          riverSourceKind:river.sourceKind,sourceFedBasinTiles:river.basinTiles,
+          riverRouteLength:river.routeLength,riverEntrySide:river.entrySide,riverDrainSide:river.drainSide,
+          mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,
+          inaccessibleHighGround:mountainAccess.remainingInaccessible,validation:"PASS",...summary
+        }
+      };
+    }
+
+    throw lastSourceError||new Error("Generated terrain has no valid hydrology source route");
   }
 
   return Object.freeze({SIZE_PRESETS,SOURCE_KIND,preset,randomSeed,generateVersus,validateBattlefield});
