@@ -1208,17 +1208,22 @@ export class WaterRenderer{
         const neighbor=allMap.get(keyOf(tile.x+dx,tile.y+dy));
         if(!neighbor||!hasAnyWater(neighbor))continue;
         const relation=this.waterEdgeRelation(tile,neighbor);
-        let high=null,low=null,authored=false,derivedFromFlowCliff=false;
+        let high=null,low=null,authored=false,derivedFromFlowCliff=false,derivedFromCliffSpill=false;
         if(relation.type==="CASCADE"){
           high=relation.high;low=relation.low;authored=true;
         }else if(relation.type==="LEVEL_BREAK"){
           high=relation.high;low=relation.low;
-          const fx=Math.sign(Number(high?.flowX||0)),fy=Math.sign(Number(high?.flowY||0));
-          const flowsToLow=high&&low&&high.river===true&&fx===Math.sign(low.x-high.x)&&fy===Math.sign(low.y-high.y);
-          const dir=flowsToLow?this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y}):null;
+          // LEVEL_BREAK already means this edge is not a traversable slope. Confirm
+          // that TerrainRenderer owns a real cliff face on this exact edge. Water
+          // may then spill over that face even when the river's primary flow points
+          // along the slope instead of sideways. This lets one sloped river tile be
+          // CONTINUOUS on its downhill edge and a CASCADE on a lateral cliff edge.
+          const dir=this.cascadeDirection({dx:low.x-high.x,dy:low.y-high.y});
           const cliff=dir&&this.terrainRenderer?.cliffFaceProfile?.(high,dir,allMap);
-          if(!flowsToLow||!cliff)continue;
-          derivedFromFlowCliff=true;
+          if(!cliff)continue;
+          const flowsToLow=this.flowMatches(high,low);
+          derivedFromFlowCliff=flowsToLow;
+          derivedFromCliffSpill=!flowsToLow;
         }else continue;
 
         const top=visualSurface(high),bottom=visualSurface(low),drop=top-bottom;
@@ -1231,6 +1236,7 @@ export class WaterRenderer{
           authoredDrop:authored?Number(high.hydrologyCascadeDrop||low.hydrologyCascadeDrop||drop):null,
           inferredFromSurface:false,
           derivedFromFlowCliff,
+          derivedFromCliffSpill,
           speed:Math.max(.6,Number(high.flowSpeed||0)+drop*.55),
           receiverRendered:rendered.has(keyOf(low.x,low.y))
         });
