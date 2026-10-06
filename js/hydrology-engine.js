@@ -33,23 +33,26 @@ export const HydrologyEngine=(()=>{
     if(!wetA&&!wetB)return{type:"NONE",high:null,low:null,drop:0,rate:0,reason:"DRY"};
 
     const terrainDelta=elevation(a)-elevation(b);
-    const high=terrainDelta>=0?a:b,low=terrainDelta>=0?b:a;
+    const cascadeThreshold=Math.max(0,Number(minCascadeDrop||0));
+    const authoredAB=Number(a.hydrologyCascadeToX)===Number(b.x)&&Number(a.hydrologyCascadeToY)===Number(b.y)&&Number(a.hydrologyCascadeDrop||0)>=cascadeThreshold;
+    const authoredBA=Number(b.hydrologyCascadeToX)===Number(a.x)&&Number(b.hydrologyCascadeToY)===Number(a.y)&&Number(b.hydrologyCascadeDrop||0)>=cascadeThreshold;
+    // Explicit generated/runtime cascade metadata identifies the directed edge.
+    // Terrain height is not allowed to reverse that authored hydrology relation.
+    const high=authoredAB?a:authoredBA?b:(terrainDelta>=0?a:b);
+    const low=high===a?b:a;
     const highSurface=waterSurfaceZ(high);
     const lowSurface=waterSurfaceZ(low)??elevation(low);
     const drop=Math.max(0,Number(highSurface??elevation(high))-Number(lowSurface));
-    const cascadeThreshold=Math.max(0,Number(minCascadeDrop||0));
-    const authored=Number(high.hydrologyCascadeToX)===Number(low.x)&&
-      Number(high.hydrologyCascadeToY)===Number(low.y)&&
-      Number(high.hydrologyCascadeDrop||0)>=cascadeThreshold;
+    const authored=authoredAB||authoredBA;
     const primary=edgeFlowDirectionMatches(high,low);
     const overflowRate=Math.max(0,Number(high.hydrologyOverflowRate||0));
     const routedRate=Math.max(0,Number(high.hydrologyOutflowRate??high.discharge??0));
 
-    // Authored/routed cross-edge flow is hydrology topology and must be resolved
-    // before terrain slope classification. Otherwise a real waterfall can be
-    // swallowed as an ordinary traversable slope.
-    if(isWater(high)&&drop>=cascadeThreshold&&primary&&(authored||routedRate>FLOW_EPSILON||overflowRate>FLOW_EPSILON)){
-      return{type:"CASCADE",high,low,drop,rate:clean(Math.max(routedRate,overflowRate)),reason:overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored};
+    // Authored cascade metadata is already the canonical cross-edge topology and
+    // must not disappear merely because flowX/flowY is stale for one presentation
+    // frame. Non-authored falls still require the actual routed direction.
+    if(isWater(high)&&drop>=cascadeThreshold&&(authored||(primary&&(routedRate>FLOW_EPSILON||overflowRate>FLOW_EPSILON)))){
+      return{type:"CASCADE",high,low,drop,rate:clean(Math.max(routedRate,overflowRate)),reason:authored?"AUTHORED_CASCADE":overflowRate>FLOW_EPSILON?"ROUTED_OVERFLOW":"ROUTED_FLOW",authored};
     }
 
     // Equal/near-equal free surfaces are one body of water even when the bed

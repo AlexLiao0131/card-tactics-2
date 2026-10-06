@@ -1020,30 +1020,15 @@ export class WaterRenderer{
     return null;
   }
 
-  waterGridEdgePoints(tile,dir,allMap){
-    const patch=this.waterPatchGrid(tile,allMap)?.grid;
-    if(!patch?.length)return[];
-    if(dir.id==="N")return [...patch[0]];
-    if(dir.id==="E")return patch.map(row=>row[3]);
-    if(dir.id==="S")return [...patch[3]].reverse();
-    if(dir.id==="W")return [...patch].reverse().map(row=>row[0]);
-    return[];
-  }
-
-  waterGridFlowRows(tile,dir,allMap){
-    const patch=this.waterPatchGrid(tile,allMap)?.grid;
-    if(!patch?.length)return[];
-    const rows=[];
-    if(dir.id==="E"){
-      for(let step=0;step<4;step++)rows.push(patch.map(row=>row[step]));
-    }else if(dir.id==="W"){
-      for(let step=0;step<4;step++)rows.push([...patch].reverse().map(row=>row[3-step]));
-    }else if(dir.id==="S"){
-      for(let step=0;step<4;step++)rows.push([...patch[step]].reverse());
-    }else if(dir.id==="N"){
-      for(let step=0;step<4;step++)rows.push([...patch[3-step]]);
-    }
-    return rows;
+  cascadeLipPoints(tile,dir,allMap){
+    const terrainRing=this.surfaceResolver.ringSamples(tile,allMap);
+    const ring=terrainRing.map((sample,index)=>this.shorelinePoint(tile,index,sample,allMap));
+    const edge=dir.id==="N"?[ring[0],ring[1],ring[2]]
+      :dir.id==="E"?[ring[2],ring[3],ring[4]]
+      :dir.id==="S"?[ring[4],ring[5],ring[6]]
+      :[ring[6],ring[7],ring[0]];
+    const sample=t=>t<=.5?this.lerpWaterPoint(edge[0],edge[1],t*2):this.lerpWaterPoint(edge[1],edge[2],(t-.5)*2);
+    return[0,1/3,2/3,1].map(sample);
   }
 
   appendCascadeSheet(out,edge,turbidity,allMap){
@@ -1051,10 +1036,11 @@ export class WaterRenderer{
     const profile=dir&&this.terrainRenderer?.cliffFaceProfile?.(edge.tile,dir,allMap);
     if(!profile?.points?.length)return;
 
-    const highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
-    const lowRows=this.waterGridFlowRows(edge.receiver,dir,allMap);
+    // Waterfalls use the same restored shared-ring water topology as the horizontal
+    // surface. Do not resurrect the removed 4x4 water patch just to build a fall.
+    const highEdge=this.cascadeLipPoints(edge.tile,dir,allMap);
     const cliff=profile.points;
-    const columns=Math.min(highEdge.length,cliff.length,...lowRows.map(row=>row.length));
+    const columns=Math.min(highEdge.length,cliff.length);
     if(columns<2)return;
 
     const topLevel=Number(edge.top),bottomLevel=Number(edge.bottom),drop=Math.max(0,topLevel-bottomLevel);
@@ -1064,66 +1050,47 @@ export class WaterRenderer{
     const dirX=Number(dir.dx),dirZ=Number(dir.dy);
     const wallRenderOffset=SURFACE_OFFSET*.75;
 
-    const pointRow=(points,progress,worldYForPoint)=>points.slice(0,columns).map((point,index)=>({
-      x:Number(point.x),z:Number(point.z),drop,progress,
-      worldY:Number(worldYForPoint(point,index))
-    }));
-
     const rows=[];
     const appendRow=points=>{
       if(points.length!==columns)return;
       const previous=rows[rows.length-1];
-      if(previous&&points.every((point,index)=>
-        Math.hypot(point.x-previous[index].x,point.z-previous[index].z,point.worldY-previous[index].worldY)<=1e-7
-      ))return;
+      if(previous&&points.every((point,index)=>Math.hypot(point.x-previous[index].x,point.z-previous[index].z,point.worldY-previous[index].worldY)<=1e-7))return;
       rows.push(points);
     };
+    const makeRow=(points,progress,yFor)=>points.slice(0,columns).map((point,index)=>({
+      x:Number(point.x),z:Number(point.z),drop,progress,worldY:Number(yFor(point,index))
+    }));
 
-    appendRow(pointRow(highEdge,0,()=>topWaterY));
-
+    appendRow(makeRow(highEdge,0,()=>topWaterY));
     const wall=cliff.slice(0,columns).map(point=>({
       x:Number(point.x)+dirX*wallRenderOffset,
       z:Number(point.z)+dirZ*wallRenderOffset,
-      topY:Number(point.topY),
-      bottomY:Number(point.bottomY)
+      topY:Number(point.topY),bottomY:Number(point.bottomY)
     }));
-    appendRow(pointRow(wall,.04,()=>topWaterY));
+    appendRow(makeRow(wall,.04,()=>topWaterY));
 
     const footY=wall.map(point=>Math.max(bottomWaterY,Number(point.bottomY)+SURFACE_OFFSET));
-    for(const progress of [.34,.67,.94]){
-      appendRow(pointRow(wall,progress,(point,index)=>
-        topWaterY+(footY[index]-topWaterY)*(progress/.94)
-      ));
-    }
+    for(const progress of [.34,.67,.94])appendRow(makeRow(wall,progress,(point,index)=>topWaterY+(footY[index]-topWaterY)*(progress/.94)));
 
-    for(let step=0;step<lowRows.length;step++){
-      const source=lowRows[step].slice(0,columns);
-      const progress=.94+(step+1)/lowRows.length*.06;
-      const landing=source.map((point,index)=>{
-        const wallPoint=wall[index];
-        const along=(Number(point.x)-wallPoint.x)*dirX+(Number(point.z)-wallPoint.z)*dirZ;
-        const x=along>0?Number(point.x):wallPoint.x;
-        const z=along>0?Number(point.z):wallPoint.z;
-        const terrain=this.renderedTerrainHeightForTilePoint(
-          edge.receiver,x,z,allMap,Number(edge.receiver?.elevation||0)
-        );
-        const groundY=Number(terrain??edge.receiver?.elevation??0)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-        return{x,z,drop,progress,worldY:Math.max(bottomWaterY,groundY)};
-      });
-      appendRow(landing);
-    }
+    // Land directly on the receiving surface/bed. The receiver does not have to be
+    // a rendered water tile: Hydrology may route a real fall into a dry lower cell
+    // that becomes wet later in the same environment evolution.
+    const landingDistance=TILE_SIZE*.18;
+    const landing=wall.map((point,index)=>{
+      const x=point.x+dirX*landingDistance,z=point.z+dirZ*landingDistance;
+      const terrain=this.renderedTerrainHeightForTilePoint(edge.receiver,x,z,allMap,Number(edge.receiver?.elevation||0));
+      const groundY=Number(terrain??edge.receiver?.elevation??0)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+      return{x,z,drop,progress:1,worldY:hasAnyWater(edge.receiver)?bottomWaterY:Math.max(bottomWaterY,groundY)};
+    });
+    appendRow(landing);
 
     if(rows.length<2)return;
-    const grid=rows.map(row=>row.map(point=>this.addCascadeVertex(
-      out,point,turbidity,edge.tile,point.progress
-    )));
-
+    const grid=rows.map(row=>row.map(point=>this.addCascadeVertex(out,point,turbidity,edge.tile,point.progress)));
     const distance3=(a,b)=>{
       const ax=out.positions[a*3],ay=out.positions[a*3+1],az=out.positions[a*3+2];
       const bx=out.positions[b*3],by=out.positions[b*3+1],bz=out.positions[b*3+2];
       return (ax-bx)**2+(ay-by)**2+(az-bz)**2;
     };
-
     for(let r=0;r<grid.length-1;r++)for(let c=0;c<columns-1;c++){
       const a=grid[r][c],b=grid[r][c+1],d=grid[r+1][c],e=grid[r+1][c+1];
       if(distance3(a,e)<=distance3(b,d))out.indices.push(a,b,e,a,e,d);
