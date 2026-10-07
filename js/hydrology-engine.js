@@ -4,6 +4,12 @@ export const HydrologyEngine=(()=>{
   const WATERLINE=0;
   const RAIN_FILL_PER_EVENT=.06,HEAVY_RAIN_FILL_PER_EVENT=.12,STORM_RAIN_FILL_PER_EVENT=.16,NATURAL_WATER_DEPTH=1;
   const SOIL_SATURATION_CAPACITY=.45,SAND_SOIL_CAPACITY=.22,DRYING_PER_CLEAR_TURN=.10,SAND_DRYING_PER_CLEAR_TURN=.16,EVAPORATION_PER_CLEAR_TURN=.06;
+  // Surface-water infiltration is a physical flux per environment turn, not an
+  // unlimited "fill soil to capacity" operation every numerical solver iteration.
+  // The previous implementation could run this absorption hundreds of times inside
+  // one redistribute() call, so a perennial spring pulse was consumed by a chain of
+  // dry tiles before any visible surface stream could survive.
+  const PLAIN_INFILTRATION_PER_TURN=.018,FOREST_INFILTRATION_PER_TURN=.022,MUD_INFILTRATION_PER_TURN=.008,SAND_INFILTRATION_PER_TURN=.034;
   const EPSILON=.0001,FLOW_EPSILON=.0005,MAX_FLOW_ITERATIONS=256,MAX_DRAIN_CYCLES=64,FLOW_RELAXATION=.5;
   // discharge is a river flow rate. This scale converts one discharge unit
   // into tile-volume per environment turn for budget/diagnostic accounting.
@@ -27,6 +33,15 @@ export const HydrologyEngine=(()=>{
   const soilCapacity=t=>baseTerrain(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
   const soilMoisture=t=>clamp(t?.soilMoisture??(t?.terrain==="MUD"?SOIL_SATURATION_CAPACITY:0),0,soilCapacity(t));
   const hasSoil=t=>!!t&&(terrainHasSoil(t.terrain)||(t.terrain==="WATER"&&terrainHasSoil(t.dryTerrain)));
+  const infiltrationRate=t=>{
+    switch(baseTerrain(t)){
+      case "SAND":return SAND_INFILTRATION_PER_TURN;
+      case "FOREST":return FOREST_INFILTRATION_PER_TURN;
+      case "MUD":return MUD_INFILTRATION_PER_TURN;
+      case "PLAIN":return PLAIN_INFILTRATION_PER_TURN;
+      default:return 0;
+    }
+  };
   const turbidity=t=>clamp(t?.waterTurbidity||0,0,1);
 
   function tileAt(map,x,y){return map?.tiles?.find(t=>t.x===x&&t.y===y)||null}
@@ -767,14 +782,17 @@ export const HydrologyEngine=(()=>{
     tile.waterSurfaceZ=tile.waterDepth>0?elevation(tile)+tile.waterDepth:null;
     if(tile.waterDepth<=0)tile.waterTurbidity=0;
     if(tile.waterDepth>0&&tile.terrain!=="WATER"){
-      const base=tile.terrain;tile.dryTerrain=base;
-      if(terrainHasSoil(base))tile.soilMoisture=base==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
+      const base=tile.terrain,moisture=terrainHasSoil(base)?soilMoisture(tile):0;tile.dryTerrain=base;
+      // Surface coverage and soil saturation are different stores. Converting a
+      // visually wet tile to WATER must not manufacture subsurface water; only the
+      // infiltration flux is allowed to increase soilMoisture.
+      if(terrainHasSoil(base))tile.soilMoisture=clean(moisture);
       tile.terrain="WATER";
       events.push({type:"BASIN_FILLED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterSurfaceZ,dryTerrain:tile.dryTerrain});
     }else if(tile.waterDepth<=0&&tile.terrain==="WATER"&&tile.dryTerrain){
-      const base=tile.dryTerrain;
-      if(base==="PLAIN"||base==="MUD"){tile.terrain="MUD";tile.soilMoisture=SOIL_SATURATION_CAPACITY;}
-      else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,Number(tile.soilMoisture||0)));}
+      const base=tile.dryTerrain,moisture=terrainHasSoil(base)?soilMoisture(tile):0;
+      if(base==="PLAIN"||base==="MUD"){tile.terrain=moisture>EPSILON?"MUD":base;tile.soilMoisture=clean(moisture);}
+      else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,moisture));}
       delete tile.dryTerrain;
       events.push({type:"BASIN_DRAINED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:0,terrain:tile.terrain});
     }
@@ -1254,15 +1272,32 @@ export const HydrologyEngine=(()=>{
     };
   }
 
-  function absorbStandingWater(map,events=[],source="INFILTRATION",fed=sourceFedWaterKeys(map)){
+  function createInfiltrationBudget(map,volumeScale=DISCHARGE_VOLUME_PER_TURN){
+    const elapsedTurns=Math.max(0,Number(volumeScale||0))/Math.max(EPSILON,DISCHARGE_VOLUME_PER_TURN),budget=new Map();
+    for(const tile of map?.tiles||[]){
+      if(!hasSoil(tile))continue;
+      const remaining=Math.max(0,soilCapacity(tile)-soilMoisture(tile));
+      const allowance=Math.min(remaining,Math.max(0,infiltrationRate(tile))*elapsedTurns);
+      if(allowance>EPSILON)budget.set(key(tile.x,tile.y),clean(allowance));
+    }
+    return budget;
+  }
+
+  function absorbStandingWater(map,events=[],source="INFILTRATION",fed=sourceFedWaterKeys(map),budget=null){
     let absorbed=0;
     for(const tile of map?.tiles||[]){
       if(waterDepth(tile)<=EPSILON||!hasSoil(tile))continue;
       const floor=protectedDepth(tile,fed),before=waterDepth(tile),available=Math.max(0,before-floor);if(available<=EPSILON)continue;
-      const excess=saturateSoil(tile,available,events,source),used=available-excess;
-      if(used>EPSILON){tile.waterDepth=floor+excess;absorbed+=used;events.push({type:"WATER_INFILTRATED",x:tile.x,y:tile.y,amount:used,waterDepth:tile.waterDepth,source});}
+      const k=key(tile.x,tile.y),remainingBudget=budget instanceof Map?Math.max(0,Number(budget.get(k)||0)):Infinity;
+      if(remainingBudget<=EPSILON)continue;
+      const requested=Math.min(available,remainingBudget),excess=saturateSoil(tile,requested,events,source),used=requested-excess;
+      if(used>EPSILON){
+        tile.waterDepth=clean(Math.max(floor,before-used));absorbed+=used;
+        if(budget instanceof Map)budget.set(k,clean(Math.max(0,remainingBudget-used)));
+        events.push({type:"WATER_INFILTRATED",x:tile.x,y:tile.y,amount:clean(used),waterDepth:tile.waterDepth,remainingInfiltrationBudget:budget instanceof Map?Number(budget.get(k)||0):null,source});
+      }
     }
-    return absorbed;
+    return clean(absorbed);
   }
 
   function releaseStoredRiverWater(map,events=[],source="RIVER_RECESSION",volumeScale=DISCHARGE_VOLUME_PER_TURN){
@@ -1454,6 +1489,9 @@ export const HydrologyEngine=(()=>{
     const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const fed=sourceFedWaterKeys(map);
     const outletBudgets=outletDrainBudgets(map,fed,volumeScale);
+    // One infiltration budget per physical hydrology step. The flow solver may
+    // iterate many times to converge, but those iterations do not advance time.
+    const infiltrationBudget=createInfiltrationBudget(map,volumeScale);
     const edgeNet=new Map();
     const initialOutletDrain=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
     const recession=releaseStoredRiverWater(map,events,source,volumeScale);
@@ -1463,7 +1501,7 @@ export const HydrologyEngine=(()=>{
     for(;iterations<MAX_FLOW_ITERATIONS;iterations++){
       maxDelta=flowIteration(map,by,fed,edgeNet);
 
-      const absorbed=absorbStandingWater(map,events,source,fed);
+      const absorbed=absorbStandingWater(map,events,source,fed,infiltrationBudget);
       const drained=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
       totalAbsorbed+=absorbed;
       totalDrained+=drained;
@@ -1578,9 +1616,10 @@ export const HydrologyEngine=(()=>{
   return Object.freeze({
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
+    PLAIN_INFILTRATION_PER_TURN,FOREST_INFILTRATION_PER_TURN,MUD_INFILTRATION_PER_TURN,SAND_INFILTRATION_PER_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
     initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
-    soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
+    soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();

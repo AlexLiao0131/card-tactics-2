@@ -960,15 +960,19 @@ export class WaterRenderer{
         if(fromPooled&&toPooled)continue;
         const sourceEdge=flow.from?.hydrologySource===true||flow.to?.hydrologySource===true;
         const downhillTransport=Number(flow.surfaceDrop||0)>EPSILON*4;
-        // Flat/equilibrium Q is a discharge fact, not a licence to draw a rail. The
-        // spring footprint owns the source itself; exposed runoff starts once the
-        // transport has a real downhill surface or Hydrology explicitly marks it as
-        // sheet flow. This keeps sustained Q from painting bars across flat lakes.
-        if(!flow.sheetFlow&&!sourceEdge&&!downhillTransport)continue;
+        const persistentTransport=Number(flow.persistentRate??flow.edgeDischarge??0)>EPSILON;
+        // A sustained per-edge Q is surface transport even when the local terrain is
+        // flat and storage has fallen to ~0. v8 suppressed those flat downstream
+        // edges to eliminate the old black rail, which also hid real spring-fed
+        // through-flow after the first source edge. The rail was a geometry/material
+        // problem, not evidence that flat Q should be invisible. Pooled water still
+        // owns its own surface, while dry transport-only reaches use the feathered
+        // terrain-conforming runoff footprint below.
+        if(!flow.sheetFlow&&!sourceEdge&&!downhillTransport&&!persistentTransport)continue;
         const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
         out.push({
           id,from:flow.from,to:flow.to,fromPooled,toPooled,
-          rate:Number(flow.rate||0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),
+          rate:Number(flow.rate||0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),persistentRate:Number(flow.persistentRate??flow.edgeDischarge??0),
           transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),
           hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null
         });
@@ -1004,7 +1008,7 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false};
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled};
     return mesh;
   }
 
