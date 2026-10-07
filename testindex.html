@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Card Tactics 2.0｜水文測試</title>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071018;color:#fff;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif}
+    #game{position:fixed;inset:0;width:100%;height:100%;border:0;background:#071018}
+    #boot{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:#071018;color:#dbe8f4;font-weight:800;letter-spacing:.04em}
+    #boot.hidden{display:none}
+  </style>
+</head>
+<body>
+  <iframe id="game" src="./index.html" title="Card Tactics 水文測試"></iframe>
+  <div id="boot">載入水文測試場...</div>
+  <script type="module">
+    const {TILE_SIZE,ELEVATION_HEIGHT}=await import("./js/coordinate-system.js");
+    const frame=document.getElementById("game"),boot=document.getElementById("boot");
+    let markerRaf=0,refreshing=false;
+
+    const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const waitFor=async test=>{
+      for(let i=0;i<900;i++){
+        const value=test();
+        if(value)return value;
+        await sleep(20);
+      }
+      throw new Error("Card Tactics Runtime 載入逾時");
+    };
+
+    function injectTestStyle(doc){
+      if(doc.getElementById("hydrologyTestStyle"))return;
+      const style=doc.createElement("style");
+      style.id="hydrologyTestStyle";
+      style.textContent=`
+        body.hydrology-test-mode #cardPhasePanel,
+        body.hydrology-test-mode #skillBar,
+        body.hydrology-test-mode #versusCoreHud,
+        body.hydrology-test-mode #turnStatus,
+        body.hydrology-test-mode #resetMap,
+        body.hydrology-test-mode .opponent-hand,
+        body.hydrology-test-mode .opponent-meta,
+        body.hydrology-test-mode .opponent-message,
+        body.hydrology-test-mode .battle-right-rail{display:none!important}
+        body.hydrology-test-mode #battleBack{display:none!important}
+        body.hydrology-test-mode .battle-view-controls{top:10px!important;right:8px!important}
+        .hydrology-test-toolbar{position:absolute;z-index:180;left:8px;top:8px;display:flex;align-items:center;gap:7px;max-width:calc(100vw - 230px);padding:7px 8px;border:1px solid #73859a;border-radius:10px;background:#07111be8;box-shadow:0 8px 28px #0009;pointer-events:auto}
+        .hydrology-test-toolbar button{min-height:38px;padding:7px 12px;border:1px solid #d2b96f;border-radius:8px;background:#182332;color:#fff;font-weight:900;white-space:nowrap}
+        .hydrology-test-toolbar button:disabled{opacity:.5}
+        .hydrology-test-info{font-size:10px;line-height:1.35;color:#d6e1ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .hydrology-test-legend{display:flex;gap:7px;align-items:center;font-size:9px;color:#c9d5df;white-space:nowrap}
+        .hydrology-test-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+        .hydrology-test-marker-layer{position:absolute;z-index:170;inset:0;pointer-events:none;overflow:hidden}
+        .hydrology-test-marker{position:absolute;left:0;top:0;transform:translate(-50%,-100%);padding:4px 6px;border:1px solid #fff8;border-radius:7px;background:#07111be8;box-shadow:0 3px 14px #000a;color:#fff;font-size:9px;font-weight:900;line-height:1.15;white-space:nowrap;text-shadow:0 1px 2px #000}
+        .hydrology-test-marker:after{content:"";position:absolute;left:50%;top:100%;height:18px;border-left:2px solid currentColor;opacity:.8}
+        .hydrology-test-marker.entry{color:#ffd768;border-color:#ffd768aa}
+        .hydrology-test-marker.spring{color:#65e6ff;border-color:#65e6ffaa}
+        .hydrology-test-marker.outlet{color:#ff7d7d;border-color:#ff7d7daa}
+        .hydrology-test-marker.source{color:#d7a0ff;border-color:#d7a0ffaa}
+        @media(max-width:700px){
+          .hydrology-test-toolbar{max-width:calc(100vw - 155px);padding:5px 6px;gap:5px}
+          .hydrology-test-toolbar button{font-size:10px;padding:6px 8px;min-height:32px}
+          .hydrology-test-info{font-size:8px}.hydrology-test-legend{display:none}
+          body.hydrology-test-mode .battle-view-controls{top:48px!important}
+          .hydrology-test-marker{font-size:8px;padding:3px 5px}
+        }
+      `;
+      doc.head.appendChild(style);
+    }
+
+    function showBattle(doc,win){
+      doc.body.classList.add("hydrology-test-mode");
+      doc.querySelectorAll(".game-screen").forEach(node=>node.classList.toggle("active",node.id==="battleScreen"));
+      win.CardTacticsRenderer?.resize?.();
+      win.CardTacticsRenderer?.resetView?.();
+      win.dispatchEvent(new win.CustomEvent("cardtactics:battle-screen-enter"));
+      win.dispatchEvent(new win.CustomEvent("cardtactics:battle-render"));
+    }
+
+    function findSpringSeed(win){
+      for(let attempt=0;attempt<80;attempt++){
+        const seed=win.MapGenerator.randomSeed();
+        try{
+          const generated=win.MapGenerator.generateVersus({size:"XLARGE",seed,coreRules:{hp:600,shield:0,defense:0}});
+          const spring=(generated.map?.tiles||[]).some(tile=>tile?.sourceKind==="SPRING_SOURCE"&&tile?.hydrologySourceDisabled!==true);
+          if(spring)return seed;
+        }catch(_error){}
+      }
+      throw new Error("80 次候選地圖內都沒有找到可用泉眼");
+    }
+
+    function markerRecords(runtime){
+      const map=runtime.getBattleMap?.();
+      const records=[];
+      for(const tile of map?.tiles||[]){
+        if(tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true){
+          const kind=String(tile.sourceKind||"").toUpperCase();
+          if(kind==="OFF_MAP_SOURCE")records.push({kind:"entry",label:"入口／水源",tile});
+          else if(kind==="SPRING_SOURCE")records.push({kind:"spring",label:"泉眼／水源",tile});
+          else records.push({kind:"source",label:"水源",tile});
+        }
+        if(tile?.hydrologyDrain===true||tile?.drain===true)records.push({kind:"outlet",label:"出口",tile});
+      }
+      return records;
+    }
+
+    function ensureOverlay(doc){
+      const battle=doc.getElementById("battleScreen");
+      let toolbar=doc.getElementById("hydrologyTestToolbar");
+      if(!toolbar){
+        toolbar=doc.createElement("div");toolbar.id="hydrologyTestToolbar";toolbar.className="hydrology-test-toolbar";
+        toolbar.innerHTML=`<button id="hydrologyRefresh" type="button">刷新地圖</button><div><div id="hydrologyTestInfo" class="hydrology-test-info">XLARGE 32×22</div><div class="hydrology-test-legend"><span><i style="background:#ffd768"></i>入口</span><span><i style="background:#65e6ff"></i>泉眼</span><span><i style="background:#ff7d7d"></i>出口</span></div></div>`;
+        battle.appendChild(toolbar);
+      }
+      let layer=doc.getElementById("hydrologyTestMarkers");
+      if(!layer){layer=doc.createElement("div");layer.id="hydrologyTestMarkers";layer.className="hydrology-test-marker-layer";battle.appendChild(layer);}
+      return{toolbar,layer,button:doc.getElementById("hydrologyRefresh"),info:doc.getElementById("hydrologyTestInfo")};
+    }
+
+    function rebuildMarkers(doc,runtime){
+      const {layer}=ensureOverlay(doc);layer.replaceChildren();
+      for(const record of markerRecords(runtime)){
+        const node=doc.createElement("div");node.className=`hydrology-test-marker ${record.kind}`;
+        const q=Math.max(0,Number(record.tile.hydrologySourceInflow??record.tile.hydrologyRequestedSourceInflow??record.tile.hydrologyOutflowRate??record.tile.discharge??0));
+        const depth=Math.max(0,Number(record.tile.waterDepth||0));
+        node.textContent=`${record.label} (${record.tile.x},${record.tile.y})${record.kind==="entry"||record.kind==="spring"?` Q ${q.toFixed(2)}｜D ${depth.toFixed(2)}`:""}`;
+        node.dataset.x=String(record.tile.x);node.dataset.y=String(record.tile.y);layer.appendChild(node);
+      }
+    }
+
+    function updateMarkerFrame(win,doc,runtime){
+      const renderer=win.CardTacticsRenderer,camera=renderer?.camera?.camera,scene=renderer?.scene,engine=renderer?.engine,canvas=renderer?.canvas;
+      const layer=doc.getElementById("hydrologyTestMarkers");
+      if(!renderer||!camera||!scene||!engine||!canvas||!layer)return;
+      const map=runtime.getBattleMap?.(),byKey=new Map((map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
+      const renderWidth=Math.max(1,engine.getRenderWidth()),renderHeight=Math.max(1,engine.getRenderHeight());
+      const viewport=camera.viewport.toGlobal(renderWidth,renderHeight),transform=scene.getTransformMatrix();
+      const canvasRect=canvas.getBoundingClientRect(),rootRect=layer.getBoundingClientRect();
+      const scaleX=canvasRect.width/renderWidth,scaleY=canvasRect.height/renderHeight,offsetX=canvasRect.left-rootRect.left,offsetY=canvasRect.top-rootRect.top;
+      for(const node of layer.children){
+        const tile=byKey.get(`${node.dataset.x},${node.dataset.y}`);if(!tile){node.hidden=true;continue;}
+        const surface=Math.max(Number(tile.elevation||0),Number(tile.elevation||0)+Math.max(0,Number(tile.waterDepth||0)));
+        const world=new win.BABYLON.Vector3(Number(tile.x)*TILE_SIZE,surface*ELEVATION_HEIGHT+.62,Number(tile.y)*TILE_SIZE);
+        const p=win.BABYLON.Vector3.Project(world,win.BABYLON.Matrix.Identity(),transform,viewport),x=offsetX+p.x*scaleX,y=offsetY+p.y*scaleY;
+        const visible=p.z>=0&&p.z<=1&&x>-120&&x<rootRect.width+120&&y>-80&&y<rootRect.height+80;
+        node.hidden=!visible;if(!visible)continue;node.style.left=`${x}px`;node.style.top=`${y}px`;
+      }
+    }
+
+    function startMarkerLoop(win,doc,runtime){
+      cancelAnimationFrame(markerRaf);
+      const tick=()=>{updateMarkerFrame(win,doc,runtime);markerRaf=requestAnimationFrame(tick);};tick();
+    }
+
+    async function generateNewTestMap(win,doc){
+      if(refreshing)return;refreshing=true;
+      const runtime=win.CardTacticsRuntime,{button,info}=ensureOverlay(doc);
+      button.disabled=true;button.textContent="生成中…";info.textContent="尋找含泉眼的 XLARGE 地圖…";
+      try{
+        const seed=findSpringSeed(win);
+        win.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"XLARGE",seed,hydrologyTest:true};
+        runtime.resetBattle();
+        runtime.debug?.setWeather?.("CLEAR",999);
+        runtime.debug?.setWind?.("CALM",0);
+        showBattle(doc,win);
+        await new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
+        rebuildMarkers(doc,runtime);
+        const records=markerRecords(runtime),entries=records.filter(r=>r.kind==="entry").length,springs=records.filter(r=>r.kind==="spring").length,outlets=records.filter(r=>r.kind==="outlet").length;
+        info.textContent=`XLARGE 32×22｜Seed ${seed}｜入口 ${entries}｜泉眼 ${springs}｜出口 ${outlets}`;
+      }catch(error){
+        console.error(error);info.textContent=`生成失敗｜${error?.message||error}`;
+      }finally{button.disabled=false;button.textContent="刷新地圖";refreshing=false;}
+    }
+
+    frame.addEventListener("load",async()=>{
+      try{
+        const win=frame.contentWindow,doc=frame.contentDocument;
+        await waitFor(()=>win.CardTacticsRuntime&&win.CardTacticsRenderer&&win.MapGenerator&&win.BABYLON);
+        injectTestStyle(doc);ensureOverlay(doc);
+        doc.getElementById("hydrologyRefresh").onclick=()=>generateNewTestMap(win,doc);
+        await generateNewTestMap(win,doc);
+        startMarkerLoop(win,doc,win.CardTacticsRuntime);
+        boot.classList.add("hidden");
+      }catch(error){
+        console.error(error);boot.textContent=`水文測試場啟動失敗｜${error?.message||error}`;
+      }
+    });
+  </script>
+</body>
+</html>
