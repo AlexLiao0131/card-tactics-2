@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Card Tactics 2.0｜水文測試</title>
+  <title>Card Tactics 2.0｜Test Lab</title>
   <style>
     *{box-sizing:border-box}
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071018;color:#fff;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif}
@@ -13,12 +13,12 @@
   </style>
 </head>
 <body>
-  <iframe id="game" src="./index.html" title="Card Tactics 水文測試"></iframe>
-  <div id="boot">載入水文測試場...</div>
+  <iframe id="game" src="./index.html" title="Card Tactics Test Lab"></iframe>
+  <div id="boot">載入 Card Tactics Test Lab...</div>
   <script type="module">
     const {TILE_SIZE,ELEVATION_HEIGHT}=await import("./js/coordinate-system.js");
     const frame=document.getElementById("game"),boot=document.getElementById("boot");
-    let markerRaf=0,refreshing=false;
+    let markerRaf=0,refreshing=false,currentSeed=null;
 
     const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     const waitFor=async test=>{
@@ -31,27 +31,30 @@
     };
 
     function injectTestStyle(doc){
-      if(doc.getElementById("hydrologyTestStyle"))return;
+      if(doc.getElementById("cardTacticsTestLabStyle"))return;
       const style=doc.createElement("style");
-      style.id="hydrologyTestStyle";
+      style.id="cardTacticsTestLabStyle";
       style.textContent=`
-        body.hydrology-test-mode #cardPhasePanel,
-        body.hydrology-test-mode #skillBar,
-        body.hydrology-test-mode #versusCoreHud,
-        body.hydrology-test-mode #turnStatus,
-        body.hydrology-test-mode #resetMap,
-        body.hydrology-test-mode .opponent-hand,
-        body.hydrology-test-mode .opponent-meta,
-        body.hydrology-test-mode .opponent-message,
-        body.hydrology-test-mode .battle-right-rail{display:none!important}
-        body.hydrology-test-mode #battleBack{display:none!important}
-        body.hydrology-test-mode .battle-view-controls{top:10px!important;right:8px!important}
-        .hydrology-test-toolbar{position:absolute;z-index:180;left:8px;top:8px;display:flex;align-items:center;gap:7px;max-width:calc(100vw - 230px);padding:7px 8px;border:1px solid #73859a;border-radius:10px;background:#07111be8;box-shadow:0 8px 28px #0009;pointer-events:auto}
-        .hydrology-test-toolbar button{min-height:38px;padding:7px 12px;border:1px solid #d2b96f;border-radius:8px;background:#182332;color:#fff;font-weight:900;white-space:nowrap}
-        .hydrology-test-toolbar button:disabled{opacity:.5}
-        .hydrology-test-info{font-size:10px;line-height:1.35;color:#d6e1ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .hydrology-test-legend{display:flex;gap:7px;align-items:center;font-size:9px;color:#c9d5df;white-space:nowrap}
-        .hydrology-test-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+        body.card-tactics-test-mode #cardPhasePanel,
+        body.card-tactics-test-mode #skillBar,
+        body.card-tactics-test-mode #versusCoreHud,
+        body.card-tactics-test-mode #turnStatus,
+        body.card-tactics-test-mode #resetMap,
+        body.card-tactics-test-mode .opponent-hand,
+        body.card-tactics-test-mode .opponent-meta,
+        body.card-tactics-test-mode .opponent-message,
+        body.card-tactics-test-mode .battle-right-rail{display:none!important}
+        body.card-tactics-test-mode #battleBack{display:none!important}
+        body.card-tactics-test-mode .battle-view-controls{top:10px!important;right:8px!important}
+        .test-lab-toolbar{position:absolute;z-index:180;left:8px;top:8px;display:flex;align-items:flex-start;gap:7px;max-width:calc(100vw - 230px);padding:7px 8px;border:1px solid #73859a;border-radius:10px;background:#07111be8;box-shadow:0 8px 28px #0009;pointer-events:auto}
+        .test-lab-toolbar button,.test-lab-toolbar input{min-height:36px;padding:6px 9px;border:1px solid #73859a;border-radius:8px;background:#182332;color:#fff;font-weight:800}
+        .test-lab-toolbar button{border-color:#d2b96f;white-space:nowrap}
+        .test-lab-toolbar button:disabled{opacity:.5}
+        .test-lab-seed{width:118px;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
+        .test-lab-info{font-size:10px;line-height:1.35;color:#d6e1ec;white-space:normal}
+        .test-lab-title{font-weight:900;color:#fff0c5;margin-bottom:2px}
+        .test-lab-legend{display:flex;gap:7px;align-items:center;margin-top:3px;font-size:9px;color:#c9d5df;white-space:nowrap}
+        .test-lab-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
         .hydrology-test-marker-layer{position:absolute;z-index:170;inset:0;pointer-events:none;overflow:hidden}
         .hydrology-test-marker{position:absolute;left:0;top:0;transform:translate(-50%,-100%);padding:4px 6px;border:1px solid #fff8;border-radius:7px;background:#07111be8;box-shadow:0 3px 14px #000a;color:#fff;font-size:9px;font-weight:900;line-height:1.15;white-space:nowrap;text-shadow:0 1px 2px #000}
         .hydrology-test-marker:after{content:"";position:absolute;left:50%;top:100%;height:18px;border-left:2px solid currentColor;opacity:.8}
@@ -60,10 +63,10 @@
         .hydrology-test-marker.outlet{color:#ff7d7d;border-color:#ff7d7daa}
         .hydrology-test-marker.source{color:#d7a0ff;border-color:#d7a0ffaa}
         @media(max-width:700px){
-          .hydrology-test-toolbar{max-width:calc(100vw - 155px);padding:5px 6px;gap:5px}
-          .hydrology-test-toolbar button{font-size:10px;padding:6px 8px;min-height:32px}
-          .hydrology-test-info{font-size:8px}.hydrology-test-legend{display:none}
-          body.hydrology-test-mode .battle-view-controls{top:48px!important}
+          .test-lab-toolbar{max-width:calc(100vw - 150px);padding:5px 6px;gap:4px;flex-wrap:wrap}
+          .test-lab-toolbar button,.test-lab-toolbar input{font-size:9px;padding:5px 7px;min-height:30px}
+          .test-lab-seed{width:100px}.test-lab-info{font-size:8px}.test-lab-legend{display:none}
+          body.card-tactics-test-mode .battle-view-controls{top:82px!important}
           .hydrology-test-marker{font-size:8px;padding:3px 5px}
         }
       `;
@@ -71,24 +74,12 @@
     }
 
     function showBattle(doc,win){
-      doc.body.classList.add("hydrology-test-mode");
+      doc.body.classList.add("card-tactics-test-mode");
       doc.querySelectorAll(".game-screen").forEach(node=>node.classList.toggle("active",node.id==="battleScreen"));
       win.CardTacticsRenderer?.resize?.();
       win.CardTacticsRenderer?.resetView?.();
       win.dispatchEvent(new win.CustomEvent("cardtactics:battle-screen-enter"));
       win.dispatchEvent(new win.CustomEvent("cardtactics:battle-render"));
-    }
-
-    function findSpringSeed(win){
-      for(let attempt=0;attempt<80;attempt++){
-        const seed=win.MapGenerator.randomSeed();
-        try{
-          const generated=win.MapGenerator.generateVersus({size:"XLARGE",seed,coreRules:{hp:600,shield:0,defense:0}});
-          const spring=(generated.map?.tiles||[]).some(tile=>tile?.sourceKind==="SPRING_SOURCE"&&tile?.hydrologySourceDisabled!==true);
-          if(spring)return seed;
-        }catch(_error){}
-      }
-      throw new Error("80 次候選地圖內都沒有找到可用泉眼");
     }
 
     function markerRecords(runtime){
@@ -108,15 +99,29 @@
 
     function ensureOverlay(doc){
       const battle=doc.getElementById("battleScreen");
-      let toolbar=doc.getElementById("hydrologyTestToolbar");
+      let toolbar=doc.getElementById("testLabToolbar");
       if(!toolbar){
-        toolbar=doc.createElement("div");toolbar.id="hydrologyTestToolbar";toolbar.className="hydrology-test-toolbar";
-        toolbar.innerHTML=`<button id="hydrologyRefresh" type="button">刷新地圖</button><div><div id="hydrologyTestInfo" class="hydrology-test-info">XLARGE 32×22</div><div class="hydrology-test-legend"><span><i style="background:#ffd768"></i>入口</span><span><i style="background:#65e6ff"></i>泉眼</span><span><i style="background:#ff7d7d"></i>出口</span></div></div>`;
+        toolbar=doc.createElement("div");toolbar.id="testLabToolbar";toolbar.className="test-lab-toolbar";
+        toolbar.innerHTML=`
+          <button id="testLabRefresh" type="button">刷新地圖</button>
+          <input id="testLabSeed" class="test-lab-seed" inputmode="numeric" aria-label="地圖 Seed" placeholder="Seed" />
+          <button id="testLabRebuild" type="button">重建 Seed</button>
+          <div>
+            <div class="test-lab-title">TEST LAB｜水文</div>
+            <div id="testLabInfo" class="test-lab-info">XLARGE 32×22｜等待生成</div>
+            <div class="test-lab-legend"><span><i style="background:#ffd768"></i>入口</span><span><i style="background:#65e6ff"></i>泉眼</span><span><i style="background:#ff7d7d"></i>出口</span></div>
+          </div>`;
         battle.appendChild(toolbar);
       }
       let layer=doc.getElementById("hydrologyTestMarkers");
       if(!layer){layer=doc.createElement("div");layer.id="hydrologyTestMarkers";layer.className="hydrology-test-marker-layer";battle.appendChild(layer);}
-      return{toolbar,layer,button:doc.getElementById("hydrologyRefresh"),info:doc.getElementById("hydrologyTestInfo")};
+      return{
+        toolbar,layer,
+        refresh:doc.getElementById("testLabRefresh"),
+        rebuild:doc.getElementById("testLabRebuild"),
+        seed:doc.getElementById("testLabSeed"),
+        info:doc.getElementById("testLabInfo")
+      };
     }
 
     function rebuildMarkers(doc,runtime){
@@ -154,12 +159,24 @@
       const tick=()=>{updateMarkerFrame(win,doc,runtime);markerRaf=requestAnimationFrame(tick);};tick();
     }
 
-    async function generateNewTestMap(win,doc){
+    function normalizeSeed(value){
+      const parsed=Number(value);
+      return Number.isFinite(parsed)?(parsed>>>0):null;
+    }
+
+    async function generateTestMap(win,doc,{reuseSeed=false}={}){
       if(refreshing)return;refreshing=true;
-      const runtime=win.CardTacticsRuntime,{button,info}=ensureOverlay(doc);
-      button.disabled=true;button.textContent="生成中…";info.textContent="尋找含泉眼的 XLARGE 地圖…";
+      const runtime=win.CardTacticsRuntime,{refresh,rebuild,seed:seedInput,info}=ensureOverlay(doc);
+      refresh.disabled=true;rebuild.disabled=true;
+      const requested=reuseSeed?normalizeSeed(seedInput.value):null;
+      const seed=requested??win.MapGenerator.randomSeed();
+      currentSeed=seed;seedInput.value=String(seed);
+      const started=performance.now();
+      info.textContent=`XLARGE 32×22｜Seed ${seed}｜生成中…`;
       try{
-        const seed=findSpringSeed(win);
+        // Exactly one generated map per request. No hidden spring hunt, no retry loop.
+        // If this seed has no spring, the tool reports 泉眼 0; if generation throws,
+        // the failing seed remains visible so the problem can be reproduced.
         win.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"XLARGE",seed,hydrologyTest:true};
         runtime.resetBattle();
         runtime.debug?.setWeather?.("CLEAR",999);
@@ -168,23 +185,30 @@
         await new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
         rebuildMarkers(doc,runtime);
         const records=markerRecords(runtime),entries=records.filter(r=>r.kind==="entry").length,springs=records.filter(r=>r.kind==="spring").length,outlets=records.filter(r=>r.kind==="outlet").length;
-        info.textContent=`XLARGE 32×22｜Seed ${seed}｜入口 ${entries}｜泉眼 ${springs}｜出口 ${outlets}`;
+        const elapsed=Math.round(performance.now()-started);
+        info.textContent=`XLARGE 32×22｜Seed ${seed}｜入口 ${entries}｜泉眼 ${springs}｜出口 ${outlets}｜${elapsed} ms`;
       }catch(error){
-        console.error(error);info.textContent=`生成失敗｜${error?.message||error}`;
-      }finally{button.disabled=false;button.textContent="刷新地圖";refreshing=false;}
+        console.error(error);
+        const elapsed=Math.round(performance.now()-started);
+        info.textContent=`生成失敗｜Seed ${seed}｜${elapsed} ms｜${error?.message||error}`;
+      }finally{
+        refresh.disabled=false;rebuild.disabled=false;refreshing=false;
+      }
     }
 
     frame.addEventListener("load",async()=>{
       try{
         const win=frame.contentWindow,doc=frame.contentDocument;
         await waitFor(()=>win.CardTacticsRuntime&&win.CardTacticsRenderer&&win.MapGenerator&&win.BABYLON);
-        injectTestStyle(doc);ensureOverlay(doc);
-        doc.getElementById("hydrologyRefresh").onclick=()=>generateNewTestMap(win,doc);
-        await generateNewTestMap(win,doc);
+        injectTestStyle(doc);const overlay=ensureOverlay(doc);
+        overlay.refresh.onclick=()=>generateTestMap(win,doc,{reuseSeed:false});
+        overlay.rebuild.onclick=()=>generateTestMap(win,doc,{reuseSeed:true});
+        overlay.seed.onkeydown=event=>{if(event.key==="Enter")generateTestMap(win,doc,{reuseSeed:true});};
+        await generateTestMap(win,doc,{reuseSeed:false});
         startMarkerLoop(win,doc,win.CardTacticsRuntime);
         boot.classList.add("hidden");
       }catch(error){
-        console.error(error);boot.textContent=`水文測試場啟動失敗｜${error?.message||error}`;
+        console.error(error);boot.textContent=`Test Lab 啟動失敗｜${error?.message||error}`;
       }
     });
   </script>
