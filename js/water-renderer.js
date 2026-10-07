@@ -915,17 +915,16 @@ export class WaterRenderer{
     return[];
   }
 
-  applyCascadeLips(tile,grid,allMap){
-    for(const dir of [{id:"N",dx:0,dy:-1},{id:"E",dx:1,dy:0},{id:"S",dx:0,dy:1},{id:"W",dx:-1,dy:0}]){
-      const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
-      const flow=this.hydrologyEdgeState(tile,neighbor);
-      if(!flow?.cascade||flow.from!==tile)continue;
-      const profile=this.surfaceResolver.cliffSpillProfile(tile,neighbor,dir,allMap),edge=this.waterGridEdgeRefs(grid,dir),count=Math.min(profile.length,edge.length);
-      for(let i=0;i<count;i++){
-        edge[i].x=Number(profile[i].lip.x);edge[i].z=Number(profile[i].lip.z);edge[i].level=visualSurface(tile);edge[i].clipped=false;edge[i].relaxed=true;edge[i].mode="CASCADE_LIP";
-      }
-    }
-    return grid;
+  samplePolyline(series,t){
+    if(!series?.length)return null;if(series.length===1)return{...series[0]};
+    const q=clamp(Number(t||0),0,1),scaled=q*(series.length-1),i=Math.min(series.length-2,Math.floor(scaled)),f=scaled-i,a=series[i],b=series[i+1];
+    return{x:Number(a.x)+(Number(b.x)-Number(a.x))*f,y:Number(a.y)+(Number(b.y)-Number(a.y))*f,z:Number(a.z)+(Number(b.z)-Number(a.z))*f,t:q};
+  }
+
+  // Resample only an already-generated polyline. This never reconstructs cliff
+  // coordinates; it merely matches vertex counts between water and the real wall.
+  resamplePolyline(series,count){
+    const n=Math.max(2,Number(count||0));return Array.from({length:n},(_,i)=>this.samplePolyline(series,i/(n-1)));
   }
 
   waterPatchGrid(tile,allMap){
@@ -947,7 +946,6 @@ export class WaterRenderer{
       }
       grid.push(row);
     }
-    this.applyCascadeLips(tile,grid,allMap);
     return{grid,ring};
   }
 
@@ -1063,30 +1061,32 @@ export class WaterRenderer{
 
   buildCascade(edge,state){
     const dir=this.cascadeDirection(edge),allMap=this.allByKey(state);if(!dir)return null;
-    const spill=this.surfaceResolver.cliffSpillProfile(edge.tile,edge.receiver,dir,allMap),highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
-    const columns=Math.min(spill.length,highEdge.length);if(columns<2)return null;
-    const activeSpill=spill.slice(0,columns),outward=SURFACE_OFFSET*.75,topY=Number(edge.top)*ELEVATION_HEIGHT+SURFACE_OFFSET,bottomY=Number(edge.bottom)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-    const approachRow=highEdge.slice(0,columns).map(point=>({x:Number(point.x),z:Number(point.z),y:topY}));
-    const lipRow=activeSpill.map(column=>({x:Number(column.lip.x)+dir.dx*outward,z:Number(column.lip.z)+dir.dy*outward,y:topY}));
-    const footRow=activeSpill.map(column=>({
-      x:Number(column.foot.x)+dir.dx*outward,z:Number(column.foot.z)+dir.dy*outward,
-      y:Math.min(topY,Math.max(bottomY,Number(column.foot.height)*ELEVATION_HEIGHT+SURFACE_OFFSET))
-    }));
+    const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,dir);
+    if(!wall?.lip?.length||!wall?.foot?.length)return null;
+
+    // The waterfall follows the exact wall vertices TerrainRenderer actually used.
+    // No cliff roughness, receiver-height clamp or wall coordinate is recomputed here.
+    const columns=Math.min(wall.lip.length,wall.foot.length);if(columns<2)return null;
+    const topY=Number(edge.top)*ELEVATION_HEIGHT+SURFACE_OFFSET,bottomY=Number(edge.bottom)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const outward=SURFACE_OFFSET*.75;
+    const lipRow=wall.lip.slice(0,columns).map(point=>({x:Number(point.x)+dir.dx*outward,z:Number(point.z)+dir.dy*outward,y:topY}));
+    const footRow=wall.foot.slice(0,columns).map(point=>({x:Number(point.x)+dir.dx*outward,z:Number(point.z)+dir.dy*outward,y:Math.min(topY,Math.max(bottomY,Number(point.y)+SURFACE_OFFSET))}));
+
+    // Bridge the live upstream water surface to the real rendered lip. The source
+    // row is resampled from the water mesh itself; the destination is the exact wall.
+    const highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
+    const approachSource=this.resamplePolyline(highEdge.map(point=>({x:Number(point.x),y:topY,z:Number(point.z)})),columns);
+    const approachRow=approachSource.map(point=>({x:point.x,y:topY,z:point.z}));
     const rows=[approachRow,lipRow];
-    for(const progress of [.30,.62,.88])rows.push(lipRow.map((point,index)=>({
-      x:point.x,z:point.z,y:point.y+(footRow[index].y-point.y)*progress
-    })));
+    for(const progress of [.30,.62,.88])rows.push(lipRow.map((point,index)=>({x:point.x,z:point.z,y:point.y+(footRow[index].y-point.y)*progress})));
     rows.push(footRow);
 
-    // If the receiving tile already has standing water, connect the falling sheet
-    // into its live surface. If it is still dry, stop at the rendered ground: the
-    // flux remains valid and the next hydrology pass may build a plunge pool there.
+    // Wet receivers connect from the exact wall foot to the receiver's actual water
+    // edge. Dry receivers terminate at the exact rendered wall foot/plunge point.
     if(edge.receiverWet){
-      const landingRow=activeSpill.map((column,index)=>{
-        const landing=column.landing||column.foot;
-        return{x:Number(landing.x),z:Number(landing.z),y:bottomY};
-      });
-      rows.push(landingRow);
+      const receiverDir=this.oppositeDirection(dir),receiverEdge=this.waterGridEdgePoints(edge.receiver,receiverDir,allMap);
+      const landing=this.resamplePolyline(receiverEdge.map(point=>({x:Number(point.x),y:bottomY,z:Number(point.z)})),columns);
+      rows.push(landing.map(point=>({x:point.x,z:point.z,y:bottomY})));
     }
 
     const positions=[],indices=[],normals=[],uvs=[];
@@ -1100,7 +1100,7 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
     mesh.material=this.cascadeMaterial;mesh.alphaIndex=12;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,sharedCliffSpillProfile:true,ruggedCliffLip:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason};
+    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,renderedCliffGeometry:true,sharedCliffVertices:true,ruggedCliffLip:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason};
 
     const center=footRow.reduce((acc,point)=>({x:acc.x+point.x/columns,y:acc.y+point.y/columns,z:acc.z+point.z/columns}),{x:0,y:0,z:0});
     const foam=BABYLON.MeshBuilder.CreateTorus(`cascade-foam-${edge.id}`,{diameter:TILE_SIZE*.55,thickness:.038,tessellation:20},this.scene);

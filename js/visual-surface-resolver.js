@@ -93,6 +93,38 @@ function influenceSnapshot(tile,weight,direction){
 export class VisualSurfaceResolver{
   constructor({maxVisualSlopeDelta=MAX_VISUAL_SLOPE_DELTA}={}){
     this.maxVisualSlopeDelta=Math.max(0,Number(maxVisualSlopeDelta||0));
+    // Runtime geometry contract: TerrainRenderer registers the exact world-space
+    // cliff vertices it actually submits to Babylon. Consumers must read these
+    // vertices instead of independently reconstructing the same wall.
+    this.renderedCliffGeometry=new Map();
+    this.renderedCliffGeometryRevision=0;
+  }
+
+  cliffGeometryKey(tile,dir){
+    const id=this.cliffDirectionId(dir);
+    return tile&&id?`${Number(tile.x)},${Number(tile.y)}:${id}`:null;
+  }
+
+  clearRenderedCliffGeometry(){
+    this.renderedCliffGeometry.clear();
+    this.renderedCliffGeometryRevision++;
+  }
+
+  registerRenderedCliffGeometry(tile,dir,geometry){
+    const key=this.cliffGeometryKey(tile,dir);if(!key||!geometry)return null;
+    const cloneSeries=series=>(series||[]).map(point=>({x:Number(point.x),y:Number(point.y),z:Number(point.z),t:Number(point.t||0)}));
+    const stored={
+      key,revision:this.renderedCliffGeometryRevision,
+      lip:cloneSeries(geometry.lip),foot:cloneSeries(geometry.foot),
+      outward:{x:Number(geometry.outward?.x||0),z:Number(geometry.outward?.z||0)},
+      drop:Number(geometry.drop||0)
+    };
+    this.renderedCliffGeometry.set(key,stored);return stored;
+  }
+
+  getRenderedCliffGeometry(tile,dir){
+    const key=this.cliffGeometryKey(tile,dir);
+    return key?this.renderedCliffGeometry.get(key)||null:null;
   }
 
   keyOf(x,y){return keyOf(x,y);}
@@ -303,40 +335,11 @@ export class VisualSurfaceResolver{
     return points;
   }
 
-  cliffEdgeProfile(tile,dir,byKey,options={}){
-    const rough=this.cliffRoughPolyline(tile,dir,options),surface=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
-    if(!rough.length||!surface.length)return[];
-    const sampleHeight=t=>{
-      const scaled=Math.max(0,Math.min(1,Number(t||0)))*(surface.length-1),i=Math.min(surface.length-2,Math.floor(scaled)),q=scaled-i;
-      return Number(surface[i].height)+(Number(surface[i+1].height)-Number(surface[i].height))*q;
-    };
-    return rough.map(point=>({...point,height:sampleHeight(point.t)}));
-  }
+  // No inferred cliff edge/spill geometry is exposed to water. TerrainRenderer
+  // owns wall construction and publishes the exact generated vertices above.
 
-  cliffSpillProfile(tile,neighbor,dir,byKey,options={}){
-    const lip=this.cliffEdgeProfile(tile,dir,byKey,options);
-    const approach=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
-    if(!lip.length||!approach.length)return[];
-    const id=this.cliffDirectionId(dir),opposite=id==="N"?{id:"S",dx:0,dy:1}:id==="S"?{id:"N",dx:0,dy:-1}:id==="E"?{id:"W",dx:-1,dy:0}:{id:"E",dx:1,dy:0};
-    const lower=neighbor?[...this.cliffSurfaceEdgeSamples(neighbor,opposite,byKey)].reverse():[];
-    const sample=(series,t)=>{
-      if(!series?.length)return null;if(series.length===1)return series[0];
-      const scaled=Math.max(0,Math.min(1,Number(t||0)))*(series.length-1),i=Math.min(series.length-2,Math.floor(scaled)),q=scaled-i,a=series[i],b=series[i+1];
-      return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,height:Number(a.height)+(Number(b.height)-Number(a.height))*q,t:Number(t||0)};
-    };
-    return lip.map(point=>{
-      const a=sample(approach,point.t)||point,l=sample(lower,point.t);
-      const ox=neighbor?Number(point.x)/TILE_SIZE-Number(neighbor.x):0,oz=neighbor?Number(point.z)/TILE_SIZE-Number(neighbor.y):0;
-      const lowerGround=neighbor?this.sampleRenderedHeight(neighbor,byKey,ox,oz):Number(point.height);
-      return{
-        t:Number(point.t),
-        approach:{x:Number(a.x),z:Number(a.z),height:Number(a.height)},
-        lip:{x:Number(point.x),z:Number(point.z),height:Number(point.height)},
-        foot:{x:Number(point.x),z:Number(point.z),height:Number(lowerGround)},
-        landing:l?{x:Number(l.x),z:Number(l.z),height:Number(l.height)}:null
-      };
-    });
-  }
+  // Deliberately no inferred cliffSpillProfile here. The exact visible wall
+  // geometry is registered by TerrainRenderer via registerRenderedCliffGeometry().
 
   sampleHeightFromRing(centerHeight,ring,ox,oz){
     const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
@@ -658,8 +661,8 @@ export class VisualSurfaceResolver{
       sharedBorderMaterialWeights:true,
       submergedBedIsolation:true,
       gameplayGridSubdivision:false,
-      sharedCliffEdgeProfile:true,
-      sharedCliffSpillProfile:true
+      renderedCliffGeometryRegistry:true,
+      waterConsumesExactCliffVertices:true
     };
   }
 }

@@ -667,6 +667,7 @@ export class TerrainRenderer{
   }
 
   buildCliffs(tiles,byKey){
+    this.surfaceResolver.clearRenderedCliffGeometry();
     this.cliffColorBindings=[];
     this.cliffColors=null;
     this.cliffWaterData=null;
@@ -702,30 +703,32 @@ export class TerrainRenderer{
         out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
         this.cliffColorBindings.push(out.binding);
 
+        // Build the exact rows once. These are the coordinates actually submitted
+        // to the cliff mesh and therefore the only valid visual contract for water.
+        const wallLip=[],wallFoot=[];
+        for(let i=0;i<rough.length;i++){
+          const point=rough[i],topY=topEdge[i].y;
+          const bottomY=Math.min(
+            neighbor
+              ?this.surfaceResolver.sampleRenderedHeight(
+                neighbor,byKey,
+                point.x/TILE_SIZE-Number(neighbor.x),
+                point.z/TILE_SIZE-Number(neighbor.y)
+              )*EH
+              :lower*EH,
+            topY
+          );
+          const t=i/Math.max(1,rough.length-1);
+          wallLip.push({x:point.x,y:topY,z:point.z,t});
+          wallFoot.push({x:point.x,y:bottomY,z:point.z,t});
+        }
+        this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
+          lip:wallLip,foot:wallFoot,outward:{x:dir.dx,z:dir.dy},drop
+        });
+
         for(let i=0;i<rough.length-1;i++){
-          const a=rough[i],b=rough[i+1];
-          const aTop=topEdge[i].y;
-          const bTop=topEdge[i+1].y;
-          const aBot=Math.min(
-            neighbor
-              ?this.surfaceResolver.sampleRenderedHeight(
-                neighbor,byKey,
-                a.x/TILE_SIZE-Number(neighbor.x),
-                a.z/TILE_SIZE-Number(neighbor.y)
-              )*EH
-              :lower*EH,
-            aTop
-          );
-          const bBot=Math.min(
-            neighbor
-              ?this.surfaceResolver.sampleRenderedHeight(
-                neighbor,byKey,
-                b.x/TILE_SIZE-Number(neighbor.x),
-                b.z/TILE_SIZE-Number(neighbor.y)
-              )*EH
-              :lower*EH,
-            bTop
-          );
+          const a=wallLip[i],b=wallLip[i+1];
+          const aTop=a.y,bTop=b.y,aBot=wallFoot[i].y,bBot=wallFoot[i+1].y;
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
