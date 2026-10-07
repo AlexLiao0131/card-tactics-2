@@ -382,7 +382,7 @@ export class MapObjectRenderer{
 
   place(entry,object,tile,byKey){
     const profile=this.groundProfile(object,tile,byKey),type=canonicalType(object);
-    const floating=object.floatOnWater===true&&Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
+    const floating=type!=="SPRING"&&object.floatOnWater===true&&Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
     const model=entry.model,seed=hash01(`${object.id}:pose`);
     entry.node.position.set(Number(object.x||0)*TILE_SIZE,floating?objectY(tile,object):profile.height,Number(object.y||0)*TILE_SIZE);
     model.position.set(0,0,0);model.rotation.set(floating?0:profile.tiltX,seed*Math.PI*2,floating?0:profile.tiltZ);
@@ -428,6 +428,6 @@ export class MapObjectRenderer{
 
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
-    return{total:this.nodes.size,byType,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false};
+    return{total:this.nodes.size,byType,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
   }
 }

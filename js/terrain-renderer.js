@@ -620,38 +620,17 @@ export class TerrainRenderer{
   }
 
   cliffEdgePoints(tile,dir){
-    const cx=Number(tile.x)*TILE_SIZE;
-    const cz=Number(tile.y)*TILE_SIZE;
-    const h=TILE_SIZE*.5;
-    if(dir.id==="N")return[[cx-h,cz-h],[cx+h,cz-h]];
-    if(dir.id==="E")return[[cx+h,cz-h],[cx+h,cz+h]];
-    if(dir.id==="S")return[[cx+h,cz+h],[cx-h,cz+h]];
-    return[[cx-h,cz+h],[cx-h,cz-h]];
+    return this.surfaceResolver.cliffEdgePoints(tile,dir).map(point=>[point.x,point.z]);
   }
 
   cliffSurfaceEdgeSamples(tile,dir,byKey){
-    const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
-    if(dir.id==="N")return patch[0].map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    if(dir.id==="E")return patch.map(row=>row[3]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    if(dir.id==="S")return [...patch[3]].reverse().map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
-    return [...patch].reverse().map(row=>row[0]).map(sample=>({x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT}));
+    return this.surfaceResolver.cliffSurfaceEdgeSamples(tile,dir,byKey).map(sample=>({
+      x:sample.x,z:sample.z,y:sample.height*ELEVATION_HEIGHT
+    }));
   }
 
-  cliffRoughPolyline(tile,dir,segments=CLIFF_EDGE_SEGMENTS){
-    const [[x1,z1],[x2,z2]]=this.cliffEdgePoints(tile,dir);
-    const points=[];
-    const nx=Number(dir.dx||0),nz=Number(dir.dy||0);
-    const edgeKey=`${Math.min(x1,x2).toFixed(3)},${Math.min(z1,z2).toFixed(3)}:${Math.max(x1,x2).toFixed(3)},${Math.max(z1,z2).toFixed(3)}`;
-    for(let i=0;i<=segments;i++){
-      const t=i/segments;
-      const x=x1+(x2-x1)*t,z=z1+(z2-z1)*t;
-      if(i===0||i===segments){points.push({x,z,t});continue;}
-      const envelope=Math.sin(Math.PI*t);
-      const irregular=.28+.72*hash01(`cliff:${edgeKey}:${i}`);
-      const offset=TILE_SIZE*CLIFF_RUGGEDNESS*envelope*irregular;
-      points.push({x:x+nx*offset,z:z+nz*offset,t});
-    }
-    return points;
+  cliffRoughPolyline(tile,dir){
+    return this.surfaceResolver.cliffRoughPolyline(tile,dir);
   }
 
 
@@ -886,6 +865,7 @@ export class TerrainRenderer{
       cliffTextureWorldSize:TILE_SIZE*1.5,
       reliefLighting:true,
       ruggedNaturalCliffs:true,
+      sharedCliffEdgeProfile:true,
       cliffSurfaceEdgeMatched:true,
       surfaceOwnsRuggedCliffRim:true,
       cliffApronOverlay:false,

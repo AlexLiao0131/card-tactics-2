@@ -13,6 +13,8 @@ const FOREST_SOIL=Object.freeze([.24,.31,.20]);
 const GRAVEL=Object.freeze([.43,.42,.37]);
 const WET_ROCK=Object.freeze([.24,.30,.29]);
 const PATCH_OFFSETS=Object.freeze([-.5,-1/6,1/6,.5]);
+const CLIFF_EDGE_SEGMENTS=3;
+const CLIFF_RUGGEDNESS=.13;
 
 export const VISUAL_TERRAIN_COLORS=Object.freeze({
   PLAIN:[.39,.55,.28],
@@ -43,6 +45,7 @@ const waterDepthOf=tile=>Math.max(0,Number(tile?.waterDepth||0));
 const clamp01=value=>Math.max(0,Math.min(1,Number(value||0)));
 const smooth01=value=>{const t=clamp01(value);return t*t*(3-2*t);};
 const average=values=>values.reduce((sum,value)=>sum+Number(value||0),0)/Math.max(1,values.length);
+const hash01=value=>{const text=String(value||"");let h=2166136261;for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}return(h>>>0)/4294967295;};
 const mixColor=(a,b,t)=>{
   const q=clamp01(t);
   return[
@@ -249,6 +252,65 @@ export class VisualSurfaceResolver{
       {ox:-.5,oz:.5,...this.cornerSample(tile,byKey,-1,1)},
       {ox:-.5,oz:0,...this.edgeSample(tile,this.tileAt(byKey,tile.x-1,tile.y))}
     ];
+  }
+
+  cliffDirectionId(dir){
+    if(dir?.id)return String(dir.id).toUpperCase();
+    const dx=Math.sign(Number(dir?.dx||0)),dy=Math.sign(Number(dir?.dy||0));
+    if(dx===0&&dy===-1)return"N";
+    if(dx===1&&dy===0)return"E";
+    if(dx===0&&dy===1)return"S";
+    if(dx===-1&&dy===0)return"W";
+    return null;
+  }
+
+  cliffEdgePoints(tile,dir){
+    const id=this.cliffDirectionId(dir);
+    if(!tile||!id)return[];
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE,h=TILE_SIZE*.5;
+    if(id==="N")return[{x:cx-h,z:cz-h,t:0},{x:cx+h,z:cz-h,t:1}];
+    if(id==="E")return[{x:cx+h,z:cz-h,t:0},{x:cx+h,z:cz+h,t:1}];
+    if(id==="S")return[{x:cx+h,z:cz+h,t:0},{x:cx-h,z:cz+h,t:1}];
+    return[{x:cx-h,z:cz+h,t:0},{x:cx-h,z:cz-h,t:1}];
+  }
+
+  cliffSurfaceEdgeSamples(tile,dir,byKey){
+    const id=this.cliffDirectionId(dir);
+    if(!tile||!id)return[];
+    const patch=this.resolveTile(tile,byKey).patchGrid;
+    let samples=[];
+    if(id==="N")samples=patch[0];
+    else if(id==="E")samples=patch.map(row=>row[3]);
+    else if(id==="S")samples=[...patch[3]].reverse();
+    else samples=[...patch].reverse().map(row=>row[0]);
+    return samples.map((sample,index)=>({x:Number(sample.x),z:Number(sample.z),height:Number(sample.height),t:index/Math.max(1,samples.length-1)}));
+  }
+
+  cliffRoughPolyline(tile,dir,{segments=CLIFF_EDGE_SEGMENTS,ruggedness=CLIFF_RUGGEDNESS}={}){
+    const id=this.cliffDirectionId(dir),edge=this.cliffEdgePoints(tile,dir);
+    if(!id||edge.length!==2)return[];
+    const [{x:x1,z:z1},{x:x2,z:z2}]=edge,points=[];
+    const dx=id==="E"?1:id==="W"?-1:0,dz=id==="S"?1:id==="N"?-1:0;
+    const edgeKey=`${Math.min(x1,x2).toFixed(3)},${Math.min(z1,z2).toFixed(3)}:${Math.max(x1,x2).toFixed(3)},${Math.max(z1,z2).toFixed(3)}`;
+    const count=Math.max(1,Math.floor(Number(segments||CLIFF_EDGE_SEGMENTS)));
+    for(let i=0;i<=count;i++){
+      const t=i/count,x=x1+(x2-x1)*t,z=z1+(z2-z1)*t;
+      if(i===0||i===count){points.push({x,z,t});continue;}
+      const envelope=Math.sin(Math.PI*t),irregular=.28+.72*hash01(`cliff:${edgeKey}:${i}`);
+      const offset=TILE_SIZE*Math.max(0,Number(ruggedness||0))*envelope*irregular;
+      points.push({x:x+dx*offset,z:z+dz*offset,t});
+    }
+    return points;
+  }
+
+  cliffEdgeProfile(tile,dir,byKey,options={}){
+    const rough=this.cliffRoughPolyline(tile,dir,options),surface=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
+    if(!rough.length||!surface.length)return[];
+    const sampleHeight=t=>{
+      const scaled=Math.max(0,Math.min(1,Number(t||0)))*(surface.length-1),i=Math.min(surface.length-2,Math.floor(scaled)),q=scaled-i;
+      return Number(surface[i].height)+(Number(surface[i+1].height)-Number(surface[i].height))*q;
+    };
+    return rough.map(point=>({...point,height:sampleHeight(point.t)}));
   }
 
   sampleHeightFromRing(centerHeight,ring,ox,oz){
@@ -570,7 +632,8 @@ export class VisualSurfaceResolver{
       centreToCentreSurfaceBlend:true,
       sharedBorderMaterialWeights:true,
       submergedBedIsolation:true,
-      gameplayGridSubdivision:false
+      gameplayGridSubdivision:false,
+      sharedCliffEdgeProfile:true
     };
   }
 }

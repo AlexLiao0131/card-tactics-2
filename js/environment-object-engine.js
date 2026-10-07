@@ -59,7 +59,7 @@ export const EnvironmentObjectEngine=(()=>{
       name:"泉眼",environment:"WATER",destructible:true,maxDurability:72,blocksMovement:false,
       collisionHeight:.36,hardness:2.2,collisionResponse:"BREAK",impactMultiplier:.8,
       flammable:false,burnDamage:0,mass:3.2,rootStrength:0,erosionResistance:.18,
-      flowResistance:0,flowBreakThreshold:99,carryThreshold:99,floatOnWater:true,
+      flowResistance:0,flowBreakThreshold:99,carryThreshold:99,floatOnWater:false,
       windBreakThreshold:99,windUprootThreshold:99,windCarryThreshold:99
     })
   });
@@ -83,6 +83,10 @@ export const EnvironmentObjectEngine=(()=>{
     object.canonicalType=canonical;
     object.environmentObject=true;
     for(const[k,v]of Object.entries(base))if(object[k]==null)object[k]=v;
+    // A spring is a fixed geological source. Generated map data from older rounds
+    // may still carry floatOnWater:true; normalize that stale presentation flag so
+    // the source stays anchored to the terrain that creates it.
+    if(canonical===TYPE.SPRING)object.floatOnWater=false;
     if(object.destructible&&object.durability==null)object.durability=Number(object.maxDurability||1);
     if(object.maxDurability==null&&object.durability!=null)object.maxDurability=Number(object.durability||1);
     return object;

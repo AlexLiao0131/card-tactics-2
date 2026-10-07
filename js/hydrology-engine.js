@@ -810,6 +810,60 @@ export const HydrologyEngine=(()=>{
     return delta;
   }
 
+  function authoredCascade(from,to){
+    return !!from&&!!to&&
+      Number(from.hydrologyCascadeToX)===Number(to.x)&&
+      Number(from.hydrologyCascadeToY)===Number(to.y)&&
+      Number(from.hydrologyCascadeDrop||0)>EPSILON;
+  }
+
+  // Canonical per-edge water-flow query used by presentation. Hydrology remains the
+  // authority: renderers do not invent a second waterfall topology. An authored
+  // cascade remains valid, while newly flooded cliff edges (for example a spring
+  // on an isolated pillar) are derived from the same live water/elevation state
+  // that pairEquilibrium uses. One source tile can therefore spill over several
+  // lower sides without adding special-case renderer coordinates.
+  function edgeFlowState(a,b,{minCascadeDrop=.18,minCliffDrop=1.0001}={}){
+    if(!a||!b)return null;
+    const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
+    if(Math.abs(dx)+Math.abs(dy)!==1||!canHoldWater(a)||!canHoldWater(b))return null;
+
+    const aDepth=waterDepth(a),bDepth=waterDepth(b);
+    if(aDepth<=EPSILON&&bDepth<=EPSILON)return{flowing:false,cascade:false,a,b};
+    const aSurface=aDepth>EPSILON?Number(waterSurfaceZ(a)):elevation(a);
+    const bSurface=bDepth>EPSILON?Number(waterSurfaceZ(b)):elevation(b);
+    const aAuthored=authoredCascade(a,b),bAuthored=authoredCascade(b,a);
+
+    let from=null,to=null,authored=false;
+    if(aAuthored){from=a;to=b;authored=true;}
+    else if(bAuthored){from=b;to=a;authored=true;}
+    else if(aSurface>bSurface+FLOW_EPSILON){from=a;to=b;}
+    else if(bSurface>aSurface+FLOW_EPSILON){from=b;to=a;}
+    else return{flowing:false,cascade:false,a,b,surfaceDrop:0,bedDrop:0,authored:false};
+
+    const fromDepth=waterDepth(from),toDepth=waterDepth(to);
+    const fromSurface=fromDepth>EPSILON?Number(waterSurfaceZ(from)):elevation(from);
+    const toSurface=toDepth>EPSILON?Number(waterSurfaceZ(to)):elevation(to);
+    const surfaceDrop=Math.max(0,fromSurface-toSurface);
+    const bedDrop=elevation(from)-elevation(to);
+    const naturalFrom=Number(from.hydrologyChannelBaseElevation??elevation(from));
+    const naturalTo=Number(to.hydrologyChannelBaseElevation??elevation(to));
+    const naturalDrop=naturalFrom-naturalTo;
+    const cliffDrop=Math.max(bedDrop,naturalDrop);
+    const cascade=fromDepth>EPSILON&&toDepth>EPSILON&&
+      surfaceDrop>=Math.max(0,Number(minCascadeDrop||0))&&
+      (authored||cliffDrop>Math.max(0,Number(minCliffDrop||0)));
+    const dirX=Math.sign(Number(to.x)-Number(from.x)),dirY=Math.sign(Number(to.y)-Number(from.y));
+    const routed=Number(from.flowX||0)===dirX&&Number(from.flowY||0)===dirY;
+    const rate=Math.max(0,routed?Number(from.hydrologyOutflowRate??from.discharge??0):surfaceDrop);
+    return{
+      flowing:surfaceDrop>FLOW_EPSILON,
+      cascade,authored,from,to,dirX,dirY,
+      surfaceDrop:clean(surfaceDrop),bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),
+      rate:clean(rate),reason:authored?"AUTHORED_CASCADE":"LIVE_TERRAIN_HEAD"
+    };
+  }
+
   function absorbStandingWater(map,events=[],source="INFILTRATION",fed=sourceFedWaterKeys(map)){
     let absorbed=0;
     for(const tile of map?.tiles||[]){
@@ -1148,7 +1202,7 @@ export const HydrologyEngine=(()=>{
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
