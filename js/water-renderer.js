@@ -332,10 +332,17 @@ export class WaterRenderer{
     const material=new BABYLON.StandardMaterial("surface-runoff-water",this.scene);
     material.diffuseTexture=texture;
     material.diffuseColor=new BABYLON.Color3(.39,.70,.76);
-    material.emissiveColor=new BABYLON.Color3(.018,.045,.050);
-    material.alpha=.52;
-    material.specularColor=new BABYLON.Color3(.24,.38,.42);
-    material.specularPower=24;
+    // DynamicTexture alpha must actually participate in blending. Without this,
+    // Babylon treats the whole runoff quad as one semi-opaque rectangle; under the
+    // battlefield lighting that rectangle is the dark/black rail seen in the field.
+    material.useAlphaFromDiffuseTexture=true;
+    material.emissiveColor=new BABYLON.Color3(.055,.12,.14);
+    material.alpha=.58;
+    material.specularColor=new BABYLON.Color3(.18,.30,.34);
+    material.specularPower=20;
+    // A paper-thin water film should not turn into a black shadow patch when the
+    // directional light is grazing the terrain. Terrain geometry still supplies Y.
+    material.disableLighting=true;
     material.backFaceCulling=false;material.needDepthPrePass=false;
     if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
     return{material,texture};
@@ -944,17 +951,20 @@ export class WaterRenderer{
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        // Transport water exists independently of storage depth. Any measured /
-        // persistent non-cascade Q may wet exposed terrain, including flat or very
-        // gentle reaches where sheetFlow's positive-bed-drop test is intentionally
-        // false. Pooled reaches are still owned by the standing-water surface.
+        // Transport and storage are separate, but runoff geometry is only for
+        // exposed terrain. Never lay a transport strip over *any* stored water --
+        // even a shallow (< render threshold) film belongs to the canonical water
+        // surface/shoreline representation rather than a second overlay mesh.
         if(!flow?.flowing||flow?.cascade||!flow.from||!flow.to)continue;
-        const fromPooled=this.isRenderableWater(flow.from),toPooled=this.isRenderableWater(flow.to);
-        // The standing-water surface already owns a river/lake reach. Drawing a
-        // center-to-center runoff ribbon on top of it is the bright straight line
-        // seen in v5. Runoff exists visually only where transport crosses exposed
-        // sloped terrain; pooled water remains one continuous surface mesh.
+        const fromPooled=hasAnyWater(flow.from),toPooled=hasAnyWater(flow.to);
         if(fromPooled&&toPooled)continue;
+        const sourceEdge=flow.from?.hydrologySource===true||flow.to?.hydrologySource===true;
+        const downhillTransport=Number(flow.surfaceDrop||0)>EPSILON*4;
+        // Flat/equilibrium Q is a discharge fact, not a licence to draw a rail. The
+        // spring footprint owns the source itself; exposed runoff starts once the
+        // transport has a real downhill surface or Hydrology explicitly marks it as
+        // sheet flow. This keeps sustained Q from painting bars across flat lakes.
+        if(!flow.sheetFlow&&!sourceEdge&&!downhillTransport)continue;
         const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
         out.push({
           id,from:flow.from,to:flow.to,fromPooled,toPooled,
@@ -969,27 +979,32 @@ export class WaterRenderer{
 
   buildRunoff(edge){
     const from=edge.from,to=edge.to,dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),len=Math.hypot(dx,dz)||1,px=-dz/len,pz=dx/len;
-    // Center-to-center geometry is clipped at the shared tile edge whenever one end
-    // is already pooled. This creates a real hand-off: pool -> slope film -> pool,
-    // instead of a decorative stripe continuing through the water body.
+    // Storage owns the pooled half of an edge. The transport mesh begins/ends at
+    // the shared boundary and therefore never crosses a lake/river surface.
     const tStart=edge.fromPooled?.5:0,tEnd=edge.toPooled?.5:1;if(tEnd-tStart<=EPSILON)return null;
-    const baseHalfWidth=this.flowCorridorHalfWidth(edge),steps=Math.max(4,Math.ceil((tEnd-tStart)*10));
-    const positions=[],indices=[],normals=[],uvs=[],phase=hash01(edge.id)*Math.PI*2;
+    const baseHalfWidth=this.flowCorridorHalfWidth(edge),steps=Math.max(6,Math.ceil((tEnd-tStart)*14));
+    const positions=[],indices=[],normals=[],uvs=[],colors=[],phase=hash01(edge.id)*Math.PI*2;
+    // Five samples across the film give us transparent feathering at both banks.
+    // The old two-vertex cross section made every edge a hard rectangular rail.
+    const lateral=[-1,-.56,0,.56,1],alpha=[0,.40,.68,.40,0],row=lateral.length;
     for(let i=0;i<=steps;i++){
-      const local=i/steps,t=tStart+(tEnd-tStart)*local,envelope=Math.sin(Math.PI*local),meander=Math.sin(local*Math.PI*2+phase)*baseHalfWidth*.10*envelope;
-      const width=baseHalfWidth*(.90+.10*Math.sin(local*Math.PI+phase*.35));
+      const local=i/steps,t=tStart+(tEnd-tStart)*local,envelope=Math.sin(Math.PI*local);
+      const meander=(Math.sin(local*Math.PI*2+phase)*.16+Math.sin(local*Math.PI*4+phase*.37)*.05)*baseHalfWidth*envelope;
+      const width=baseHalfWidth*(.82+.14*Math.sin(local*Math.PI+phase*.35)+.08*Math.sin(local*Math.PI*3+phase));
       const cx=(Number(from.x)+(Number(to.x)-Number(from.x))*t)*TILE_SIZE+px*meander,cz=(Number(from.y)+(Number(to.y)-Number(from.y))*t)*TILE_SIZE+pz*meander;
       const tile=t<.5?from:to;
-      for(const side of[-1,1]){
-        const x=cx+px*width*side,z=cz+pz*width*side,y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.48;
-        const point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(side<0?0:1,local*2.0);normals.push(0,0,0);
+      for(let j=0;j<row;j++){
+        const side=lateral[j],x=cx+px*width*side,z=cz+pz*width*side,y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.42;
+        const point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push((side+1)*.5,local*2.0);normals.push(0,0,0);
+        colors.push(1,1,1,alpha[j]);
       }
     }
-    for(let i=0;i<steps;i++){const a=i*2,b=a+1,c=a+2,d=a+3;indices.push(a,b,d,a,d,c);}
+    for(let i=0;i<steps;i++)for(let j=0;j<row-1;j++){const a=i*row+j,b=a+1,c=a+row,d=c+1;indices.push(a,b,d,a,d,c);}
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
-    const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
-    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true};
+    const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
+    Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false};
     return mesh;
   }
 
