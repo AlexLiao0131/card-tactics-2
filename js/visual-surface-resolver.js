@@ -313,6 +313,31 @@ export class VisualSurfaceResolver{
     return rough.map(point=>({...point,height:sampleHeight(point.t)}));
   }
 
+  cliffSpillProfile(tile,neighbor,dir,byKey,options={}){
+    const lip=this.cliffEdgeProfile(tile,dir,byKey,options);
+    const approach=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
+    if(!lip.length||!approach.length)return[];
+    const id=this.cliffDirectionId(dir),opposite=id==="N"?{id:"S",dx:0,dy:1}:id==="S"?{id:"N",dx:0,dy:-1}:id==="E"?{id:"W",dx:-1,dy:0}:{id:"E",dx:1,dy:0};
+    const lower=neighbor?[...this.cliffSurfaceEdgeSamples(neighbor,opposite,byKey)].reverse():[];
+    const sample=(series,t)=>{
+      if(!series?.length)return null;if(series.length===1)return series[0];
+      const scaled=Math.max(0,Math.min(1,Number(t||0)))*(series.length-1),i=Math.min(series.length-2,Math.floor(scaled)),q=scaled-i,a=series[i],b=series[i+1];
+      return{x:Number(a.x)+(Number(b.x)-Number(a.x))*q,z:Number(a.z)+(Number(b.z)-Number(a.z))*q,height:Number(a.height)+(Number(b.height)-Number(a.height))*q,t:Number(t||0)};
+    };
+    return lip.map(point=>{
+      const a=sample(approach,point.t)||point,l=sample(lower,point.t);
+      const ox=neighbor?Number(point.x)/TILE_SIZE-Number(neighbor.x):0,oz=neighbor?Number(point.z)/TILE_SIZE-Number(neighbor.y):0;
+      const lowerGround=neighbor?this.sampleRenderedHeight(neighbor,byKey,ox,oz):Number(point.height);
+      return{
+        t:Number(point.t),
+        approach:{x:Number(a.x),z:Number(a.z),height:Number(a.height)},
+        lip:{x:Number(point.x),z:Number(point.z),height:Number(point.height)},
+        foot:{x:Number(point.x),z:Number(point.z),height:Number(lowerGround)},
+        landing:l?{x:Number(l.x),z:Number(l.z),height:Number(l.height)}:null
+      };
+    });
+  }
+
   sampleHeightFromRing(centerHeight,ring,ox,oz){
     const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
     const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
@@ -633,7 +658,8 @@ export class VisualSurfaceResolver{
       sharedBorderMaterialWeights:true,
       submergedBedIsolation:true,
       gameplayGridSubdivision:false,
-      sharedCliffEdgeProfile:true
+      sharedCliffEdgeProfile:true,
+      sharedCliffSpillProfile:true
     };
   }
 }

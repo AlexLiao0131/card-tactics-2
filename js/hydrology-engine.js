@@ -4,13 +4,15 @@ export const HydrologyEngine=(()=>{
   const WATERLINE=0;
   const RAIN_FILL_PER_EVENT=.06,HEAVY_RAIN_FILL_PER_EVENT=.12,STORM_RAIN_FILL_PER_EVENT=.16,NATURAL_WATER_DEPTH=1;
   const SOIL_SATURATION_CAPACITY=.45,SAND_SOIL_CAPACITY=.22,DRYING_PER_CLEAR_TURN=.10,SAND_DRYING_PER_CLEAR_TURN=.16,EVAPORATION_PER_CLEAR_TURN=.06;
-  const EPSILON=.0001,FLOW_EPSILON=.0005,MAX_FLOW_ITERATIONS=256,MAX_DRAIN_CYCLES=64;
+  const EPSILON=.0001,FLOW_EPSILON=.0005,MAX_FLOW_ITERATIONS=256,MAX_DRAIN_CYCLES=64,FLOW_RELAXATION=.5;
   // discharge is a river flow rate. This scale converts one discharge unit
   // into tile-volume per environment turn for budget/diagnostic accounting.
   const DISCHARGE_VOLUME_PER_TURN=.06,DEFAULT_SOURCE_DISCHARGE=1,MAX_BASE_FLOW_SPEED=3.2;
   const INITIAL_SOURCE_SETTLE_MAX_TURNS=64,INITIAL_SOURCE_SETTLE_STABLE_TURNS=3,INITIAL_SOURCE_SETTLE_STEP_TURNS=4;
   const MIN_CHANNEL_CAPACITY_FACTOR=1.15,MAX_CHANNEL_CAPACITY_FACTOR=3.5;
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],FLOW_DIRS=[[1,0],[0,1]],key=(x,y)=>`${x},${y}`;
+  const edgeDirectionId=(dx,dy)=>dx===1&&dy===0?"E":dx===-1&&dy===0?"W":dx===0&&dy===1?"S":dx===0&&dy===-1?"N":null;
+  const compareTileOrder=(a,b)=>Number(a?.y||0)-Number(b?.y||0)||Number(a?.x||0)-Number(b?.x||0);
 
   const elevation=t=>Number(t?.elevation||0);
   const waterDepth=t=>Math.max(0,Number(t?.waterDepth||0));
@@ -645,6 +647,7 @@ export const HydrologyEngine=(()=>{
     const ref=(map?.generatedRiverProfile?.sources||[]).find(source=>Number(source.x)===Number(x)&&Number(source.y)===Number(y));
     if(ref)ref.active=false;
     reconcileRiverDischarge(map,{events,applyOverflow:false,source:reason});
+    clearEdgeFlows(map);
     events.push({type:"HYDROLOGY_SOURCE_DISABLED",x:Number(x),y:Number(y),reason,objectId});
     return true;
   }
@@ -788,10 +791,9 @@ export const HydrologyEngine=(()=>{
     sync(tile,events);return next-before;
   }
 
-  function pairEquilibrium(a,b,minA=0,minB=0){
-    if(!canHoldWater(a)||!canHoldWater(b))return 0;
-    const va=waterDepth(a),vb=waterDepth(b),total=va+vb;if(total<=EPSILON)return 0;
-    const sediment=turbidity(a)*va+turbidity(b)*vb;
+  function pairTargetDepths(a,b,va=waterDepth(a),vb=waterDepth(b),minA=0,minB=0){
+    if(!canHoldWater(a)||!canHoldWater(b))return{nextA:va,nextB:vb};
+    const total=va+vb;if(total<=EPSILON)return{nextA:va,nextB:vb};
     minA=Math.min(va,Math.max(0,Number(minA||0)));minB=Math.min(vb,Math.max(0,Number(minB||0)));
     const ga=elevation(a),gb=elevation(b);let nextA=0,nextB=0;
     if(ga<=gb){const rise=gb-ga;if(total<=rise){nextA=total;nextB=0;}else{const level=(total+ga+gb)/2;nextA=level-ga;nextB=level-gb;}}
@@ -803,11 +805,140 @@ export const HydrologyEngine=(()=>{
       if(reducibleA>=reducibleB){const take=Math.min(over,reducibleA);nextA-=take;over-=take;if(over>EPSILON)nextB-=Math.min(over,reducibleB);}
       else{const take=Math.min(over,reducibleB);nextB-=take;over-=take;if(over>EPSILON)nextA-=Math.min(over,reducibleA);}
     }
+    return{nextA:Math.max(0,nextA),nextB:Math.max(0,nextB)};
+  }
+
+  function pairEquilibrium(a,b,minA=0,minB=0){
+    if(!canHoldWater(a)||!canHoldWater(b))return 0;
+    const va=waterDepth(a),vb=waterDepth(b),total=va+vb;if(total<=EPSILON)return 0;
+    const sediment=turbidity(a)*va+turbidity(b)*vb;
+    const{nextA,nextB}=pairTargetDepths(a,b,va,vb,minA,minB);
     const delta=Math.max(Math.abs(nextA-va),Math.abs(nextB-vb));a.waterDepth=nextA;b.waterDepth=nextB;
     const concentration=total>EPSILON?clamp(sediment/total,0,1):0;
     if(nextA>EPSILON)a.waterTurbidity=clean(concentration);else a.waterTurbidity=0;
     if(nextB>EPSILON)b.waterTurbidity=clean(concentration);else b.waterTurbidity=0;
     return delta;
+  }
+
+  function canonicalEdge(from,to){
+    const forward=compareTileOrder(from,to)<=0,first=forward?from:to,second=forward?to:from;
+    return{key:`${key(first.x,first.y)}|${key(second.x,second.y)}`,first,second,sign:forward?1:-1};
+  }
+
+  function accumulateEdgeTransfer(edgeNet,from,to,amount,fromSurface,toSurface){
+    const volume=Math.max(0,Number(amount||0));if(volume<=EPSILON||!from||!to)return;
+    const edge=canonicalEdge(from,to);
+    let entry=edgeNet.get(edge.key);
+    if(!entry){entry={first:edge.first,second:edge.second,net:0,gross:0,maxHead:0,maxFromSurface:-Infinity,minToSurface:Infinity};edgeNet.set(edge.key,entry);}
+    entry.net+=edge.sign*volume;entry.gross+=volume;
+    const head=Math.max(0,Number(fromSurface)-Number(toSurface));
+    entry.maxHead=Math.max(entry.maxHead,head);entry.maxFromSurface=Math.max(entry.maxFromSurface,Number(fromSurface));entry.minToSurface=Math.min(entry.minToSurface,Number(toSurface));
+  }
+
+  // One synchronous/Jacobi-style flow pass. Every edge proposes against the same
+  // snapshot, then all proposals are applied together. This removes the old scan
+  // order bias where a protected spring could dump its entire new volume through
+  // the first neighbour visited and leave equally-low sides dry.
+  function flowIteration(map,by,fed,edgeNet){
+    const snapshots=new Map();
+    for(const tile of map.tiles)snapshots.set(key(tile.x,tile.y),{depth:waterDepth(tile),turbidity:turbidity(tile)});
+    const proposals=[],outgoing=new Map();
+    for(const tile of map.tiles){
+      if(!canHoldWater(tile))continue;
+      const aSnap=snapshots.get(key(tile.x,tile.y));
+      for(const[dx,dy]of FLOW_DIRS){
+        const other=by.get(key(tile.x+dx,tile.y+dy));if(!other||!canHoldWater(other))continue;
+        const bSnap=snapshots.get(key(other.x,other.y));
+        const minA=fed.has(key(tile.x,tile.y))?baselineDepth(tile):0,minB=fed.has(key(other.x,other.y))?baselineDepth(other):0;
+        const target=pairTargetDepths(tile,other,aSnap.depth,bSnap.depth,minA,minB);
+        const signed=(target.nextB-bSnap.depth)*FLOW_RELAXATION;
+        if(Math.abs(signed)<=EPSILON)continue;
+        const from=signed>0?tile:other,to=signed>0?other:tile,amount=Math.abs(signed);
+        const fromSnap=signed>0?aSnap:bSnap,toSnap=signed>0?bSnap:aSnap;
+        const fromSurface=elevation(from)+fromSnap.depth,toSurface=elevation(to)+(toSnap.depth>EPSILON?toSnap.depth:0);
+        proposals.push({from,to,amount,fromSurface,toSurface});
+        const fk=key(from.x,from.y);outgoing.set(fk,Number(outgoing.get(fk)||0)+amount);
+      }
+    }
+    if(!proposals.length)return 0;
+
+    const depthDelta=new Map(),sedimentDelta=new Map();
+    let maxDelta=0;
+    for(const proposal of proposals){
+      const fk=key(proposal.from.x,proposal.from.y),tk=key(proposal.to.x,proposal.to.y);
+      const snap=snapshots.get(fk),floor=fed.has(fk)?baselineDepth(proposal.from):0,available=Math.max(0,snap.depth-floor),requested=Math.max(EPSILON,Number(outgoing.get(fk)||0));
+      const scale=Math.min(1,available/requested),amount=proposal.amount*scale;if(amount<=EPSILON)continue;
+      depthDelta.set(fk,Number(depthDelta.get(fk)||0)-amount);depthDelta.set(tk,Number(depthDelta.get(tk)||0)+amount);
+      const sediment=amount*Number(snap.turbidity||0);sedimentDelta.set(fk,Number(sedimentDelta.get(fk)||0)-sediment);sedimentDelta.set(tk,Number(sedimentDelta.get(tk)||0)+sediment);
+      accumulateEdgeTransfer(edgeNet,proposal.from,proposal.to,amount,proposal.fromSurface,proposal.toSurface);
+    }
+
+    for(const tile of map.tiles){
+      const k=key(tile.x,tile.y),snap=snapshots.get(k),delta=Number(depthDelta.get(k)||0);if(Math.abs(delta)<=EPSILON)continue;
+      const floor=fed.has(k)?baselineDepth(tile):0,next=Math.max(floor,snap.depth+delta);
+      const sedimentMass=Math.max(0,snap.depth*snap.turbidity+Number(sedimentDelta.get(k)||0));
+      tile.waterDepth=next;tile.waterTurbidity=next>EPSILON?clean(clamp(sedimentMass/next,0,1)):0;
+      maxDelta=Math.max(maxDelta,Math.abs(next-snap.depth));
+    }
+    return maxDelta;
+  }
+
+  function clearEdgeFlows(map){
+    for(const tile of map?.tiles||[])delete tile.hydrologyEdgeOutflows;
+    if(map)map.hydrologyEdgeFlowSummary={source:null,edges:0,totalVolume:0,totalRate:0};
+  }
+
+  function commitEdgeFlows(map,edgeNet,{source="FLOW",volumeScale=DISCHARGE_VOLUME_PER_TURN}={}){
+    if(!map?.tiles?.length)return[];
+    const previousSourceFlows=[];
+    for(const tile of map.tiles)for(const[dir,record]of Object.entries(tile?.hydrologyEdgeOutflows||{})){
+      if(/SOURCE|SPRING/.test(String(record?.source||"")))previousSourceFlows.push({tile,dir,record:{...record}});
+    }
+    clearEdgeFlows(map);
+    const scale=Math.max(EPSILON,Number(volumeScale||DISCHARGE_VOLUME_PER_TURN)),out=[];
+    for(const entry of edgeNet.values()){
+      const signed=Number(entry.net||0);if(Math.abs(signed)<=EPSILON)continue;
+      const from=signed>0?entry.first:entry.second,to=signed>0?entry.second:entry.first,volume=clean(Math.abs(signed));
+      if(volume<=EPSILON)continue;
+      const dx=Math.sign(Number(to.x)-Number(from.x)),dy=Math.sign(Number(to.y)-Number(from.y)),dir=edgeDirectionId(dx,dy);if(!dir)continue;
+      const fromSurface=waterDepth(from)>EPSILON?elevation(from)+waterDepth(from):Number.isFinite(entry.maxFromSurface)?entry.maxFromSurface:elevation(from);
+      const toSurface=waterDepth(to)>EPSILON?elevation(to)+waterDepth(to):elevation(to);
+      const bedDrop=elevation(from)-elevation(to),naturalFrom=Number(from.hydrologyChannelBaseElevation??elevation(from)),naturalTo=Number(to.hydrologyChannelBaseElevation??elevation(to)),naturalDrop=naturalFrom-naturalTo;
+      const record={
+        toX:Number(to.x),toY:Number(to.y),dirX:dx,dirY:dy,source,volume,rate:clean(volume/scale),
+        surfaceDrop:clean(Math.max(0,entry.maxHead,fromSurface-toSurface)),fromSurface:roundSigned(fromSurface),toSurface:roundSigned(toSurface),
+        bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),cliffDrop:roundSigned(Math.max(bedDrop,naturalDrop)),grossVolume:clean(entry.gross)
+      };
+      (from.hydrologyEdgeOutflows??={})[dir]=record;out.push({fromX:from.x,fromY:from.y,...record});
+    }
+
+    // Authored river cascades remain a topology contract even when their protected
+    // baseline makes the local equalizer report no net volume in this pass. They are
+    // inserted only when no measured edge flow already owns that side.
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    for(const from of map.tiles){
+      const tx=Number(from.hydrologyCascadeToX),ty=Number(from.hydrologyCascadeToY);if(!Number.isFinite(tx)||!Number.isFinite(ty)||waterDepth(from)<=EPSILON)continue;
+      const to=by.get(key(tx,ty));if(!to)continue;const dx=Math.sign(tx-from.x),dy=Math.sign(ty-from.y),dir=edgeDirectionId(dx,dy);if(!dir||(from.hydrologyEdgeOutflows||{})[dir])continue;
+      const fromSurface=elevation(from)+waterDepth(from),toSurface=waterDepth(to)>EPSILON?elevation(to)+waterDepth(to):elevation(to),rate=Math.max(0,Number(from.hydrologyOutflowRate??from.discharge??0));
+      const record={toX:tx,toY:ty,dirX:dx,dirY:dy,source:"AUTHORED_CASCADE",volume:clean(rate*scale),rate:clean(rate),surfaceDrop:clean(Math.max(0,fromSurface-toSurface,Number(from.hydrologyCascadeDrop||0))),fromSurface:roundSigned(fromSurface),toSurface:roundSigned(toSurface),bedDrop:roundSigned(elevation(from)-elevation(to)),naturalDrop:roundSigned(Number(from.hydrologyChannelBaseElevation??elevation(from))-Number(to.hydrologyChannelBaseElevation??elevation(to))),cliffDrop:roundSigned(Math.max(elevation(from)-elevation(to),Number(from.hydrologyCascadeDrop||0))),grossVolume:clean(rate*scale),authored:true};
+      (from.hydrologyEdgeOutflows??={})[dir]=record;out.push({fromX:from.x,fromY:from.y,...record});
+    }
+    // Climate/drying/contact passes may rebalance an already-settled source network
+    // immediately after the real source injection pass. Do not erase its measured
+    // multi-edge flux just because that secondary pass had no new source volume.
+    // The next source pass refreshes it; destroying the source clears it explicitly.
+    if(activeSourceTiles(map).length&&previousSourceFlows.length&&!/SOURCE_DISABLED|SOURCE_RECESSION/.test(String(source||""))){
+      const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+      for(const prior of previousSourceFlows){
+        const from=prior.tile,record=prior.record;if(waterDepth(from)<=EPSILON||(from.hydrologyEdgeOutflows||{})[prior.dir])continue;
+        const to=by.get(key(record.toX,record.toY));if(!to)continue;
+        const refreshed={...record,fromSurface:roundSigned(elevation(from)+waterDepth(from)),toSurface:roundSigned(waterDepth(to)>EPSILON?elevation(to)+waterDepth(to):elevation(to))};
+        refreshed.surfaceDrop=clean(Math.max(Number(record.surfaceDrop||0),Number(refreshed.fromSurface)-Number(refreshed.toSurface)));
+        (from.hydrologyEdgeOutflows??={})[prior.dir]=refreshed;out.push({fromX:from.x,fromY:from.y,...refreshed});
+      }
+    }
+    map.hydrologyEdgeFlowSummary={source,edges:out.length,totalVolume:clean(out.reduce((sum,item)=>sum+Number(item.volume||0),0)),totalRate:clean(out.reduce((sum,item)=>sum+Number(item.rate||0),0))};
+    return out;
   }
 
   function authoredCascade(from,to){
@@ -817,50 +948,52 @@ export const HydrologyEngine=(()=>{
       Number(from.hydrologyCascadeDrop||0)>EPSILON;
   }
 
-  // Canonical per-edge water-flow query used by presentation. Hydrology remains the
-  // authority: renderers do not invent a second waterfall topology. An authored
-  // cascade remains valid, while newly flooded cliff edges (for example a spring
-  // on an isolated pillar) are derived from the same live water/elevation state
-  // that pairEquilibrium uses. One source tile can therefore spill over several
-  // lower sides without adding special-case renderer coordinates.
+  function storedEdgeFlow(from,to){
+    if(!from||!to)return null;
+    const dir=edgeDirectionId(Math.sign(Number(to.x)-Number(from.x)),Math.sign(Number(to.y)-Number(from.y)));
+    const record=dir?from?.hydrologyEdgeOutflows?.[dir]:null;
+    if(!record||Number(record.toX)!==Number(to.x)||Number(record.toY)!==Number(to.y))return null;
+    return record;
+  }
+
+  // Canonical per-edge query. Unlike flowX/flowY, which is only a principal river
+  // direction, hydrologyEdgeOutflows can represent N/E/S/W simultaneously and is
+  // written by the actual volume solver. Presentation consumes this record; it does
+  // not infer waterfalls from coordinates or water levels on its own.
   function edgeFlowState(a,b,{minCascadeDrop=.18,minCliffDrop=1.0001}={}){
     if(!a||!b)return null;
     const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
     if(Math.abs(dx)+Math.abs(dy)!==1||!canHoldWater(a)||!canHoldWater(b))return null;
 
-    const aDepth=waterDepth(a),bDepth=waterDepth(b);
-    if(aDepth<=EPSILON&&bDepth<=EPSILON)return{flowing:false,cascade:false,a,b};
-    const aSurface=aDepth>EPSILON?Number(waterSurfaceZ(a)):elevation(a);
-    const bSurface=bDepth>EPSILON?Number(waterSurfaceZ(b)):elevation(b);
-    const aAuthored=authoredCascade(a,b),bAuthored=authoredCascade(b,a);
-
-    let from=null,to=null,authored=false;
-    if(aAuthored){from=a;to=b;authored=true;}
-    else if(bAuthored){from=b;to=a;authored=true;}
-    else if(aSurface>bSurface+FLOW_EPSILON){from=a;to=b;}
-    else if(bSurface>aSurface+FLOW_EPSILON){from=b;to=a;}
-    else return{flowing:false,cascade:false,a,b,surfaceDrop:0,bedDrop:0,authored:false};
+    let from=null,to=null,record=null,authored=false;
+    const ab=storedEdgeFlow(a,b),ba=storedEdgeFlow(b,a);
+    if(ab&&ba){if(Number(ab.rate||0)>=Number(ba.rate||0)){from=a;to=b;record=ab;}else{from=b;to=a;record=ba;}}
+    else if(ab){from=a;to=b;record=ab;}
+    else if(ba){from=b;to=a;record=ba;}
+    else if(authoredCascade(a,b)){from=a;to=b;authored=true;}
+    else if(authoredCascade(b,a)){from=b;to=a;authored=true;}
+    else return{flowing:false,cascade:false,a,b,authored:false,reason:"NO_EDGE_FLUX"};
 
     const fromDepth=waterDepth(from),toDepth=waterDepth(to);
-    const fromSurface=fromDepth>EPSILON?Number(waterSurfaceZ(from)):elevation(from);
-    const toSurface=toDepth>EPSILON?Number(waterSurfaceZ(to)):elevation(to);
-    const surfaceDrop=Math.max(0,fromSurface-toSurface);
-    const bedDrop=elevation(from)-elevation(to);
+    const fromSurface=Number(record?.fromSurface??(fromDepth>EPSILON?waterSurfaceZ(from):elevation(from)));
+    const toSurface=Number(record?.toSurface??(toDepth>EPSILON?waterSurfaceZ(to):elevation(to)));
+    const surfaceDrop=Math.max(0,Number(record?.surfaceDrop??(fromSurface-toSurface)));
+    const bedDrop=Number(record?.bedDrop??(elevation(from)-elevation(to)));
     const naturalFrom=Number(from.hydrologyChannelBaseElevation??elevation(from));
     const naturalTo=Number(to.hydrologyChannelBaseElevation??elevation(to));
-    const naturalDrop=naturalFrom-naturalTo;
-    const cliffDrop=Math.max(bedDrop,naturalDrop);
-    const cascade=fromDepth>EPSILON&&toDepth>EPSILON&&
+    const naturalDrop=Number(record?.naturalDrop??(naturalFrom-naturalTo));
+    const cliffDrop=Math.max(Number(record?.cliffDrop??0),bedDrop,naturalDrop);
+    const cascade=fromDepth>EPSILON&&
       surfaceDrop>=Math.max(0,Number(minCascadeDrop||0))&&
-      (authored||cliffDrop>Math.max(0,Number(minCliffDrop||0)));
-    const dirX=Math.sign(Number(to.x)-Number(from.x)),dirY=Math.sign(Number(to.y)-Number(from.y));
-    const routed=Number(from.flowX||0)===dirX&&Number(from.flowY||0)===dirY;
-    const rate=Math.max(0,routed?Number(from.hydrologyOutflowRate??from.discharge??0):surfaceDrop);
+      (authored||record?.authored===true||cliffDrop>Math.max(0,Number(minCliffDrop||0)));
     return{
-      flowing:surfaceDrop>FLOW_EPSILON,
-      cascade,authored,from,to,dirX,dirY,
-      surfaceDrop:clean(surfaceDrop),bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),
-      rate:clean(rate),reason:authored?"AUTHORED_CASCADE":"LIVE_TERRAIN_HEAD"
+      flowing:authored||Number(record?.volume||0)>EPSILON||Number(record?.rate||0)>EPSILON,
+      cascade,authored:authored||record?.authored===true,from,to,
+      dirX:Math.sign(Number(to.x)-Number(from.x)),dirY:Math.sign(Number(to.y)-Number(from.y)),
+      surfaceDrop:clean(surfaceDrop),bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),cliffDrop:roundSigned(cliffDrop),
+      volume:clean(record?.volume||0),rate:clean(record?.rate??from.hydrologyOutflowRate??from.discharge??0),
+      fromSurface:roundSigned(fromSurface),toSurface:roundSigned(toSurface),
+      reason:record?"MEASURED_EDGE_FLUX":"AUTHORED_CASCADE"
     };
   }
 
@@ -1064,29 +1197,14 @@ export const HydrologyEngine=(()=>{
     const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const fed=sourceFedWaterKeys(map);
     const outletBudgets=outletDrainBudgets(map,fed,volumeScale);
+    const edgeNet=new Map();
     const initialOutletDrain=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
     const recession=releaseStoredRiverWater(map,events,source,volumeScale);
     let iterations=0,maxDelta=0,totalDrained=clean(initialOutletDrain+recession.reduce((sum,r)=>sum+r.drained,0)),totalAbsorbed=0;
 
     // flow -> infiltration -> capacity-limited outlet drainage -> flow again
     for(;iterations<MAX_FLOW_ITERATIONS;iterations++){
-      maxDelta=0;
-      for(const tile of map.tiles){
-        if(!canHoldWater(tile))continue;
-        for(const[dx,dy]of FLOW_DIRS){
-          const other=by.get(key(tile.x+dx,tile.y+dy));
-          if(!other)continue;
-          maxDelta=Math.max(
-            maxDelta,
-            pairEquilibrium(
-              tile,
-              other,
-              fed.has(key(tile.x,tile.y))?baselineDepth(tile):0,
-              fed.has(key(other.x,other.y))?baselineDepth(other):0
-            )
-          );
-        }
-      }
+      maxDelta=flowIteration(map,by,fed,edgeNet);
 
       const absorbed=absorbStandingWater(map,events,source,fed);
       const drained=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
@@ -1121,6 +1239,8 @@ export const HydrologyEngine=(()=>{
 
       sync(tile,events);
     }
+
+    commitEdgeFlows(map,edgeNet,{source,volumeScale});
 
     if(overbank.length){
       events.push({
@@ -1201,8 +1321,8 @@ export const HydrologyEngine=(()=>{
   return Object.freeze({
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
-    EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
+    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });

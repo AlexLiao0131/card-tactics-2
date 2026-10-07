@@ -592,8 +592,8 @@ export class WaterRenderer{
     let from=null,to=null,target=null;
     if(targetA&&targetA.x===Number(b?.x)&&targetA.y===Number(b?.y)){from=a;to=b;target=targetA;}
     else if(targetB&&targetB.x===Number(a?.x)&&targetB.y===Number(a?.y)){from=b;to=a;target=targetB;}
-    if(!from||!to||!hasAnyWater(from)||!hasAnyWater(to))return null;
-    const top=visualSurface(from),bottom=visualSurface(to),drop=top-bottom;
+    if(!from||!to||!hasAnyWater(from))return null;
+    const top=visualSurface(from),bottom=hasAnyWater(to)?visualSurface(to):Number(to?.elevation||0),drop=top-bottom;
     if(drop<WATERFALL_MIN_DROP)return null;
     return{cascade:true,flowing:true,authored:true,from,to,dirX:Math.sign(to.x-from.x),dirY:Math.sign(to.y-from.y),surfaceDrop:drop,rate:Number(from.discharge||0),reason:"LEGACY_AUTHORED_CASCADE",authoredDrop:target.drop};
   }
@@ -608,7 +608,7 @@ export class WaterRenderer{
   }
 
   isCascadeBoundary(a,b){
-    if(!hasAnyWater(a)||!hasAnyWater(b))return false;
+    if(!a||!b||(!hasAnyWater(a)&&!hasAnyWater(b)))return false;
     return this.hydrologyEdgeState(a,b)?.cascade===true;
   }
 
@@ -685,7 +685,7 @@ export class WaterRenderer{
     for(const member of members){
       for(const dir of DIRS){
         const next=slotTiles.get(keyOf(member.x+dir.dx,member.y+dir.dy));
-        if(!next||memberKeys.has(keyOf(next.x,next.y))||!hasAnyWater(next))continue;
+        if(!next||memberKeys.has(keyOf(next.x,next.y)))continue;
         if(this.isCascadeBoundary(member,next)){cascade=true;break;}
       }
       if(cascade)break;
@@ -703,7 +703,7 @@ export class WaterRenderer{
     if(edgeDir){
       const neighbor=allMap.get(keyOf(tile.x+edgeDir.dx,tile.y+edgeDir.dy));
       if(this.continuousWaterEdge(tile,neighbor))return"INTERNAL";
-      if(neighbor&&hasAnyWater(neighbor)&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
+      if(neighbor&&this.isCascadeBoundary(tile,neighbor))return"CASCADE";
       return"SHORE";
     }
 
@@ -906,6 +906,28 @@ export class WaterRenderer{
 
   edgeWaterPoint(a,mid,b,t){const q=clamp(Number(t||0),0,1);return q<=.5?this.lerpWaterPoint(a,mid,q*2):this.lerpWaterPoint(mid,b,(q-.5)*2);}
 
+  waterGridEdgeRefs(grid,dir){
+    if(!grid?.length||!dir)return[];
+    if(dir.id==="N")return[...grid[0]];
+    if(dir.id==="E")return grid.map(row=>row[3]);
+    if(dir.id==="S")return[...grid[3]].reverse();
+    if(dir.id==="W")return[...grid].reverse().map(row=>row[0]);
+    return[];
+  }
+
+  applyCascadeLips(tile,grid,allMap){
+    for(const dir of [{id:"N",dx:0,dy:-1},{id:"E",dx:1,dy:0},{id:"S",dx:0,dy:1},{id:"W",dx:-1,dy:0}]){
+      const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
+      const flow=this.hydrologyEdgeState(tile,neighbor);
+      if(!flow?.cascade||flow.from!==tile)continue;
+      const profile=this.surfaceResolver.cliffSpillProfile(tile,neighbor,dir,allMap),edge=this.waterGridEdgeRefs(grid,dir),count=Math.min(profile.length,edge.length);
+      for(let i=0;i<count;i++){
+        edge[i].x=Number(profile[i].lip.x);edge[i].z=Number(profile[i].lip.z);edge[i].level=visualSurface(tile);edge[i].clipped=false;edge[i].relaxed=true;edge[i].mode="CASCADE_LIP";
+      }
+    }
+    return grid;
+  }
+
   waterPatchGrid(tile,allMap){
     const terrainRing=this.surfaceResolver.ringSamples(tile,allMap),ring=terrainRing.map((sample,index)=>this.shorelinePoint(tile,index,sample,allMap));
     const steps=[0,1/3,2/3,1],nw=ring[0],ne=ring[2],se=ring[4],sw=ring[6],grid=[];
@@ -925,6 +947,7 @@ export class WaterRenderer{
       }
       grid.push(row);
     }
+    this.applyCascadeLips(tile,grid,allMap);
     return{grid,ring};
   }
 
@@ -1008,33 +1031,30 @@ export class WaterRenderer{
   oppositeDirection(dir){return dir?this.cascadeDirection({dx:-dir.dx,dy:-dir.dy}):null;}
 
   waterGridEdgePoints(tile,dir,allMap){
-    const patch=this.waterPatchGrid(tile,allMap)?.grid;
-    if(!patch?.length||!dir)return[];
-    if(dir.id==="N")return[...patch[0]];
-    if(dir.id==="E")return patch.map(row=>row[3]);
-    if(dir.id==="S")return[...patch[3]].reverse();
-    if(dir.id==="W")return[...patch].reverse().map(row=>row[0]);
-    return[];
+    return this.waterGridEdgeRefs(this.waterPatchGrid(tile,allMap)?.grid,dir);
   }
 
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[],seen=new Set();
-    const wetTiles=tilesOf(state).filter(hasAnyWater);
-    for(const tile of wetTiles){
+    // Scan every undirected gameplay edge exactly once. Starting only from wet
+    // tiles and only looking east/south misses west/north spill faces when the low
+    // receiver is still dry. Hydrology's per-edge flux decides the direction.
+    for(const tile of tilesOf(state)){
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
-        const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-        if(!neighbor||!hasAnyWater(neighbor))continue;
+        const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        if(!flow?.cascade||!flow.from||!flow.to)continue;
+        if(!flow?.cascade||!flow.from||!flow.to||!hasAnyWater(flow.from))continue;
         const high=flow.from,low=flow.to,id=`${high.x},${high.y}->${low.x},${low.y}`;
         if(seen.has(id))continue;seen.add(id);
-        const top=visualSurface(high),bottom=visualSurface(low),drop=top-bottom;
+        const top=Number.isFinite(Number(flow.fromSurface))?Number(flow.fromSurface):visualSurface(high);
+        const bottom=Number.isFinite(Number(flow.toSurface))?Number(flow.toSurface):(hasAnyWater(low)?visualSurface(low):Number(low.elevation||0));
+        const drop=Math.max(0,Number(flow.surfaceDrop??(top-bottom)));
         if(drop<WATERFALL_MIN_DROP)continue;
         out.push({
           id,tile:high,receiver:low,dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y),
           top,bottom,drop,authoredDrop:flow.authored?Number(high.hydrologyCascadeDrop||drop):null,
           speed:Math.max(.6,Number(high.flowSpeed||0),Number(flow.rate||0),drop*.55),
-          hydrologyEdgeReason:flow.reason||null,authored:flow.authored===true
+          flowVolume:Number(flow.volume||0),hydrologyEdgeReason:flow.reason||null,authored:flow.authored===true,receiverWet:hasAnyWater(low)
         });
       }
     }
@@ -1042,67 +1062,55 @@ export class WaterRenderer{
   }
 
   buildCascade(edge,state){
-    const dir=this.cascadeDirection(edge),allMap=this.allByKey(state);
-    if(!dir)return null;
-    const opposite=this.oppositeDirection(dir);
-    const highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
-    const lowEdge=this.waterGridEdgePoints(edge.receiver,opposite,allMap).reverse();
-    const profile=this.surfaceResolver.cliffEdgeProfile(edge.tile,dir,allMap);
-    const columns=Math.min(highEdge.length,lowEdge.length,profile.length);
-    if(columns<2)return null;
-
-    const wallOffset=SURFACE_OFFSET*.75;
-    const wall=profile.slice(0,columns).map(point=>({
-      x:Number(point.x)+dir.dx*wallOffset,
-      z:Number(point.z)+dir.dy*wallOffset,
-      terrainHeight:Number(point.height)
+    const dir=this.cascadeDirection(edge),allMap=this.allByKey(state);if(!dir)return null;
+    const spill=this.surfaceResolver.cliffSpillProfile(edge.tile,edge.receiver,dir,allMap),highEdge=this.waterGridEdgePoints(edge.tile,dir,allMap);
+    const columns=Math.min(spill.length,highEdge.length);if(columns<2)return null;
+    const activeSpill=spill.slice(0,columns),outward=SURFACE_OFFSET*.75,topY=Number(edge.top)*ELEVATION_HEIGHT+SURFACE_OFFSET,bottomY=Number(edge.bottom)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+    const approachRow=highEdge.slice(0,columns).map(point=>({x:Number(point.x),z:Number(point.z),y:topY}));
+    const lipRow=activeSpill.map(column=>({x:Number(column.lip.x)+dir.dx*outward,z:Number(column.lip.z)+dir.dy*outward,y:topY}));
+    const footRow=activeSpill.map(column=>({
+      x:Number(column.foot.x)+dir.dx*outward,z:Number(column.foot.z)+dir.dy*outward,
+      y:Math.min(topY,Math.max(bottomY,Number(column.foot.height)*ELEVATION_HEIGHT+SURFACE_OFFSET))
     }));
-    const topRow=highEdge.slice(0,columns).map(point=>({x:Number(point.x),z:Number(point.z),y:Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET}));
-    const lowRow=lowEdge.slice(0,columns).map(point=>({x:Number(point.x),z:Number(point.z),y:Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET}));
-    const wallTop=wall.map((point,index)=>({x:point.x,z:point.z,y:topRow[index].y}));
-    const wallFoot=wall.map((point,index)=>{
-      const ox=point.x/TILE_SIZE-Number(edge.receiver.x),oz=point.z/TILE_SIZE-Number(edge.receiver.y);
-      const ground=this.surfaceResolver.sampleRenderedHeight(edge.receiver,allMap,ox,oz)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-      return{x:point.x,z:point.z,y:Math.min(topRow[index].y,Math.max(lowRow[index].y,ground))};
-    });
-
-    const rows=[topRow,wallTop];
-    for(const progress of [.30,.62,.88])rows.push(wall.map((point,index)=>({
-      x:point.x,z:point.z,y:wallTop[index].y+(wallFoot[index].y-wallTop[index].y)*progress
+    const rows=[approachRow,lipRow];
+    for(const progress of [.30,.62,.88])rows.push(lipRow.map((point,index)=>({
+      x:point.x,z:point.z,y:point.y+(footRow[index].y-point.y)*progress
     })));
-    rows.push(wallFoot,lowRow);
+    rows.push(footRow);
+
+    // If the receiving tile already has standing water, connect the falling sheet
+    // into its live surface. If it is still dry, stop at the rendered ground: the
+    // flux remains valid and the next hydrology pass may build a plunge pool there.
+    if(edge.receiverWet){
+      const landingRow=activeSpill.map((column,index)=>{
+        const landing=column.landing||column.foot;
+        return{x:Number(landing.x),z:Number(landing.z),y:bottomY};
+      });
+      rows.push(landingRow);
+    }
 
     const positions=[],indices=[],normals=[],uvs=[];
     for(let r=0;r<rows.length;r++){
       const v=r/Math.max(1,rows.length-1);
-      for(let c=0;c<columns;c++){
-        const point=rows[r][c];positions.push(point.x,point.y,point.z);uvs.push(c/Math.max(1,columns-1),v*2.25);normals.push(0,0,0);
-      }
+      for(let c=0;c<columns;c++){const point=rows[r][c];positions.push(point.x,point.y,point.z);uvs.push(c/Math.max(1,columns-1),v*2.25);normals.push(0,0,0);}
     }
-    for(let r=0;r<rows.length-1;r++)for(let c=0;c<columns-1;c++){
-      const a=r*columns+c,b=a+1,d=(r+1)*columns+c,e=d+1;
-      indices.push(a,b,e,a,e,d);
-    }
+    for(let r=0;r<rows.length-1;r++)for(let c=0;c<columns-1;c++){const a=r*columns+c,b=a+1,d=(r+1)*columns+c,e=d+1;indices.push(a,b,e,a,e,d);}
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
 
     const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
     mesh.material=this.cascadeMaterial;mesh.alphaIndex=12;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,sharedCliffEdgeProfile:true,fullSharedEdgeWidth:true,hydrologyEdgeReason:edge.hydrologyEdgeReason};
+    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,sharedCliffSpillProfile:true,ruggedCliffLip:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason};
 
-    const center=wallFoot.reduce((acc,point)=>({x:acc.x+point.x/columns,y:acc.y+point.y/columns,z:acc.z+point.z/columns}),{x:0,y:0,z:0});
+    const center=footRow.reduce((acc,point)=>({x:acc.x+point.x/columns,y:acc.y+point.y/columns,z:acc.z+point.z/columns}),{x:0,y:0,z:0});
     const foam=BABYLON.MeshBuilder.CreateTorus(`cascade-foam-${edge.id}`,{diameter:TILE_SIZE*.55,thickness:.038,tessellation:20},this.scene);
     foam.material=this.foamMaterial;foam.alphaIndex=13;foam.isPickable=false;foam.position.set(center.x,center.y+.020,center.z);foam.visibility=mesh.visibility;
-
     const ripples=[];
     for(let i=0;i<2;i++){
       const ripple=BABYLON.MeshBuilder.CreateTorus(`cascade-ripple-${i}-${edge.id}`,{diameter:TILE_SIZE*(.42+i*.14),thickness:.024,tessellation:18},this.scene);
-      ripple.material=this.foamMaterial;ripple.alphaIndex=13;ripple.isPickable=false;
-      ripple.position.set(center.x+dir.dx*TILE_SIZE*.04,center.y+.012+i*.002,center.z+dir.dy*TILE_SIZE*.04);ripple.visibility=0;ripples.push(ripple);
+      ripple.material=this.foamMaterial;ripple.alphaIndex=13;ripple.isPickable=false;ripple.position.set(center.x+dir.dx*TILE_SIZE*.04,center.y+.012+i*.002,center.z+dir.dy*TILE_SIZE*.04);ripple.visibility=0;ripples.push(ripple);
     }
-
-    const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);
-    mesh.parent=root;foam.parent=root;for(const ripple of ripples)ripple.parent=root;
+    const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);mesh.parent=root;foam.parent=root;for(const ripple of ripples)ripple.parent=root;
     return{root,mesh,foam,ripples,baseVisibility:mesh.visibility,phase:(edge.tile.x*13+edge.tile.y*7)%17};
   }
 
@@ -1114,6 +1122,7 @@ export class WaterRenderer{
       hasAnyWater(tile)?visualSurface(tile).toFixed(4):"dry",
       Number(tile.flowX||0),Number(tile.flowY||0),Number(tile.flowSpeed||0).toFixed(3),
       tile.hydrologyCascadeToX??"n",tile.hydrologyCascadeToY??"n",Number(tile.hydrologyCascadeDrop||0).toFixed(3),
+      ...["N","E","S","W"].map(dir=>{const f=tile.hydrologyEdgeOutflows?.[dir];return f?`${dir}>${f.toX},${f.toY}:${Number(f.rate||0).toFixed(3)}:${Number(f.cliffDrop||0).toFixed(3)}`:`${dir}-`; }),
       tile.fogged?1:0
     ].join(":" )).sort().join(",");
     const groups=components.map(component=>
@@ -1211,10 +1220,14 @@ export class WaterRenderer{
       cascadeAuthority:"HydrologyEngine.edgeFlowState",
       cascadesRequireHydrologyDirection:false,
       cascadesRequireHydrologyMetadata:false,
-      cascadesRequireDownstreamWater:true,
+      cascadesRequireDownstreamWater:false,
       multiEdgeCascades:true,
       sharedCliffEdgeProfile:true,
-      fixedCascadeWidth:false
+      fixedCascadeWidth:false,
+      measuredPerEdgeFlux:true,
+      dryReceiverCascade:true,
+      ruggedCliffSpillProfile:true,
+      waterSurfaceOwnsRuggedCascadeLip:true
     };
   }
 }
