@@ -63,9 +63,11 @@ export class WaterRenderer{
     this.surfaceAnimations=new Map();
     this.cascades=new Map();
     this.runoffs=new Map();
+    this.sourceFootprints=new Map();
     this.surfaceSignature="";
     this.cascadeSignature="";
     this.runoffSignature="";
+    this.sourceSignature="";
     this.waveTime=0;
     this.waveAccumulator=0;
     this.wind={x:0,z:0,strength:0};
@@ -750,12 +752,42 @@ export class WaterRenderer{
   }
 
   activeHydrologySources(state){
+    // Source activity is a boundary condition, not a standing-water test. A spring
+    // remains visually identifiable while its injected volume is immediately being
+    // transported away and local storage is below the ordinary water-surface cutoff.
     return tilesOf(state).filter(tile=>
-      tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true&&hasAnyWater(tile)
+      tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true
     ).map(tile=>({
-      x:Number(tile.x)*TILE_SIZE,z:Number(tile.y)*TILE_SIZE,
+      tile,x:Number(tile.x)*TILE_SIZE,z:Number(tile.y)*TILE_SIZE,
       rate:Math.max(0,Number(tile.hydrologySourceInflow??tile.hydrologyRequestedSourceInflow??tile.discharge??1))
     }));
+  }
+
+  sourceFootprintSignatureFor(sources){
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+(sources||[]).map(source=>{
+      const tile=source.tile||{};
+      return`${Number(tile.x)},${Number(tile.y)}:${Number(source.rate||0).toFixed(4)}:${tile.fogged?1:0}`;
+    }).sort().join("|");
+  }
+
+  buildSourceFootprint(source){
+    const tile=source?.tile;if(!tile)return null;
+    const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);if(!geometry?.triangles?.length)return null;
+    const rate=Math.max(0,Number(source.rate||0)),radius=TILE_SIZE*clamp(.19+Math.sqrt(rate)*.035,.19,.30),segments=18;
+    const positions=[],indices=[],normals=[],uvs=[],cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const push=(x,z,u,v)=>{const y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.60,point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(u,v);normals.push(0,0,0);return positions.length/3-1;};
+    const center=push(cx,cz,.5,.5),ring=[];
+    for(let i=0;i<segments;i++){
+      const angle=i/segments*Math.PI*2,noise=.94+.06*Math.sin(angle*3+hash01(`${tile.x},${tile.y}`)*Math.PI*2),r=radius*noise;
+      ring.push(push(cx+Math.cos(angle)*r,cz+Math.sin(angle)*r,.5+Math.cos(angle)*.5,.5+Math.sin(angle)*.5));
+    }
+    for(let i=0;i<segments;i++)indices.push(center,ring[i],ring[(i+1)%segments]);
+    BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+    const mesh=new BABYLON.Mesh(`spring-wet-footprint-${tile.x}-${tile.y}`,this.scene),data=new BABYLON.VertexData();
+    Object.assign(data,{positions,indices,normals,uvs});data.applyToMesh(mesh,false);
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=tile.fogged?.18:1;
+    mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,rate,terrainConforming:true,gameplayDepth:false,canonicalWetFootprint:true};
+    return mesh;
   }
 
   sourceFieldAt(point,sources){
@@ -912,7 +944,11 @@ export class WaterRenderer{
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        if(!flow?.sheetFlow||!flow.from||!flow.to)continue;
+        // Transport water exists independently of storage depth. Any measured /
+        // persistent non-cascade Q may wet exposed terrain, including flat or very
+        // gentle reaches where sheetFlow's positive-bed-drop test is intentionally
+        // false. Pooled reaches are still owned by the standing-water surface.
+        if(!flow?.flowing||flow?.cascade||!flow.from||!flow.to)continue;
         const fromPooled=this.isRenderableWater(flow.from),toPooled=this.isRenderableWater(flow.to);
         // The standing-water surface already owns a river/lake reach. Drawing a
         // center-to-center runoff ribbon on top of it is the bright straight line
@@ -1059,26 +1095,20 @@ export class WaterRenderer{
       }
     }
 
-    // Storage intersection alone can collapse a source-fed waterfall into a thin
-    // sliver: a steep lip transports Q continuously while holding almost no local
-    // waterDepth. The same Q->wet-corridor model used by slope runoff therefore
-    // supplies the minimum physically wet lip width. Existing broader polygon spans
-    // are preserved; this only fills/expands a transport span, never a dry no-Q lip.
-    let merged=this.mergeDistanceSpans(spans);
+    const merged=this.mergeDistanceSpans(spans);
+    if(merged.length)return merged;
+
+    // Never widen a real lake/river surface merely because Q is present: that was
+    // the v6 path that could create a waterfall on a dry protrusion inside a lake.
+    // A transport-only reach (below the standing-water render threshold) may still
+    // arrive at a cliff. In that case the same Q corridor used by surface runoff is
+    // the canonical wet footprint at the lip, so the waterfall inherits that exact
+    // transport width instead of inventing one on a pooled surface.
+    if(this.isRenderableWater(edge?.tile))return[];
     const q=Math.max(0,Number((edge?.edgeDischarge??edge?.rate)??0)),transport=Math.max(0,Number(edge?.transportVolume||0));
-    if(q>EPSILON||transport>EPSILON){
-      const targetWidth=Math.min(metrics.total,this.flowCorridorHalfWidth(edge)*2),currentWidth=merged.reduce((sum,span)=>sum+Math.max(0,span.end-span.start),0);
-      if(targetWidth>currentWidth+EPSILON){
-        let center=metrics.total*.5;
-        if(merged.length){
-          const weight=Math.max(EPSILON,currentWidth);
-          center=merged.reduce((sum,span)=>sum+((span.start+span.end)*.5)*Math.max(EPSILON,span.end-span.start),0)/weight;
-        }
-        const half=targetWidth*.5,start=clamp(center-half,0,Math.max(0,metrics.total-targetWidth));
-        merged=this.mergeDistanceSpans([...merged,{start,end:start+targetWidth}]);
-      }
-    }
-    return merged;
+    if(q<=EPSILON&&transport<=EPSILON)return[];
+    const width=Math.min(metrics.total,this.flowCorridorHalfWidth(edge)*2),start=Math.max(0,(metrics.total-width)*.5);
+    return width>EPSILON?[{start,end:start+width,transportFootprint:true}]:[];
   }
 
   resetWaterSeamRegistry(){this.waterSeamRegistry.clear();}
@@ -1100,7 +1130,8 @@ export class WaterRenderer{
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        if(!flow?.cascade||!flow.from||!flow.to||!hasAnyWater(flow.from))continue;
+        const transported=Math.max(0,Number(flow?.transportVolume??flow?.volume??0));
+        if(!flow?.cascade||!flow.from||!flow.to||(!hasAnyWater(flow.from)&&transported<=EPSILON))continue;
         const high=flow.from,low=flow.to,id=`${high.x},${high.y}->${low.x},${low.y}`;
         if(seen.has(id))continue;seen.add(id);
         const top=Number.isFinite(Number(flow.fromSurface))?Number(flow.fromSurface):visualSurface(high);
@@ -1208,6 +1239,7 @@ export class WaterRenderer{
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
     const runoffs=this.runoffEdges(state);
+    const sources=this.activeHydrologySources(state);
 
     const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
@@ -1241,9 +1273,16 @@ export class WaterRenderer{
       this.runoffSignature=runoffSignature;
     }
 
-    if(!waterTiles.length&&!runoffs.length){
-      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.resetWaterSeamRegistry();
-      this.surfaceSignature=this.cascadeSignature=this.runoffSignature="";
+    const sourceSignature=this.sourceFootprintSignatureFor(sources);
+    if(sourceSignature!==this.sourceSignature){
+      this.disposeMap(this.sourceFootprints);
+      for(const source of sources){const built=this.buildSourceFootprint(source);if(built)this.sourceFootprints.set(`${source.tile.x},${source.tile.y}`,built);}
+      this.sourceSignature=sourceSignature;
+    }
+
+    if(!waterTiles.length&&!runoffs.length&&!sources.length){
+      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.disposeMap(this.sourceFootprints);this.resetWaterSeamRegistry();
+      this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
     }
   }
 
@@ -1253,6 +1292,7 @@ export class WaterRenderer{
       sideMeshes:0,
       cascades:this.cascades.size,
       surfaceRunoffs:this.runoffs.size,
+      activeSourceFootprints:this.sourceFootprints.size,
       separatedWaterLevels:false,
       hydrologyContinuousSurface:true,
       sharedWetEdges:true,
@@ -1277,6 +1317,8 @@ export class WaterRenderer{
       windDrivenWaves:true,
       windWaveStrength:Number(this.wind?.strength||0),
       refinedWaterTopology:true,
+      canonicalWetFootprint:true,
+      transportWaterVisibleWithoutGameplayDepth:true,
       waterSurfaceTrianglesPerTile:18,
       rogueWavePresentation:true,
       rogueWaveWaterBodyDeformation:true,

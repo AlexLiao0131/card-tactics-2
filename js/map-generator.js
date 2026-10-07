@@ -256,16 +256,8 @@ export const MapGenerator=(()=>{
       return tile.captureZone!==true;
     }
 
-    function nearestOpenX(targetX,y,fromX=targetX){
-      const minX=2,maxX=map.width-3;
-      const candidates=[];
-      for(let x=minX;x<=maxX;x++){
-        const tile=getTile(x,y);
-        if(!tile||tile.captureZone===true)continue;
-        candidates.push({x,score:Math.abs(x-targetX)*4+Math.abs(x-fromX)});
-      }
-      candidates.sort((a,b)=>a.score-b.score||a.x-b.x);
-      return candidates[0]?.x??clamp(targetX,minX,maxX);
+    function naturalHeight(tile){
+      return Number(tile?.hydrologyChannelBaseElevation??tile?.elevation??0);
     }
 
     function cardinalPath(start,goal){
@@ -308,38 +300,6 @@ export const MapGenerator=(()=>{
       return path;
     }
 
-    function springConnectorPath(start,goal){
-      if(!start||!goal)return[];
-      const startKey=key(start.x,start.y),goalKey=key(goal.x,goal.y),queue=[{x:start.x,y:start.y}],seen=new Set([startKey]),parent=new Map();
-      let head=0;
-      while(head<queue.length){
-        const current=queue[head++],currentKey=key(current.x,current.y);
-        if(currentKey===goalKey)break;
-        const currentTile=getTile(current.x,current.y);
-        const steps=DIRS.map(([dx,dy])=>({x:current.x+dx,y:current.y+dy}))
-          .filter(point=>inBounds(map.width,map.height,point.x,point.y)&&point.x>=2&&point.x<=map.width-3)
-          .filter(point=>{
-            const pointKey=key(point.x,point.y),isGoal=pointKey===goalKey,tile=getTile(point.x,point.y);
-            if(!tile||tile.captureZone===true)return false;
-            if(!isGoal&&protectedKeys.has(pointKey))return false;
-            if(!isGoal&&riverKeys.has(pointKey))return false;
-            return true;
-          })
-          .sort((a,b)=>{
-            const at=getTile(a.x,a.y),bt=getTile(b.x,b.y);
-            const ad=Math.abs(a.x-goal.x)+Math.abs(a.y-goal.y),bd=Math.abs(b.x-goal.x)+Math.abs(b.y-goal.y);
-            const au=Math.max(0,Number(at?.elevation||0)-Number(currentTile?.elevation||0));
-            const bu=Math.max(0,Number(bt?.elevation||0)-Number(currentTile?.elevation||0));
-            return ad-bd+(au-bu)*3;
-          });
-        for(const next of steps){const nextKey=key(next.x,next.y);if(seen.has(nextKey))continue;seen.add(nextKey);parent.set(nextKey,current);queue.push(next);}
-      }
-      if(!seen.has(goalKey))return[];
-      const path=[];let cursor={x:goal.x,y:goal.y};
-      while(true){path.push(cursor);const cursorKey=key(cursor.x,cursor.y);if(cursorKey===startKey)break;cursor=parent.get(cursorKey);if(!cursor)return[];}
-      path.reverse();return path;
-    }
-
     function chooseOffMapSource(){
       // An innate/pre-existing river may only enter from outside the battlefield.
       // Pick a boundary entry; do not invent an internal BASIN_SOURCE.
@@ -353,6 +313,47 @@ export const MapGenerator=(()=>{
       }
       candidates.sort((a,b)=>a.score-b.score||Math.abs(a.tile.x-xBase)-Math.abs(b.tile.x-xBase));
       return candidates[0]?.tile||getTile(clamp(xBase,2,map.width-3),0);
+    }
+
+
+    function chooseOffMapDrain(source){
+      const candidates=[];
+      for(let x=2;x<=map.width-3;x++){
+        const tile=getTile(x,map.height-1);if(!tile||tile.captureZone===true)continue;
+        const previous=getTile(x,map.height-2),height=naturalHeight(tile),approach=naturalHeight(previous);
+        const score=height*2.5+Math.max(0,height-approach)*4+Math.abs(x-Number(source?.x??x))*.18;
+        candidates.push({tile,score,height});
+      }
+      candidates.sort((a,b)=>a.score-b.score||a.height-b.height||a.tile.x-b.tile.x);
+      return candidates[0]?.tile||getTile(clamp(Number(source?.x??xBase),2,map.width-3),map.height-1);
+    }
+
+    function naturalRiverPath(start,goal){
+      if(!start||!goal)return[];
+      const startKey=key(start.x,start.y),goalKey=key(goal.x,goal.y),cost=new Map([[startKey,0]]),parent=new Map(),open=[{x:start.x,y:start.y,g:0}];
+      while(open.length){
+        let best=0;for(let i=1;i<open.length;i++)if(open[i].g<open[best].g)best=i;
+        const current=open.splice(best,1)[0],currentKey=key(current.x,current.y);
+        if(current.g>Number(cost.get(currentKey))+1e-9)continue;
+        if(currentKey===goalKey)break;
+        const currentTile=getTile(current.x,current.y),currentHeight=naturalHeight(currentTile);
+        for(const[dx,dy]of DIRS){
+          const nx=current.x+dx,ny=current.y+dy,nk=key(nx,ny);
+          if(!inBounds(map.width,map.height,nx,ny)||nx<2||nx>map.width-3)continue;
+          const next=getTile(nx,ny);if(!next||next.captureZone===true)continue;
+          const nextHeight=naturalHeight(next),uphill=Math.max(0,nextHeight-currentHeight),highland=Math.max(0,nextHeight-1),backtrack=Math.max(0,current.y-ny);
+          const routePenalty=protectedKeys.has(nk)&&nk!==goalKey?8:0;
+          const existingWater=Number(next.waterDepth||0)>0&&!next.river?-.35:0;
+          const step=Math.max(.2,1+uphill*7+highland*1.8+backtrack*2.25+routePenalty+existingWater);
+          const ng=current.g+step;
+          if(ng+1e-9>=Number(cost.get(nk)??Infinity))continue;
+          cost.set(nk,ng);parent.set(nk,{x:current.x,y:current.y});open.push({x:nx,y:ny,g:ng});
+        }
+      }
+      if(!cost.has(goalKey))return[];
+      const path=[];let cursor={x:goal.x,y:goal.y};
+      while(true){path.push(cursor);const ck=key(cursor.x,cursor.y);if(ck===startKey)break;cursor=parent.get(ck);if(!cursor)return[];}
+      path.reverse();return path;
     }
 
     function springCanReachOutlet(source){
@@ -381,19 +382,30 @@ export const MapGenerator=(()=>{
         const height=Number(tile.elevation||0);if(height<HIGH_SPRING_MIN_ELEVATION)continue;
         const neighbors=DIRS.map(([dx,dy])=>getTile(x+dx,y+dy)).filter(Boolean);
         const downhill=neighbors.filter(next=>Number(next.elevation||0)<height-1e-6);
-        const supported=neighbors.some(next=>Number(next.elevation||0)>=height-1e-6);
-        if(!downhill.length||!supported||!springCanReachOutlet(tile))continue;
-        const lowest=Math.min(...downhill.map(next=>Number(next.elevation||0)));
-        const relief=height-lowest;
-        // Prefer a shoulder/slope with a real downhill watershed, not an isolated pillar.
-        const score=Math.abs(x-xBase)*.12+y*.05-relief*.8+Math.abs(downhill.length-2)*.35;
+        const gentleDownhill=downhill.filter(next=>height-Number(next.elevation||0)<=1.0001);
+        const cliffFaces=downhill.filter(next=>height-Number(next.elevation||0)>1.0001).length;
+        const supported=neighbors.filter(next=>Number(next.elevation||0)>=height-1e-6).length;
+        // A natural spring should emerge on a shoulder / slope, not on top of an
+        // isolated pillar. It needs at least one walkable-height downhill release,
+        // enough lateral support, and at most one immediate cliff face.
+        if(!gentleDownhill.length||supported<1||cliffFaces>1||!springCanReachOutlet(tile))continue;
+        const lowest=Math.min(...downhill.map(next=>Number(next.elevation||0))),relief=height-lowest;
+        const highPenalty=Math.max(0,height-3)*.9,cliffPenalty=cliffFaces*1.2;
+        const score=Math.abs(x-xBase)*.12+y*.05+relief*.45+Math.abs(downhill.length-2)*.35+highPenalty+cliffPenalty;
         candidates.push({tile,score});
       }
       candidates.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
       const source=candidates[0]?.tile||null;if(!source)return null;
+      const sourceKey=key(source.x,source.y);
       source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
       source.hydrologySourceInflow=HIGH_SPRING_INFLOW;source.baseDischarge=HIGH_SPRING_INFLOW;source.discharge=HIGH_SPRING_INFLOW;
       source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.elevation||0);
+      // A spring is a geological map object, so its footprint is reserved before
+      // vegetation is painted. Saturated source ground is MUD rather than FOREST / 
+      // PLAIN, which also prevents the later terrain-object seeder from creating a
+      // tree or random bush on top of the spring without changing movement blocking.
+      source.terrain="MUD";source.soilMoisture=.45;source.springSourceFootprint=true;
+      protectedKeys.add(sourceKey);
       return source;
     }
 
@@ -446,19 +458,11 @@ export const MapGenerator=(()=>{
     // On-map springs are separate sources and never receive a pre-carved connector.
     const sourceSeed=chooseOffMapSource();
     if(!sourceSeed)throw new Error("Off-map river source generation failed");
-    let targetX=sourceSeed.x;
-    let last={x:sourceSeed.x,y:sourceSeed.y};
-    const authoredSource=placeRiverTile(last.x,last.y);
+    const drainSeed=chooseOffMapDrain(sourceSeed),naturalPath=naturalRiverPath(sourceSeed,drainSeed);
+    if(!drainSeed||!naturalPath.length)throw new Error("Terrain-aware off-map river routing failed");
+    const authoredSource=placeRiverTile(sourceSeed.x,sourceSeed.y);
     if(authoredSource){authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="OFF_MAP_SOURCE";authoredSource.hydrologySourceInflow=OFF_MAP_SOURCE_INFLOW;authoredSource.baseDischarge=OFF_MAP_SOURCE_INFLOW;authoredSource.discharge=OFF_MAP_SOURCE_INFLOW;}
-
-    for(let y=sourceSeed.y+1;y<map.height;y++){
-      if(rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
-      const resolvedX=nearestOpenX(targetX,y,last?.x??targetX);
-      const target={x:resolvedX,y};
-      const path=cardinalPath(last,target);
-      if(!path.length)throw new Error(`River routing failed at ${last.x},${last.y} -> ${target.x},${target.y}`);
-      last=layPath(path.slice(1))||last;
-    }
+    layPath(naturalPath.slice(1));
 
     // Every strategic route receives a real ford connected to the existing river
     // through the same cardinal routing rule. Capture zones are obstacles rather
