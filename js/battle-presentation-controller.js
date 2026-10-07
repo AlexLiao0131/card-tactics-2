@@ -8,7 +8,16 @@ const WEATHER_NAME=Object.freeze({CLEAR:"晴朗",FOG:"迷霧",RAIN:"雨",HEAVY_R
 function create(ctx){
   if(!ctx?.state)throw new Error("BattlePresentationController requires state().");
   function teamPresentation(team){if(team===ctx.TEAM?.PLAYER||team==="P"||team==="PLAYER")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E"||team==="ENEMY")return"ENEMY";if(team===ctx.TEAM?.NEUTRAL||team==="N"||team==="NEUTRAL")return"NEUTRAL";return String(team||"NEUTRAL");}
-  function tileHydrology(tile){const depth=Number(window.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);return{waterDepth:Math.max(0,Number.isFinite(depth)?depth:0),waterSurfaceZ:surface==null?null:Number(surface),soilMoisture:Number(tile?.soilMoisture||0),debrisMass:Number(tile?.debrisMass||0),material:tile?.material||null,snowDepth:Number(tile?.snowDepth||0),iceThickness:Number(tile?.iceThickness||0),flowX:Number(tile?.flowX||0),flowY:Number(tile?.flowY||0),flowSpeed:Number(tile?.flowSpeed||0),river:!!tile?.river,ford:!!tile?.ford,...(tile?.dryTerrain?{dryTerrain:tile.dryTerrain}:{})};}
+  function tileHydrology(tile){
+    const depth=Number(window.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);
+    const edgeOutflows=Object.fromEntries(Object.entries(tile?.hydrologyEdgeOutflows||{}).map(([dir,flow])=>[dir,{...flow}]));
+    return{
+      waterDepth:Math.max(0,Number.isFinite(depth)?depth:0),waterSurfaceZ:surface==null?null:Number(surface),soilMoisture:Number(tile?.soilMoisture||0),debrisMass:Number(tile?.debrisMass||0),material:tile?.material||null,snowDepth:Number(tile?.snowDepth||0),iceThickness:Number(tile?.iceThickness||0),flowX:Number(tile?.flowX||0),flowY:Number(tile?.flowY||0),flowSpeed:Number(tile?.flowSpeed||0),river:!!tile?.river,ford:!!tile?.ford,
+      hydrologySource:tile?.hydrologySource===true,hydrologySourceDisabled:tile?.hydrologySourceDisabled===true,hydrologySourceInflow:Number(tile?.hydrologySourceInflow||0),hydrologyRequestedSourceInflow:Number(tile?.hydrologyRequestedSourceInflow||0),
+      hydrologyEdgeOutflows:edgeOutflows,hydrologyCascadeToX:tile?.hydrologyCascadeToX??null,hydrologyCascadeToY:tile?.hydrologyCascadeToY??null,hydrologyCascadeDrop:Number(tile?.hydrologyCascadeDrop||0),hydrologyChannelBaseElevation:tile?.hydrologyChannelBaseElevation??null,
+      ...(tile?.dryTerrain?{dryTerrain:tile.dryTerrain}:{})
+    };
+  }
   function unitRenderZ(unit,tile){const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile);return Number(vertical?.renderZ??unit?.z??TacticalEngine.elevation(tile)??0);}
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}

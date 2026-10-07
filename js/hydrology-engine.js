@@ -986,12 +986,16 @@ export const HydrologyEngine=(()=>{
     const cascade=fromDepth>EPSILON&&
       surfaceDrop>=Math.max(0,Number(minCascadeDrop||0))&&
       (authored||record?.authored===true||cliffDrop>Math.max(0,Number(minCliffDrop||0)));
+    const resolvedRate=Math.max(0,Number(record?.rate??from.hydrologyOutflowRate??from.discharge??0));
+    // Generic hydraulic power proxy used by presentation and future erosion:
+    // discharge rate multiplied by available head. No terrain/type special case.
+    const hydraulicPower=clean(resolvedRate*Math.max(0,surfaceDrop));
     return{
-      flowing:authored||Number(record?.volume||0)>EPSILON||Number(record?.rate||0)>EPSILON,
+      flowing:authored||Number(record?.volume||0)>EPSILON||resolvedRate>EPSILON,
       cascade,authored:authored||record?.authored===true,from,to,
       dirX:Math.sign(Number(to.x)-Number(from.x)),dirY:Math.sign(Number(to.y)-Number(from.y)),
       surfaceDrop:clean(surfaceDrop),bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),cliffDrop:roundSigned(cliffDrop),
-      volume:clean(record?.volume||0),rate:clean(record?.rate??from.hydrologyOutflowRate??from.discharge??0),
+      volume:clean(record?.volume||0),rate:clean(resolvedRate),hydraulicPower,
       fromSurface:roundSigned(fromSurface),toSurface:roundSigned(toSurface),
       reason:record?"MEASURED_EDGE_FLUX":"AUTHORED_CASCADE"
     };

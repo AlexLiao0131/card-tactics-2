@@ -58,7 +58,7 @@ export const MapGenerator=(()=>{
   function setDry(tile,elevation=0,terrain=null){
     if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||(tile.elevation>=2?"HIGH_GROUND":"PLAIN");tile.waterDepth=0;tile.waterSurfaceZ=null;
     delete tile.dryTerrain;delete tile.soilMoisture;delete tile.river;delete tile.ford;delete tile.flowX;delete tile.flowY;delete tile.baseFlowSpeed;delete tile.flowSpeed;delete tile.discharge;delete tile.baseDischarge;
-    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;delete tile.sourcePool;
+    delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;
   }
   function setWater(tile,{bed=-1,depth=1,river=false,ford=false,flowX=0,flowY=1,flowSpeed=.6,discharge=1}={}){
     if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";tile.soilMoisture=1;
@@ -360,33 +360,6 @@ export const MapGenerator=(()=>{
       return candidates[0]?.tile||getTile(xBase,1)||getTile(xBase,0);
     }
 
-    function buildSourcePool(profile){
-      for(const ref of profile?.sources||[]){
-        const source=getTile(ref.x,ref.y);
-        if(!source)continue;
-        const surface=Number(source.waterSurfaceZ??(Number(source.elevation||0)+Number(source.waterDepth||0)));
-        const candidates=[];
-        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
-          if(!dx&&!dy)continue;
-          const tile=getTile(source.x+dx,source.y+dy);
-          if(!tile||tile.river===true||tile.captureZone===true||protectedKeys.has(key(tile.x,tile.y)))continue;
-          if(tile.terrain==="WALL")continue;
-          if(source.sourceKind==="SPRING_SOURCE"&&Number(tile.elevation||0)<surface-.60)continue;
-          candidates.push(tile);
-        }
-        candidates.sort((a,b)=>Number(a.elevation||0)-Number(b.elevation||0)||a.y-b.y||a.x-b.x);
-        // Carve only a few cells so the spring head is an irregular depression,
-        // never a rectangular lake stamp.
-        for(const [index,tile] of candidates.slice(0,3).entries()){
-          const natural=Number(tile.elevation||0);
-          const bed=Math.min(natural,surface-(.20+index*.05));
-          const depth=Math.max(.12,surface-bed);
-          setWater(tile,{bed,depth,river:false});
-          tile.waterSurfaceZ=surface;
-          tile.sourcePool=true;
-        }
-      }
-    }
 
     function placeRiverTile(tx,ty){
       const tile=getTile(tx,ty);
@@ -526,10 +499,9 @@ export const MapGenerator=(()=>{
 
     attachHighSpring(authoredSource);
     const profile=finalizeGeneratedRiverProfile(map);
-    buildSourcePool(profile);
     const sourceObjects=(profile.sources||[])
       .filter(ref=>ref.kind==="SPRING_SOURCE")
-      .map(ref=>({id:ref.objectId||`generated_spring_${ref.x}_${ref.y}`,x:ref.x,y:ref.y,type:"SPRING",environment:"WATER",destructible:true,blocksMovement:false,floatOnWater:true,hydrologySourceX:ref.x,hydrologySourceY:ref.y}));
+      .map(ref=>({id:ref.objectId||`generated_spring_${ref.x}_${ref.y}`,x:ref.x,y:ref.y,type:"SPRING",environment:"WATER",destructible:true,blocksMovement:false,floatOnWater:false,hydrologySourceX:ref.x,hydrologySourceY:ref.y}));
     return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile,sourceObjects};
   }
 

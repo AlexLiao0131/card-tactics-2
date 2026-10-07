@@ -93,11 +93,37 @@ function influenceSnapshot(tile,weight,direction){
 export class VisualSurfaceResolver{
   constructor({maxVisualSlopeDelta=MAX_VISUAL_SLOPE_DELTA}={}){
     this.maxVisualSlopeDelta=Math.max(0,Number(maxVisualSlopeDelta||0));
-    // Runtime geometry contract: TerrainRenderer registers the exact world-space
-    // cliff vertices it actually submits to Babylon. Consumers must read these
-    // vertices instead of independently reconstructing the same wall.
+    // Runtime geometry contract: TerrainRenderer is the sole owner of visible
+    // terrain geometry. Water and other presentation systems consume the exact
+    // world-space vertices that were submitted to Babylon instead of rebuilding
+    // a second approximation from GridState.
+    this.renderedSurfaceGeometry=new Map();
+    this.renderedSurfaceGeometryRevision=0;
     this.renderedCliffGeometry=new Map();
     this.renderedCliffGeometryRevision=0;
+  }
+
+
+  clearRenderedSurfaceGeometry(){
+    this.renderedSurfaceGeometry.clear();
+    this.renderedSurfaceGeometryRevision++;
+  }
+
+  registerRenderedSurfaceGeometry(tile,geometry){
+    if(!tile||!geometry)return null;
+    const key=this.keyOf(tile.x,tile.y);
+    const clonePoint=point=>({x:Number(point.x),y:Number(point.y),z:Number(point.z)});
+    const triangles=(geometry.triangles||[])
+      .filter(triangle=>Array.isArray(triangle)&&triangle.length===3)
+      .map(triangle=>triangle.map(clonePoint));
+    const stored={key,revision:this.renderedSurfaceGeometryRevision,triangles};
+    this.renderedSurfaceGeometry.set(key,stored);
+    return stored;
+  }
+
+  getRenderedSurfaceGeometry(tile){
+    if(!tile)return null;
+    return this.renderedSurfaceGeometry.get(this.keyOf(tile.x,tile.y))||null;
   }
 
   cliffGeometryKey(tile,dir){
@@ -112,10 +138,21 @@ export class VisualSurfaceResolver{
 
   registerRenderedCliffGeometry(tile,dir,geometry){
     const key=this.cliffGeometryKey(tile,dir);if(!key||!geometry)return null;
-    const cloneSeries=series=>(series||[]).map(point=>({x:Number(point.x),y:Number(point.y),z:Number(point.z),t:Number(point.t||0)}));
+    const cloneSeries=series=>(series||[]).map(point=>({
+      x:Number(point.x),y:Number(point.y),z:Number(point.z),t:Number(point.t||0),
+      ...(point.normal?{normal:{x:Number(point.normal.x||0),z:Number(point.normal.z||0)}}:{})
+    }));
+    const cloneSegment=segment=>({
+      topA:{x:Number(segment.topA.x),y:Number(segment.topA.y),z:Number(segment.topA.z)},
+      topB:{x:Number(segment.topB.x),y:Number(segment.topB.y),z:Number(segment.topB.z)},
+      bottomA:{x:Number(segment.bottomA.x),y:Number(segment.bottomA.y),z:Number(segment.bottomA.z)},
+      bottomB:{x:Number(segment.bottomB.x),y:Number(segment.bottomB.y),z:Number(segment.bottomB.z)},
+      normal:{x:Number(segment.normal?.x||0),z:Number(segment.normal?.z||0)}
+    });
     const stored={
       key,revision:this.renderedCliffGeometryRevision,
       lip:cloneSeries(geometry.lip),foot:cloneSeries(geometry.foot),
+      segments:(geometry.segments||[]).map(cloneSegment),
       outward:{x:Number(geometry.outward?.x||0),z:Number(geometry.outward?.z||0)},
       drop:Number(geometry.drop||0)
     };
@@ -661,8 +698,11 @@ export class VisualSurfaceResolver{
       sharedBorderMaterialWeights:true,
       submergedBedIsolation:true,
       gameplayGridSubdivision:false,
+      renderedSurfaceGeometryRegistry:true,
+      waterConsumesExactTerrainTriangles:true,
       renderedCliffGeometryRegistry:true,
-      waterConsumesExactCliffVertices:true
+      waterConsumesExactCliffVertices:true,
+      waterConsumesExactCliffFaces:true
     };
   }
 }

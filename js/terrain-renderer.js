@@ -368,6 +368,8 @@ export class TerrainRenderer{
 
   disposeMeshes(){
     this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];this.grassSignature="";
+    this.surfaceResolver.clearRenderedSurfaceGeometry();
+    this.surfaceResolver.clearRenderedCliffGeometry();
     for(const mesh of this.meshes.values())mesh.dispose();
     this.meshes.clear();
     this.signatureValue="";
@@ -496,6 +498,7 @@ export class TerrainRenderer{
   }
 
   buildSurface(tiles,byKey){
+    this.surfaceResolver.clearRenderedSurfaceGeometry();
     this.surfaceColorBindings=[];
     this.updateCounts.surfaceBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
@@ -505,16 +508,26 @@ export class TerrainRenderer{
     let minNormalY=1;
     let ruggedSurfaceEdges=0;
 
+    let currentTileTriangles=null;
     const addFace=(a,b,c,colors)=>{
-      const before=out.normals.length;
+      const beforeNormals=out.normals.length,beforePositions=out.positions.length;
       const ok=this.pushFace(out,a,b,c,colors);
       if(!ok){skippedDegenerate++;return;}
-      for(let n=before+1;n<out.normals.length;n+=3){
+      for(let n=beforeNormals+1;n<out.normals.length;n+=3){
         minNormalY=Math.min(minNormalY,out.normals[n]);
+      }
+      if(currentTileTriangles){
+        const p=out.positions.slice(beforePositions,beforePositions+9);
+        currentTileTriangles.push([
+          {x:p[0],y:p[1],z:p[2]},
+          {x:p[3],y:p[4],z:p[5]},
+          {x:p[6],y:p[7],z:p[8]}
+        ]);
       }
     };
 
     for(const tile of tiles){
+      currentTileTriangles=[];
       const fog=tile.fogged?.62:1;
       const visual=this.surfaceResolver.resolveTile(tile,byKey);
       const samples=visual.patchGrid.flat();
@@ -582,7 +595,9 @@ export class TerrainRenderer{
         }
         ruggedSurfaceEdges++;
       }
+      this.surfaceResolver.registerRenderedSurfaceGeometry(tile,{triangles:currentTileTriangles});
     }
+    currentTileTriangles=null;
 
     const mesh=new BABYLON.Mesh("terrain-surface",this.scene);
     const data=new BABYLON.VertexData();
@@ -613,6 +628,7 @@ export class TerrainRenderer{
       baseTrianglesPerTile:18,
       ruggedSurfaceExtensions:true,
       ruggedSurfaceEdges,
+      renderedSurfaceGeometryRegistered:true,
       skippedDegenerate,
       minNormalY
     };
@@ -722,13 +738,18 @@ export class TerrainRenderer{
           wallLip.push({x:point.x,y:topY,z:point.z,t});
           wallFoot.push({x:point.x,y:bottomY,z:point.z,t});
         }
-        this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
-          lip:wallLip,foot:wallFoot,outward:{x:dir.dx,z:dir.dy},drop
-        });
-
+        const wallSegments=[];
         for(let i=0;i<rough.length-1;i++){
           const a=wallLip[i],b=wallLip[i+1];
           const aTop=a.y,bTop=b.y,aBot=wallFoot[i].y,bBot=wallFoot[i+1].y;
+          const tx=b.x-a.x,tz=b.z-a.z,length=Math.hypot(tx,tz)||1;
+          let nx=tz/length,nz=-tx/length;
+          if(nx*dir.dx+nz*dir.dy<0){nx=-nx;nz=-nz;}
+          wallSegments.push({
+            topA:{x:a.x,y:aTop,z:a.z},topB:{x:b.x,y:bTop,z:b.z},
+            bottomA:{x:a.x,y:aBot,z:a.z},bottomB:{x:b.x,y:bBot,z:b.z},
+            normal:{x:nx,z:nz}
+          });
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
@@ -764,6 +785,19 @@ export class TerrainRenderer{
           }
 
         }
+        const pointNormal=index=>{
+          const adjacent=[];
+          if(index>0)adjacent.push(wallSegments[index-1]?.normal);
+          if(index<wallSegments.length)adjacent.push(wallSegments[index]?.normal);
+          const nx=adjacent.reduce((sum,n)=>sum+Number(n?.x||0),0),nz=adjacent.reduce((sum,n)=>sum+Number(n?.z||0),0),length=Math.hypot(nx,nz)||1;
+          return{x:nx/length,z:nz/length};
+        };
+        for(let i=0;i<wallLip.length;i++){
+          wallLip[i].normal=pointNormal(i);wallFoot[i].normal=pointNormal(i);
+        }
+        this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
+          lip:wallLip,foot:wallFoot,segments:wallSegments,outward:{x:dir.dx,z:dir.dy},drop
+        });
         ruggedEdges++;
       }
     }
@@ -795,6 +829,7 @@ export class TerrainRenderer{
       ruggedEdges,
       sharedRuggedSurfaceBoundary:true,
       lowerSurfaceMatchedWall:true,
+      renderedCliffFaceGeometryRegistered:true,
       sceneLightingPrimary:true,
       reducedBakedLighting:true,
       cliffTextureProjection:"triplanar-world-normal-blend",
