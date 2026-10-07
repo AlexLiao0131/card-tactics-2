@@ -447,7 +447,12 @@ export const EnvironmentEngine=(()=>{
     recordDestroyedObjects(state,events);return events;
   }
   function advanceEnvironmentTurn(map,state){
-    if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);weatherPulse(map,state,events);decrementClimate(state);
+    if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);
+    // A hydrology source is a real volume source, not only a discharge label.
+    // Inject it once per environment turn, then let the canonical Hydrology flow
+    // decide where that water settles, overflows and drains.
+    if(window.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
+    weatherPulse(map,state,events);decrementClimate(state);
     if(window.HydrologyEngine?.sourceRecessionActive?.(map)&&!events.some(event=>event?.type==="HYDROLOGY_REBALANCED")){
       HydrologyEngine.advanceSourceRecession(map,{events,source:"SPRING_SOURCE_RECESSION"});
     }

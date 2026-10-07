@@ -8,6 +8,7 @@ export const HydrologyEngine=(()=>{
   // discharge is a river flow rate. This scale converts one discharge unit
   // into tile-volume per environment turn for budget/diagnostic accounting.
   const DISCHARGE_VOLUME_PER_TURN=.06,DEFAULT_SOURCE_DISCHARGE=1,MAX_BASE_FLOW_SPEED=3.2;
+  const INITIAL_SOURCE_SETTLE_MAX_TURNS=64,INITIAL_SOURCE_SETTLE_STABLE_TURNS=3,INITIAL_SOURCE_SETTLE_STEP_TURNS=4;
   const MIN_CHANNEL_CAPACITY_FACTOR=1.15,MAX_CHANNEL_CAPACITY_FACTOR=3.5;
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],FLOW_DIRS=[[1,0],[0,1]],key=(x,y)=>`${x},${y}`;
 
@@ -369,28 +370,35 @@ export const HydrologyEngine=(()=>{
     return tiles.filter(tile=>tile?.hydrologyDrain===true||tile?.drain===true||isBoundaryTile(map,tile));
   }
 
-  function boundaryDrainBudget(map,tile,fed,by){
+  function boundaryDrainBudget(map,tile,fed,by,volumeScale=DISCHARGE_VOLUME_PER_TURN){
     const profile=outletProfile(map,tile,by);if(!profile)return 0;
     const floor=protectedDepth(tile,fed);
     const head=Math.max(0,waterDepth(tile)-floor);
     if(head<=EPSILON)return 0;
     if(tile.drain===true&&Number.isFinite(Number(tile.drainCapacity))){
-      return clean(Math.max(0,Number(tile.drainCapacity))*DISCHARGE_VOLUME_PER_TURN);
+      return clean(Math.max(0,Number(tile.drainCapacity))*Math.max(0,Number(volumeScale||0)));
     }
     // Broad-crested outlet approximation. Terrain controls width and efficiency;
     // the available hydraulic head controls how much can leave this turn.
     const rate=profile.openWidth*Math.pow(head,1.5)*profile.efficiency;
-    return clean(rate*DISCHARGE_VOLUME_PER_TURN);
+    return clean(rate*Math.max(0,Number(volumeScale||0)));
   }
 
-  function outletDrainBudgets(map,fed=sourceFedWaterKeys(map)){
+  function outletDrainBudgets(map,fed=sourceFedWaterKeys(map),volumeScale=DISCHARGE_VOLUME_PER_TURN){
     const budgets=new Map(),by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
     const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
     for(const tile of map?.tiles||[]){
-      if(tile?.river===true&&tile?.hydrologyDrain===true)continue;
+      if(tile?.river===true&&tile?.hydrologyDrain===true){
+        // Convert the abstract routed river discharge back into real water volume
+        // leaving the map. The protected channel baseline stays in place; only
+        // source/flood water above that baseline can leave.
+        const throughRate=Math.max(0,Number(tile.hydrologyOutflowRate??tile.discharge??tile.baseDischarge??0));
+        budgets.set(key(tile.x,tile.y),clean(throughRate*Math.max(0,Number(volumeScale||0))));
+        continue;
+      }
       const eligible=tile?.drain===true||(openBoundary&&tile?.river!==true&&isBoundaryTile(map,tile));
       if(!eligible||waterDepth(tile)<=EPSILON)continue;
-      budgets.set(key(tile.x,tile.y),boundaryDrainBudget(map,tile,fed,by));
+      budgets.set(key(tile.x,tile.y),boundaryDrainBudget(map,tile,fed,by,volumeScale));
     }
     return budgets;
   }
@@ -651,10 +659,50 @@ export const HydrologyEngine=(()=>{
   const baselineDepth=t=>Math.max(0,Number(t?.hydrologyBaseWaterDepth||0));
   function captureSourceBaselines(map){
     const fed=sourceFedWaterKeys(map);
-    for(const tile of map?.tiles||[])tile.hydrologyBaseWaterDepth=fed.has(key(tile.x,tile.y))?clean(waterDepth(tile)):0;
+    // Baselines protect the authored river channel, not every wet tile connected to
+    // a source. A spring-fed pond/basin must remain free to equalize with adjacent
+    // lower terrain; otherwise its initial water becomes an immovable stencil.
+    for(const tile of map?.tiles||[])tile.hydrologyBaseWaterDepth=(tile?.river===true&&fed.has(key(tile.x,tile.y)))?clean(waterDepth(tile)):0;
     return fed;
   }
   function protectedDepth(tile,fed){return fed?.has(key(tile.x,tile.y))?Math.min(waterDepth(tile),baselineDepth(tile)):0}
+
+  function activeSourceTiles(map){
+    return(map?.tiles||[]).filter(tile=>tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true&&canHoldWater(tile));
+  }
+
+  function advanceSources(map,{events=[],source="SOURCE_INFLOW",volumeScale=DISCHARGE_VOLUME_PER_TURN,redistributeAfter=true}={}){
+    if(!map?.tiles?.length)return events;
+    const scale=Math.max(0,Number(volumeScale||0));
+    let injectedVolume=0,sourceCount=0;
+    for(const tile of activeSourceTiles(map)){
+      const rate=Math.max(0,sourceDemandRate(tile));
+      const volume=clean(rate*scale);
+      if(volume<=EPSILON)continue;
+      const before=waterDepth(tile);
+      setWaterDepth(tile,before+volume,events,source);
+      injectedVolume=clean(injectedVolume+volume);sourceCount++;
+      events.push({type:"HYDROLOGY_SOURCE_INFLOW",x:tile.x,y:tile.y,source,rate,volume,waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile)});
+    }
+    if(injectedVolume>EPSILON&&redistributeAfter)redistribute(map,{source,events,riverPulse:false,volumeScale:scale});
+    if(injectedVolume>EPSILON)events.push({type:"HYDROLOGY_SOURCES_ADVANCED",source,sourceCount,injectedVolume});
+    return events;
+  }
+
+  function settleInitialSources(map,{maxTurns=INITIAL_SOURCE_SETTLE_MAX_TURNS,stableTurns=INITIAL_SOURCE_SETTLE_STABLE_TURNS,stepTurns=INITIAL_SOURCE_SETTLE_STEP_TURNS}={}){
+    const beforeVolume=totalWater(map),capTurns=Math.max(1,Math.floor(Number(maxTurns||0))),needStable=Math.max(1,Math.floor(Number(stableTurns||0))),step=Math.max(1,Math.floor(Number(stepTurns||0)));
+    if(!activeSourceTiles(map).length)return{turns:0,steps:0,stable:true,beforeVolume,afterVolume:beforeVolume};
+    let previous=beforeVolume,stable=0,turns=0,steps=0;
+    while(turns<capTurns){
+      const span=Math.min(step,capTurns-turns),scale=DISCHARGE_VOLUME_PER_TURN*span;
+      advanceSources(map,{events:[],source:"SOURCE_INITIAL_SETTLE",volumeScale:scale,redistributeAfter:true});
+      turns+=span;steps++;
+      const now=totalWater(map),delta=Math.abs(now-previous);
+      stable=delta<=FLOW_EPSILON?stable+1:0;previous=now;
+      if(stable>=needStable)break;
+    }
+    return{turns,steps,stable:stable>=needStable,beforeVolume,afterVolume:totalWater(map)};
+  }
 
   function initializeMap(map){
     for(const tile of map?.tiles||[]){
@@ -672,6 +720,15 @@ export const HydrologyEngine=(()=>{
       if(terrainHasSoil(tile.dryTerrain))tile.soilMoisture=soilCapacity(tile);
     }
     map.hydrologyRiverProfiles=normalizeRiverNetwork(map);
+    refreshRiverChannelCapacity(map);
+    refreshOutletHydraulics(map);
+    reconcileRiverDischarge(map);
+    captureSourceBaselines(map);
+    // Generated spring/source maps represent an already-running watershed at battle
+    // start. Let the real Hydrology flow settle it instead of stamping extra WATER
+    // tiles in the generator. This fills connected low basins and keeps the same
+    // source -> volume -> flow path used during later environment turns.
+    map.hydrologyInitialSourceSettle=settleInitialSources(map);
     captureSourceBaselines(map);
     refreshRiverChannelCapacity(map);
     refreshOutletHydraulics(map);
@@ -764,7 +821,7 @@ export const HydrologyEngine=(()=>{
     return absorbed;
   }
 
-  function releaseStoredRiverWater(map,events=[],source="RIVER_RECESSION"){
+  function releaseStoredRiverWater(map,events=[],source="RIVER_RECESSION",volumeScale=DISCHARGE_VOLUME_PER_TURN){
     const reports=[];
     for(const component of riverComponents(map)){
       const by=new Map(component.map(tile=>[key(tile.x,tile.y),tile]));
@@ -806,7 +863,7 @@ export const HydrologyEngine=(()=>{
           ?Number(tile.outletEffectiveCapacity??tile.channelCapacity??0)
           :Number(tile.channelCapacity||0);
         const spareRate=Math.max(0,routeCapacity-Number(tile.hydrologyOutflowRate||0));
-        const spareVolume=clean(spareRate*DISCHARGE_VOLUME_PER_TURN);
+        const spareVolume=clean(spareRate*Math.max(0,Number(volumeScale||0)));
         const pass=Math.min(available,spareVolume);
         const retained=Math.max(0,available-pass);
 
@@ -871,17 +928,17 @@ export const HydrologyEngine=(()=>{
     return reports;
   }
 
-  function riverDrainBudgets(map){
+  function riverDrainBudgets(map,volumeScale=DISCHARGE_VOLUME_PER_TURN){
     const budgets=new Map();
     for(const tile of map?.tiles||[]){
       if(tile?.river!==true||tile?.hydrologyDrain!==true)continue;
       const spareRate=Math.max(0,Number(tile.outletEffectiveCapacity??tile.channelCapacity??0)-Number(tile.hydrologyOutflowRate||0));
-      budgets.set(key(tile.x,tile.y),clean(spareRate*DISCHARGE_VOLUME_PER_TURN));
+      budgets.set(key(tile.x,tile.y),clean(spareRate*Math.max(0,Number(volumeScale||0))));
     }
     return budgets;
   }
 
-  function applyOutlets(map,events=[],source="DRAINAGE",fed=sourceFedWaterKeys(map),outletBudgets=null){
+  function applyOutlets(map,events=[],source="DRAINAGE",fed=sourceFedWaterKeys(map),outletBudgets=null,volumeScale=DISCHARGE_VOLUME_PER_TURN){
     let drained=0;
     const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
     const by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
@@ -897,12 +954,8 @@ export const HydrologyEngine=(()=>{
       const available=Math.max(0,waterDepth(tile)-floor);
       if(available<=EPSILON)continue;
 
-      // River outlet discharge is handled by reconcileRiverDischarge/recession so
-      // floodwater cannot bypass the terrain-derived outlet capacity here.
-      if(tile.river===true&&tile.hydrologyDrain===true)continue;
-
       const k=key(tile.x,tile.y);
-      if(!budgets.has(k))budgets.set(k,boundaryDrainBudget(map,tile,fed,by));
+      if(!budgets.has(k))budgets.set(k,boundaryDrainBudget(map,tile,fed,by,volumeScale));
       const remaining=Math.max(0,Number(budgets.get(k)||0));
       if(remaining<=EPSILON)continue;
 
@@ -918,7 +971,7 @@ export const HydrologyEngine=(()=>{
         tile.outletOpenWidth=profile.openWidth;
       }
       events.push({
-        type:"WATER_DRAINED_OFF_MAP",
+        type:tile.river===true&&tile.hydrologyDrain===true?"RIVER_THROUGHFLOW_DRAINED":"WATER_DRAINED_OFF_MAP",
         x:tile.x,y:tile.y,
         amount,
         source,
@@ -933,13 +986,13 @@ export const HydrologyEngine=(()=>{
     return drained;
   }
 
-  function redistribute(map,{source="FLOW",events=[],riverPulse=false}={}){
+  function redistribute(map,{source="FLOW",events=[],riverPulse=false,volumeScale=DISCHARGE_VOLUME_PER_TURN}={}){
     if(!map?.tiles?.length)return events;
 
     const riverReports=reconcileRiverDischarge(map,{
       events,
       applyOverflow:riverPulse,
-      volumeScale:DISCHARGE_VOLUME_PER_TURN,
+      volumeScale:Math.max(0,Number(volumeScale||0)),
       source
     });
 
@@ -956,9 +1009,9 @@ export const HydrologyEngine=(()=>{
     const beforeVolume=totalWater(map);
     const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const fed=sourceFedWaterKeys(map);
-    const outletBudgets=outletDrainBudgets(map,fed);
-    const initialOutletDrain=applyOutlets(map,events,source,fed,outletBudgets);
-    const recession=releaseStoredRiverWater(map,events,source);
+    const outletBudgets=outletDrainBudgets(map,fed,volumeScale);
+    const initialOutletDrain=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
+    const recession=releaseStoredRiverWater(map,events,source,volumeScale);
     let iterations=0,maxDelta=0,totalDrained=clean(initialOutletDrain+recession.reduce((sum,r)=>sum+r.drained,0)),totalAbsorbed=0;
 
     // flow -> infiltration -> capacity-limited outlet drainage -> flow again
@@ -982,7 +1035,7 @@ export const HydrologyEngine=(()=>{
       }
 
       const absorbed=absorbStandingWater(map,events,source,fed);
-      const drained=applyOutlets(map,events,source,fed,outletBudgets);
+      const drained=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
       totalAbsorbed+=absorbed;
       totalDrained+=drained;
 
@@ -1095,7 +1148,7 @@ export const HydrologyEngine=(()=>{
     WATERLINE,RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT,NATURAL_WATER_DEPTH,
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,sourceRecessionActive,deactivateSource,advanceSourceRecession,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
