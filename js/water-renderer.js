@@ -951,12 +951,20 @@ export class WaterRenderer{
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        // Transport and storage are separate, but runoff geometry is only for
-        // exposed terrain. Never lay a transport strip over *any* stored water --
-        // even a shallow (< render threshold) film belongs to the canonical water
-        // surface/shoreline representation rather than a second overlay mesh.
+        // Transport and storage are separate. Runoff owns exposed transport where
+        // the standing-water surface renderer has not claimed both endpoints. This
+        // includes sub-threshold storage carried by a real Q, so shallow spring
+        // reaches do not disappear between the source footprint and a waterfall.
         if(!flow?.flowing||flow?.cascade||!flow.from||!flow.to)continue;
-        const fromPooled=hasAnyWater(flow.from),toPooled=hasAnyWater(flow.to);
+        // Visual ownership must follow the surface renderer, not raw storage.
+        // A tile with 0 < waterDepth <= MIN_WATER_DEPTH can contain real storage
+        // without owning a standing-water mesh. Treating any positive depth as
+        // "pooled" made both systems step aside: Surface skipped it for being too
+        // shallow while Runoff skipped it for having storage. That is why a spring
+        // could show Qin/Qout and even produce a downstream waterfall while the
+        // ground reach between them looked completely dry.
+        const fromPooled=this.isRenderableWater(flow.from),toPooled=this.isRenderableWater(flow.to);
+        const fromStored=hasAnyWater(flow.from),toStored=hasAnyWater(flow.to);
         if(fromPooled&&toPooled)continue;
         const sourceEdge=flow.from?.hydrologySource===true||flow.to?.hydrologySource===true;
         const downhillTransport=Number(flow.surfaceDrop||0)>EPSILON*4;
@@ -971,7 +979,7 @@ export class WaterRenderer{
         if(!flow.sheetFlow&&!sourceEdge&&!downhillTransport&&!persistentTransport)continue;
         const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
         out.push({
-          id,from:flow.from,to:flow.to,fromPooled,toPooled,
+          id,from:flow.from,to:flow.to,fromPooled,toPooled,fromStored,toStored,
           rate:Number(flow.rate||0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),persistentRate:Number(flow.persistentRate??flow.edgeDischarge??0),
           transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),
           hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null
@@ -1008,12 +1016,15 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled};
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored)};
     return mesh;
   }
 
   runoffSignatureFor(edges){
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}`).sort().join("|");
+    // Geometry clips at the midpoint whenever a standing-water surface owns one
+    // endpoint. Include that ownership in the cache signature so crossing the
+    // visible-water threshold cannot leave a stale full-length/half-length strip.
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}`).sort().join("|");
   }
 
   polygonSurfaceLevelAtPoint(point,polygon){
