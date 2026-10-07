@@ -62,8 +62,10 @@ export class WaterRenderer{
     this.surfaceMeshes=new Map();
     this.surfaceAnimations=new Map();
     this.cascades=new Map();
+    this.runoffs=new Map();
     this.surfaceSignature="";
     this.cascadeSignature="";
+    this.runoffSignature="";
     this.waveTime=0;
     this.waveAccumulator=0;
     this.wind={x:0,z:0,strength:0};
@@ -849,6 +851,53 @@ export class WaterRenderer{
     return{u,v,w};
   }
 
+  terrainSurfaceYAtPoint(tile,point){
+    const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
+    for(const triangle of geometry?.triangles||[]){
+      const bary=this.pointInTriangleXZ(point,triangle[0],triangle[1],triangle[2]);
+      if(!bary)continue;
+      return Number(triangle[0].y)*bary.u+Number(triangle[1].y)*bary.w+Number(triangle[2].y)*bary.v;
+    }
+    return Number(tile?.elevation||0)*ELEVATION_HEIGHT;
+  }
+
+  runoffEdges(state){
+    const all=tilesOf(state),by=this.byKey(all),seen=new Set(),out=[];
+    for(const tile of all){
+      for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
+        const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
+        const flow=this.hydrologyEdgeState(tile,neighbor);
+        if(!flow?.sheetFlow||!flow.from||!flow.to)continue;
+        const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
+        out.push({id,from:flow.from,to:flow.to,rate:Number(flow.rate||0),transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null});
+      }
+    }
+    return out;
+  }
+
+  buildRunoff(edge){
+    const from=edge.from,to=edge.to,dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),len=Math.hypot(dx,dz)||1,px=-dz/len,pz=dx/len;
+    const rate=Math.max(.05,Number(edge.rate||0)),halfWidth=TILE_SIZE*clamp(.055+Math.sqrt(rate)*.045,.055,.16),steps=6;
+    const positions=[],indices=[],normals=[],uvs=[];
+    for(let i=0;i<=steps;i++){
+      const t=i/steps,cx=(Number(from.x)+(Number(to.x)-Number(from.x))*t)*TILE_SIZE,cz=(Number(from.y)+(Number(to.y)-Number(from.y))*t)*TILE_SIZE,tile=t<.5?from:to;
+      for(const side of[-1,1]){
+        const x=cx+px*halfWidth*side,z=cz+pz*halfWidth*side,y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.55;
+        const point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(side<0?0:1,t*2.2);normals.push(0,0,0);
+      }
+    }
+    for(let i=0;i<steps;i++){const a=i*2,b=a+1,c=a+2,d=a+3;indices.push(a,b,d,a,d,c);}
+    BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+    const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
+    mesh.material=this.cascadeMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.rate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false};
+    return mesh;
+  }
+
+  runoffSignatureFor(edges){
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}`).sort().join("|");
+  }
+
   polygonSurfaceLevelAtPoint(point,polygon){
     if(!point||!polygon?.length)return null;
     for(let i=1;i<polygon.length-1;i++){
@@ -1075,6 +1124,7 @@ export class WaterRenderer{
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
+    const runoffs=this.runoffEdges(state);
 
     const surfaceSignature=this.surfaceSignatureFor(components,state);
     if(surfaceSignature!==this.surfaceSignature){
@@ -1101,9 +1151,16 @@ export class WaterRenderer{
       this.cascadeSignature=cascadeSignature;
     }
 
-    if(!waterTiles.length){
-      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.resetWaterSeamRegistry();
-      this.surfaceSignature=this.cascadeSignature="";
+    const runoffSignature=this.runoffSignatureFor(runoffs);
+    if(runoffSignature!==this.runoffSignature){
+      this.disposeMap(this.runoffs);
+      for(const edge of runoffs){const built=this.buildRunoff(edge);if(built)this.runoffs.set(edge.id,built);}
+      this.runoffSignature=runoffSignature;
+    }
+
+    if(!waterTiles.length&&!runoffs.length){
+      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.resetWaterSeamRegistry();
+      this.surfaceSignature=this.cascadeSignature=this.runoffSignature="";
     }
   }
 
@@ -1112,6 +1169,7 @@ export class WaterRenderer{
       surfaceMeshes:this.surfaceMeshes.size,
       sideMeshes:0,
       cascades:this.cascades.size,
+      surfaceRunoffs:this.runoffs.size,
       separatedWaterLevels:false,
       hydrologyContinuousSurface:true,
       sharedWetEdges:true,

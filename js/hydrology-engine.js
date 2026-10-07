@@ -113,19 +113,11 @@ export const HydrologyEngine=(()=>{
     }
 
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
-    let sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
-    const sourceWasDisabled=component.some(tile=>tile?.hydrologySourceDisabled===true);
-    if(!sources.length&&!sourceWasDisabled){
-      // Every upstream dead-end is a tributary/source. This makes branches physically
-      // valid instead of creating an unexplained local water-surface hump.
-      sources=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
-      if(!sources.length){
-        const minProjection=Math.min(...component.map(project));
-        sources=component.filter(tile=>Math.abs(project(tile)-minProjection)<=EPSILON&&!drainKeys.has(key(tile.x,tile.y)));
-      }
-    }
+    const sources=component.filter(tile=>tile?.hydrologySource===true&&!drainKeys.has(key(tile.x,tile.y)));
 
-    // Rebuild inferred source/drain markers deterministically.
+    // Sources are explicit physical inputs (OFF_MAP_SOURCE / SPRING_SOURCE).
+    // River geometry is never allowed to promote an upstream leaf into a source.
+    // Rebuild source/drain markers deterministically from those formal inputs.
     for(const tile of component){
       tile.hydrologySource=false;
       tile.hydrologyDrain=false;
@@ -1220,8 +1212,14 @@ export const HydrologyEngine=(()=>{
 
     authored=authored||authoredCascade(from,to)||persistent?.authored===true||solver?.authored===true;
     const fromDepth=waterDepth(from),toDepth=waterDepth(to);
-    const fromSurface=fromDepth>EPSILON?Number(waterSurfaceZ(from)):elevation(from);
-    const toSurface=toDepth>EPSILON?Number(waterSurfaceZ(to)):elevation(to);
+    // Edge records capture the hydraulic head at the instant water crossed the edge.
+    // Use that transport surface when storage has already drained from a steep slope;
+    // otherwise a real through-flow would disappear visually just because it stores
+    // almost no standing water on the intermediate tile.
+    const recordedFrom=Number(persistent?.fromSurface??solver?.fromSurface);
+    const recordedTo=Number(persistent?.toSurface??solver?.toSurface);
+    const fromSurface=Number.isFinite(recordedFrom)?recordedFrom:(fromDepth>EPSILON?Number(waterSurfaceZ(from)):elevation(from));
+    const toSurface=Number.isFinite(recordedTo)?recordedTo:(toDepth>EPSILON?Number(waterSurfaceZ(to)):elevation(to));
     const surfaceDrop=Math.max(0,fromSurface-toSurface);
     const bedDrop=elevation(from)-elevation(to);
     const naturalFrom=Number(from.hydrologyChannelBaseElevation??elevation(from));
@@ -1235,14 +1233,18 @@ export const HydrologyEngine=(()=>{
     const transportVolume=persistentRate>EPSILON
       ?Math.max(0,Number(persistent?.transportVolume||persistentRate*DISCHARGE_VOLUME_PER_TURN))
       :solverVolume;
-    const flowing=fromDepth>EPSILON&&(resolvedRate>EPSILON||solverVolume>EPSILON);
+    const flowing=(resolvedRate>EPSILON||solverVolume>EPSILON)&&(fromDepth>EPSILON||transportVolume>EPSILON||solverVolume>EPSILON);
     const cascade=flowing&&
       surfaceDrop>=Math.max(0,Number(minCascadeDrop||0))&&
       (authored||cliffDrop>Math.max(0,Number(minCliffDrop||0)));
+    // A non-cliff downhill transport edge is surface runoff. It is deliberately
+    // separate from standing waterDepth so a thin moving film does not become a
+    // gameplay-depth tile (drowning/buoyancy remain owned by actual storage).
+    const sheetFlow=flowing&&!cascade&&surfaceDrop>FLOW_EPSILON&&bedDrop>FLOW_EPSILON;
     const hydraulicPower=clean(resolvedRate*Math.max(0,surfaceDrop));
 
     return{
-      flowing,cascade,authored,from,to,
+      flowing,cascade,sheetFlow,authored,from,to,
       dirX:Math.sign(Number(to.x)-Number(from.x)),dirY:Math.sign(Number(to.y)-Number(from.y)),
       surfaceDrop:clean(surfaceDrop),bedDrop:roundSigned(bedDrop),naturalDrop:roundSigned(naturalDrop),cliffDrop:roundSigned(cliffDrop),
       volume:clean(solverVolume),transportVolume:clean(transportVolume),

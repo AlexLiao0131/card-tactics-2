@@ -12,8 +12,9 @@ export const MapGenerator=(()=>{
   const RIVER_GENTLE_STEP=.025;
   const RIVER_CASCADE_BED_DROP=1.0001;
   const HIGH_SPRING_SOURCE_CHANCE=.40;
-  const HIGH_SPRING_MIN_ELEVATION=2;
+  const HIGH_SPRING_MIN_ELEVATION=1;
   const HIGH_SPRING_INFLOW=1;
+  const OFF_MAP_SOURCE_INFLOW=1;
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   const inBounds=(w,h,x,y)=>x>=0&&y>=0&&x<w&&y<h;
   const tileAt=(map,x,y)=>map.tiles.find(t=>t.x===x&&t.y===y)||null;
@@ -138,13 +139,9 @@ export const MapGenerator=(()=>{
     const drainKeys=new Set(drains.map(tile=>key(tile.x,tile.y)));
     // Only the authored upstream basin seeds the generated river. Ford connector
     // branches are gameplay crossings, not magical tributary springs.
-    let sources=rivers.filter(tile=>tile?.hydrologyAuthoredSource===true&&!drainKeys.has(key(tile.x,tile.y)));
-    if(!sources.length){
-      const naturalLeaves=leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y))&&tile?.ford!==true&&!tile?.routeId);
-      const pool=naturalLeaves.length?naturalLeaves:leaves.filter(tile=>!drainKeys.has(key(tile.x,tile.y)));
-      const minY=pool.length?Math.min(...pool.map(tile=>Number(tile.y||0))):Math.min(...rivers.map(tile=>Number(tile.y||0)));
-      sources=pool.filter(tile=>Number(tile.y||0)===minY);
-    }
+    // Sources are formal authored hydrology inputs. Never promote a river leaf or
+    // projection edge into a magical source merely because it is upstream.
+    const sources=rivers.filter(tile=>tile?.hydrologyAuthoredSource===true&&!drainKeys.has(key(tile.x,tile.y)));
 
     for(const tile of rivers){tile.hydrologySource=false;tile.hydrologyDrain=false;}
     for(const tile of sources)tile.hydrologySource=true;
@@ -343,21 +340,61 @@ export const MapGenerator=(()=>{
       path.reverse();return path;
     }
 
-    function chooseUpstreamSource(){
-      const maxY=clamp(Math.round(map.height*.24),2,map.height-3);
+    function chooseOffMapSource(){
+      // An innate/pre-existing river may only enter from outside the battlefield.
+      // Pick a boundary entry; do not invent an internal BASIN_SOURCE.
       const candidates=[];
-      for(let y=1;y<=maxY;y++)for(let x=2;x<=map.width-3;x++){
-        const tile=getTile(x,y);
-        if(!tile||tile.captureZone===true||protectedKeys.has(key(x,y)))continue;
-        // Prefer an actual local depression near the intended river corridor.
-        const local=DIRS.map(([dx,dy])=>getTile(x+dx,y+dy)).filter(Boolean);
-        const localMean=local.length?local.reduce((sum,t)=>sum+Number(t.elevation||0),0)/local.length:Number(tile.elevation||0);
-        const basinBonus=Math.max(0,localMean-Number(tile.elevation||0));
-        const score=Number(tile.elevation||0)*6+Math.abs(x-xBase)*.55+y*.08-basinBonus*2.2;
+      for(let x=2;x<=map.width-3;x++){
+        const tile=getTile(x,0);
+        if(!tile||tile.captureZone===true||protectedKeys.has(key(x,0)))continue;
+        const next=getTile(x,1);
+        const score=Number(tile.elevation||0)*2+Math.abs(x-xBase)*.45+Math.max(0,Number(tile.elevation||0)-Number(next?.elevation||0))*.2;
+        candidates.push({tile,score});
+      }
+      candidates.sort((a,b)=>a.score-b.score||Math.abs(a.tile.x-xBase)-Math.abs(b.tile.x-xBase));
+      return candidates[0]?.tile||getTile(clamp(xBase,2,map.width-3),0);
+    }
+
+    function springCanReachOutlet(source){
+      // A spring is not given a pre-carved river. We only reject placements whose
+      // watershed cannot ever spill to an existing river or map boundary without
+      // rising above the spring's own terrain level. Depressions/flats may fill first.
+      const ceiling=Number(source.elevation||0)+1e-6,seen=new Set([key(source.x,source.y)]),queue=[source];
+      while(queue.length){
+        const current=queue.shift();
+        if(current!==source&&(current.river===true||current.x===0||current.y===0||current.x===map.width-1||current.y===map.height-1))return true;
+        for(const[dx,dy]of DIRS){
+          const next=getTile(current.x+dx,current.y+dy),nk=next?key(next.x,next.y):null;
+          if(!next||seen.has(nk)||next.captureZone===true||protectedKeys.has(nk)||Number(next.elevation||0)>ceiling)continue;
+          seen.add(nk);queue.push(next);
+        }
+      }
+      return false;
+    }
+
+    function placeNaturalSpring(){
+      if(rand()>=HIGH_SPRING_SOURCE_CHANCE)return null;
+      const candidates=[];
+      for(let y=1;y<map.height-1;y++)for(let x=2;x<=map.width-3;x++){
+        const tile=getTile(x,y),tileKey=key(x,y);
+        if(!tile||tile.river===true||tile.captureZone===true||protectedKeys.has(tileKey)||Number(tile.waterDepth||0)>0)continue;
+        const height=Number(tile.elevation||0);if(height<HIGH_SPRING_MIN_ELEVATION)continue;
+        const neighbors=DIRS.map(([dx,dy])=>getTile(x+dx,y+dy)).filter(Boolean);
+        const downhill=neighbors.filter(next=>Number(next.elevation||0)<height-1e-6);
+        const supported=neighbors.some(next=>Number(next.elevation||0)>=height-1e-6);
+        if(!downhill.length||!supported||!springCanReachOutlet(tile))continue;
+        const lowest=Math.min(...downhill.map(next=>Number(next.elevation||0)));
+        const relief=height-lowest;
+        // Prefer a shoulder/slope with a real downhill watershed, not an isolated pillar.
+        const score=Math.abs(x-xBase)*.12+y*.05-relief*.8+Math.abs(downhill.length-2)*.35;
         candidates.push({tile,score});
       }
       candidates.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
-      return candidates[0]?.tile||getTile(xBase,1)||getTile(xBase,0);
+      const source=candidates[0]?.tile||null;if(!source)return null;
+      source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
+      source.hydrologySourceInflow=HIGH_SPRING_INFLOW;source.baseDischarge=HIGH_SPRING_INFLOW;source.discharge=HIGH_SPRING_INFLOW;
+      source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.elevation||0);
+      return source;
     }
 
 
@@ -403,52 +440,16 @@ export const MapGenerator=(()=>{
       return path.length?path[path.length-1]:null;
     }
 
-    function attachHighSpring(basinSource){
-      if(!basinSource||rand()>=HIGH_SPRING_SOURCE_CHANCE)return null;
-      const radius=Math.max(5,Math.round(Math.min(map.width,map.height)*.38));
-      const maxY=clamp(Math.round(map.height*.28),2,map.height-3),candidates=[];
-      for(let y=1;y<=maxY;y++)for(let x=2;x<=map.width-3;x++){
-        const tile=getTile(x,y),tileKey=key(x,y);
-        if(!tile||tile===basinSource||tile.captureZone===true||protectedKeys.has(tileKey)||riverKeys.has(tileKey))continue;
-        if(Number(tile.elevation||0)<HIGH_SPRING_MIN_ELEVATION)continue;
-        const distance=Math.abs(x-basinSource.x)+Math.abs(y-basinSource.y);
-        if(distance>radius)continue;
-        for(const[dx,dy]of DIRS){
-          const outlet=getTile(x+dx,y+dy),outletKey=outlet?key(outlet.x,outlet.y):"";
-          if(!outlet||outlet.captureZone===true||protectedKeys.has(outletKey))continue;
-          const drop=Number(tile.elevation||0)-Number(outlet.elevation||0);
-          if(drop<=RIVER_CASCADE_BED_DROP)continue;
-          const path=springConnectorPath({x:outlet.x,y:outlet.y},{x:basinSource.x,y:basinSource.y});
-          if(!path.length||path.length>radius+2||path.some(point=>point.x===x&&point.y===y))continue;
-          const adjacent=new Set();
-          for(const[adx,ady]of DIRS){const neighbor=getTile(x+adx,y+ady);if(neighbor&&riverKeys.has(key(neighbor.x,neighbor.y)))adjacent.add(key(neighbor.x,neighbor.y));}
-          for(const point of path)if(Math.abs(point.x-x)+Math.abs(point.y-y)===1)adjacent.add(key(point.x,point.y));
-          if(adjacent.size!==1||!adjacent.has(outletKey))continue;
-          const score=distance*3+path.length-Number(tile.elevation||0)*1.5-drop*3+Math.abs(x-xBase)*.25;
-          candidates.push({tile,outlet,path,drop,score});
-        }
-      }
-      candidates.sort((a,b)=>a.score-b.score||b.drop-a.drop||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
-      const picked=candidates[0];if(!picked)return null;
-      const source=placeRiverTile(picked.tile.x,picked.tile.y);if(!source)return null;
-      source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";source.hydrologySourceInflow=HIGH_SPRING_INFLOW;
-      source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.hydrologyChannelBaseElevation??0);
-      // The first edge is guaranteed to be a real pre-carving drop. The remaining
-      // connector joins the existing upstream river without touching protected roads.
-      for(const point of picked.path){if(point.x===basinSource.x&&point.y===basinSource.y)continue;placeRiverTile(point.x,point.y);}
-      basinSource.hydrologyAuthoredSource=false;delete basinSource.sourceKind;delete basinSource.sourceObjectId;
-      return source;
-    }
 
-    // Main river starts in an actual low upstream basin instead of materialising
-    // on the map boundary. The source tile is authored explicitly so later ford
-    // connector branches can never become fake springs.
-    const sourceSeed=chooseUpstreamSource();
-    if(!sourceSeed)throw new Error("River source basin generation failed");
+
+    // A pre-existing river has one formal OFF_MAP_SOURCE at the map boundary.
+    // On-map springs are separate sources and never receive a pre-carved connector.
+    const sourceSeed=chooseOffMapSource();
+    if(!sourceSeed)throw new Error("Off-map river source generation failed");
     let targetX=sourceSeed.x;
     let last={x:sourceSeed.x,y:sourceSeed.y};
     const authoredSource=placeRiverTile(last.x,last.y);
-    if(authoredSource){authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="BASIN_SOURCE";authoredSource.hydrologySourceInflow=HIGH_SPRING_INFLOW;}
+    if(authoredSource){authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="OFF_MAP_SOURCE";authoredSource.hydrologySourceInflow=OFF_MAP_SOURCE_INFLOW;authoredSource.baseDischarge=OFF_MAP_SOURCE_INFLOW;authoredSource.discharge=OFF_MAP_SOURCE_INFLOW;}
 
     for(let y=sourceSeed.y+1;y<map.height;y++){
       if(rand()<.28)targetX=clamp(targetX+(rand()<.5?-1:1),3,map.width-4);
@@ -497,11 +498,12 @@ export const MapGenerator=(()=>{
       }
     });
 
-    attachHighSpring(authoredSource);
     const profile=finalizeGeneratedRiverProfile(map);
-    const sourceObjects=(profile.sources||[])
-      .filter(ref=>ref.kind==="SPRING_SOURCE")
-      .map(ref=>({id:ref.objectId||`generated_spring_${ref.x}_${ref.y}`,x:ref.x,y:ref.y,type:"SPRING",environment:"WATER",destructible:true,blocksMovement:false,floatOnWater:false,hydrologySourceX:ref.x,hydrologySourceY:ref.y}));
+    const spring=placeNaturalSpring();
+    if(spring){
+      profile.sources.push({x:spring.x,y:spring.y,kind:"SPRING_SOURCE",active:true,objectId:spring.sourceObjectId});
+    }
+    const sourceObjects=spring?[{id:spring.sourceObjectId,x:spring.x,y:spring.y,type:"SPRING",environment:"WATER",destructible:true,blocksMovement:false,floatOnWater:false,hydrologySourceX:spring.x,hydrologySourceY:spring.y}]:[];
     return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile,sourceObjects};
   }
 
