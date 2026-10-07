@@ -80,6 +80,9 @@ export class WaterRenderer{
     const cascade=this.makeCascadeMaterial();
     this.cascadeMaterial=cascade.material;
     this.cascadeTexture=cascade.texture;
+    const runoff=this.makeRunoffMaterial();
+    this.runoffMaterial=runoff.material;
+    this.runoffTexture=runoff.texture;
     this.foamMaterial=this.makeSideMaterial("water-foam",new BABYLON.Color3(.78,.93,1),.52);
     this.rogueFoamMaterial=this.makeSideMaterial("rogue-wave-foam",new BABYLON.Color3(.90,.98,1),.86);
 
@@ -116,6 +119,7 @@ export class WaterRenderer{
       }
       for(const whirl of this.whirlpools.values())this.updateWhirlpoolVisual(whirl,dt);
       this.cascadeTexture.vOffset=(this.cascadeTexture.vOffset-dt*.72)%1;
+      this.runoffTexture.vOffset=(this.runoffTexture.vOffset-dt*.28)%1;
       for(const entry of this.cascades.values()){
         const impact=Math.max(.32,Number(entry.impactScale||1)),p=1+Math.sin(this.waveTime*(2.6+impact*.9)+entry.phase)*(.035+.035*Math.min(1,impact));
         for(const group of entry.impacts||[]){
@@ -300,6 +304,37 @@ export class WaterRenderer{
     material.specularPower=34;
     material.backFaceCulling=false;
     material.needDepthPrePass=false;
+    if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
+    return{material,texture};
+  }
+
+  makeRunoffMaterial(){
+    // Surface runoff is a thin terrain-following film, not a miniature waterfall.
+    // Give it its own low-contrast flow texture so it cannot draw bright rails across
+    // established river/lake surfaces or inherit the cascade's white streak pattern.
+    const texture=new BABYLON.DynamicTexture("runoff-flow-texture",{width:96,height:256},this.scene,true);
+    texture.hasAlpha=true;
+    const ctx=texture.getContext();
+    ctx.clearRect(0,0,96,256);
+    const cross=ctx.createLinearGradient(0,0,96,0);
+    cross.addColorStop(0,"rgba(164,220,236,0.04)");
+    cross.addColorStop(.22,"rgba(160,224,238,0.20)");
+    cross.addColorStop(.5,"rgba(190,236,244,0.30)");
+    cross.addColorStop(.78,"rgba(160,224,238,0.20)");
+    cross.addColorStop(1,"rgba(164,220,236,0.04)");
+    ctx.fillStyle=cross;ctx.fillRect(0,0,96,256);
+    ctx.strokeStyle="rgba(228,248,250,0.14)";ctx.lineWidth=2;
+    for(let y=18;y<256;y+=52){ctx.beginPath();ctx.moveTo(12,y);ctx.bezierCurveTo(32,y+5,62,y-4,84,y+2);ctx.stroke();}
+    texture.update();texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;texture.wrapU=BABYLON.Texture.CLAMP_ADDRESSMODE;
+
+    const material=new BABYLON.StandardMaterial("surface-runoff-water",this.scene);
+    material.diffuseTexture=texture;
+    material.diffuseColor=new BABYLON.Color3(.39,.70,.76);
+    material.emissiveColor=new BABYLON.Color3(.018,.045,.050);
+    material.alpha=.52;
+    material.specularColor=new BABYLON.Color3(.24,.38,.42);
+    material.specularPower=24;
+    material.backFaceCulling=false;material.needDepthPrePass=false;
     if(BABYLON.Material?.MATERIAL_ALPHABLEND!=null)material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
     return{material,texture};
   }
@@ -861,6 +896,16 @@ export class WaterRenderer{
     return Number(tile?.elevation||0)*ELEVATION_HEIGHT;
   }
 
+  flowCorridorHalfWidth(edge){
+    // Q describes transport while waterDepth describes storage. A moving film needs
+    // a finite wetted corridor even when storage on the slope is nearly zero. Keep
+    // one generic Q->width mapping for slope runoff and the waterfall lip hand-off.
+    const q=Math.max(0,Number((edge?.edgeDischarge??edge?.rate)??0));
+    const transported=Math.max(0,Number(edge?.transportVolume||0));
+    const strength=Math.max(q,transported*.5);
+    return TILE_SIZE*clamp(.10+Math.sqrt(strength)*.075,.10,.26);
+  }
+
   runoffEdges(state){
     const all=tilesOf(state),by=this.byKey(all),seen=new Set(),out=[];
     for(const tile of all){
@@ -868,8 +913,19 @@ export class WaterRenderer{
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
         if(!flow?.sheetFlow||!flow.from||!flow.to)continue;
+        const fromPooled=this.isRenderableWater(flow.from),toPooled=this.isRenderableWater(flow.to);
+        // The standing-water surface already owns a river/lake reach. Drawing a
+        // center-to-center runoff ribbon on top of it is the bright straight line
+        // seen in v5. Runoff exists visually only where transport crosses exposed
+        // sloped terrain; pooled water remains one continuous surface mesh.
+        if(fromPooled&&toPooled)continue;
         const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
-        out.push({id,from:flow.from,to:flow.to,rate:Number(flow.rate||0),transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null});
+        out.push({
+          id,from:flow.from,to:flow.to,fromPooled,toPooled,
+          rate:Number(flow.rate||0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),
+          transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),
+          hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null
+        });
       }
     }
     return out;
@@ -877,20 +933,27 @@ export class WaterRenderer{
 
   buildRunoff(edge){
     const from=edge.from,to=edge.to,dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),len=Math.hypot(dx,dz)||1,px=-dz/len,pz=dx/len;
-    const rate=Math.max(.05,Number(edge.rate||0)),halfWidth=TILE_SIZE*clamp(.055+Math.sqrt(rate)*.045,.055,.16),steps=6;
-    const positions=[],indices=[],normals=[],uvs=[];
+    // Center-to-center geometry is clipped at the shared tile edge whenever one end
+    // is already pooled. This creates a real hand-off: pool -> slope film -> pool,
+    // instead of a decorative stripe continuing through the water body.
+    const tStart=edge.fromPooled?.5:0,tEnd=edge.toPooled?.5:1;if(tEnd-tStart<=EPSILON)return null;
+    const baseHalfWidth=this.flowCorridorHalfWidth(edge),steps=Math.max(4,Math.ceil((tEnd-tStart)*10));
+    const positions=[],indices=[],normals=[],uvs=[],phase=hash01(edge.id)*Math.PI*2;
     for(let i=0;i<=steps;i++){
-      const t=i/steps,cx=(Number(from.x)+(Number(to.x)-Number(from.x))*t)*TILE_SIZE,cz=(Number(from.y)+(Number(to.y)-Number(from.y))*t)*TILE_SIZE,tile=t<.5?from:to;
+      const local=i/steps,t=tStart+(tEnd-tStart)*local,envelope=Math.sin(Math.PI*local),meander=Math.sin(local*Math.PI*2+phase)*baseHalfWidth*.10*envelope;
+      const width=baseHalfWidth*(.90+.10*Math.sin(local*Math.PI+phase*.35));
+      const cx=(Number(from.x)+(Number(to.x)-Number(from.x))*t)*TILE_SIZE+px*meander,cz=(Number(from.y)+(Number(to.y)-Number(from.y))*t)*TILE_SIZE+pz*meander;
+      const tile=t<.5?from:to;
       for(const side of[-1,1]){
-        const x=cx+px*halfWidth*side,z=cz+pz*halfWidth*side,y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.55;
-        const point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(side<0?0:1,t*2.2);normals.push(0,0,0);
+        const x=cx+px*width*side,z=cz+pz*width*side,y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.48;
+        const point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(side<0?0:1,local*2.0);normals.push(0,0,0);
       }
     }
     for(let i=0;i<steps;i++){const a=i*2,b=a+1,c=a+2,d=a+3;indices.push(a,b,d,a,d,c);}
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
-    mesh.material=this.cascadeMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.rate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false};
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true};
     return mesh;
   }
 
@@ -986,7 +1049,7 @@ export class WaterRenderer{
 
   cascadeSpillIntervals(edge,state,wall,polygons=null){
     const allMap=this.allByKey(state),waterPolygons=polygons||this.waterSurfacePolygons(edge.tile,allMap),metrics=this.wallPathMetrics(wall);
-    if(!metrics||!waterPolygons.length)return[];
+    if(!metrics)return[];
     const spans=[];
     for(let i=0;i<metrics.count-1;i++){
       const a=metrics.lip[i],b=metrics.lip[i+1],segmentStart=metrics.cumulative[i],length=metrics.cumulative[i+1]-segmentStart;
@@ -995,7 +1058,27 @@ export class WaterRenderer{
         for(const interval of this.segmentPolygonIntervals(a,b,polygon))spans.push({start:segmentStart+interval.start*length,end:segmentStart+interval.end*length});
       }
     }
-    return this.mergeDistanceSpans(spans);
+
+    // Storage intersection alone can collapse a source-fed waterfall into a thin
+    // sliver: a steep lip transports Q continuously while holding almost no local
+    // waterDepth. The same Q->wet-corridor model used by slope runoff therefore
+    // supplies the minimum physically wet lip width. Existing broader polygon spans
+    // are preserved; this only fills/expands a transport span, never a dry no-Q lip.
+    let merged=this.mergeDistanceSpans(spans);
+    const q=Math.max(0,Number((edge?.edgeDischarge??edge?.rate)??0)),transport=Math.max(0,Number(edge?.transportVolume||0));
+    if(q>EPSILON||transport>EPSILON){
+      const targetWidth=Math.min(metrics.total,this.flowCorridorHalfWidth(edge)*2),currentWidth=merged.reduce((sum,span)=>sum+Math.max(0,span.end-span.start),0);
+      if(targetWidth>currentWidth+EPSILON){
+        let center=metrics.total*.5;
+        if(merged.length){
+          const weight=Math.max(EPSILON,currentWidth);
+          center=merged.reduce((sum,span)=>sum+((span.start+span.end)*.5)*Math.max(EPSILON,span.end-span.start),0)/weight;
+        }
+        const half=targetWidth*.5,start=clamp(center-half,0,Math.max(0,metrics.total-targetWidth));
+        merged=this.mergeDistanceSpans([...merged,{start,end:start+targetWidth}]);
+      }
+    }
+    return merged;
   }
 
   resetWaterSeamRegistry(){this.waterSeamRegistry.clear();}
@@ -1218,6 +1301,10 @@ export class WaterRenderer{
       interiorNormalOffsetOnly:true,
       hydraulicWetSpans:true,
       exactPolygonLipIntersection:true,
+      dischargeBackedLipWidth:true,
+      runoffOverPooledWater:false,
+      runoffPoolBoundaryHandoff:true,
+      dedicatedRunoffMaterial:true,
       fixedCascadeWidth:false,
       persistentPerEdgeDischarge:true,
       hydraulicImpactPower:true,
