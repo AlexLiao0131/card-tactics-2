@@ -11,10 +11,11 @@ function create(ctx){
   function tileHydrology(tile){
     const depth=Number(window.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);
     const edgeOutflows=Object.fromEntries(Object.entries(tile?.hydrologyEdgeOutflows||{}).map(([dir,flow])=>[dir,{...flow}]));
+    const edgeDischarge=Object.fromEntries(Object.entries(tile?.hydrologyEdgeDischarge||{}).map(([dir,flow])=>[dir,{...flow}]));
     return{
       waterDepth:Math.max(0,Number.isFinite(depth)?depth:0),waterSurfaceZ:surface==null?null:Number(surface),soilMoisture:Number(tile?.soilMoisture||0),debrisMass:Number(tile?.debrisMass||0),material:tile?.material||null,snowDepth:Number(tile?.snowDepth||0),iceThickness:Number(tile?.iceThickness||0),flowX:Number(tile?.flowX||0),flowY:Number(tile?.flowY||0),flowSpeed:Number(tile?.flowSpeed||0),river:!!tile?.river,ford:!!tile?.ford,
       hydrologySource:tile?.hydrologySource===true,hydrologySourceDisabled:tile?.hydrologySourceDisabled===true,hydrologySourceInflow:Number(tile?.hydrologySourceInflow||0),hydrologyRequestedSourceInflow:Number(tile?.hydrologyRequestedSourceInflow||0),
-      hydrologyEdgeOutflows:edgeOutflows,hydrologyCascadeToX:tile?.hydrologyCascadeToX??null,hydrologyCascadeToY:tile?.hydrologyCascadeToY??null,hydrologyCascadeDrop:Number(tile?.hydrologyCascadeDrop||0),hydrologyChannelBaseElevation:tile?.hydrologyChannelBaseElevation??null,
+      hydrologyEdgeOutflows:edgeOutflows,hydrologyEdgeDischarge:edgeDischarge,hydrologyCascadeToX:tile?.hydrologyCascadeToX??null,hydrologyCascadeToY:tile?.hydrologyCascadeToY??null,hydrologyCascadeDrop:Number(tile?.hydrologyCascadeDrop||0),hydrologyChannelBaseElevation:tile?.hydrologyChannelBaseElevation??null,
       ...(tile?.dryTerrain?{dryTerrain:tile.dryTerrain}:{})
     };
   }

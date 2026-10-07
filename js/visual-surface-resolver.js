@@ -452,24 +452,57 @@ export class VisualSurfaceResolver{
   }
 
   shoreContactAt(tile,byKey,ox=0,oz=0){
-    // Presentation only: immediate shared edges and the rendered ground height.
-    // No diagonal shortcuts through land and no wet tint up a dry high cliff.
+    // Presentation only. Build one continuous shoreline-contact field from the
+    // four real shared water edges, then bridge only corners that are connected
+    // to one of those edges. This keeps the hydrology/grid ownership unchanged
+    // while preventing the wet-bank decoration from tracing a hard 90-degree
+    // tile mask around lakes and rivers. A diagonal water tile alone can never
+    // wet through a dry corner.
     if(!tile||waterDepthOf(tile)>0)return 0;
+    const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
+    const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
     let ground=null;
-    let contact=0;
+    const sampleGround=()=>ground==null?(ground=this.sampleRenderedHeight(tile,byKey,px,pz)):ground;
+    const edgeContacts=new Map();
+    const contactFor=(water,distance)=>{
+      const level=this.waterSurfaceOf(water);
+      if(level==null)return 0;
+      const edge=1-smooth01(Math.max(0,distance)/.48);
+      if(edge<=0)return 0;
+      const height=1-smooth01(Math.abs(sampleGround()-level)/.65);
+      const depth=smooth01(waterDepthOf(water)/.12);
+      return clamp01(edge*height*depth);
+    };
+
     for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
       const water=this.tileAt(byKey,tile.x+dx,tile.y+dy);
-      const level=this.waterSurfaceOf(water);
-      if(level==null)continue;
-      const distance=Math.max(0,.5-ox*dx-oz*dy);
-      const edge=1-smooth01(distance/.48);
-      if(edge<=0)continue;
-      if(ground==null)ground=this.sampleRenderedHeight(tile,byKey,ox,oz);
-      const height=1-smooth01(Math.abs(ground-level)/.65);
-      const depth=smooth01(waterDepthOf(water)/.12);
-      contact=Math.max(contact,edge*height*depth);
+      const distance=.5-px*dx-pz*dy;
+      const contact=contactFor(water,distance);
+      if(contact>0)edgeContacts.set(`${dx},${dy}`,contact);
     }
-    return contact;
+
+    // Probabilistic union gives the two edge bands a rounded, continuous join
+    // instead of max()'s square/L-shaped isolines. It is still driven entirely
+    // by actual cardinal water contacts.
+    let dry=1;
+    for(const contact of edgeContacts.values())dry*=1-contact;
+    let contact=1-dry;
+
+    // At a connected shoreline turn, use the real diagonal water level only to
+    // round the outer decoration around the shared corner. Requiring at least one
+    // adjacent cardinal wet edge prevents diagonal shortcuts across dry land.
+    for(const sx of [-1,1])for(const sz of [-1,1]){
+      const sideX=edgeContacts.get(`${sx},0`)||0;
+      const sideZ=edgeContacts.get(`0,${sz}`)||0;
+      if(sideX<=0&&sideZ<=0)continue;
+      const diagonal=this.tileAt(byKey,tile.x+sx,tile.y+sz);
+      if(this.waterSurfaceOf(diagonal)==null)continue;
+      const dx=.5-px*sx,dz=.5-pz*sz;
+      const radial=Math.hypot(Math.max(0,dx),Math.max(0,dz));
+      const corner=contactFor(diagonal,radial)*Math.max(sideX,sideZ);
+      contact=1-(1-contact)*(1-corner);
+    }
+    return clamp01(contact);
   }
 
   cliffWaterContact(tile,neighbor){
