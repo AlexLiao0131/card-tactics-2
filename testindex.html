@@ -124,13 +124,20 @@
       };
     }
 
+    function globalThisHydrologyCapacity(tile){
+      const win=frame.contentWindow;
+      return Number(win?.HydrologyEngine?.soilCapacity?.(tile)??0);
+    }
+
     function rebuildMarkers(doc,runtime){
       const {layer}=ensureOverlay(doc);layer.replaceChildren();
       for(const record of markerRecords(runtime)){
         const node=doc.createElement("div");node.className=`hydrology-test-marker ${record.kind}`;
-        const q=Math.max(0,Number(record.tile.hydrologySourceInflow??record.tile.hydrologyRequestedSourceInflow??record.tile.hydrologyOutflowRate??record.tile.discharge??0));
+        const qIn=Math.max(0,Number(record.tile.hydrologySourceInflow??record.tile.hydrologyRequestedSourceInflow??record.tile.discharge??0));
+        const qOut=Object.values(record.tile.hydrologyEdgeDischarge||{}).reduce((sum,edge)=>sum+Math.max(0,Number(edge?.rate||0)),0);
         const depth=Math.max(0,Number(record.tile.waterDepth||0));
-        node.textContent=`${record.label} (${record.tile.x},${record.tile.y})${record.kind==="entry"||record.kind==="spring"?` Q ${q.toFixed(2)}｜D ${depth.toFixed(2)}`:""}`;
+        const soil=Math.max(0,Number(record.tile.soilMoisture||0)),soilCap=Math.max(0,Number(globalThisHydrologyCapacity(record.tile)??0));
+        node.textContent=`${record.label} (${record.tile.x},${record.tile.y})${record.kind==="entry"||record.kind==="spring"?` Qin ${qIn.toFixed(2)}｜Qout ${qOut.toFixed(2)}｜D ${depth.toFixed(2)}｜Soil ${soil.toFixed(2)}/${soilCap.toFixed(2)}`:""}`;
         node.dataset.x=String(record.tile.x);node.dataset.y=String(record.tile.y);layer.appendChild(node);
       }
     }
