@@ -332,12 +332,14 @@ export class WaterRenderer{
     const material=new BABYLON.StandardMaterial("surface-runoff-water",this.scene);
     material.diffuseTexture=texture;
     material.diffuseColor=new BABYLON.Color3(.39,.70,.76);
-    // DynamicTexture alpha must actually participate in blending. Without this,
-    // Babylon treats the whole runoff quad as one semi-opaque rectangle; under the
-    // battlefield lighting that rectangle is the dark/black rail seen in the field.
-    material.useAlphaFromDiffuseTexture=true;
+    // The wet-footprint mesh owns bank transparency through vertex alpha. Keep the
+    // animated texture as colour/detail only; multiplying texture alpha * material
+    // alpha * vertex alpha made real Q-only spring flow almost disappear on bright
+    // terrain even though the geometry existed. The old black rail is prevented by
+    // zero-alpha bank vertices, not by hiding the whole transport surface.
+    material.useAlphaFromDiffuseTexture=false;
     material.emissiveColor=new BABYLON.Color3(.055,.12,.14);
-    material.alpha=.58;
+    material.alpha=.56;
     material.specularColor=new BABYLON.Color3(.18,.30,.34);
     material.specularPower=20;
     // A paper-thin water film should not turn into a black shadow patch when the
@@ -781,19 +783,19 @@ export class WaterRenderer{
     const tile=source?.tile;if(!tile)return null;
     const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);if(!geometry?.triangles?.length)return null;
     const rate=Math.max(0,Number(source.rate||0)),radius=TILE_SIZE*clamp(.19+Math.sqrt(rate)*.035,.19,.30),segments=18;
-    const positions=[],indices=[],normals=[],uvs=[],cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-    const push=(x,z,u,v)=>{const y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.60,point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(u,v);normals.push(0,0,0);return positions.length/3-1;};
-    const center=push(cx,cz,.5,.5),ring=[];
+    const positions=[],indices=[],normals=[],uvs=[],colors=[],cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const push=(x,z,u,v,alpha)=>{const y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.60,point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(u,v);normals.push(0,0,0);colors.push(1,1,1,alpha);return positions.length/3-1;};
+    const center=push(cx,cz,.5,.5,.82),ring=[];
     for(let i=0;i<segments;i++){
       const angle=i/segments*Math.PI*2,noise=.94+.06*Math.sin(angle*3+hash01(`${tile.x},${tile.y}`)*Math.PI*2),r=radius*noise;
-      ring.push(push(cx+Math.cos(angle)*r,cz+Math.sin(angle)*r,.5+Math.cos(angle)*.5,.5+Math.sin(angle)*.5));
+      ring.push(push(cx+Math.cos(angle)*r,cz+Math.sin(angle)*r,.5+Math.cos(angle)*.5,.5+Math.sin(angle)*.5,0));
     }
     for(let i=0;i<segments;i++)indices.push(center,ring[i],ring[(i+1)%segments]);
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
     const mesh=new BABYLON.Mesh(`spring-wet-footprint-${tile.x}-${tile.y}`,this.scene),data=new BABYLON.VertexData();
-    Object.assign(data,{positions,indices,normals,uvs});data.applyToMesh(mesh,false);
-    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.visibility=tile.fogged?.18:1;
-    mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,rate,terrainConforming:true,gameplayDepth:false,canonicalWetFootprint:true};
+    Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=tile.fogged?.18:1;
+    mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,rate,terrainConforming:true,gameplayDepth:false,canonicalWetFootprint:true,radialWetFade:true};
     return mesh;
   }
 
@@ -945,17 +947,29 @@ export class WaterRenderer{
     return TILE_SIZE*clamp(.10+Math.sqrt(strength)*.075,.10,.26);
   }
 
+  transportCrossSection(edge,local=0){
+    // One deterministic cross-section function is shared by the horizontal runoff
+    // approach and the waterfall lip. This closes the old geometry gap where Q could
+    // jump from an invisible ground reach into a separately-centred waterfall sheet.
+    const q=clamp(local,0,1),baseHalfWidth=this.flowCorridorHalfWidth(edge),phase=hash01(edge?.id||"")*Math.PI*2,envelope=Math.sin(Math.PI*q);
+    return{
+      baseHalfWidth,phase,
+      meander:(Math.sin(q*Math.PI*2+phase)*.16+Math.sin(q*Math.PI*4+phase*.37)*.05)*baseHalfWidth*envelope,
+      width:baseHalfWidth*(.82+.14*Math.sin(q*Math.PI+phase*.35)+.08*Math.sin(q*Math.PI*3+phase))
+    };
+  }
+
   runoffEdges(state){
     const all=tilesOf(state),by=this.byKey(all),seen=new Set(),out=[];
     for(const tile of all){
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
-        // Transport and storage are separate. Runoff owns exposed transport where
-        // the standing-water surface renderer has not claimed both endpoints. This
-        // includes sub-threshold storage carried by a real Q, so shallow spring
-        // reaches do not disappear between the source footprint and a waterfall.
-        if(!flow?.flowing||flow?.cascade||!flow.from||!flow.to)continue;
+        // Transport and storage are separate. Every transported edge must have one
+        // horizontal owner up to its hand-off boundary. A cascade owns the vertical
+        // cliff face only; when its upstream tile has no standing-water mesh, runoff
+        // must still draw the source/ground approach from the tile centre to the lip.
+        if(!flow?.flowing||!flow.from||!flow.to)continue;
         // Visual ownership must follow the surface renderer, not raw storage.
         // A tile with 0 < waterDepth <= MIN_WATER_DEPTH can contain real storage
         // without owning a standing-water mesh. Treating any positive depth as
@@ -965,7 +979,9 @@ export class WaterRenderer{
         // ground reach between them looked completely dry.
         const fromPooled=this.isRenderableWater(flow.from),toPooled=this.isRenderableWater(flow.to);
         const fromStored=hasAnyWater(flow.from),toStored=hasAnyWater(flow.to);
-        if(fromPooled&&toPooled)continue;
+        const cascadeApproach=flow.cascade===true&&!fromPooled;
+        if(flow.cascade===true&&!cascadeApproach)continue;
+        if(!flow.cascade&&fromPooled&&toPooled)continue;
         const sourceEdge=flow.from?.hydrologySource===true||flow.to?.hydrologySource===true;
         const downhillTransport=Number(flow.surfaceDrop||0)>EPSILON*4;
         const persistentTransport=Number(flow.persistentRate??flow.edgeDischarge??0)>EPSILON;
@@ -979,7 +995,7 @@ export class WaterRenderer{
         if(!flow.sheetFlow&&!sourceEdge&&!downhillTransport&&!persistentTransport)continue;
         const id=`${flow.from.x},${flow.from.y}->${flow.to.x},${flow.to.y}`;if(seen.has(id))continue;seen.add(id);
         out.push({
-          id,from:flow.from,to:flow.to,fromPooled,toPooled,fromStored,toStored,
+          id,from:flow.from,to:flow.to,fromPooled,toPooled,fromStored,toStored,cascadeApproach,
           rate:Number(flow.rate||0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),persistentRate:Number(flow.persistentRate??flow.edgeDischarge??0),
           transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),
           hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null
@@ -991,18 +1007,17 @@ export class WaterRenderer{
 
   buildRunoff(edge){
     const from=edge.from,to=edge.to,dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),len=Math.hypot(dx,dz)||1,px=-dz/len,pz=dx/len;
-    // Storage owns the pooled half of an edge. The transport mesh begins/ends at
-    // the shared boundary and therefore never crosses a lake/river surface.
-    const tStart=edge.fromPooled?.5:0,tEnd=edge.toPooled?.5:1;if(tEnd-tStart<=EPSILON)return null;
-    const baseHalfWidth=this.flowCorridorHalfWidth(edge),steps=Math.max(6,Math.ceil((tEnd-tStart)*14));
-    const positions=[],indices=[],normals=[],uvs=[],colors=[],phase=hash01(edge.id)*Math.PI*2;
+    // Storage owns pooled terrain. A normal runoff edge may cross the full centre-to-
+    // centre segment; a cascade approach stops exactly at the shared cliff lip (t=.5)
+    // where the vertical cascade takes ownership.
+    const tStart=edge.fromPooled?.5:0,tEnd=edge.cascadeApproach?.5:(edge.toPooled?.5:1);if(tEnd-tStart<=EPSILON)return null;
+    const steps=Math.max(6,Math.ceil((tEnd-tStart)*14));
+    const positions=[],indices=[],normals=[],uvs=[],colors=[];
     // Five samples across the film give us transparent feathering at both banks.
     // The old two-vertex cross section made every edge a hard rectangular rail.
     const lateral=[-1,-.56,0,.56,1],alpha=[0,.40,.68,.40,0],row=lateral.length;
     for(let i=0;i<=steps;i++){
-      const local=i/steps,t=tStart+(tEnd-tStart)*local,envelope=Math.sin(Math.PI*local);
-      const meander=(Math.sin(local*Math.PI*2+phase)*.16+Math.sin(local*Math.PI*4+phase*.37)*.05)*baseHalfWidth*envelope;
-      const width=baseHalfWidth*(.82+.14*Math.sin(local*Math.PI+phase*.35)+.08*Math.sin(local*Math.PI*3+phase));
+      const local=i/steps,t=tStart+(tEnd-tStart)*local,profile=this.transportCrossSection(edge,local),meander=profile.meander,width=profile.width;
       const cx=(Number(from.x)+(Number(to.x)-Number(from.x))*t)*TILE_SIZE+px*meander,cz=(Number(from.y)+(Number(to.y)-Number(from.y))*t)*TILE_SIZE+pz*meander;
       const tile=t<.5?from:to;
       for(let j=0;j<row;j++){
@@ -1016,7 +1031,7 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored)};
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascadeApproach:edge.cascadeApproach===true,softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored)};
     return mesh;
   }
 
@@ -1024,7 +1039,7 @@ export class WaterRenderer{
     // Geometry clips at the midpoint whenever a standing-water surface owns one
     // endpoint. Include that ownership in the cache signature so crossing the
     // visible-water threshold cannot leave a stale full-length/half-length strip.
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}`).sort().join("|");
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascadeApproach?1:0}`).sort().join("|");
   }
 
   polygonSurfaceLevelAtPoint(point,polygon){
@@ -1137,8 +1152,11 @@ export class WaterRenderer{
     if(this.isRenderableWater(edge?.tile))return[];
     const q=Math.max(0,Number((edge?.edgeDischarge??edge?.rate)??0)),transport=Math.max(0,Number(edge?.transportVolume||0));
     if(q<=EPSILON&&transport<=EPSILON)return[];
-    const width=Math.min(metrics.total,this.flowCorridorHalfWidth(edge)*2),start=Math.max(0,(metrics.total-width)*.5);
-    return width>EPSILON?[{start,end:start+width,transportFootprint:true}]:[];
+    // Use the exact same transport cross-section that reaches the cliff lip from
+    // buildRunoff(cascadeApproach). The waterfall may change direction vertically,
+    // but it may not invent a wider or independently-centred wet span on the wall.
+    const lipProfile=this.transportCrossSection(edge,1),width=Math.min(metrics.total,lipProfile.width*2),start=Math.max(0,(metrics.total-width)*.5);
+    return width>EPSILON?[{start,end:start+width,transportFootprint:true,sharedRunoffLip:true}]:[];
   }
 
   resetWaterSeamRegistry(){this.waterSeamRegistry.clear();}
@@ -1202,9 +1220,11 @@ export class WaterRenderer{
           const downstreamLevel=this.waterSurfaceLevelAtPoint(foot,downstreamPolygons,null),bottomY=downstreamLevel==null?Number(foot.y)+SURFACE_OFFSET:Number(downstreamLevel)*ELEVATION_HEIGHT+SURFACE_OFFSET;
           const y=topY+(Math.min(topY,bottomY)-topY)*v,baseX=Number(lip.x)+(Number(foot.x)-Number(lip.x))*v,baseZ=Number(lip.z)+(Number(foot.z)-Number(lip.z))*v;
           let nx=Number(lip.normal?.x||0)+(Number(foot.normal?.x||0)-Number(lip.normal?.x||0))*v,nz=Number(lip.normal?.z||0)+(Number(foot.normal?.z||0)-Number(lip.normal?.z||0))*v,nl=Math.hypot(nx,nz)||1;nx/=nl;nz/=nl;
-          // The shared top/foot/corner boundary stays exactly on the canonical seam.
-          // Only interior vertices move outward to suppress z-fighting with the rock.
-          const boundary=r===0||r===rowFractions.length-1||c===0||c===columns-1,seamEnvelope=boundary?0:Math.sin(Math.PI*v)*Math.sin(Math.PI*u),offset=SURFACE_OFFSET*.32*seamEnvelope;
+          // Only the horizontal top/bottom seams must stay welded. Vertical side
+          // columns are still part of the visible sheet and need the same outward
+          // clearance as its interior; pinning them to the rock produced the dark
+          // wall interference/z-fighting visible beside narrow waterfalls.
+          const boundary=r===0||r===rowFractions.length-1,seamEnvelope=boundary?0:Math.sin(Math.PI*v),offset=SURFACE_OFFSET*.48*seamEnvelope;
           const point=this.canonicalWaterPoint({x:baseX+nx*offset,y,z:baseZ+nz*offset});
           positions.push(point.x,point.y,point.z);uvs.push(u,v*2.25);normals.push(0,0,0);
           if(r===rowFractions.length-1)impactPoints.push(point);
