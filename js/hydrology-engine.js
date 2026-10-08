@@ -1254,7 +1254,13 @@ export const HydrologyEngine=(()=>{
     const transportVolume=persistentRate>EPSILON
       ?Math.max(0,Number(persistent?.transportVolume||persistentRate*DISCHARGE_VOLUME_PER_TURN))
       :solverVolume;
-    const flowing=(resolvedRate>EPSILON||solverVolume>EPSILON)&&(fromDepth>EPSILON||transportVolume>EPSILON||solverVolume>EPSILON);
+    // The solver's edgeNet is a history of transfers within its last time
+    // step, not proof that a dry, source-free edge still carries water now.
+    // Perennial source Q is independent of storage (D may be zero); transient
+    // solver flow must retain real water at at least one end of the edge.
+    const flowing=persistentRate>EPSILON
+      ?transportVolume>EPSILON||fromDepth>EPSILON||toDepth>EPSILON
+      :(solverRate>EPSILON||solverVolume>EPSILON)&&fromDepth>EPSILON;
     const cascade=flowing&&
       surfaceDrop>=Math.max(0,Number(minCascadeDrop||0))&&
       (authored||cliffDrop>Math.max(0,Number(minCliffDrop||0)));

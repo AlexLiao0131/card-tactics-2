@@ -126,6 +126,69 @@ export class VisualSurfaceResolver{
     return this.renderedSurfaceGeometry.get(this.keyOf(tile.x,tile.y))||null;
   }
 
+  // Transport-only water has Q but no gameplay depth. This is a shared
+  // PRESENTATION footprint, derived from the existing 3x3 sampling resolution
+  // and the published terrain triangles. It does not create hydrology storage.
+  // No Renderer may extrapolate a surface height outside these triangles.
+  transportHalfWidth(edge){
+    const from=edge?.from;
+    const microWidth=TILE_SIZE/Math.sqrt(MICRO_REGION_LAYOUT.length);
+    const discharge=Math.max(0,Number(edge?.edgeDischarge??edge?.persistentRate??edge?.rate??0));
+    const outgoing=Object.values(from?.hydrologyEdgeDischarge||{}).reduce((sum,item)=>sum+Math.max(0,Number(item?.rate||0)),0);
+    return microWidth*.5*(outgoing>EPSILON?Math.min(1,discharge/outgoing):1);
+  }
+
+  transportSurfaceFootprint(edge,segment,{surfaceTriangles=null}={}){
+    const from=edge?.from,to=edge?.to;
+    if(!from||!to||!segment)return{polygons:[],halfWidth:0};
+    const x0=Number(from.x)*TILE_SIZE,z0=Number(from.y)*TILE_SIZE;
+    const dx=(Number(to.x)-Number(from.x))*TILE_SIZE,dz=(Number(to.y)-Number(from.y))*TILE_SIZE;
+    const length=Math.hypot(dx,dz);if(length<=EPSILON)return{polygons:[],halfWidth:0};
+    const ux=dx/length,uz=dz/length,px=-uz,pz=ux;
+    // 3x3 is the existing VISUAL discretization, not a fabricated water depth.
+    // Fractional Q divides the same channel's visual coverage at a fork.
+    const halfWidth=this.transportHalfWidth(edge);
+    if(halfWidth<=EPSILON)return{polygons:[],halfWidth:0};
+    const along=point=>((Number(point.x)-x0)*ux+(Number(point.z)-z0)*uz)/length;
+    const across=point=>(Number(point.x)-x0)*px+(Number(point.z)-z0)*pz;
+    const clip=(polygon,evaluate)=>{
+      const result=[];
+      for(let i=0;i<polygon.length;i++){
+        const a=polygon[i],b=polygon[(i+1)%polygon.length];
+        const va=evaluate(a),vb=evaluate(b),aIn=va>=-EPSILON,bIn=vb>=-EPSILON;
+        if(aIn)result.push(a);
+        if(aIn!==bIn){
+          const t=va/(va-vb);
+          result.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t,
+            ...(a.clearance!=null&&b.clearance!=null?{clearance:a.clearance+(b.clearance-a.clearance)*t}:{})});
+        }
+      }
+      return result;
+    };
+    const polygons=[];
+    for(const tile of [from,to]){
+      const terrain=this.getRenderedSurfaceGeometry(tile);
+      const polygonsForTile=typeof surfaceTriangles==="function"?surfaceTriangles(tile,terrain?.triangles||[]):terrain?.triangles||[];
+      for(const triangle of polygonsForTile){
+        for(const [left,right] of [[-halfWidth,0],[0,halfWidth]]){
+          let polygon=triangle.map(p=>({x:p.x,y:p.y,z:p.z,...(p.clearance!=null?{clearance:p.clearance}:{})}));
+          for(const constraint of [p=>along(p)-Number(segment.start),p=>Number(segment.end)-along(p),p=>across(p)-left,p=>right-across(p)]){
+            polygon=clip(polygon,constraint);
+            if(polygon.length<3)break;
+          }
+          if(polygon.length<3)continue;
+          const distinct=polygon.filter((p,i)=>Math.hypot(p.x-polygon[(i+polygon.length-1)%polygon.length].x,p.z-polygon[(i+polygon.length-1)%polygon.length].z)>EPSILON);
+          if(distinct.length<3)continue;
+          polygons.push({tile,points:distinct.map(point=>({
+            ...point,along:along(point),across:across(point),
+            bankFade:Math.max(0,1-Math.abs(across(point))/halfWidth)
+          }))});
+        }
+      }
+    }
+    return{polygons,halfWidth,revision:this.renderedSurfaceGeometryRevision};
+  }
+
   cliffGeometryKey(tile,dir){
     const id=this.cliffDirectionId(dir);
     return tile&&id?`${Number(tile.x)},${Number(tile.y)}:${id}`:null;

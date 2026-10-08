@@ -707,12 +707,15 @@ export class TerrainRenderer{
         const drop=top-lower;
         if(drop<=this.surfaceResolver.maxVisualSlopeDelta)continue;
 
-        // The wall top uses the same 4x4 VisualSurface edge heights as the
-        // surface-owned rugged shoulder. Its bottom samples the actual rendered
-        // lower surface at the outward rough position, so no apron overlay is needed.
+        // Upper shoulder ends at the rugged lip, while the rock face ends at
+        // the neighbouring lower surface's EXISTING edge. No additional apron.
         const topEdge=this.cliffSurfaceEdgeSamples(tile,dir,byKey);
 
         const rough=this.cliffRoughPolyline(tile,dir);
+        // The lower ground is already built from its own 4x4 patch. A cliff
+        // must terminate at those ACTUAL edge vertices, not at a rugged X/Z
+        // extrapolated from the upper lip. Opposite edges have reverse winding.
+        const lowEdge=neighbor?this.cliffSurfaceEdgeSamples(neighbor,{dx:-dir.dx,dy:-dir.dy},byKey).reverse():null;
         out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
         out.waterContact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
         const {wallColor,wetWallColor,wetWallFactor}=out.palette;
@@ -724,30 +727,22 @@ export class TerrainRenderer{
         const wallLip=[],wallFoot=[];
         for(let i=0;i<rough.length;i++){
           const point=rough[i],topY=topEdge[i].y;
-          const bottomY=Math.min(
-            neighbor
-              ?this.surfaceResolver.sampleRenderedHeight(
-                neighbor,byKey,
-                point.x/TILE_SIZE-Number(neighbor.x),
-                point.z/TILE_SIZE-Number(neighbor.y)
-              )*EH
-              :lower*EH,
-            topY
-          );
+          const bottom=lowEdge?.[i];
+          const bottomY=bottom?Number(bottom.y):lower*EH;
           const t=i/Math.max(1,rough.length-1);
           wallLip.push({x:point.x,y:topY,z:point.z,t});
-          wallFoot.push({x:point.x,y:bottomY,z:point.z,t});
+          wallFoot.push({x:bottom?Number(bottom.x):point.x,y:bottomY,z:bottom?Number(bottom.z):point.z,t});
         }
         const wallSegments=[];
         for(let i=0;i<rough.length-1;i++){
-          const a=wallLip[i],b=wallLip[i+1];
-          const aTop=a.y,bTop=b.y,aBot=wallFoot[i].y,bBot=wallFoot[i+1].y;
+          const a=wallLip[i],b=wallLip[i+1],af=wallFoot[i],bf=wallFoot[i+1];
+          const aTop=a.y,bTop=b.y,aBot=af.y,bBot=bf.y;
           const tx=b.x-a.x,tz=b.z-a.z,length=Math.hypot(tx,tz)||1;
           let nx=tz/length,nz=-tx/length;
           if(nx*dir.dx+nz*dir.dy<0){nx=-nx;nz=-nz;}
           wallSegments.push({
             topA:{x:a.x,y:aTop,z:a.z},topB:{x:b.x,y:bTop,z:b.z},
-            bottomA:{x:a.x,y:aBot,z:a.z},bottomB:{x:b.x,y:bBot,z:b.z},
+            bottomA:{x:af.x,y:aBot,z:af.z},bottomB:{x:bf.x,y:bBot,z:bf.z},
             normal:{x:nx,z:nz}
           });
 
@@ -757,18 +752,20 @@ export class TerrainRenderer{
           if(wetWallFactor>0){
             const aMid=aBot+(aTop-aBot)*.46;
             const bMid=bBot+(bTop-bBot)*.46;
+            const am={x:af.x+(a.x-af.x)*.46,y:aMid,z:af.z+(a.z-af.z)*.46};
+            const bm={x:bf.x+(b.x-bf.x)*.46,y:bMid,z:bf.z+(b.z-bf.z)*.46};
             this.pushCliffQuad(
               out,
-              {x:a.x,y:aBot,z:a.z},
-              {x:b.x,y:bBot,z:b.z},
-              {x:b.x,y:bMid,z:b.z},
-              {x:a.x,y:aMid,z:a.z},
+              {x:af.x,y:aBot,z:af.z},
+              {x:bf.x,y:bBot,z:bf.z},
+              bm,
+              am,
               wetWallColor
             );
             this.pushCliffQuad(
               out,
-              {x:a.x,y:aMid,z:a.z},
-              {x:b.x,y:bMid,z:b.z},
+              am,
+              bm,
               {x:b.x,y:bTop,z:b.z},
               {x:a.x,y:aTop,z:a.z},
               wallColor
@@ -776,8 +773,8 @@ export class TerrainRenderer{
           }else{
             this.pushCliffQuad(
               out,
-              {x:a.x,y:aBot,z:a.z},
-              {x:b.x,y:bBot,z:b.z},
+              {x:af.x,y:aBot,z:af.z},
+              {x:bf.x,y:bBot,z:bf.z},
               {x:b.x,y:bTop,z:b.z},
               {x:a.x,y:aTop,z:a.z},
               wallColor

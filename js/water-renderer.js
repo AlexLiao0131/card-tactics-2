@@ -1,5 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
-import { VisualSurfaceResolver,MICRO_REGION_LAYOUT } from "./visual-surface-resolver.js";
+import { VisualSurfaceResolver } from "./visual-surface-resolver.js";
 
 const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
@@ -21,9 +21,7 @@ const WATER_DEEP_ALPHA=.82;
 // Runoff UVs use world-distance phase so adjacent hydrology edges read as one
 // moving stream instead of restarting their texture at every tile boundary.
 const RUNOFF_UV_REPEAT_DISTANCE=TILE_SIZE*.78;
-// A tiny overlap lets a terrain-following film disappear underneath the standing
-// water mesh at the exact clipped shoreline instead of leaving a hairline gap.
-const RUNOFF_SHORE_OVERLAP_T=.025;
+// Water/terrain intersection is the shared shoreline; no overlap distance.
 
 const DIRS=Object.freeze([
   {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
@@ -652,7 +650,14 @@ export class WaterRenderer{
   }
 
   continuousWaterEdge(a,b){
-    return !!a&&!!b&&this.isRenderableWater(a)&&this.isRenderableWater(b)&&!this.isCascadeBoundary(a,b);
+    if(!a||!b||!this.isRenderableWater(a)||!this.isRenderableWater(b))return false;
+    const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
+    // A published rock face is a hard water-surface discontinuity even when Q
+    // is zero. Flow rate controls transport, NOT whether adjacent free surfaces
+    // are allowed to average through a cliff.
+    if(this.surfaceResolver.getRenderedCliffGeometry(a,{dx,dy})||
+       this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy}))return false;
+    return this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
   }
 
   surfaceComponents(waterTiles){
@@ -718,21 +723,22 @@ export class WaterRenderer{
     return total>EPSILON?weighted/total:visualSurface(tile);
   }
 
-  clipTerrainTriangleToWater(tile,triangle,allMap){
+  clipTerrainTriangleAtWaterline(tile,triangle,allMap,wet=true){
+    // Storage water has a world-space surface and terrain has registered XYZ
+    // triangles. Their actual intersection is the ONLY wet/dry handoff boundary.
     if(!Array.isArray(triangle)||triangle.length!==3)return[];
     const vertices=triangle.map(point=>{
       const level=this.waterLevelAtWorld(tile,point.x,point.z,allMap);
-      const waterY=level*ELEVATION_HEIGHT,terrainY=Number(point.y||0);
-      return{x:Number(point.x),z:Number(point.z),terrainY,waterY,level,clearance:waterY-terrainY};
+      const waterY=level*ELEVATION_HEIGHT,terrainY=Number(point.y);
+      return{x:Number(point.x),y:terrainY,z:Number(point.z),terrainY,waterY,level,clearance:waterY-terrainY};
     });
-    const inside=vertex=>vertex.clearance>EPSILON*ELEVATION_HEIGHT;
+    const inside=vertex=>wet?vertex.clearance>0:vertex.clearance<=0;
     const interpolate=(a,b)=>{
-      const denom=a.clearance-b.clearance;
-      const t=Math.abs(denom)<=1e-9?.5:clamp(a.clearance/denom,0,1);
+      const t=a.clearance/(a.clearance-b.clearance);
       const x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;
       const waterY=a.waterY+(b.waterY-a.waterY)*t;
       const terrainY=a.terrainY+(b.terrainY-a.terrainY)*t;
-      return{x,z,terrainY,waterY,level:waterY/ELEVATION_HEIGHT,clearance:waterY-terrainY};
+      return{x,y:terrainY,z,terrainY,waterY,level:waterY/ELEVATION_HEIGHT,clearance:0};
     };
     const polygon=[];
     for(let i=0;i<vertices.length;i++){
@@ -740,7 +746,11 @@ export class WaterRenderer{
       if(aIn)polygon.push(a);
       if(aIn!==bIn)polygon.push(interpolate(a,b));
     }
-    return polygon.map(point=>({
+    return polygon;
+  }
+
+  clipTerrainTriangleToWater(tile,triangle,allMap){
+    return this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,true).map(point=>({
       x:point.x,z:point.z,level:point.level,
       depth:Math.max(0,point.clearance/ELEVATION_HEIGHT),
       clipped:point.clearance<=EPSILON*ELEVATION_HEIGHT*2,
@@ -825,6 +835,31 @@ export class WaterRenderer{
     return{depth,color,alpha};
   }
 
+  onRenderedCliffWaterSeam(tile,point,allMap){
+    // Water waves are GPU-displaced, the waterfall sheet is not. Find the
+    // actual common rock lip or foot by reading the geometry registered by
+    // TerrainRenderer. A pinned vertex retains the hydrologic surface height.
+    const touches=series=>{
+      for(let i=0;i<(series?.length||0)-1;i++){
+        const a=series[i],b=series[i+1],vx=b.x-a.x,vz=b.z-a.z,wx=point.x-a.x,wz=point.z-a.z,len=vx*vx+vz*vz;
+        if(len<=1e-12)continue;
+        const t=(wx*vx+wz*vz)/len;
+        if(t<0||t>1)continue;
+        const dx=a.x+vx*t-point.x,dz=a.z+vz*t-point.z;
+        if(dx*dx+dz*dz<=1e-12)return true;
+      }
+      return false;
+    };
+    for(const dir of DIRS){
+      // Upstream cliff lips belong to this tile; downstream cliff feet belong
+      // to a higher neighbour but can meet a stored surface in THIS tile.
+      if(touches(this.surfaceResolver.getRenderedCliffGeometry(tile,dir)?.lip))return true;
+      const uphill=allMap?.get(keyOf(tile.x-dir.dx,tile.y-dir.dy));
+      if(uphill&&touches(this.surfaceResolver.getRenderedCliffGeometry(uphill,dir)?.foot))return true;
+    }
+    return false;
+  }
+
   addVertex(out,cache,point,allMap,turbidity,tile,sources=[]){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const seam=this.canonicalWaterPoint({x:Number(point.x),y,z:Number(point.z)});
@@ -837,8 +872,9 @@ export class WaterRenderer{
     out.positions.push(seam.x,seam.y,seam.z);
     out.uvs.push(seam.x/(TILE_SIZE*3.25),seam.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
-    out.waveWeights.push(smooth01(visual.depth/.34));
-    const sourceField=this.sourceFieldAt(point,sources);
+    const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap);
+    out.waveWeights.push(onCliffLip?0:smooth01(visual.depth/.34));
+    const sourceField=visual.depth<=EPSILON||onCliffLip?{weight:0,phase:0}:this.sourceFieldAt(point,sources);
     out.sourceWeights.push(sourceField.weight);out.sourcePhases.push(sourceField.phase);
     out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
     this.accumulateVertexMotion(out,index,tile);
@@ -947,14 +983,7 @@ export class WaterRenderer{
   }
 
   flowCorridorHalfWidth(edge){
-    // Hydrology stores Q and transported tile-volume, not sub-tile water depth.
-    // A transport-only film therefore cannot have a physically exact width.
-    // Its *visual* footprint is bounded by the EXISTING 3x3 terrain resolution:
-    // each sqrt(volume) of a tile's 2D surface is resolved within one micro-region,
-    // never widened to an invented world-space stream corridor.
-    const transported=Math.max(0,Number(edge?.transportVolume||0));
-    const microRegionWorldWidth=TILE_SIZE/Math.sqrt(MICRO_REGION_LAYOUT.length);
-    return (microRegionWorldWidth/2)*Math.min(1,Math.sqrt(transported));
+    return this.surfaceResolver.transportHalfWidth(edge);
   }
 
   transportCrossSection(edge){
@@ -999,134 +1028,116 @@ export class WaterRenderer{
     return this.assignRunoffPathPhases(out);
   }
 
-  appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors){
-    // Transport-only water lives on real rendered 3x3 terrain triangles. Clip
-    // those triangles to Q's direction and the current edge's wetted corridor;
-    // never manufacture a separate centre-to-centre ribbon mesh at tile height.
-    const from=edge.from,to=edge.to;
-    const x0=Number(from.x)*TILE_SIZE,z0=Number(from.y)*TILE_SIZE;
-    const vx=(Number(to.x)-Number(from.x))*TILE_SIZE,vz=(Number(to.y)-Number(from.y))*TILE_SIZE;
-    const distance=Math.hypot(vx,vz);if(distance<=EPSILON)return;
-    const ux=vx/distance,uz=vz/distance,px=-uz,pz=ux;
-    const along=point=>((Number(point.x)-x0)*ux+(Number(point.z)-z0)*uz)/distance;
-    const across=point=>(Number(point.x)-x0)*px+(Number(point.z)-z0)*pz;
-    // Clipping interpolates the original registered triangle's full xyz. A new
-    // polygon vertex is thus still ON that very triangle, not at a guessed Y.
-    const clip=(polygon,evaluate)=>{
-      const out=[];
-      for(let i=0;i<polygon.length;i++){
-        const a=polygon[i],b=polygon[(i+1)%polygon.length],da=evaluate(a),db=evaluate(b),insideA=da>=-1e-9,insideB=db>=-1e-9;
-        if(insideA)out.push(a);
-        if(insideA!==insideB){
-          const t=da/(da-db);
-          out.push({x:Number(a.x)+(Number(b.x)-Number(a.x))*t,
-            y:Number(a.y)+(Number(b.y)-Number(a.y))*t,
-            z:Number(a.z)+(Number(b.z)-Number(a.z))*t});
-        }
+  appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors,allMap){
+    // The shared VisualSurfaceResolver owns the Q-only wet footprint. This
+    // renderer only converts its published terrain XYZ polygons to Babylon.
+    const wetContours=[edge.from,edge.to].filter(tile=>waterDepth(tile)>EPSILON)
+      .flatMap(tile=>this.waterSurfacePolygons(tile,allMap));
+    const footprint=this.surfaceResolver.transportSurfaceFootprint(edge,segment,{
+      surfaceTriangles:(tile,triangles)=>waterDepth(tile)>EPSILON
+        ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
+        :triangles
+    });
+    for(const {points} of footprint.polygons){
+      const first=positions.length/3;
+      for(const p of points){
+        const x=Number(p.x),z=Number(p.z);
+        const waterline=p.clearance===0||wetContours.some(poly=>this.pointOnPolygonBoundary({x,z},poly,1e-9));
+        const point=this.canonicalWaterPoint({x,y:Number(p.y)+(waterline?SURFACE_OFFSET:SURFACE_OFFSET*.42),z});
+        positions.push(point.x,point.y,point.z);normals.push(0,0,0);
+        uvs.push((Number(p.across)/width+1)*.5,
+          (Number(edge.flowPathStart||0)+Number(p.along)*TILE_SIZE)/Math.max(EPSILON,Number(edge.flowPathRepeat||RUNOFF_UV_REPEAT_DISTANCE)));
+        colors.push(1,1,1,.72*Number(p.bankFade));
       }
-      return out;
-    };
-    const lo=Number(segment.start),hi=Number(segment.end);
-    for(const tile of [from,to]){
-      const terrain=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
-      for(const triangle of terrain?.triangles||[]){
-        // Split on the flow centreline: a centre vertex has alpha whereas the
-        // exact geometric banks fade to zero. This cannot form a hard blue rail.
-        for(const [left,right] of [[-width,0],[0,width]]){
-          let polygon=triangle.map(p=>({x:p.x,y:p.y,z:p.z}));
-          for(const fn of [p=>along(p)-lo,p=>hi-along(p),p=>across(p)-left,p=>right-across(p)]){
-            polygon=clip(polygon,fn);
-            if(polygon.length<3)break;
-          }
-          if(polygon.length<3)continue;
-          polygon=polygon.filter((p,i)=>{
-            const prev=polygon[(i+polygon.length-1)%polygon.length];
-            return Math.hypot(Number(p.x)-Number(prev.x),Number(p.z)-Number(prev.z))>1e-9;
-          });
-          if(polygon.length<3)continue;
-          const first=positions.length/3;
-          for(const p of polygon){
-            const x=Number(p.x),z=Number(p.z),y=Number(p.y)+SURFACE_OFFSET*.42;
-            positions.push(x,y,z);normals.push(0,0,0);
-            const cross=across(p),alpha=.72*Math.max(0,1-Math.abs(cross)/width);
-            const pathDistance=Number(edge.flowPathStart||0)+along(p)*distance;
-            uvs.push((cross/width+1)*.5,pathDistance/Math.max(EPSILON,Number(edge.flowPathRepeat||RUNOFF_UV_REPEAT_DISTANCE)));
-            colors.push(1,1,1,alpha);
-          }
-          for(let i=1;i<polygon.length-1;i++){
-            const a=polygon[0],b=polygon[i],c=polygon[i+1];
-            const area=(Number(b.x)-Number(a.x))*(Number(c.z)-Number(a.z))-(Number(b.z)-Number(a.z))*(Number(c.x)-Number(a.x));
-            if(Math.abs(area)>1e-10)indices.push(first,first+i,first+i+1);
-          }
-        }
+      for(let i=1;i<points.length-1;i++){
+        const a=points[0],b=points[i],c=points[i+1];
+        if(Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))>1e-10)indices.push(first,first+i,first+i+1);
       }
     }
   }
 
-  buildRunoff(edge){
-    const from=edge.from,to=edge.to,dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),len=Math.hypot(dx,dz)||1,px=-dz/len,pz=dx/len;
-    const segments=(edge.runoffSegments||[]).filter(segment=>Number(segment.end)-Number(segment.start)>EPSILON);
-    if(!segments.length)return null;
-    const positions=[],indices=[],normals=[],uvs=[],colors=[],validVertices=[];
-    const direction={dx:Math.sign(dx),dy:Math.sign(dz)};
-    // The cliff is authored and published by TerrainRenderer. Runoff must meet
-    // THAT lip/foot, not the straight half-tile boundary of the gameplay grid.
-    const cliff=edge.cascade?this.surfaceResolver.getRenderedCliffGeometry(from,direction):null;
-    const wallMetrics=cliff?this.wallPathMetrics(cliff):null;
-    // Five samples across the film keep banks feathered while the centre carries
-    // enough opacity to make the moving transport legible on bright terrain.
-    const lateral=[-1,-.56,0,.56,1],alpha=[0,.42,.72,.42,0],row=lateral.length;
-    const {width}=this.transportCrossSection(edge);
-    if(width<=EPSILON)return null;
-    // Cache the five matching wall columns once per edge, not once per row.
-    const wallColumns=wallMetrics?lateral.map(side=>this.wallSampleAtLateral(wallMetrics,from,to,width*side)):null;
-
-    for(const segment of segments){
-      if(segment.kind==="SURFACE_RUNOFF"){
-        this.appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors);
-        continue;
-      }
-      const tStart=clamp(Number(segment.start),0,1),tEnd=clamp(Number(segment.end),0,1),steps=Math.max(4,Math.ceil((tEnd-tStart)*16));
-      const stripBase=positions.length/3;
-      for(let i=0;i<=steps;i++){
-        const local=i/steps,t=tStart+(tEnd-tStart)*local;
-        // A cascade is one hydraulic edge with two horizontal legs. Continue the
-        // same cross-section phase after the vertical drop so approach, waterfall
-        // and landing do not look like three unrelated pieces.
-        for(let j=0;j<row;j++){
-          const side=lateral[j],crossDistance=width*side;
-          const wallSample=segment.kind.startsWith("CASCADE_")?wallColumns?.[j]:null;
-          // For each column the rendered cliff can be at a DIFFERENT distance
-          // from the grid midpoint. Intersect the actual lip/foot per lateral
-          // sample, so both films stop on the same rugged polyline as the wall.
-          const wallT=wallSample?.edgeT;
-          const actualT=wallT==null?t:segment.kind==="CASCADE_APPROACH"
-            ?tStart+(wallT-tStart)*local
-            :wallT+(tEnd-wallT)*local;
-          const x=(Number(from.x)+(Number(to.x)-Number(from.x))*actualT)*TILE_SIZE+px*crossDistance;
-          const z=(Number(from.y)+(Number(to.y)-Number(from.y))*actualT)*TILE_SIZE+pz*crossDistance;
-          // The river path comes from edge Q. Its displayed height exists ONLY
-          // where a real TerrainRenderer triangle supports it. No tile-centre
-          // elevation fallback may grow a floating blue polygon over a cliff.
-          const target={x,z},approach=segment.kind==="CASCADE_APPROACH",landing=segment.kind==="CASCADE_LANDING";
-          let y=approach?this.renderedTerrainYAtPoint(from,target)
-            :landing?this.renderedTerrainYAtPoint(to,target)
-            :this.renderedTerrainYAtPoint(actualT<.5?from:to,target);
-          if(y==null&&!approach&&!landing)y=this.renderedTerrainYAtPoint(actualT<.5?to:from,target);
-          if(wallSample&&approach&&i===steps)y=wallSample.lip.y;
-          if(wallSample&&landing&&i===0)y=wallSample.foot.y;
-          validVertices.push(y!=null&&Number.isFinite(y));
-          const point=this.canonicalWaterPoint({x,y:(y??0)+SURFACE_OFFSET*.42,z});positions.push(point.x,point.y,point.z);
-          const pathDistance=Number(edge.flowPathStart||0)+t*TILE_SIZE;
-          uvs.push((side+1)*.5,pathDistance/Math.max(EPSILON,Number(edge.flowPathRepeat||RUNOFF_UV_REPEAT_DISTANCE)));normals.push(0,0,0);
-          colors.push(1,1,1,alpha[j]);
+  appendCliffJunction(edge,segment,cliff,metrics,spans,allMap,positions,indices,normals,uvs,colors){
+    // The cascade mesh is built from these SAME exact wall columns. Its lip
+    // and foot vertex positions, not a nominal grid midpoint, own the joins.
+    const from=edge.from,to=edge.to;
+    const dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y),length=Math.hypot(dx,dz);
+    if(length<=EPSILON)return;
+    const px=-dz/length,pz=dx/length,ux=dx/length,uz=dz/length;
+    const width=this.transportCrossSection(edge).width;
+    if(width<=EPSILON)return;
+    const approach=segment.kind==="CASCADE_APPROACH";
+    const target=approach?from:to;
+    const pooledReceiver=!approach&&edge.toPooled;
+    const downstreamPolygons=pooledReceiver?this.waterSurfacePolygons(to,allMap):[];
+    const originX=Number(from.x)*TILE_SIZE,originZ=Number(from.y)*TILE_SIZE;
+    const across=p=>(Number(p.x)-originX)*px+(Number(p.z)-originZ)*pz;
+    for(const span of spans){
+      const distances=this.wallColumnDistances(span,metrics),columns=distances.map(d=>this.wallSampleAtDistance(metrics,d));
+      if(columns.length<2)continue;
+      const valid=[],base=positions.length/3,steps=8;
+      // Column-major order guarantees every edge of the actual rugged lip/foot
+      // is represented in the runoff approach and landing, too.
+      for(let row=0;row<=steps;row++){
+        const t=row/steps;
+        for(const sample of columns){
+          const seam=approach?sample.lip:sample.foot;
+          const sideDistance=across(sample.lip),side=sideDistance/width;
+          const anchor={x:(approach?from.x:to.x)*TILE_SIZE+px*sideDistance,
+            z:(approach?from.y:to.y)*TILE_SIZE+pz*sideDistance};
+          let targetPoint=anchor,fullPath=true;
+          if(pooledReceiver){
+            const intervals=this.segmentWaterIntervals(seam,anchor,downstreamPolygons);
+            // The destination water polygon is a genuine world-space boundary.
+            // If the waterfall already lands inside its water, no dry film is needed.
+            if(intervals.some(v=>v.start<=1e-8))fullPath=false;
+            else if(intervals.length){
+              const first=intervals[0];
+              targetPoint={x:seam.x+(anchor.x-seam.x)*first.start,
+                z:seam.z+(anchor.z-seam.z)*first.start};
+            }
+          }
+          const p0=approach?anchor:seam,p1=approach?seam:targetPoint;
+          const x=p0.x+(p1.x-p0.x)*t,z=p0.z+(p1.z-p0.z)*t;
+          const terrainY=this.renderedTerrainYAtPoint(target,{x,z});
+          const exactSeam=approach&&row===steps||!approach&&row===0;
+          const waterline=pooledReceiver&&row===steps&&fullPath&&this.waterSurfaceLevelAtPoint({x,z},downstreamPolygons,null)!=null;
+          const y=exactSeam?Number(seam.y):terrainY;
+          valid.push(fullPath&&(exactSeam||y!=null));
+          const point=this.canonicalWaterPoint({x,y:(y??0)+(waterline?SURFACE_OFFSET:SURFACE_OFFSET*.42),z});
+          positions.push(point.x,point.y,point.z);normals.push(0,0,0);
+          const travel=(x-originX)*ux+(z-originZ)*uz;
+          uvs.push((side+1)*.5,(Number(edge.flowPathStart||0)+travel)/Math.max(EPSILON,Number(edge.flowPathRepeat||RUNOFF_UV_REPEAT_DISTANCE)));
+          colors.push(1,1,1,.72*Math.max(0,1-Math.abs(side)));
         }
       }
-      for(let i=0;i<steps;i++)for(let j=0;j<row-1;j++){
-        const a=stripBase+i*row+j,b=a+1,c=a+row,d=c+1;
-        // A quad is visible only when all corners are backed by real rendered
-        // terrain or by the registered cliff's own lip/foot seam.
-        if(validVertices[a]&&validVertices[b]&&validVertices[c]&&validVertices[d])indices.push(a,b,d,a,d,c);
+      const n=columns.length;
+      for(let i=0;i<steps;i++)for(let j=0;j<n-1;j++){
+        const a=base+i*n+j,b=a+1,c=a+n,d=c+1;
+        if(valid[i*n+j]&&valid[i*n+j+1]&&valid[(i+1)*n+j]&&valid[(i+1)*n+j+1])indices.push(a,b,d,a,d,c);
+      }
+    }
+  }
+
+  buildRunoff(edge,state=null){
+    const from=edge.from,to=edge.to;
+    const segments=(edge.runoffSegments||[]).filter(segment=>Number(segment.end)-Number(segment.start)>EPSILON);
+    if(!segments.length)return null;
+    const positions=[],indices=[],normals=[],uvs=[],colors=[];
+    const allMap=state?this.allByKey(state):new Map([[keyOf(from.x,from.y),from],[keyOf(to.x,to.y),to]]);
+    const direction={dx:Math.sign(Number(to.x)-Number(from.x)),dy:Math.sign(Number(to.y)-Number(from.y))};
+    const wall=edge.cascade?this.surfaceResolver.getRenderedCliffGeometry(from,direction):null;
+    const metrics=wall?this.wallPathMetrics(wall):null;
+    const width=this.transportCrossSection(edge).width;
+    if(width<=EPSILON)return null;
+    // Exactly the same Hydrology surface/cliff footprint used by buildCascade.
+    // No 0.5-grid assumption, guessed half-width splice, or independent rock lip.
+    const cascadeEdge={tile:from,receiver:to,edgeDischarge:edge.edgeDischarge,rate:edge.rate,transportVolume:edge.transportVolume};
+    const spans=metrics?this.cascadeSpillIntervals(cascadeEdge,state||{map:{tiles:[from,to]}},wall):[];
+    for(const segment of segments){
+      if(segment.kind==="SURFACE_RUNOFF"){
+        this.appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors,allMap);
+      }else if(metrics&&spans.length){
+        this.appendCliffJunction(edge,segment,wall,metrics,spans,allMap,positions,indices,normals,uvs,colors);
       }
     }
     if(!indices.length)return null;
@@ -1134,13 +1145,15 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="EXACT_SHORELINE"||segment.endKind==="EXACT_SHORELINE")};
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="WATERLINE_TRIANGLE"||segment.endKind==="WATERLINE_TRIANGLE"),registeredCliffSeam:!!metrics,sharedWallColumns:true};
     return mesh;
   }
 
   runoffSignatureFor(edges){
     const segmentKey=edge=>(edge.runoffSegments||[]).map(segment=>`${segment.kind}:${Number(segment.start).toFixed(4)}-${Number(segment.end).toFixed(4)}:${segment.startKind||""}:${segment.endKind||""}`).join(",");
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.edgeDischarge.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascade?1:0}:${segmentKey(edge)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|");
+    // The wet contour may move when waterDepth changes even if Q and pooled
+    // flags remain unchanged; refresh the runoff with its owning water surface.
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${this.surfaceSignature||""}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.edgeDischarge.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascade?1:0}:${segmentKey(edge)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|");
   }
 
   polygonSurfaceLevelAtPoint(point,polygon){
@@ -1194,37 +1207,13 @@ export class WaterRenderer{
   }
 
   runoffSegmentsForEdge(edge,state){
-    const a={x:Number(edge.from.x)*TILE_SIZE,z:Number(edge.from.y)*TILE_SIZE};
-    const b={x:Number(edge.to.x)*TILE_SIZE,z:Number(edge.to.y)*TILE_SIZE};
-    const allMap=this.allByKey(state),segments=[];
-
-    const sourceShoreExit=()=>{
-      if(!edge.fromPooled)return{t:0,kind:"CENTER"};
-      const spans=this.segmentWaterIntervals(a,b,this.waterSurfacePolygons(edge.from,allMap));
-      const span=spans.find(item=>item.start<=EPSILON&&item.end>EPSILON);
-      return span?{t:clamp(Number(span.end)-RUNOFF_SHORE_OVERLAP_T,0,1),kind:"EXACT_SHORELINE"}:null;
-    };
-    const receiverShoreEntry=()=>{
-      if(!edge.toPooled)return{t:1,kind:"CENTER"};
-      const spans=this.segmentWaterIntervals(a,b,this.waterSurfacePolygons(edge.to,allMap));
-      const span=[...spans].reverse().find(item=>item.end>=1-EPSILON);
-      return span?{t:clamp(Number(span.start)+RUNOFF_SHORE_OVERLAP_T,0,1),kind:"EXACT_SHORELINE"}:null;
-    };
-
-    const source=sourceShoreExit(),receiver=receiverShoreEntry();
-    // No hydrologic shoreline crossing was found in registered terrain: do
-    // not invent a tile-midpoint handoff and produce a floating water rectangle.
-    if(!source||!receiver)return segments;
-    if(!edge.cascade){
-      if(receiver.t-source.t>EPSILON)segments.push({start:source.t,end:receiver.t,kind:"SURFACE_RUNOFF",startKind:source.kind,endKind:receiver.kind,profileOffset:0});
-      return segments;
-    }
-
-    // A cascade occupies only the vertical face. Q still owns horizontal transport
-    // on both sides of that face: the upstream approach and, when needed, the lower
-    // landing run to the real downstream shoreline/next tile centre.
-    if(!edge.fromPooled&&.5-source.t>EPSILON)segments.push({start:source.t,end:.5,kind:"CASCADE_APPROACH",startKind:source.kind,endKind:"CLIFF_LIP",profileOffset:0});
-    if(receiver.t-.5>EPSILON)segments.push({start:.5,end:receiver.t,kind:"CASCADE_LANDING",startKind:"CLIFF_FOOT",endKind:receiver.kind,profileOffset:1});
+    // The segments describe hydrologic connectivity, never a guessed half-grid
+    // shoreline. buildRunoff clips each leg against actual registered triangles,
+    // wet contour vertices, and published cliff lip/foot polylines.
+    if(!edge.cascade)return [{start:0,end:1,kind:"SURFACE_RUNOFF",startKind:edge.fromPooled?"WATERLINE_TRIANGLE":"CENTER",endKind:edge.toPooled?"WATERLINE_TRIANGLE":"CENTER",profileOffset:0}];
+    const segments=[];
+    if(!edge.fromPooled)segments.push({start:0,end:1,kind:"CASCADE_APPROACH",startKind:"HYDROLOGY_SOURCE",endKind:"CLIFF_LIP",profileOffset:0});
+    segments.push({start:0,end:1,kind:"CASCADE_LANDING",startKind:"CLIFF_FOOT",endKind:edge.toPooled?"WATERLINE_TRIANGLE":"HYDROLOGY_RECEIVER",profileOffset:1});
     return segments;
   }
 
@@ -1524,7 +1513,7 @@ export class WaterRenderer{
     const runoffSignature=this.runoffSignatureFor(runoffs);
     if(runoffSignature!==this.runoffSignature){
       this.disposeMap(this.runoffs);
-      for(const edge of runoffs){const built=this.buildRunoff(edge);if(built)this.runoffs.set(edge.id,built);}
+      for(const edge of runoffs){const built=this.buildRunoff(edge,state);if(built)this.runoffs.set(edge.id,built);}
       this.runoffSignature=runoffSignature;
     }
 
