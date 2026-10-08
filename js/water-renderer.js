@@ -64,6 +64,9 @@ export class WaterRenderer{
     this.cascades=new Map();
     this.runoffs=new Map();
     this.sourceFootprints=new Map();
+    // Derived, read-only topology for the current hydrology snapshot. Not a
+    // second water state: no volumes or gameplay depth are written here.
+    this.sheetFlowNetwork=new Map();
     this.surfaceSignature="";
     this.cascadeSignature="";
     this.runoffSignature="";
@@ -1051,12 +1054,16 @@ export class WaterRenderer{
   }
 
   runoffEdges(state){
-    const all=tilesOf(state),by=this.byKey(all),seen=new Set(),out=[];
+    const all=tilesOf(state),by=this.byKey(all),seen=new Set(),out=[],hydrologyEdges=[];
     for(const tile of all){
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
         if(!flow?.flowing||!flow.from||!flow.to)continue;
+
+        // Inventory every published Q edge, including edges wholly within
+        // standing water, before selecting the subset drawn as terrain runoff.
+        hydrologyEdges.push(flow);
 
         // Visual ownership follows the actual standing-water renderer, not raw
         // storage. Sub-threshold water plus a real Q remains a transport film.
@@ -1081,6 +1088,7 @@ export class WaterRenderer{
         if(edge.runoffSegments.length)out.push(edge);
       }
     }
+    this.sheetFlowNetwork=this.surfaceResolver.sheetFlowBoundaryNetwork(all,hydrologyEdges);
     return this.assignRunoffPathPhases(out);
   }
 
@@ -1203,7 +1211,13 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="WATERLINE_TRIANGLE"||segment.endKind==="WATERLINE_TRIANGLE"),registeredCliffSeam:!!metrics,sharedWallColumns:true};
+    const fromNetwork=this.sheetFlowNetwork?.get(keyOf(from.x,from.y));
+    const toNetwork=this.sheetFlowNetwork?.get(keyOf(to.x,to.y));
+    const publishedEdge=fromNetwork?.outgoing.find(item=>item.id===edge.id);
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="WATERLINE_TRIANGLE"||segment.endKind==="WATERLINE_TRIANGLE"),registeredCliffSeam:!!metrics,sharedWallColumns:true,
+      sheetBoundaryQ:{incoming:Number(fromNetwork?.qIn||0),outgoing:Number(fromNetwork?.qOut||0),receiverIncoming:Number(toNetwork?.qIn||0),receiverOutgoing:Number(toNetwork?.qOut||0),sourceRate:Number(fromNetwork?.sourceRate||0)},
+      publishedGeometryJoin:publishedEdge?.geometryJoin||"NO_PUBLISHED_Q_EDGE",publishedGeometryJoinValid:publishedEdge?.geometryJoinValid===true,
+      publishedTerrainRevision:Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0),publishedCliffRevision:Number(this.surfaceResolver.renderedCliffGeometryRevision||0)};
     return mesh;
   }
 
@@ -1746,6 +1760,10 @@ export class WaterRenderer{
       dedicatedRunoffMaterial:true,
       fixedCascadeWidth:false,
       persistentPerEdgeDischarge:true,
+      sheetFlowBoundaryInventory:true,
+      sheetFlowActiveTiles:[...this.sheetFlowNetwork.values()].filter(tile=>tile.incoming.length||tile.outgoing.length).length,
+      sheetFlowGeometryRejectedEdges:new Set([...this.sheetFlowNetwork.values()].flatMap(tile=>tile.outgoing)
+        .filter(edge=>!edge.geometryJoinValid&&!edge.cascade).map(edge=>edge.id)).size,
       hydraulicImpactPower:true,
       sourceUpwellingField:true,
       dryReceiverCascade:true

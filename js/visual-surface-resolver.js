@@ -126,6 +126,96 @@ export class VisualSurfaceResolver{
     return this.renderedSurfaceGeometry.get(this.keyOf(tile.x,tile.y))||null;
   }
 
+  // The published Babylon terrain triangles are the sole world-space height
+  // authority. Do not reconstruct a slope from tile elevation or patchGrid here.
+  publishedSurfacePoint(tile,x,z){
+    const geometry=this.getRenderedSurfaceGeometry(tile);
+    if(!geometry?.triangles?.length)return null;
+    for(let triangleIndex=0;triangleIndex<geometry.triangles.length;triangleIndex++){
+      const [a,b,c]=geometry.triangles[triangleIndex];
+      const ax=b.x-a.x,az=b.z-a.z,bx=c.x-a.x,bz=c.z-a.z;
+      const determinant=ax*bz-az*bx;
+      if(Math.abs(determinant)<=EPSILON)continue;
+      const px=Number(x)-a.x,pz=Number(z)-a.z;
+      const u=(px*bz-pz*bx)/determinant,v=(ax*pz-az*px)/determinant,w=1-u-v;
+      if(u < -EPSILON||v < -EPSILON||w < -EPSILON)continue;
+      return{x:Number(x),y:a.y+u*(b.y-a.y)+v*(c.y-a.y),z:Number(z),
+        triangleIndex,barycentric:{a:w,b:u,c:v},tileKey:geometry.key,terrainRevision:geometry.revision};
+    }
+    return null;
+  }
+
+  // One edge has ONE set of XZ sample coordinates on both sides. A cliff is
+  // not a sloping seam: its two independently published lip/foot heights must
+  // not be averaged into a fictitious surface crossing.
+  publishedSheetBoundary(from,to){
+    if(!from||!to)return{ok:false,reason:"MISSING_TILE",samples:[]};
+    const dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y);
+    if(Math.abs(dx)+Math.abs(dz)!==1)return{ok:false,reason:"NON_ADJACENT",samples:[]};
+    if(this.getRenderedCliffGeometry(from,{dx,dy:dz})||
+       this.getRenderedCliffGeometry(to,{dx:-dx,dy:-dz})){
+      return{ok:false,reason:"REGISTERED_CLIFF_BOUNDARY",samples:[],
+        terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision};
+    }
+    const samples=[];
+    // Corners plus the THREE existing micro-region edge centres, sampled on
+    // their exact world XZ coordinates, not a second tessellation.
+    const edgeFractions=[0,1/6,.5,5/6,1];
+    for(let i=0;i<edgeFractions.length;i++){
+      const t=edgeFractions[i];
+      const x=dx!==0?(Number(from.x)+dx*.5)*TILE_SIZE:(Number(from.x)-.5+t)*TILE_SIZE;
+      const z=dz!==0?(Number(from.y)+dz*.5)*TILE_SIZE:(Number(from.y)-.5+t)*TILE_SIZE;
+      const a=this.publishedSurfacePoint(from,x,z),b=this.publishedSurfacePoint(to,x,z);
+      if(!a||!b)return{ok:false,reason:"MISSING_PUBLISHED_SURFACE",samples:[],
+        terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision};
+      // Distinct heights here mean no watertight smooth-terrain handoff exists.
+      // Never draw a synthetic midpoint between the two surfaces.
+      if(Math.abs(a.y-b.y)>EPSILON*100)return{ok:false,reason:"SURFACE_SEAM_HEIGHT_MISMATCH",samples:[],
+        terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision,
+        mismatch:{x,z,fromY:a.y,toY:b.y}};
+      samples.push({x,y:a.y,z,fromTriangle:a.triangleIndex,toTriangle:b.triangleIndex,t});
+    }
+    return{ok:true,reason:"PUBLISHED_SURFACE_SEAM",samples,
+      terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision};
+  }
+
+  // Read-only TILE-scale inventory of REAL hydrology edges. This deliberately
+  // does not create microcell storage or a second water state. It will feed the
+  // shared sheet-flow solve; every incident Q edge is represented once.
+  sheetFlowBoundaryNetwork(tiles,edges){
+    const nodes=new Map();
+    for(const tile of tiles||[]){
+      if(!tile)continue;
+      const tileKey=this.keyOf(tile.x,tile.y);
+      nodes.set(tileKey,{tileKey,waterDepth:waterDepthOf(tile),sourceRate:tile.hydrologySource===true&&tile.hydrologySourceDisabled!==true
+        ?Math.max(0,Number(tile.hydrologySourceInflow||0)):0,
+        incoming:[],outgoing:[],qIn:0,qOut:0});
+    }
+    const seen=new Set();
+    for(const edge of edges||[]){
+      const from=edge?.from,to=edge?.to;
+      if(!from||!to)continue;
+      const fromKey=this.keyOf(from.x,from.y),toKey=this.keyOf(to.x,to.y);
+      const id=`${fromKey}->${toKey}`;
+      if(seen.has(id))continue;
+      seen.add(id);
+      const q=Math.max(0,Number(edge.edgeDischarge??edge.persistentRate??edge.rate??0));
+      if(q<=EPSILON)continue;
+      const a=nodes.get(fromKey),b=nodes.get(toKey);
+      if(!a||!b)continue;
+      const seam=this.publishedSheetBoundary(from,to);
+      const record={id,q,fromKey,toKey,cascade:edge.cascade===true,
+        geometryJoin:seam.reason,geometryJoinValid:seam.ok,terrainRevision:seam.terrainRevision,
+        cliffRevision:seam.cliffRevision};
+      a.outgoing.push(record);a.qOut+=q;b.incoming.push(record);b.qIn+=q;
+    }
+    for(const node of nodes.values()){
+      node.incoming.sort((a,b)=>a.id.localeCompare(b.id));
+      node.outgoing.sort((a,b)=>a.id.localeCompare(b.id));
+    }
+    return nodes;
+  }
+
   // Transport-only water has Q but no gameplay depth. This is a shared
   // PRESENTATION footprint, derived from the existing 3x3 sampling resolution
   // and the published terrain triangles. It does not create hydrology storage.
@@ -149,21 +239,10 @@ export class VisualSurfaceResolver{
     if(Math.abs(dx)+Math.abs(dz)!==1)return [];
     const terrains=[from,to].map(tile=>this.getRenderedSurfaceGeometry(tile)?.triangles||[]);
     if(terrains.some(tris=>!tris.length))return [];
-    const sampleY=(point,triangles)=>{
-      for(const triangle of triangles){
-        const [a,b,c]=triangle;
-        const ax=b.x-a.x,az=b.z-a.z,bx=c.x-a.x,bz=c.z-a.z;
-        const determinant=ax*bz-az*bx;
-        if(Math.abs(determinant)<=EPSILON)continue;
-        const px=point.x-a.x,pz=point.z-a.z;
-        const u=(px*bz-pz*bx)/determinant,v=(ax*pz-az*px)/determinant;
-        if(u>=-EPSILON&&v>=-EPSILON&&u+v<=1+EPSILON)return a.y+u*(b.y-a.y)+v*(c.y-a.y);
-      }
-      return null;
-    };
+    const sampleY=(point,tile)=>this.publishedSurfacePoint(tile,point.x,point.z)?.y??null;
     const nodes=new Map(),links=new Map();
-    const put=(id,x,z,triangles)=>{
-      const y=sampleY({x,z},triangles);if(y==null)return;
+    const put=(id,x,z,tile)=>{
+      const y=sampleY({x,z},tile);if(y==null)return;
       nodes.set(id,{id,x,y,z});links.set(id,[]);
     };
     const connect=(a,b)=>{
@@ -178,7 +257,7 @@ export class VisualSurfaceResolver{
     for(let tileIndex=0;tileIndex<2;tileIndex++){
       const tile=tileIndex===0?from:to;
       for(let row=0;row<3;row++)for(let col=0;col<3;col++)
-        put(`${tileIndex}:${row}:${col}`,(Number(tile.x)+coords[col])*TILE_SIZE,(Number(tile.y)+coords[row])*TILE_SIZE,terrains[tileIndex]);
+        put(`${tileIndex}:${row}:${col}`,(Number(tile.x)+coords[col])*TILE_SIZE,(Number(tile.y)+coords[row])*TILE_SIZE,tile);
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
         for(const [dr,dc] of [[0,1],[1,0],[1,1],[1,-1]]){
           const rr=row+dr,cc=col+dc;
@@ -186,16 +265,17 @@ export class VisualSurfaceResolver{
         }
       }
     }
+    const seam=this.publishedSheetBoundary(from,to);
+    if(!seam.ok)return [];
     for(let lateral=0;lateral<3;lateral++){
       // Shared boundary samples use the *same world XZ* for both tiles.
       // They are not guessed tile-centre crossings or separate water heights.
       const x=dx!==0?(Number(from.x)+dx*.5)*TILE_SIZE:(Number(from.x)+coords[lateral])*TILE_SIZE;
       const z=dz!==0?(Number(from.y)+dz*.5)*TILE_SIZE:(Number(from.y)+coords[lateral])*TILE_SIZE;
-      const p={x,z};
-      const heights=terrains.map(tris=>sampleY(p,tris));
-      if(heights.some(y=>y==null))continue;
+      const p=seam.samples[lateral+1];
+      if(!p)continue;
       const id=`seam:${lateral}`;
-      nodes.set(id,{id,x,z,y:(heights[0]+heights[1])*.5});links.set(id,[]);
+      nodes.set(id,{id,x:p.x,z:p.z,y:p.y});links.set(id,[]);
       if(dx!==0){
         const fromCol=dx>0?2:0,toCol=dx>0?0:2;
         connect(`${0}:${lateral}:${fromCol}`,id);connect(id,`${1}:${lateral}:${toCol}`);
