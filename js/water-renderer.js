@@ -67,6 +67,9 @@ export class WaterRenderer{
     // Derived, read-only topology for the current hydrology snapshot. Not a
     // second water state: no volumes or gameplay depth are written here.
     this.sheetFlowNetwork=new Map();
+    this.sheetFlowSurfaces=new Map();
+    this.sheetFlowMeshes=new Map();
+    this.sheetFlowSignature="";
     this.surfaceSignature="";
     this.cascadeSignature="";
     this.runoffSignature="";
@@ -825,6 +828,8 @@ export class WaterRenderer{
 
   buildSourceFootprint(source,runoffs=[]){
     const tile=source?.tile;if(!tile||waterDepth(tile)>EPSILON)return null;
+    // A source outlet is already part of its tile's one shared sheet mesh.
+    if(this.sheetFlowSurfaces.has(keyOf(tile.x,tile.y)))return null;
     const edges=runoffs.filter(edge=>edge.from===tile&&this.springOutletLength(edge)>0);
     if(!edges.length)return null;
     const positions=[],indices=[],normals=[],uvs=[],colors=[];
@@ -1092,15 +1097,64 @@ export class WaterRenderer{
     return this.assignRunoffPathPhases(out);
   }
 
+  // The Q-only surface is ONE sheet per gameplay tile. All incident Q
+  // branches were resolved together against TerrainRenderer's *published*
+  // triangles. Rendering does not select a stream width, centreline or Y.
+  buildSheetFlow(solution,sharedMaxDepth){
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[]};
+    for(const polygon of solution.polygons||[]){
+      const first=out.positions.length/3;
+      for(const vertex of polygon.points){
+        const depth=Math.max(0,Number(vertex.depth||0));
+        const point=this.canonicalWaterPoint({x:Number(vertex.x),
+          y:Number(vertex.y)+depth+SURFACE_OFFSET*.42,z:Number(vertex.z)});
+        out.positions.push(point.x,point.y,point.z);
+        out.normals.push(0,0,0);
+        const vx=Number(solution.flow.x||0),vz=Number(solution.flow.z||0);
+        out.uvs.push(((-vz*point.x+vx*point.z)/TILE_SIZE),
+          (vx*point.x+vz*point.z)/Math.max(EPSILON,RUNOFF_UV_REPEAT_DISTANCE));
+        // One transfer function for the whole active sheet network keeps alpha
+        // identical on both sides of any shared, physically valid seam.
+        out.colors.push(1,1,1,sharedMaxDepth>0?Math.sqrt(depth/sharedMaxDepth):0);
+      }
+      for(let i=1;i<polygon.points.length-1;i++){
+        const a=polygon.points[0],b=polygon.points[i],c=polygon.points[i+1];
+        if(Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))>1e-10)
+          out.indices.push(first,first+i,first+i+1);
+      }
+    }
+    if(!out.indices.length)return null;
+    BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
+    const mesh=new BABYLON.Mesh(`sheet-flow-${solution.key}`,this.scene),data=new BABYLON.VertexData();
+    Object.assign(data,{positions:out.positions,indices:out.indices,normals:out.normals,
+      uvs:out.uvs,colors:out.colors});data.applyToMesh(mesh,false);
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;
+    mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+    mesh.visibility=solution.tile.fogged?.16:1;
+    mesh.metadata={kind:"water-surface-runoff",model:solution.model,
+      tileKey:solution.key,geometryRevision:solution.geometryRevision,
+      sourceEdges:solution.boundaryEdges.map(edge=>edge.id),
+      transportVolume:solution.transportVolume,targetVolumeProxy:solution.targetVolume,
+      volumeProxyAfterSeam:solution.volumeProxyAfterSeam,
+      wetArea:solution.wetArea,maxVisualFilmDepth:solution.maxDepth,
+      triangleCount:out.indices.length/3,gameplayDepth:false,
+      terrainConforming:true,registeredTriangleOnly:true,hydrologySource:false,
+      pathEndpointsAreTileCenters:false,fixedCorridorWidth:false,
+      mergedTileQ:true,sharedTerrainCoordinates:true};
+    return mesh;
+  }
+
   appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors,allMap){
     // The shared VisualSurfaceResolver owns the Q-only wet footprint. This
     // renderer only converts its published terrain XYZ polygons to Babylon.
     const wetContours=[edge.from,edge.to].filter(tile=>waterDepth(tile)>EPSILON)
       .flatMap(tile=>this.waterSurfacePolygons(tile,allMap));
     const footprint=this.surfaceResolver.transportSurfaceFootprint(edge,segment,{
-      surfaceTriangles:(tile,triangles)=>waterDepth(tile)>EPSILON
-        ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
-        :triangles
+      surfaceTriangles:(tile,triangles)=>this.sheetFlowSurfaces.has(keyOf(tile.x,tile.y))&&!edge.cascade
+        ?[]
+        :waterDepth(tile)>EPSILON
+          ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
+          :triangles
     });
     for(const {points:terrainPoints} of footprint.polygons){
       const points=this.clipSpringOutletPolygon(terrainPoints,this.springOutletLength(edge),false);
@@ -1678,6 +1732,23 @@ export class WaterRenderer{
     }
 
     const runoffSignature=this.runoffSignatureFor(runoffs);
+    // Recalculate only when terrain revision, Q topology, waterline, or
+    // presentation input changes. Never sample old terrain XYZ after rebuild.
+    if(runoffSignature!==this.sheetFlowSignature){
+      // Avoid retaining XYZ -> Y registry layers after Q-driven sheet rebuilds.
+      this.resetWaterSeamRegistry();
+      const newSurfaces=this.surfaceResolver.sheetFlowTileSurfaces(tilesOf(state),this.sheetFlowNetwork);
+      const maxDepth=Math.max(0,...[...newSurfaces.values()].map(v=>v.maxDepth));
+      const newMeshes=new Map();
+      for(const sheet of newSurfaces.values()){
+        const mesh=this.buildSheetFlow(sheet,maxDepth);
+        if(mesh)newMeshes.set(sheet.key,mesh);
+      }
+      this.disposeMap(this.sheetFlowMeshes);
+      this.sheetFlowSurfaces=newSurfaces;
+      this.sheetFlowMeshes=newMeshes;
+      this.sheetFlowSignature=runoffSignature;
+    }
     if(runoffSignature!==this.runoffSignature){
       this.disposeMap(this.runoffs);
       for(const edge of runoffs){const built=this.buildRunoff(edge,state);if(built)this.runoffs.set(edge.id,built);}
@@ -1692,7 +1763,9 @@ export class WaterRenderer{
     }
 
     if(!waterTiles.length&&!runoffs.length&&!sources.length){
-      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.disposeMap(this.sourceFootprints);this.resetWaterSeamRegistry();
+      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.disposeMap(this.sourceFootprints);
+      this.disposeMap(this.sheetFlowMeshes);this.sheetFlowSurfaces.clear();this.sheetFlowSignature="";
+      this.resetWaterSeamRegistry();
       this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
     }
   }
@@ -1760,6 +1833,7 @@ export class WaterRenderer{
       dedicatedRunoffMaterial:true,
       fixedCascadeWidth:false,
       persistentPerEdgeDischarge:true,
+      sheetFlowSurfaceMeshes:this.sheetFlowMeshes.size,
       sheetFlowBoundaryInventory:true,
       sheetFlowActiveTiles:[...this.sheetFlowNetwork.values()].filter(tile=>tile.incoming.length||tile.outgoing.length).length,
       sheetFlowGeometryRejectedEdges:new Set([...this.sheetFlowNetwork.values()].flatMap(tile=>tile.outgoing)

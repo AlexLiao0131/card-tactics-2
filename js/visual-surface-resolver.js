@@ -205,6 +205,7 @@ export class VisualSurfaceResolver{
       if(!a||!b)continue;
       const seam=this.publishedSheetBoundary(from,to);
       const record={id,q,fromKey,toKey,cascade:edge.cascade===true,
+        transportVolume:Math.max(0,Number(edge.transportVolume??edge.volume??0)),
         geometryJoin:seam.reason,geometryJoinValid:seam.ok,terrainRevision:seam.terrainRevision,
         cliffRevision:seam.cliffRevision};
       a.outgoing.push(record);a.qOut+=q;b.incoming.push(record);b.qIn+=q;
@@ -214,6 +215,187 @@ export class VisualSurfaceResolver{
       node.outgoing.sort((a,b)=>a.id.localeCompare(b.id));
     }
     return nodes;
+  }
+
+  // This is a PRESENTATION solve of a single tile's moving Q-only sheet,
+  // not another hydrological storage grid. The published per-turn transport
+  // volume supplies the sole scale of the visible cross-section. It is a
+  // one-turn *transit proxy*, never a replacement for gameplay waterDepth.
+  // The surface is fitted to the actual registered terrain triangles, then
+  // clipped and volume-normalized; all sheet XYZ is derived from those faces.
+  sheetFlowTileSurfaces(tiles,network){
+    const results=new Map();
+    const area=(a,b,c)=>Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))/2;
+    const vertexKey=p=>`${Number(p.x).toFixed(9)},${Number(p.z).toFixed(9)}`;
+    const clipWet=triangle=>{
+      const out=[];
+      for(let i=0;i<triangle.length;i++){
+        const a=triangle[i],b=triangle[(i+1)%triangle.length];
+        const aWet=a.depth>0,bWet=b.depth>0;
+        if(aWet)out.push(a);
+        if(aWet!==bWet){
+          const t=a.depth/(a.depth-b.depth);
+          out.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
+            z:a.z+(b.z-a.z)*t,depth:0});
+        }
+      }
+      return out;
+    };
+    // Film depth on each emitted triangle is affine. Its volume is exactly
+    // the projected triangle area multiplied by average positive depth.
+    const integration=polygon=>{
+      let wetArea=0,volume=0;
+      for(let i=1;i+1<polygon.length;i++){
+        const a=polygon[0],b=polygon[i],c=polygon[i+1],aXZ=area(a,b,c);
+        wetArea+=aXZ;volume+=aXZ*(a.depth+b.depth+c.depth)/3;
+      }
+      return {wetArea,volume};
+    };
+    function solveHeight(volumeAt,target,low,high){
+      if(volumeAt(low)>target+EPSILON)return null;
+      for(let i=0;i<50&&volumeAt(high)<target;i++)high=high*2+Math.max(1,high-low);
+      if(volumeAt(high)<target)return null;
+      for(let i=0;i<42;i++){
+        const mid=(low+high)*.5;
+        if(volumeAt(mid)<target)low=mid;else high=mid;
+      }
+      return (low+high)/2;
+    }
+    for(const tile of tiles||[]){
+      if(!tile||waterDepthOf(tile)>EPSILON)continue;
+      const key=this.keyOf(tile.x,tile.y),node=network?.get(key);
+      const geometry=this.getRenderedSurfaceGeometry(tile);
+      if(!node||!geometry?.triangles?.length)continue;
+      const edges=[...(node.incoming||[]),...(node.outgoing||[])];
+      // Stage 2 supports entire source-fed dry reaches. Existing pooled-water
+      // and cliff junctions retain their pre-existing renderers until the
+      // canonical cross-surface handoff is implemented and tested.
+      if(!edges.length||edges.some(edge=>edge.cascade||!edge.geometryJoinValid))continue;
+      const incoming=(node.incoming||[]).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
+      const outgoing=(node.outgoing||[]).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
+      const transit=Math.max(incoming,outgoing);
+      if(transit<=EPSILON)continue;
+      const triangles=geometry.triangles;
+      let weight=0,cx=0,cy=0,cz=0;
+      for(const tri of triangles){
+        const w=area(...tri);if(w<=EPSILON)continue;
+        weight+=w;
+        cx+=w*(tri[0].x+tri[1].x+tri[2].x)/3;
+        cy+=w*(tri[0].y+tri[1].y+tri[2].y)/3;
+        cz+=w*(tri[0].z+tri[1].z+tri[2].z)/3;
+      }
+      if(weight<=EPSILON)continue;
+      cx/=weight;cy/=weight;cz/=weight;
+      let xx=0,xz=0,zz=0,xy=0,zy=0;
+      for(const tri of triangles){
+        const w=area(...tri);if(w<=EPSILON)continue;
+        const x=(tri[0].x+tri[1].x+tri[2].x)/3-cx;
+        const z=(tri[0].z+tri[1].z+tri[2].z)/3-cz;
+        const y=(tri[0].y+tri[1].y+tri[2].y)/3-cy;
+        xx+=w*x*x;xz+=w*x*z;zz+=w*z*z;xy+=w*x*y;zy+=w*z*y;
+      }
+      const determinant=xx*zz-xz*xz;
+      const sx=determinant>EPSILON?(xy*zz-zy*xz)/determinant:0;
+      const sz=determinant>EPSILON?(zy*xx-xy*xz)/determinant:0;
+      const residual=new Map();
+      for(const tri of triangles)for(const p of tri){
+        const k=vertexKey(p),relative=cy+sx*(p.x-cx)+sz*(p.z-cz)-p.y;
+        residual.set(k,relative);
+      }
+      const values=[...residual.values()];if(!values.length)continue;
+      const lowest=-Math.max(...values),highest=-Math.min(...values);
+      const target=transit*TILE_SIZE*TILE_SIZE*ELEVATION_HEIGHT;
+      const calculate=(offset,locked=null,emit=false)=>{
+        let wetArea=0,volume=0;
+        const polygons=[];
+        const depths=emit?new Map():null;
+        for(let triangleIndex=0;triangleIndex<triangles.length;triangleIndex++){
+          const tri=triangles[triangleIndex];
+          const points=tri.map(p=>{
+            const k=vertexKey(p),raw=locked?.has(k)?locked.get(k):residual.get(k)+offset;
+            if(depths)depths.set(k,Math.max(0,raw));
+            return {...p,depth:raw};
+          });
+          const wet=clipWet(points);
+          if(wet.length<3)continue;
+          const measurement=integration(wet);
+          wetArea+=measurement.wetArea;volume+=measurement.volume;
+          if(emit&&measurement.wetArea>EPSILON)polygons.push({triangleIndex,points:wet});
+        }
+        return {wetArea,volume,polygons,depths};
+      };
+      const baseline=solveHeight(off=>calculate(off).volume,target,lowest,highest+target/weight);
+      if(baseline==null)continue;
+      const preliminary=calculate(baseline,null,true);
+      let fx=0,fz=0;
+      for(const edge of edges){
+        const [ax,az]=edge.fromKey.split(',').map(Number),[bx,bz]=edge.toKey.split(',').map(Number);
+        fx+=(bx-ax)*edge.q;fz+=(bz-az)*edge.q;
+      }
+      const magnitude=Math.hypot(fx,fz);
+      results.set(key,{tile,key,triangles,geometryRevision:geometry.revision,
+        targetVolume:target,transportVolume:transit,initialDepths:preliminary.depths,
+        residual,calculate,locked:new Map(),baseline,
+        boundaryEdges:edges,flow:{x:magnitude?fx/magnitude:0,z:magnitude?fz/magnitude:0},
+        model:'REGISTERED_TERRAIN_TRANSIT_SHEET'});
+    }
+    // The same registered edge coordinates are used by both adjacent dry tiles.
+    // Avoid mismatch: a seam is wet only if both sides have a valid Q edge.
+    const tileByKey=new Map((tiles||[]).map(tile=>[this.keyOf(tile.x,tile.y),tile]));
+    for(const result of results.values()){
+      const t=result.tile;
+      for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const neighbor=tileByKey.get(this.keyOf(t.x+dx,t.y+dz));
+        const other=neighbor&&results.get(this.keyOf(neighbor.x,neighbor.y));
+        const forward=`${result.key}->${other?.key}`,reverse=`${other?.key}->${result.key}`;
+        const valid=!!other&&result.boundaryEdges.some(edge=>(edge.id===forward||edge.id===reverse)&&edge.geometryJoinValid);
+        if(valid&&result.key>other.key)continue;
+        const xEdge=(t.x+dx*.5)*TILE_SIZE,zEdge=(t.y+dz*.5)*TILE_SIZE;
+        const samples=new Set();
+        for(const tri of result.triangles)for(const p of tri){
+          if(Math.abs((dx!==0?p.x-xEdge:p.z-zEdge))<=EPSILON*10)samples.add(vertexKey(p));
+        }
+        for(const k of samples){
+          const shared=valid?Math.min(result.initialDepths.get(k)||0,other.initialDepths.get(k)||0):0;
+          result.locked.set(k,shared);
+          if(valid)other.locked.set(k,shared);
+        }
+      }
+    }
+    const candidateKeys=new Set(results.keys());
+    for(const result of results.values()){
+      const values=[...result.residual.values()];
+      const low=-Math.max(...values),high=-Math.min(...values)+result.targetVolume/(TILE_SIZE*TILE_SIZE*ELEVATION_HEIGHT);
+      const minimal=result.calculate(low,result.locked);
+      // A locked boundary with excessive wet volume cannot be reconciled by
+      // the local solver. Fail the sheet instead of publishing fake water.
+      if(minimal.volume>result.targetVolume+EPSILON){results.delete(result.key);continue;}
+      const offset=solveHeight(h=>result.calculate(h,result.locked).volume,result.targetVolume,low,high);
+      if(offset==null){results.delete(result.key);continue;}
+      const solved=result.calculate(offset,result.locked,true);
+      if(!solved.polygons.length){results.delete(result.key);continue;}
+      result.polygons=solved.polygons;
+      result.wetArea=solved.wetArea;
+      result.volumeProxyAfterSeam=solved.volume;
+      result.maxDepth=Math.max(0,...solved.depths.values());
+      result.minDepth=0;
+      delete result.initialDepths;delete result.locked;delete result.residual;delete result.calculate;
+    }
+    // If a paired seam fails after the coupled budget solve, discard its
+    // connected candidate sheets as well. The legacy surface renderer remains
+    // available; never leave a partially solved positive seam hanging.
+    let changed=true;
+    while(changed){
+      changed=false;
+      for(const entry of [...results.values()]){
+        const disconnected=entry.boundaryEdges.some(edge=>{
+          const other=edge.fromKey===entry.key?edge.toKey:edge.fromKey;
+          return candidateKeys.has(other)&&!results.has(other);
+        });
+        if(disconnected){results.delete(entry.key);changed=true;}
+      }
+    }
+    return results;
   }
 
   // Transport-only water has Q but no gameplay depth. This is a shared
