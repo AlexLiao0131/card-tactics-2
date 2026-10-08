@@ -1,4 +1,4 @@
-import { TILE_SIZE } from "./coordinate-system.js";
+import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 
 const EPSILON=1e-8;
 const MAX_VISUAL_SLOPE_DELTA=1.0001;
@@ -352,6 +352,30 @@ export class VisualSurfaceResolver{
   getRenderedCliffGeometry(tile,dir){
     const key=this.cliffGeometryKey(tile,dir);
     return key?this.renderedCliffGeometry.get(key)||null:null;
+  }
+
+  // Authoritative stored-water overtopping at an EXISTING rendered rock lip.
+  // Hydraulic edge Q describes routed transport, but a broad stored free surface
+  // may also extend over neighbouring cliff faces that have no individually
+  // routed Q edge. This check uses Hydrology's real waterSurfaceZ, the lower
+  // receiver's real water level, and TerrainRenderer's published cliff vertices.
+  // It adds no water, no discharge, no new hydrology state or fabricated cliff.
+  storedWaterCliffOvertopping(from,to,dir,{minDrop=0}={}){
+    const wall=this.getRenderedCliffGeometry(from,dir);
+    if(!wall?.lip?.length||waterDepthOf(from)<=0||!to)return null;
+    const upper=this.waterSurfaceOf(from);
+    const lower=this.waterSurfaceOf(to)??elevationOf(to);
+    if(!Number.isFinite(upper)||!Number.isFinite(lower)||upper-lower<=Math.max(0,Number(minDrop||0)))return null;
+    const waterY=upper*ELEVATION_HEIGHT;
+    // A portion of the *actual* lip must be below the free surface. Having
+    // water elsewhere in a tile, or merely being taller than the receiver,
+    // does not authorize a waterfall.
+    let wetLip=false;
+    for(let i=0;i<wall.lip.length-1;i++){
+      const a=wall.lip[i],b=wall.lip[i+1];
+      if(Math.max(waterY-Number(a.y),waterY-Number(b.y))>1e-7){wetLip=true;break;}
+    }
+    return wetLip?{wall,top:upper,bottom:lower,drop:upper-lower,source:"STORED_WATER_OVERTOPPING"}:null;
   }
 
   keyOf(x,y){return keyOf(x,y);}

@@ -1361,27 +1361,54 @@ export class WaterRenderer{
 
   cascadeEdges(state,waterTiles){
     const allMap=this.allByKey(state),out=[],seen=new Set();
-    // Scan every undirected gameplay edge exactly once. Starting only from wet
-    // tiles and only looking east/south misses west/north spill faces when the low
-    // receiver is still dry. Hydrology's per-edge flux decides the direction.
+    // Physical transport Q and stored-water overtopping are distinct facts.
+    // Q-only sheets keep the Hydrology edge contract. A standing water surface
+    // can also overtop an ACTUAL cliff lip along a neighbouring edge that the
+    // tile-scale Q routing did not individually select. Never infer a waterfall
+    // from elevation difference alone: verify the recorded lip and the exact
+    // upper-water/terrain polygon intersection before drawing anything.
     for(const tile of tilesOf(state)){
       for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
         const neighbor=allMap.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));if(!neighbor)continue;
         const flow=this.hydrologyEdgeState(tile,neighbor);
         const transported=Math.max(0,Number(flow?.transportVolume??flow?.volume??0));
-        if(!flow?.cascade||!flow.from||!flow.to||(!hasAnyWater(flow.from)&&transported<=EPSILON))continue;
-        const high=flow.from,low=flow.to,id=`${high.x},${high.y}->${low.x},${low.y}`;
-        if(seen.has(id))continue;seen.add(id);
-        const top=Number.isFinite(Number(flow.fromSurface))?Number(flow.fromSurface):visualSurface(high);
-        const bottom=Number.isFinite(Number(flow.toSurface))?Number(flow.toSurface):(hasAnyWater(low)?visualSurface(low):Number(low.elevation||0));
-        const drop=Math.max(0,Number(flow.surfaceDrop??(top-bottom)));
+        let resolved=flow?.cascade&&flow.from&&flow.to&&(hasAnyWater(flow.from)||transported>EPSILON)
+          ?flow:null;
+        if(!resolved){
+          // Check both orientations: this is an undirected grid edge, while
+          // the real cliff only belongs to its HIGH-side TerrainRenderer tile.
+          for(const [high,low] of [[tile,neighbor],[neighbor,tile]]){
+            const facing={dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y)};
+            const overflow=this.surfaceResolver.storedWaterCliffOvertopping(high,low,facing,{minDrop:WATERFALL_MIN_DROP});
+            if(!overflow)continue;
+            const polygons=this.waterSurfacePolygons(high,allMap);
+            const candidate={tile:high,receiver:low};
+            if(!this.cascadeSpillIntervals(candidate,state,overflow.wall,polygons).length)continue;
+            // This is a measured waterline crossing, not an invented Q value.
+            // The actual game storage and transport stay owned by Hydrology.
+            resolved={cascade:true,from:high,to:low,fromSurface:overflow.top,toSurface:overflow.bottom,
+              surfaceDrop:overflow.drop,rate:0,volume:0,transportVolume:0,edgeDischarge:0,
+              hydraulicPower:0,reason:overflow.source,storedWaterOvertopping:true};
+            break;
+          }
+        }
+        if(!resolved)continue;
+        const high=resolved.from,low=resolved.to,id=`${high.x},${high.y}->${low.x},${low.y}`;
+        if(seen.has(id))continue;
+        const top=Number.isFinite(Number(resolved.fromSurface))?Number(resolved.fromSurface):visualSurface(high);
+        const bottom=Number.isFinite(Number(resolved.toSurface))?Number(resolved.toSurface):(hasAnyWater(low)?visualSurface(low):Number(low.elevation||0));
+        const drop=Math.max(0,Number(resolved.surfaceDrop??(top-bottom)));
         if(drop<WATERFALL_MIN_DROP)continue;
+        seen.add(id);
         out.push({
           id,tile:high,receiver:low,dx:Math.sign(low.x-high.x),dy:Math.sign(low.y-high.y),
-          top,bottom,drop,authoredDrop:flow.authored?Number(high.hydrologyCascadeDrop||drop):null,
-          speed:Math.max(.6,Number(high.flowSpeed||0),Number(flow.rate||0),drop*.55),
-          flowVolume:Number(flow.volume||0),transportVolume:Number(flow.transportVolume??flow.volume??0),edgeDischarge:Number(flow.edgeDischarge??flow.rate??0),hydraulicPower:Number(flow.hydraulicPower??Math.max(0,Number(flow.rate||0))*drop),
-          hydrologyEdgeReason:flow.reason||null,authored:flow.authored===true,receiverWet:hasAnyWater(low)
+          top,bottom,drop,authoredDrop:resolved.authored?Number(high.hydrologyCascadeDrop||drop):null,
+          speed:Math.max(.6,Number(high.flowSpeed||0),Number(resolved.rate||0),drop*.55),
+          flowVolume:Number(resolved.volume||0),transportVolume:Number(resolved.transportVolume??resolved.volume??0),
+          edgeDischarge:Number(resolved.edgeDischarge??resolved.rate??0),
+          hydraulicPower:Number(resolved.hydraulicPower??Math.max(0,Number(resolved.rate||0))*drop),
+          hydrologyEdgeReason:resolved.reason||null,authored:resolved.authored===true,
+          storedWaterOvertopping:resolved.storedWaterOvertopping===true,receiverWet:hasAnyWater(low)
         });
       }
     }
@@ -1436,7 +1463,7 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
     mesh.material=this.cascadeMaterial;mesh.alphaIndex=12;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,interiorNormalOffsetOnly:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason};
+    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,interiorNormalOffsetOnly:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason,storedWaterOvertopping:edge.storedWaterOvertopping===true};
 
     const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);mesh.parent=root;
     const impact=Math.max(0,Number(edge.hydraulicPower||0)),impactScale=clamp(Math.sqrt(impact+.01),.32,1.45),impacts=[];
