@@ -740,11 +740,28 @@ export class TerrainRenderer{
           const tx=b.x-a.x,tz=b.z-a.z,length=Math.hypot(tx,tz)||1;
           let nx=tz/length,nz=-tx/length;
           if(nx*dir.dx+nz*dir.dy<0){nx=-nx;nz=-nz;}
+          const actualFaces=[];
           wallSegments.push({
             topA:{x:a.x,y:aTop,z:a.z},topB:{x:b.x,y:bTop,z:b.z},
             bottomA:{x:af.x,y:aBot,z:af.z},bottomB:{x:bf.x,y:bBot,z:bf.z},
-            normal:{x:nx,z:nz}
+            normal:{x:nx,z:nz},faces:actualFaces
           });
+          // Store the actual triangles SUBMITTED to the rock mesh, including its
+          // wet-wall split and diagonal. The waterfall must not reconstruct a
+          // different surface from only lip/foot and smoothed normals.
+          const emitRegisteredWallQuad=(pa,pb,pc,pd,color,bottomV,topV)=>{
+            const start=out.positions.length;
+            this.pushCliffQuad(out,pa,pb,pc,pd,color);
+            const tags=[[0,bottomV],[1,bottomV],[1,topV],
+                        [0,bottomV],[1,topV],[0,topV]];
+            for(let offset=start;offset+8<out.positions.length;offset+=9){
+              const startTag=(offset-start)/3;
+              actualFaces.push({vertices:[0,1,2].map(j=>({
+                x:out.positions[offset+j*3],y:out.positions[offset+j*3+1],z:out.positions[offset+j*3+2],
+                u:tags[startTag+j][0],v:tags[startTag+j][1]
+              }))});
+            }
+          };
 
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
@@ -754,30 +771,22 @@ export class TerrainRenderer{
             const bMid=bBot+(bTop-bBot)*.46;
             const am={x:af.x+(a.x-af.x)*.46,y:aMid,z:af.z+(a.z-af.z)*.46};
             const bm={x:bf.x+(b.x-bf.x)*.46,y:bMid,z:bf.z+(b.z-bf.z)*.46};
-            this.pushCliffQuad(
-              out,
+            emitRegisteredWallQuad(
               {x:af.x,y:aBot,z:af.z},
               {x:bf.x,y:bBot,z:bf.z},
-              bm,
-              am,
-              wetWallColor
+              bm,am,wetWallColor,1,.54
             );
-            this.pushCliffQuad(
-              out,
-              am,
-              bm,
+            emitRegisteredWallQuad(
+              am,bm,
               {x:b.x,y:bTop,z:b.z},
-              {x:a.x,y:aTop,z:a.z},
-              wallColor
+              {x:a.x,y:aTop,z:a.z},wallColor,.54,0
             );
           }else{
-            this.pushCliffQuad(
-              out,
+            emitRegisteredWallQuad(
               {x:af.x,y:aBot,z:af.z},
               {x:bf.x,y:bBot,z:bf.z},
               {x:b.x,y:bTop,z:b.z},
-              {x:a.x,y:aTop,z:a.z},
-              wallColor
+              {x:a.x,y:aTop,z:a.z},wallColor,1,0
             );
           }
 

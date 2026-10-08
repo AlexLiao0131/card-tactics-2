@@ -1422,39 +1422,107 @@ export class WaterRenderer{
     const allMap=this.allByKey(state),upstreamPolygons=this.waterSurfacePolygons(edge.tile,allMap),spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
     const downstreamPolygons=edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[];
     const positions=[],indices=[],normals=[],uvs=[],impactGroups=[];
-    let vertexBase=0;
-    const rowFractions=[0,.25,.50,.75,1];
-
-    for(let spanIndex=0;spanIndex<spans.length;spanIndex++){
-      const span=spans[spanIndex],distances=this.wallColumnDistances(span,metrics),columnsData=distances.map(distance=>this.wallSampleAtDistance(metrics,distance));
-      if(columnsData.length<2)continue;
-      const columns=columnsData.length,stripBase=vertexBase,impactPoints=[];
-      for(let r=0;r<rowFractions.length;r++){
-        const v=rowFractions[r];
-        for(let c=0;c<columns;c++){
-          const u=columns===1?0:c/(columns-1),sample=columnsData[c],lip=sample.lip,foot=sample.foot;
-          // Pooled water starts at the real clipped free surface. Q-only film
-          // starts directly at the rendered rock lip instead of an unrelated
-          // tile-centre elevation (which left water hanging above the wall).
-          const storedTop=this.waterSurfaceLevelAtPoint(lip,upstreamPolygons,null);
-          const topY=storedTop==null?Number(lip.y)+SURFACE_OFFSET*.42:Number(storedTop)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-          const downstreamLevel=this.waterSurfaceLevelAtPoint(foot,downstreamPolygons,null),bottomY=downstreamLevel==null?Number(foot.y)+SURFACE_OFFSET*.42:Number(downstreamLevel)*ELEVATION_HEIGHT+SURFACE_OFFSET;
-          const y=topY+(Math.min(topY,bottomY)-topY)*v,baseX=Number(lip.x)+(Number(foot.x)-Number(lip.x))*v,baseZ=Number(lip.z)+(Number(foot.z)-Number(lip.z))*v;
-          let nx=Number(lip.normal?.x||0)+(Number(foot.normal?.x||0)-Number(lip.normal?.x||0))*v,nz=Number(lip.normal?.z||0)+(Number(foot.normal?.z||0)-Number(lip.normal?.z||0))*v,nl=Math.hypot(nx,nz)||1;nx/=nl;nz/=nl;
-          // Only the horizontal top/bottom seams must stay welded. Vertical side
-          // columns are still part of the visible sheet and need the same outward
-          // clearance as its interior; pinning them to the rock produced the dark
-          // wall interference/z-fighting visible beside narrow waterfalls.
-          const boundary=r===0||r===rowFractions.length-1,seamEnvelope=boundary?0:Math.sin(Math.PI*v),offset=SURFACE_OFFSET*.48*seamEnvelope;
-          const point=this.canonicalWaterPoint({x:baseX+nx*offset,y,z:baseZ+nz*offset});
-          positions.push(point.x,point.y,point.z);uvs.push(u,v*2.25);normals.push(0,0,0);
-          if(r===rowFractions.length-1)impactPoints.push(point);
+    // The rock triangles in wall.segments[].faces are captured from the actual
+    // Babylon cliff mesh. A bilinear lip/foot strip does not share its interior
+    // triangle planes and can be swallowed by the irregular rock decoration.
+    // Subdivide/crop ONLY those actual triangles; do not infer a second wall.
+    const outward=wall.outward;
+    const clip=(polygon,distance)=>{
+      const result=[];
+      for(let i=0;i<polygon.length;i++){
+        const a=polygon[i],b=polygon[(i+1)%polygon.length],da=distance(a),db=distance(b),aInside=da>=-1e-9,bInside=db>=-1e-9;
+        if(aInside)result.push(a);
+        if(aInside!==bInside){
+          const t=da/(da-db),p={};
+          for(const key of ['x','y','z','s','v','stopY'])p[key]=Number(a[key])+(Number(b[key])-Number(a[key]))*t;
+          result.push(p);
         }
       }
-      for(let r=0;r<rowFractions.length-1;r++)for(let c=0;c<columns-1;c++){
-        const a=stripBase+r*columns+c,b=a+1,d=stripBase+(r+1)*columns+c,e=d+1;indices.push(a,b,e,a,e,d);
+      return result;
+    };
+    const putFace=(polygon,span)=>{
+      if(polygon.length<3)return;
+      const first=positions.length/3;
+      for(const point of polygon){
+        // The whole water face and rock face use the same triangle topology.
+        // A common outward displacement (rather than averaged corner normals)
+        // keeps the sheet in front of every facet and leaves no cracks at bends.
+        // Keep the lip/foot on the published seam for runoff/waterline joins.
+        const v=clamp(point.v,0,1),clearance=SURFACE_OFFSET*4*v*(1-v);
+        const welded=this.canonicalWaterPoint({
+          x:Number(point.x)+Number(outward.x)*clearance,
+          y:Number(point.y)+SURFACE_OFFSET*.42,
+          z:Number(point.z)+Number(outward.z)*clearance
+        });
+        positions.push(welded.x,welded.y,welded.z);
+        uvs.push((Number(point.s)-Number(span.start))/Math.max(EPSILON,Number(span.end)-Number(span.start)),Number(point.v)*2.25);
+        normals.push(0,0,0);
       }
-      vertexBase+=rowFractions.length*columns;
+      for(let i=1;i<polygon.length-1;i++){
+        const a=polygon[0],b=polygon[i],c=polygon[i+1];
+        const ab={x:b.x-a.x,y:b.y-a.y,z:b.z-a.z},ac={x:c.x-a.x,y:c.y-a.y,z:c.z-a.z};
+        const area=Math.hypot(ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,ab.x*ac.y-ab.y*ac.x);
+        if(area>1e-12)indices.push(first,first+i,first+i+1);
+      }
+    };
+    for(let spanIndex=0;spanIndex<spans.length;spanIndex++){
+      const span=spans[spanIndex],distances=this.wallColumnDistances(span,metrics),impactPoints=[];
+      // Above the actual lip, pooled water may stand higher than the rock edge.
+      // Preserve the true stored free-surface seam without lifting the entire
+      // rock-conforming curtain off its triangles.
+      const topEdge=[];
+      for(const distance of distances){
+        const sample=this.wallSampleAtDistance(metrics,distance);
+        const storedTop=this.waterSurfaceLevelAtPoint(sample.lip,upstreamPolygons,null);
+        const topY=storedTop==null?sample.lip.y+SURFACE_OFFSET*.42:Number(storedTop)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+        topEdge.push({lip:sample.lip,topY});
+        const downstream=this.waterSurfaceLevelAtPoint(sample.foot,downstreamPolygons,null);
+        const landY=downstream==null?sample.foot.y+SURFACE_OFFSET*.42:Number(downstream)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+        impactPoints.push({x:sample.foot.x,y:landY,z:sample.foot.z});
+      }
+      for(let i=0;i<topEdge.length-1;i++){
+        const a=topEdge[i],b=topEdge[i+1];
+        if(a.topY<=a.lip.y+SURFACE_OFFSET*.42+EPSILON&&b.topY<=b.lip.y+SURFACE_OFFSET*.42+EPSILON)continue;
+        const base=positions.length/3;
+        for(const p of [
+          {x:a.lip.x,y:a.topY,z:a.lip.z,v:0},
+          {x:b.lip.x,y:b.topY,z:b.lip.z,v:0},
+          {x:b.lip.x,y:b.lip.y+SURFACE_OFFSET*.42,z:b.lip.z,v:1},
+          {x:a.lip.x,y:a.lip.y+SURFACE_OFFSET*.42,z:a.lip.z,v:1}
+        ]){
+          const shared=this.canonicalWaterPoint(p);
+          positions.push(shared.x,shared.y,shared.z);normals.push(0,0,0);
+          uvs.push(i/Math.max(1,topEdge.length-1),p.v*2.25);
+        }
+        indices.push(base,base+1,base+2,base,base+2,base+3);
+      }
+      // Clip each genuine face triangle to the exact waterfall spill interval.
+      // For a submerged receiver, also clip at the existing lower free surface;
+      // the submerged portion belongs to the pooled water, not a waterfall.
+      for(let i=0;i<metrics.count-1;i++){
+        const section=wall.segments?.[i];if(!section?.faces?.length)continue;
+        const s0=metrics.cumulative[i],s1=metrics.cumulative[i+1];
+        if(s1<=span.start+EPSILON||s0>=span.end-EPSILON)continue;
+        const downstream0=this.waterSurfaceLevelAtPoint(metrics.foot[i],downstreamPolygons,null);
+        const downstream1=this.waterSurfaceLevelAtPoint(metrics.foot[i+1],downstreamPolygons,null);
+        const floor0=downstream0==null?metrics.foot[i].y:Math.max(metrics.foot[i].y,Number(downstream0)*ELEVATION_HEIGHT);
+        const floor1=downstream1==null?metrics.foot[i+1].y:Math.max(metrics.foot[i+1].y,Number(downstream1)*ELEVATION_HEIGHT);
+        for(const face of section.faces){
+          let polygon=(face.vertices||[]).map(p=>({
+            x:Number(p.x),y:Number(p.y),z:Number(p.z),v:Number(p.v),
+            s:s0+(s1-s0)*Number(p.u),
+            stopY:floor0+(floor1-floor0)*Number(p.u)
+          }));
+          if(polygon.length!==3)continue;
+          polygon=clip(polygon,p=>p.s-Number(span.start));
+          if(polygon.length<3)continue;
+          polygon=clip(polygon,p=>Number(span.end)-p.s);
+          if(polygon.length<3)continue;
+          polygon=clip(polygon,p=>p.y-p.stopY);
+          if(polygon.length<3)continue;
+          putFace(polygon,span);
+        }
+      }
       if(impactPoints.length)impactGroups.push({spanIndex,points:impactPoints});
     }
     if(!indices.length)return null;
@@ -1463,7 +1531,7 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
     mesh.material=this.cascadeMaterial;mesh.alphaIndex=12;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,interiorNormalOffsetOnly:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason,storedWaterOvertopping:edge.storedWaterOvertopping===true};
+    mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,actualRenderedRockFaces:true,matchingRockFaceTriangulation:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason,storedWaterOvertopping:edge.storedWaterOvertopping===true};
 
     const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);mesh.parent=root;
     const impact=Math.max(0,Number(edge.hydraulicPower||0)),impactScale=clamp(Math.sqrt(impact+.01),.32,1.45),impacts=[];

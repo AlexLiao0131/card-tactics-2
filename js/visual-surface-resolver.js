@@ -337,7 +337,11 @@ export class VisualSurfaceResolver{
       topB:{x:Number(segment.topB.x),y:Number(segment.topB.y),z:Number(segment.topB.z)},
       bottomA:{x:Number(segment.bottomA.x),y:Number(segment.bottomA.y),z:Number(segment.bottomA.z)},
       bottomB:{x:Number(segment.bottomB.x),y:Number(segment.bottomB.y),z:Number(segment.bottomB.z)},
-      normal:{x:Number(segment.normal?.x||0),z:Number(segment.normal?.z||0)}
+      normal:{x:Number(segment.normal?.x||0),z:Number(segment.normal?.z||0)},
+      // TerrainRenderer's exact submitted rock faces, not an inferred quad.
+      faces:(segment.faces||[]).map(face=>({vertices:(face.vertices||[]).map(p=>({
+        x:Number(p.x),y:Number(p.y),z:Number(p.z),u:Number(p.u),v:Number(p.v)
+      }))}))
     });
     const stored={
       key,revision:this.renderedCliffGeometryRevision,
