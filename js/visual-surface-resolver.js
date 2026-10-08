@@ -138,55 +138,182 @@ export class VisualSurfaceResolver{
     return microWidth*.5*(outgoing>EPSILON?Math.min(1,discharge/outgoing):1);
   }
 
+  // The authoritative Q graph is tile-scale, while actual land contours are
+  // resolved on the existing 3x3 microregions. A straight line between tile
+  // centres is NOT a stream bed. Resolve each Q edge onto the published terrain
+  // height field before generating its visible wet footprint.
+  transportSurfacePath(edge){
+    const from=edge?.from,to=edge?.to;
+    if(!from||!to)return [];
+    const dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y);
+    if(Math.abs(dx)+Math.abs(dz)!==1)return [];
+    const terrains=[from,to].map(tile=>this.getRenderedSurfaceGeometry(tile)?.triangles||[]);
+    if(terrains.some(tris=>!tris.length))return [];
+    const sampleY=(point,triangles)=>{
+      for(const triangle of triangles){
+        const [a,b,c]=triangle;
+        const ax=b.x-a.x,az=b.z-a.z,bx=c.x-a.x,bz=c.z-a.z;
+        const determinant=ax*bz-az*bx;
+        if(Math.abs(determinant)<=EPSILON)continue;
+        const px=point.x-a.x,pz=point.z-a.z;
+        const u=(px*bz-pz*bx)/determinant,v=(ax*pz-az*px)/determinant;
+        if(u>=-EPSILON&&v>=-EPSILON&&u+v<=1+EPSILON)return a.y+u*(b.y-a.y)+v*(c.y-a.y);
+      }
+      return null;
+    };
+    const nodes=new Map(),links=new Map();
+    const put=(id,x,z,triangles)=>{
+      const y=sampleY({x,z},triangles);if(y==null)return;
+      nodes.set(id,{id,x,y,z});links.set(id,[]);
+    };
+    const connect=(a,b)=>{
+      if(!nodes.has(a)||!nodes.has(b))return;
+      const p=nodes.get(a),q=nodes.get(b);
+      const horizontal=Math.hypot(p.x-q.x,p.z-q.z);
+      if(horizontal<=EPSILON)return;
+      links.get(a).push({id:b,length:horizontal,rise:Math.max(0,q.y-p.y)});
+      links.get(b).push({id:a,length:horizontal,rise:Math.max(0,p.y-q.y)});
+    };
+    const coords=[-1/3,0,1/3];
+    for(let tileIndex=0;tileIndex<2;tileIndex++){
+      const tile=tileIndex===0?from:to;
+      for(let row=0;row<3;row++)for(let col=0;col<3;col++)
+        put(`${tileIndex}:${row}:${col}`,(Number(tile.x)+coords[col])*TILE_SIZE,(Number(tile.y)+coords[row])*TILE_SIZE,terrains[tileIndex]);
+      for(let row=0;row<3;row++)for(let col=0;col<3;col++){
+        for(const [dr,dc] of [[0,1],[1,0],[1,1],[1,-1]]){
+          const rr=row+dr,cc=col+dc;
+          if(rr>=0&&rr<3&&cc>=0&&cc<3)connect(`${tileIndex}:${row}:${col}`,`${tileIndex}:${rr}:${cc}`);
+        }
+      }
+    }
+    for(let lateral=0;lateral<3;lateral++){
+      // Shared boundary samples use the *same world XZ* for both tiles.
+      // They are not guessed tile-centre crossings or separate water heights.
+      const x=dx!==0?(Number(from.x)+dx*.5)*TILE_SIZE:(Number(from.x)+coords[lateral])*TILE_SIZE;
+      const z=dz!==0?(Number(from.y)+dz*.5)*TILE_SIZE:(Number(from.y)+coords[lateral])*TILE_SIZE;
+      const p={x,z};
+      const heights=terrains.map(tris=>sampleY(p,tris));
+      if(heights.some(y=>y==null))continue;
+      const id=`seam:${lateral}`;
+      nodes.set(id,{id,x,z,y:(heights[0]+heights[1])*.5});links.set(id,[]);
+      if(dx!==0){
+        const fromCol=dx>0?2:0,toCol=dx>0?0:2;
+        connect(`${0}:${lateral}:${fromCol}`,id);connect(id,`${1}:${lateral}:${toCol}`);
+      }else{
+        const fromRow=dz>0?2:0,toRow=dz>0?0:2;
+        connect(`${0}:${fromRow}:${lateral}`,id);connect(id,`${1}:${toRow}:${lateral}`);
+      }
+    }
+    const source='0:1:1',sink='1:1:1';if(!nodes.has(source)||!nodes.has(sink))return [];
+    // Minimise uphill crossing before path length. This uses real world-space
+    // terrain elevations; Q direction still owns which tile receives water.
+    // No new hydrological storage, runoff rate, or guessed visual meander.
+    const scores=new Map([[source,{rise:0,length:0}]]),previous=new Map(),settled=new Set();
+    while(true){
+      let current=null;
+      for(const [id,score] of scores){
+        if(settled.has(id))continue;
+        if(current===null){current=id;continue;}
+        const old=scores.get(current);
+        if(score.rise<old.rise-EPSILON||(Math.abs(score.rise-old.rise)<=EPSILON&&score.length<old.length-EPSILON))current=id;
+      }
+      if(current===null||current===sink)break;
+      settled.add(current);
+      const base=scores.get(current);
+      for(const link of links.get(current)||[]){
+        const candidate={rise:base.rise+link.rise,length:base.length+link.length};
+        const old=scores.get(link.id);
+        if(!old||candidate.rise<old.rise-EPSILON||(Math.abs(candidate.rise-old.rise)<=EPSILON&&candidate.length<old.length-EPSILON)){
+          scores.set(link.id,candidate);previous.set(link.id,current);
+        }
+      }
+    }
+    if(!scores.has(sink))return [];
+    const result=[],seen=new Set();let current=sink;
+    while(current&& !seen.has(current)){
+      seen.add(current);result.push(nodes.get(current));current=previous.get(current);
+    }
+    return result.reverse();
+  }
+
   transportSurfaceFootprint(edge,segment,{surfaceTriangles=null}={}){
     const from=edge?.from,to=edge?.to;
     if(!from||!to||!segment)return{polygons:[],halfWidth:0};
-    const x0=Number(from.x)*TILE_SIZE,z0=Number(from.y)*TILE_SIZE;
-    const dx=(Number(to.x)-Number(from.x))*TILE_SIZE,dz=(Number(to.y)-Number(from.y))*TILE_SIZE;
-    const length=Math.hypot(dx,dz);if(length<=EPSILON)return{polygons:[],halfWidth:0};
-    const ux=dx/length,uz=dz/length,px=-uz,pz=ux;
-    // 3x3 is the existing VISUAL discretization, not a fabricated water depth.
-    // Fractional Q divides the same channel's visual coverage at a fork.
     const halfWidth=this.transportHalfWidth(edge);
     if(halfWidth<=EPSILON)return{polygons:[],halfWidth:0};
-    const along=point=>((Number(point.x)-x0)*ux+(Number(point.z)-z0)*uz)/length;
-    const across=point=>(Number(point.x)-x0)*px+(Number(point.z)-z0)*pz;
-    const clip=(polygon,evaluate)=>{
+    const path=this.transportSurfacePath(edge);
+    if(path.length<2)return{polygons:[],halfWidth,path:[]};
+    const pathLengths=[0];
+    for(let i=1;i<path.length;i++)pathLengths.push(pathLengths[i-1]+Math.hypot(path[i].x-path[i-1].x,path[i].z-path[i-1].z));
+    const startLength=Math.max(0,Number(segment.start))*pathLengths.at(-1),endLength=Math.min(1,Number(segment.end))*pathLengths.at(-1);
+    const nearest=point=>{
+      let best=null;
+      for(let i=1;i<path.length;i++){
+        const a=path[i-1],b=path[i],vx=b.x-a.x,vz=b.z-a.z,den=vx*vx+vz*vz;
+        if(den<=EPSILON)continue;
+        const t=Math.max(0,Math.min(1,((point.x-a.x)*vx+(point.z-a.z)*vz)/den));
+        const x=a.x+vx*t,z=a.z+vz*t,dx=point.x-x,dz=point.z-z;
+        const distance=Math.hypot(dx,dz),along=pathLengths[i-1]+Math.sqrt(den)*t;
+        if(along<startLength-EPSILON||along>endLength+EPSILON)continue;
+        if(!best||distance<best.distance)best={distance,along,across:(vx*dz-vz*dx)/Math.sqrt(den)};
+      }
+      return best||{distance:Infinity,along:0,across:Infinity};
+    };
+    const clip=(poly)=>{
       const result=[];
-      for(let i=0;i<polygon.length;i++){
-        const a=polygon[i],b=polygon[(i+1)%polygon.length];
-        const va=evaluate(a),vb=evaluate(b),aIn=va>=-EPSILON,bIn=vb>=-EPSILON;
-        if(aIn)result.push(a);
-        if(aIn!==bIn){
-          const t=va/(va-vb);
-          result.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t,
+      for(let i=0;i<poly.length;i++){
+        const a=poly[i],b=poly[(i+1)%poly.length],da=halfWidth-a.distance,db=halfWidth-b.distance;
+        const inA=da>=-EPSILON,inB=db>=-EPSILON;
+        if(inA)result.push(a);
+        if(inA!==inB){
+          const t=da/(da-db),x=a.x+(b.x-a.x)*t,y=a.y+(b.y-a.y)*t,z=a.z+(b.z-a.z)*t;
+          const along=a.along+(b.along-a.along)*t;
+          result.push({x,y,z,along,across:a.across+(b.across-a.across)*t,distance:halfWidth,
             ...(a.clearance!=null&&b.clearance!=null?{clearance:a.clearance+(b.clearance-a.clearance)*t}:{})});
         }
       }
       return result;
     };
     const polygons=[];
+    // Refine each registered 3x3 triangle in its OWN plane, so even at a narrow
+    // Q split there are vertices to resolve the wet edge. Every new XYZ is a
+    // barycentric interpolation of actual TerrainRenderer mesh vertices.
+    const subdivisions=Math.sqrt(MICRO_REGION_LAYOUT.length)*2;
     for(const tile of [from,to]){
       const terrain=this.getRenderedSurfaceGeometry(tile);
-      const polygonsForTile=typeof surfaceTriangles==="function"?surfaceTriangles(tile,terrain?.triangles||[]):terrain?.triangles||[];
-      for(const triangle of polygonsForTile){
-        for(const [left,right] of [[-halfWidth,0],[0,halfWidth]]){
-          let polygon=triangle.map(p=>({x:p.x,y:p.y,z:p.z,...(p.clearance!=null?{clearance:p.clearance}:{})}));
-          for(const constraint of [p=>along(p)-Number(segment.start),p=>Number(segment.end)-along(p),p=>across(p)-left,p=>right-across(p)]){
-            polygon=clip(polygon,constraint);
-            if(polygon.length<3)break;
+      const surfaces=typeof surfaceTriangles==='function'?surfaceTriangles(tile,terrain?.triangles||[]):terrain?.triangles||[];
+      for(const polygon of surfaces){
+        for(let fan=1;fan<polygon.length-1;fan++){
+          const tri=[polygon[0],polygon[fan],polygon[fan+1]];
+          const lattice=[];
+          for(let i=0;i<=subdivisions;i++){
+            const row=[];
+            for(let j=0;j<=subdivisions-i;j++){
+              const u=i/subdivisions,v=j/subdivisions,w=1-u-v;
+              const point={x:tri[0].x*w+tri[1].x*u+tri[2].x*v,
+                y:tri[0].y*w+tri[1].y*u+tri[2].y*v,
+                z:tri[0].z*w+tri[1].z*u+tri[2].z*v};
+              if(tri.every(p=>p.clearance!=null))point.clearance=tri[0].clearance*w+tri[1].clearance*u+tri[2].clearance*v;
+              row.push({...point,...nearest(point)});
+            }
+            lattice.push(row);
           }
-          if(polygon.length<3)continue;
-          const distinct=polygon.filter((p,i)=>Math.hypot(p.x-polygon[(i+polygon.length-1)%polygon.length].x,p.z-polygon[(i+polygon.length-1)%polygon.length].z)>EPSILON);
-          if(distinct.length<3)continue;
-          polygons.push({tile,points:distinct.map(point=>({
-            ...point,along:along(point),across:across(point),
-            bankFade:Math.max(0,1-Math.abs(across(point))/halfWidth)
-          }))});
+          const insert=(vertices)=>{
+            if(!vertices.some(p=>p.distance<=halfWidth+EPSILON))return;
+            const wet=clip(vertices);
+            if(wet.length<3)return;
+            const distinct=wet.filter((p,i)=>Math.hypot(p.x-wet[(i+wet.length-1)%wet.length].x,p.z-wet[(i+wet.length-1)%wet.length].z)>EPSILON);
+            if(distinct.length<3)return;
+            polygons.push({tile,points:distinct.map(p=>({...p,bankFade:Math.max(0,1-p.distance/halfWidth),along:p.along/TILE_SIZE}))});
+          };
+          for(let i=0;i<subdivisions;i++)for(let j=0;j<subdivisions-i;j++){
+            insert([lattice[i][j],lattice[i+1][j],lattice[i][j+1]]);
+            if(j<subdivisions-i-1)insert([lattice[i+1][j],lattice[i+1][j+1],lattice[i][j+1]]);
+          }
         }
       }
     }
-    return{polygons,halfWidth,revision:this.renderedSurfaceGeometryRevision};
+    return{polygons,halfWidth,path,revision:this.renderedSurfaceGeometryRevision};
   }
 
   cliffGeometryKey(tile,dir){
