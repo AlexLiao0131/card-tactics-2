@@ -243,7 +243,7 @@ export const MapGenerator=(()=>{
     return map.generatedRiverProfile;
   }
 
-  function createRiver(map,routes,protectedKeys,rand){
+  function createRiver(map,routes,protectedKeys,rand,{springMode="RANDOM"}={}){
     const xBase=clamp(Math.round(map.width*(.42+rand()*.16)),4,map.width-5);
     const river=[],riverKeys=new Set(),routeCrossings=new Map();
     const tileMap=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
@@ -374,7 +374,11 @@ export const MapGenerator=(()=>{
     }
 
     function placeNaturalSpring(){
-      if(rand()>=HIGH_SPRING_SOURCE_CHANCE)return null;
+      // Consume the normal random draw in every mode so a test toggle never
+      // shifts subsequent forest/object generation for the same map seed.
+      const naturalSpringRoll=rand();
+      if(springMode==="NEVER")return null;
+      if(springMode!=="ALWAYS"&&naturalSpringRoll>=HIGH_SPRING_SOURCE_CHANCE)return null;
       const candidates=[];
       for(let y=1;y<map.height-1;y++)for(let x=2;x<=map.width-3;x++){
         const tile=getTile(x,y),tileKey=key(x,y);
@@ -688,14 +692,14 @@ export const MapGenerator=(()=>{
 
   function stats(map){const e=map.tiles.map(t=>Number(t.elevation||0));return{minElevation:Math.min(...e),maxElevation:Math.max(...e),waterTiles:map.tiles.filter(t=>t.waterDepth>0).length,riverTiles:map.tiles.filter(t=>t.river).length,fordTiles:map.tiles.filter(t=>t.ford).length,forestTiles:map.tiles.filter(t=>t.terrain==="FOREST").length,highGroundTiles:map.tiles.filter(t=>t.terrain==="HIGH_GROUND").length};}
 
-  function generateVersus({size="MEDIUM",seed=randomSeed(),coreRules={}}={}){
+  function generateVersus({size="MEDIUM",seed=randomSeed(),coreRules={},springMode="RANDOM"}={}){
     const cfg=preset(size),resolvedSeed=Number(seed)>>>0,rand=createRandom(resolvedSeed),map={id:`generated_versus_${cfg.id.toLowerCase()}_${resolvedSeed}`,name:`Generated ${cfg.label}`,width:cfg.width,height:cfg.height,tiles:[],objects:[],generated:true,seed:resolvedSeed,size:cfg.id};
     for(let y=0;y<map.height;y++)for(let x=0;x<map.width;x++)map.tiles.push({x,y,terrain:"PLAIN",elevation:0,waterDepth:0,waterSurfaceZ:null});
     applyTerrain(map,elevationField(map.width,map.height,cfg,rand));
 
     const protectedKeys=new Set(),baseInfo=carveBaseZones(map,protectedKeys),ys=routeYs(map),routes=ys.map((y,i)=>carveStrategicRoute(map,y,i,protectedKeys,rand));
     connectRoutesToBases(map,routes,baseInfo,protectedKeys);
-    const capturePoints=createCapturePoints(map,routes,protectedKeys),river=createRiver(map,routes,protectedKeys,rand);
+    const capturePoints=createCapturePoints(map,routes,protectedKeys),river=createRiver(map,routes,protectedKeys,rand,{springMode});
     addForests(map,cfg,rand,protectedKeys);
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
     const rocks=addRocks(map,cfg,rand,protectedKeys);

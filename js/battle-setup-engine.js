@@ -110,7 +110,9 @@ export const BattleSetupEngine=(()=>{
       const generated=MapGenerator.generateVersus({
         size:battleSetup?.mapSize||stage.battlefield.defaultSize||"MEDIUM",
         seed:battleSetup?.seed,
-        coreRules:stage.coreRules||{}
+        coreRules:stage.coreRules||{},
+        // Explicit test-only constraint; normal battles retain natural chance.
+        springMode:battleSetup?.hydrologyTest===true?battleSetup?.springMode:"RANDOM"
       });
 
       map=generated.map;
