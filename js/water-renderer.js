@@ -781,30 +781,86 @@ export class WaterRenderer{
     }));
   }
 
-  sourceFootprintSignatureFor(sources){
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#`+(sources||[]).map(source=>{
+  // The first 3x3 micro-region is the spring outlet. Its exact end section
+  // is shared with the ongoing Q-only runoff (not a separate radial puddle).
+  springOutletLength(edge){
+    return edge?.from?.hydrologySource===true&&
+      (edge.from.sourceKind==="SPRING_SOURCE"||edge.from.springSourceFootprint===true)&&
+      edge.from.hydrologySourceDisabled!==true&&!edge.fromPooled&&!edge.cascade&&(edge.runoffSegments||[]).some(s=>s.kind==="SURFACE_RUNOFF")
+      ?TILE_SIZE/3:0;
+  }
+
+  // Both sides of the spring/runoff join are clipped from the SAME registered
+  // terrain polygons using the SAME path-distance scalar. Therefore the join
+  // has identical XYZ even where the 3x3 terrain has an irregular slope.
+  clipSpringOutletPolygon(points,joinLength,sourceSide){
+    if(!joinLength)return points;
+    const limit=joinLength/TILE_SIZE;
+    const inside=p=>sourceSide?Number(p.along)<=limit+EPSILON:Number(p.along)>=limit-EPSILON;
+    const lerp=(a,b)=>{
+      const delta=Number(b.along)-Number(a.along),t=Math.abs(delta)<=EPSILON?0:clamp((limit-Number(a.along))/delta,0,1);
+      return Object.fromEntries(Object.keys(a).filter(k=>typeof a[k]==="number"&&typeof b[k]==="number")
+        .map(k=>[k,Number(a[k])+(Number(b[k])-Number(a[k]))*t]).concat([["along",limit]]));
+    };
+    const result=[];
+    for(let i=0;i<points.length;i++){
+      const a=points[i],b=points[(i+1)%points.length],insideA=inside(a),insideB=inside(b);
+      if(insideA)result.push(a);
+      if(insideA!==insideB)result.push(lerp(a,b));
+    }
+    return result;
+  }
+
+  sourceFootprintSignatureFor(sources,runoffs=[]){
+    const outlets=runoffs.filter(edge=>this.springOutletLength(edge)>0)
+      .map(edge=>`${edge.id}:${Number(edge.edgeDischarge||0).toFixed(4)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|");
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}#${outlets}#`+(sources||[]).map(source=>{
       const tile=source.tile||{};
-      return`${Number(tile.x)},${Number(tile.y)}:${Number(source.rate||0).toFixed(4)}:${tile.fogged?1:0}`;
+      return`${Number(tile.x)},${Number(tile.y)}:${Number(source.rate||0).toFixed(4)}:${waterDepth(tile).toFixed(4)}:${tile.fogged?1:0}`;
     }).sort().join("|");
   }
 
-  buildSourceFootprint(source){
-    const tile=source?.tile;if(!tile)return null;
-    const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);if(!geometry?.triangles?.length)return null;
-    const rate=Math.max(0,Number(source.rate||0)),radius=TILE_SIZE*clamp(.19+Math.sqrt(rate)*.035,.19,.30),segments=18;
-    const positions=[],indices=[],normals=[],uvs=[],colors=[],cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-    const push=(x,z,u,v,alpha)=>{const y=this.terrainSurfaceYAtPoint(tile,{x,z})+SURFACE_OFFSET*.60,point=this.canonicalWaterPoint({x,y,z});positions.push(point.x,point.y,point.z);uvs.push(u,v);normals.push(0,0,0);colors.push(1,1,1,alpha);return positions.length/3-1;};
-    const center=push(cx,cz,.5,.5,.82),ring=[];
-    for(let i=0;i<segments;i++){
-      const angle=i/segments*Math.PI*2,noise=.94+.06*Math.sin(angle*3+hash01(`${tile.x},${tile.y}`)*Math.PI*2),r=radius*noise;
-      ring.push(push(cx+Math.cos(angle)*r,cz+Math.sin(angle)*r,.5+Math.cos(angle)*.5,.5+Math.sin(angle)*.5,0));
+  buildSourceFootprint(source,runoffs=[]){
+    const tile=source?.tile;if(!tile||waterDepth(tile)>EPSILON)return null;
+    const edges=runoffs.filter(edge=>edge.from===tile&&this.springOutletLength(edge)>0);
+    if(!edges.length)return null;
+    const positions=[],indices=[],normals=[],uvs=[],colors=[];
+    for(const edge of edges){
+      const width=this.transportCrossSection(edge).width;
+      if(width<=EPSILON)continue;
+      for(const segment of edge.runoffSegments||[]){
+        if(segment.kind!=="SURFACE_RUNOFF")continue;
+        const footprint=this.surfaceResolver.transportSurfaceFootprint(edge,segment);
+        for(const polygon of footprint.polygons){
+          if(polygon.tile!==tile)continue;
+          const points=this.clipSpringOutletPolygon(polygon.points,this.springOutletLength(edge),true);
+          if(points.length<3)continue;
+          const first=positions.length/3;
+          for(const p of points){
+            const point=this.canonicalWaterPoint({x:Number(p.x),y:Number(p.y)+SURFACE_OFFSET*.42,z:Number(p.z)});
+            positions.push(point.x,point.y,point.z);normals.push(0,0,0);
+            uvs.push((Number(p.across)/width+1)*.5,
+              (Number(edge.flowPathStart||0)+Number(p.along)*TILE_SIZE)/Math.max(EPSILON,Number(edge.flowPathRepeat||RUNOFF_UV_REPEAT_DISTANCE)));
+            // Keep the EXACT alpha at the handoff, but make the centre of the
+            // outlet visibly emerge past the existing ring of spring stones.
+            const emerge=clamp(1-Number(p.along)*TILE_SIZE/this.springOutletLength(edge),0,1);
+            colors.push(1,1,1,(.72+.28*emerge)*Number(p.bankFade));
+          }
+          for(let i=1;i<points.length-1;i++){
+            const a=points[0],b=points[i],c=points[i+1];
+            if(Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))>1e-10)indices.push(first,first+i,first+i+1);
+          }
+        }
+      }
     }
-    for(let i=0;i<segments;i++)indices.push(center,ring[i],ring[(i+1)%segments]);
+    if(!indices.length)return null;
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
-    const mesh=new BABYLON.Mesh(`spring-wet-footprint-${tile.x}-${tile.y}`,this.scene),data=new BABYLON.VertexData();
+    const mesh=new BABYLON.Mesh(`spring-outlet-${tile.x}-${tile.y}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
     mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=tile.fogged?.18:1;
-    mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,rate,terrainConforming:true,gameplayDepth:false,canonicalWetFootprint:true,radialWetFade:true};
+    mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,
+      rate:source.rate,terrainConforming:true,gameplayDepth:false,connectedToRunoff:true,
+      actualSourceFlowEdges:edges.map(edge=>edge.id),sharedTransportTriangles:true,sharedOutletJoin:true,radialWetFade:false};
     return mesh;
   }
 
@@ -1038,7 +1094,9 @@ export class WaterRenderer{
         ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
         :triangles
     });
-    for(const {points} of footprint.polygons){
+    for(const {points:terrainPoints} of footprint.polygons){
+      const points=this.clipSpringOutletPolygon(terrainPoints,this.springOutletLength(edge),false);
+      if(points.length<3)continue;
       const first=positions.length/3;
       for(const p of points){
         const x=Number(p.x),z=Number(p.z);
@@ -1612,10 +1670,10 @@ export class WaterRenderer{
       this.runoffSignature=runoffSignature;
     }
 
-    const sourceSignature=this.sourceFootprintSignatureFor(sources);
+    const sourceSignature=this.sourceFootprintSignatureFor(sources,runoffs);
     if(sourceSignature!==this.sourceSignature){
       this.disposeMap(this.sourceFootprints);
-      for(const source of sources){const built=this.buildSourceFootprint(source);if(built)this.sourceFootprints.set(`${source.tile.x},${source.tile.y}`,built);}
+      for(const source of sources){const built=this.buildSourceFootprint(source,runoffs);if(built)this.sourceFootprints.set(`${source.tile.x},${source.tile.y}`,built);}
       this.sourceSignature=sourceSignature;
     }
 
