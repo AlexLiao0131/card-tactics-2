@@ -181,7 +181,6 @@ export const HydrologyEngine=(()=>{
       tile.waterSurfaceZ=surface;
       tile.terrain="WATER";
       tile.dryTerrain??="PLAIN";
-      tile.soilMoisture=soilCapacity(tile);
       tile.river=true;
 
       if(tile.hydrologyDrain===true){
@@ -720,7 +719,7 @@ export const HydrologyEngine=(()=>{
   function initializeMap(map){
     for(const tile of map?.tiles||[]){
       tile.waterTurbidity=clean(clamp(tile.waterTurbidity||0,0,1));
-      if(tile.terrain==="MUD"){tile.soilMoisture=SOIL_SATURATION_CAPACITY;continue;}
+      if(tile.terrain==="MUD"){tile.soilMoisture=clean(tile.soilMoisture==null?SOIL_SATURATION_CAPACITY:soilMoisture(tile));continue;}
       if(tile.terrain==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,Number(tile.soilMoisture||0)));
       if(tile.terrain!=="WATER")continue;
       if(!Number.isFinite(Number(tile.waterDepth))||Number(tile.waterDepth)<=0){
@@ -730,7 +729,6 @@ export const HydrologyEngine=(()=>{
       tile.waterDepth=clean(tile.waterDepth);
       tile.waterSurfaceZ=elevation(tile)+waterDepth(tile);
       tile.dryTerrain??="PLAIN";
-      if(terrainHasSoil(tile.dryTerrain))tile.soilMoisture=soilCapacity(tile);
     }
     map.hydrologyRiverProfiles=normalizeRiverNetwork(map);
     refreshRiverChannelCapacity(map);
@@ -760,8 +758,10 @@ export const HydrologyEngine=(()=>{
   function fillCapacity(tile){return Math.max(0,WATERLINE-elevation(tile))}
 
   function markMud(tile,events=[],source="SATURATION"){
-    if(!tile||tile.terrain!=="PLAIN")return false;
-    tile.terrain="MUD";
+    if(!tile||baseTerrain(tile)!=="PLAIN")return false;
+    // Mud is a change to the underlying ground, even when surface water covers it.
+    if(tile.terrain==="WATER")tile.dryTerrain="MUD";
+    else tile.terrain="MUD";
     events.push({type:"MUD_CREATED",x:tile.x,y:tile.y,source,soilMoisture:soilMoisture(tile)});
     return true;
   }
@@ -770,7 +770,10 @@ export const HydrologyEngine=(()=>{
     if(!tile||!hasSoil(tile)||amount<=EPSILON)return Math.max(0,Number(amount||0));
     const before=soilMoisture(tile),capacity=Math.max(0,soilCapacity(tile)-before),absorbed=Math.min(capacity,Math.max(0,Number(amount||0)));
     if(absorbed>EPSILON){
-      tile.soilMoisture=clean(before+absorbed);if(tile.terrain==="PLAIN")markMud(tile,events,source);
+      tile.soilMoisture=clean(before+absorbed);
+      // The existing soil capacity, not first contact or a new guessed threshold,
+      // defines saturation-driven mud formation. Unsaturated soil stays wet ground.
+      if(tile.soilMoisture>=soilCapacity(tile)-EPSILON)markMud(tile,events,source);
       events.push({type:"SOIL_MOISTURE_CHANGED",x:tile.x,y:tile.y,from:before,to:tile.soilMoisture,absorbed,source});
     }
     return Math.max(0,Number(amount||0)-absorbed);
@@ -791,7 +794,7 @@ export const HydrologyEngine=(()=>{
       events.push({type:"BASIN_FILLED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterSurfaceZ,dryTerrain:tile.dryTerrain});
     }else if(tile.waterDepth<=0&&tile.terrain==="WATER"&&tile.dryTerrain){
       const base=tile.dryTerrain,moisture=terrainHasSoil(base)?soilMoisture(tile):0;
-      if(base==="PLAIN"||base==="MUD"){tile.terrain=moisture>EPSILON?"MUD":base;tile.soilMoisture=clean(moisture);}
+      if(base==="PLAIN"||base==="MUD"){tile.terrain=base;tile.soilMoisture=clean(moisture);}
       else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,moisture));}
       delete tile.dryTerrain;
       events.push({type:"BASIN_DRAINED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:0,terrain:tile.terrain});
@@ -1608,7 +1611,7 @@ export const HydrologyEngine=(()=>{
 
   function drySoil(map,{amount=DRYING_PER_CLEAR_TURN,source="DRYING"}={}){
     const events=[];
-    for(const tile of map?.tiles||[]){if(waterDepth(tile)>EPSILON||!hasSoil(tile))continue;const before=soilMoisture(tile);if(before<=EPSILON)continue;const dryAmount=baseTerrain(tile)==="SAND"?Math.max(Number(amount||0),SAND_DRYING_PER_CLEAR_TURN):Math.max(0,Number(amount||0)),next=clean(Math.max(0,before-dryAmount));tile.soilMoisture=next;if(Math.abs(next-before)>EPSILON)events.push({type:"SOIL_MOISTURE_CHANGED",x:tile.x,y:tile.y,from:before,to:next,source});if(tile.terrain==="MUD"&&next<=EPSILON){tile.terrain="PLAIN";delete tile.soilMoisture;events.push({type:"MUD_DRY",x:tile.x,y:tile.y,source});}}
+    for(const tile of map?.tiles||[]){if(waterDepth(tile)>EPSILON||!hasSoil(tile))continue;const before=soilMoisture(tile);if(before<=EPSILON)continue;const dryAmount=baseTerrain(tile)==="SAND"?Math.max(Number(amount||0),SAND_DRYING_PER_CLEAR_TURN):Math.max(0,Number(amount||0)),next=clean(Math.max(0,before-dryAmount));tile.soilMoisture=next;if(Math.abs(next-before)>EPSILON)events.push({type:"SOIL_MOISTURE_CHANGED",x:tile.x,y:tile.y,from:before,to:next,source});if(tile.terrain==="MUD"&&next<=EPSILON&&!Number(tile.massFlowResidue||0)){tile.terrain="PLAIN";delete tile.soilMoisture;events.push({type:"MUD_DRY",x:tile.x,y:tile.y,source});}}
     if((map?.tiles||[]).some(tile=>tile?.river===true))redistribute(map,{source,events,riverPulse:false});
     return events;
   }

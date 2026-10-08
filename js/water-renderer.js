@@ -11,7 +11,6 @@ const logicalSurface=tile=>tile?.waterSurfaceZ==null
 
 const SURFACE_OFFSET=.016;
 const EPSILON=.001;
-const MIN_WATER_DEPTH=.12;
 const WATERFALL_MIN_DROP=.18;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
@@ -36,9 +35,6 @@ function visualSurface(tile){
 }
 function hasAnyWater(tile){
   return waterDepth(tile)>EPSILON;
-}
-function hasVisibleWater(tile){
-  return waterDepth(tile)>MIN_WATER_DEPTH;
 }
 function average(values){
   return values.length?values.reduce((sum,value)=>sum+Number(value||0),0)/values.length:0;
@@ -366,20 +362,10 @@ export class WaterRenderer{
   surfaceGroup(tile){return tile?.fogged?"fogged":"visible";}
   turbidity(tile){return clamp(tile?.waterTurbidity||0,0,1);}
   waterTiles(state){
-    const tiles=tilesOf(state),by=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
-    const visible=new Set(tiles.filter(hasVisibleWater).map(tile=>keyOf(tile.x,tile.y)));
-    const selected=tiles.filter(tile=>{
-      if(hasVisibleWater(tile))return true;
-      if(!hasAnyWater(tile))return false;
-      // A thin film surrounded by established water is still part of that water
-      // body. Rendering it prevents a perfect one-tile terrain rectangle from
-      // punching through an otherwise continuous lake/flood surface.
-      let neighbors=0;
-      for(const dir of DIRS){
-        if(visible.has(keyOf(tile.x+dir.dx,tile.y+dir.dy)))neighbors++;
-      }
-      return neighbors>=2;
-    });
+    // Surface ownership is determined by actual stored hydrology depth, not an
+    // independent display cutoff. Clipped terrain triangles determine the visible
+    // wet portion of each 3x3 terrain patch; Q-only flow stays with runoffEdges().
+    const selected=tilesOf(state).filter(hasAnyWater);
     this.renderableWaterKeys=new Set(selected.map(tile=>keyOf(tile.x,tile.y)));
     return selected;
   }

@@ -62,7 +62,7 @@ export const MapGenerator=(()=>{
     delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;
   }
   function setWater(tile,{bed=-1,depth=1,river=false,ford=false,flowX=0,flowY=1,flowSpeed=.6,discharge=1}={}){
-    if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";tile.soilMoisture=1;
+    if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";
     if(river){tile.river=true;tile.ford=!!ford;tile.flowX=Number(flowX||0);tile.flowY=Number(flowY||0);tile.baseFlowSpeed=Number(flowSpeed||.6);tile.flowSpeed=tile.baseFlowSpeed;tile.baseDischarge=Number(discharge||1);tile.discharge=tile.baseDischarge;}
   }
 
@@ -400,11 +400,10 @@ export const MapGenerator=(()=>{
       source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
       source.hydrologySourceInflow=HIGH_SPRING_INFLOW;source.baseDischarge=HIGH_SPRING_INFLOW;source.discharge=HIGH_SPRING_INFLOW;
       source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.elevation||0);
-      // A spring is a geological map object, so its footprint is reserved before
-      // vegetation is painted. Saturated source ground is MUD rather than FOREST / 
-      // PLAIN, which also prevents the later terrain-object seeder from creating a
-      // tree or random bush on top of the spring without changing movement blocking.
-      source.terrain="MUD";source.soilMoisture=.45;source.springSourceFootprint=true;
+      // Source is a protected geological object footprint. The terrain remains
+      // authored by the map elevation and terrain generators; Hydrology determines
+      // its actual water/soil state and WaterRenderer draws the outlet footprint.
+      source.springSourceFootprint=true;
       protectedKeys.add(sourceKey);
       return source;
     }
