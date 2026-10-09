@@ -1595,6 +1595,34 @@ export class WaterRenderer{
     const allMap=this.allByKey(state),upstreamPolygons=this.waterSurfacePolygons(edge.tile,allMap),spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
     const downstreamPolygons=edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[];
     const positions=[],indices=[],normals=[],uvs=[],impactGroups=[];
+    const buildStoredOvertoppingJunction=()=>{
+      if(edge.storedWaterOvertopping!==true)return null;
+      const junctionEdge={
+        id:`${edge.id}:stored-overtopping-junction`,
+        from:edge.tile,to:edge.receiver,
+        fromPooled:hasAnyWater(edge.tile),toPooled:hasAnyWater(edge.receiver),
+        fromStored:hasAnyWater(edge.tile),toStored:hasAnyWater(edge.receiver),
+        cascade:true,rate:0,edgeDischarge:0,persistentRate:0,transportVolume:0,
+        surfaceDrop:Number(edge.drop||0),hydraulicPower:0,reason:edge.hydrologyEdgeReason||"STORED_WATER_OVERTOPPING",
+        flowPathStart:0,flowPathRepeat:RUNOFF_UV_REPEAT_DISTANCE
+      };
+      const junctionSegments=[
+        {start:0,end:1,kind:"CASCADE_APPROACH",startKind:"WATER_SURFACE",endKind:"CLIFF_LIP"},
+        {start:0,end:1,kind:"CASCADE_LANDING",startKind:"CLIFF_FOOT",endKind:junctionEdge.toPooled?"WATERLINE_TRIANGLE":"HYDROLOGY_RECEIVER"}
+      ];
+      const jPos=[],jIdx=[],jNorm=[],jUvs=[],jCols=[];
+      for(const segment of junctionSegments)this.appendCliffJunction(junctionEdge,segment,wall,metrics,spans,allMap,jPos,jIdx,jNorm,jUvs,jCols);
+      if(!jIdx.length)return null;
+      BABYLON.VertexData.ComputeNormals(jPos,jIdx,jNorm);
+      const mesh=new BABYLON.Mesh(`cascade-junction-${edge.id}`,this.scene),data=new BABYLON.VertexData();
+      Object.assign(data,{positions:jPos,indices:jIdx,normals:jNorm,uvs:jUvs,colors:jCols});data.applyToMesh(mesh,false);
+      mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=edge.tile.fogged?.16:1;
+      mesh.metadata={kind:"water-cascade-junction",storedWaterOvertopping:true,cascadeApproach:true,cascadeLanding:true,
+        renderedCliffGeometry:true,sharedWallColumns:true,transportOnly:true,gameplayDepth:false,
+        exactCliffJunction:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),
+        receiverWet:edge.receiverWet===true,hydrologyEdgeReason:edge.hydrologyEdgeReason||null};
+      return mesh;
+    };
     // The rock triangles in wall.segments[].faces are captured from the actual
     // Babylon cliff mesh. A bilinear lip/foot strip does not share its interior
     // triangle planes and can be swallowed by the irregular rock decoration.
@@ -1707,6 +1735,8 @@ export class WaterRenderer{
     mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,actualRenderedRockFaces:true,matchingRockFaceTriangulation:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason,storedWaterOvertopping:edge.storedWaterOvertopping===true};
 
     const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);mesh.parent=root;
+    const storedOvertoppingJunction=buildStoredOvertoppingJunction();
+    if(storedOvertoppingJunction)storedOvertoppingJunction.parent=root;
     const impact=Math.max(0,Number(edge.hydraulicPower||0)),impactScale=clamp(Math.sqrt(impact+.01),.32,1.45),impacts=[];
     for(const group of impactGroups){
       const count=Math.max(1,group.points.length),center=group.points.reduce((acc,point)=>({x:acc.x+point.x/count,y:acc.y+point.y/count,z:acc.z+point.z/count}),{x:0,y:0,z:0});
