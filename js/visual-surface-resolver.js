@@ -185,6 +185,24 @@ export class VisualSurfaceResolver{
   }
 
 
+  // Shared wet/dry contour clipping. D supplies a waterline clearance and
+  // Q supplies its solved moving-film clearance; both clip the SAME registered
+  // terrain polygons with exactly the same inclusion / intersection rule.
+  clipPublishedClearancePolygon(vertices,wet,interpolate,clearanceOf=p=>p.clearance){
+    if(!Array.isArray(vertices)||vertices.length<3)return[];
+    const inside=p=>wet?clearanceOf(p)>0:clearanceOf(p)<=0;
+    const result=[];
+    for(let i=0;i<vertices.length;i++){
+      const a=vertices[i],b=vertices[(i+1)%vertices.length],aIn=inside(a),bIn=inside(b);
+      if(aIn)result.push(a);
+      if(aIn!==bIn){
+        const da=clearanceOf(a),db=clearanceOf(b),t=da/(da-db);
+        result.push(interpolate(a,b,t));
+      }
+    }
+    return result;
+  }
+
   // Canonical stored-water/terrain intersection, on TerrainRenderer's exact
   // published triangles. WaterRenderer supplies only its already-calculated
   // local water level; no new hydrology, interpolated terrain or visible mesh.
@@ -197,21 +215,12 @@ export class VisualSurfaceResolver{
       return{x:Number(point.x),y:terrainY,z:Number(point.z),terrainY,waterY,level,clearance:waterY-terrainY};
     });
     if(vertices.some(vertex=>!vertex))return[];
-    const inside=vertex=>wet?vertex.clearance>0:vertex.clearance<=0;
-    const interpolate=(a,b)=>{
-      const t=a.clearance/(a.clearance-b.clearance);
+    return this.clipPublishedClearancePolygon(vertices,wet,(a,b,t)=>{
       const x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;
       const waterY=a.waterY+(b.waterY-a.waterY)*t;
       const terrainY=a.terrainY+(b.terrainY-a.terrainY)*t;
       return{x,y:terrainY,z,terrainY,waterY,level:waterY/ELEVATION_HEIGHT,clearance:0};
-    };
-    const polygon=[];
-    for(let i=0;i<vertices.length;i++){
-      const a=vertices[i],b=vertices[(i+1)%vertices.length],aIn=inside(a),bIn=inside(b);
-      if(aIn)polygon.push(a);
-      if(aIn!==bIn)polygon.push(interpolate(a,b));
-    }
-    return polygon;
+    });
   }
 
   // D>0 and moving Q-only now use this same geometric definition of an actual
@@ -230,6 +239,31 @@ export class VisualSurfaceResolver{
         clipped:point.clearance<=.001*ELEVATION_HEIGHT*2,
         mode:"TERRAIN_INTERSECTION"
       })));
+    }
+    return polygons;
+  }
+
+  // One visual water-polygon contract for every horizontal water surface.
+  // Stored D owns its existing published-ground waterline. Q-only sheets own
+  // their already-solved film clearance, but both emit the SAME level/depth/
+  // shoreline format for one WaterRenderer triangulation, shading and motion.
+  // This is a disposable presentation projection, never another Hydrology D.
+  presentationWaterPolygons(tile,levelAtWorld,sheet=null){
+    if(hasStoredWaterDepth(tile))return this.publishedStoredWaterPolygons(tile,levelAtWorld);
+    if(!tile||!sheet||sheet.key!==this.keyOf(tile.x,tile.y))return[];
+    const polygons=[];
+    for(const polygon of sheet.polygons||[]){
+      if(!polygon?.points||polygon.points.length<3)continue;
+      polygons.push(polygon.points.map(vertex=>{
+        const depthWorld=Math.max(0,Number(vertex.depth||0));
+        return{
+          x:Number(vertex.x),z:Number(vertex.z),
+          level:(Number(vertex.y)+depthWorld)/ELEVATION_HEIGHT,
+          depth:depthWorld/ELEVATION_HEIGHT,
+          clipped:depthWorld<=EPSILON,
+          mode:"TERRAIN_INTERSECTION",owner:"TRANSIT_Q"
+        };
+      }));
     }
     return polygons;
   }
@@ -312,20 +346,9 @@ export class VisualSurfaceResolver{
     const results=new Map();
     const area=(a,b,c)=>Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))/2;
     const vertexKey=p=>`${Number(p.x).toFixed(9)},${Number(p.z).toFixed(9)}`;
-    const clipWet=triangle=>{
-      const out=[];
-      for(let i=0;i<triangle.length;i++){
-        const a=triangle[i],b=triangle[(i+1)%triangle.length];
-        const aWet=a.depth>0,bWet=b.depth>0;
-        if(aWet)out.push(a);
-        if(aWet!==bWet){
-          const t=a.depth/(a.depth-b.depth);
-          out.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
-            z:a.z+(b.z-a.z)*t,depth:0});
-        }
-      }
-      return out;
-    };
+    const clipWet=triangle=>this.clipPublishedClearancePolygon(triangle,true,
+      (a,b,t)=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
+        z:a.z+(b.z-a.z)*t,depth:0}),point=>point.depth);
     // Film depth on each emitted triangle is affine. Its volume is exactly
     // the projected triangle area multiplied by average positive depth.
     const integration=polygon=>{
