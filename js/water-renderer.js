@@ -732,51 +732,13 @@ export class WaterRenderer{
   }
 
   clipTerrainTriangleAtWaterline(tile,triangle,allMap,wet=true){
-    // Storage water has a world-space surface and terrain has registered XYZ
-    // triangles. Their actual intersection is the ONLY wet/dry handoff boundary.
-    if(!Array.isArray(triangle)||triangle.length!==3)return[];
-    const vertices=triangle.map(point=>{
-      const level=this.waterLevelAtWorld(tile,point.x,point.z,allMap);
-      const waterY=level*ELEVATION_HEIGHT,terrainY=Number(point.y);
-      return{x:Number(point.x),y:terrainY,z:Number(point.z),terrainY,waterY,level,clearance:waterY-terrainY};
-    });
-    const inside=vertex=>wet?vertex.clearance>0:vertex.clearance<=0;
-    const interpolate=(a,b)=>{
-      const t=a.clearance/(a.clearance-b.clearance);
-      const x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;
-      const waterY=a.waterY+(b.waterY-a.waterY)*t;
-      const terrainY=a.terrainY+(b.terrainY-a.terrainY)*t;
-      return{x,y:terrainY,z,terrainY,waterY,level:waterY/ELEVATION_HEIGHT,clearance:0};
-    };
-    const polygon=[];
-    for(let i=0;i<vertices.length;i++){
-      const a=vertices[i],b=vertices[(i+1)%vertices.length],aIn=inside(a),bIn=inside(b);
-      if(aIn)polygon.push(a);
-      if(aIn!==bIn)polygon.push(interpolate(a,b));
-    }
-    return polygon;
-  }
-
-  clipTerrainTriangleToWater(tile,triangle,allMap){
-    return this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,true).map(point=>({
-      x:point.x,z:point.z,level:point.level,
-      depth:Math.max(0,point.clearance/ELEVATION_HEIGHT),
-      clipped:point.clearance<=EPSILON*ELEVATION_HEIGHT*2,
-      mode:"TERRAIN_INTERSECTION"
-    }));
+    return this.surfaceResolver.clipPublishedWaterTriangle(triangle,
+      (x,z)=>this.waterLevelAtWorld(tile,x,z,allMap),wet);
   }
 
   waterSurfacePolygons(tile,allMap){
-    // Never report a storage water surface for a tile owned by Q-only flow.
-    if(!hasAnyWater(tile))return[];
-    const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
-    if(!geometry?.triangles?.length)return[];
-    const polygons=[];
-    for(const triangle of geometry.triangles){
-      const polygon=this.clipTerrainTriangleToWater(tile,triangle,allMap);
-      if(polygon.length>=3)polygons.push(polygon);
-    }
-    return polygons;
+    return this.surfaceResolver.publishedStoredWaterPolygons(tile,
+      (x,z)=>this.waterLevelAtWorld(tile,x,z,allMap));
   }
 
   activeHydrologySources(state){
@@ -1126,8 +1088,9 @@ export class WaterRenderer{
       const first=out.positions.length/3;
       for(const vertex of polygon.points){
         const depth=Math.max(0,Number(vertex.depth||0));
+        const joined=solution.storedHandoffKeys?.has(`${Number(vertex.x).toFixed(9)},${Number(vertex.z).toFixed(9)}`);
         const point=this.canonicalWaterPoint({x:Number(vertex.x),
-          y:Number(vertex.y)+depth+SURFACE_OFFSET*.42,z:Number(vertex.z)});
+          y:Number(vertex.y)+depth+SURFACE_OFFSET*(joined?1:.42),z:Number(vertex.z)});
         out.positions.push(point.x,point.y,point.z);
         out.normals.push(0,0,0);
         out.uvs.push(((-fz*point.x+fx*point.z)/TILE_SIZE),
@@ -1185,7 +1148,9 @@ export class WaterRenderer{
       triangleCount:out.indices.length/3,gameplayDepth:false,
       terrainConforming:true,registeredTriangleOnly:true,hydrologySource:false,
       pathEndpointsAreTileCenters:false,fixedCorridorWidth:false,
-      mergedTileQ:true,sharedTerrainCoordinates:true};
+      mergedTileQ:true,sharedTerrainCoordinates:true,
+      storedHandoffSamples:Number(solution.storedHandoffSamples||0),
+      sharedQDWaterline:solution.storedHandoffSamples>0};
     return mesh;
   }
 
@@ -1802,7 +1767,10 @@ export class WaterRenderer{
     if(runoffSignature!==this.sheetFlowSignature){
       // Avoid retaining XYZ -> Y registry layers after Q-driven sheet rebuilds.
       this.resetWaterSeamRegistry();
-      const newSurfaces=this.surfaceResolver.sheetFlowTileSurfaces(tilesOf(state),this.sheetFlowNetwork);
+      const allMap=this.allByKey(state);
+      const newSurfaces=this.surfaceResolver.sheetFlowTileSurfaces(tilesOf(state),this.sheetFlowNetwork,{
+        storedLevelAtWorld:(tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap)
+      });
       const newMeshes=new Map();
       for(const sheet of newSurfaces.values()){
         const mesh=this.buildSheetFlow(sheet);
@@ -1901,6 +1869,8 @@ export class WaterRenderer{
       fixedCascadeWidth:false,
       persistentPerEdgeDischarge:true,
       sheetFlowSurfaceMeshes:this.sheetFlowMeshes.size,
+      sheetFlowQDWaterlineHandoffs:[...this.sheetFlowSurfaces.values()].filter(sheet=>Number(sheet.storedHandoffSamples||0)>0).length,
+      sheetFlowQDInsufficientBudget:[...this.sheetFlowNetwork.values()].filter(node=>node.storedHandoffReason==="INSUFFICIENT_Q_TRANSIT_VOLUME").length,
       sheetFlowBoundaryInventory:true,
       sheetFlowActiveTiles:[...this.sheetFlowNetwork.values()].filter(tile=>tile.incoming.length||tile.outgoing.length).length,
       sheetFlowGeometryRejectedEdges:new Set([...this.sheetFlowNetwork.values()].flatMap(tile=>tile.outgoing)
