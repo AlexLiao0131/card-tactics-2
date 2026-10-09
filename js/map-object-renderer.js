@@ -18,10 +18,12 @@ function hash01(value){
 function mixColor(a,b,t){const amount=clamp(Number(t||0),0,1);return a.map((v,i)=>clamp(v+(b[i]-v)*amount,0,1));}
 
 export class MapObjectRenderer{
-  constructor(scene){
+  constructor(scene,terrainRenderer=null){
     this.scene=scene;
     this.nodes=new Map();
-    this.surfaceResolver=new VisualSurfaceResolver();
+    // Consume the terrain renderer's published geometry, matching WaterRenderer.
+    // Standalone previews may still use a private resolver as a fallback.
+    this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
     this.materials={
       trunk:this.mat("prop-trunk",new BABYLON.Color3(.28,.17,.09)),
       deadTrunk:this.mat("prop-dead-trunk",new BABYLON.Color3(.25,.23,.20)),
@@ -262,7 +264,15 @@ export class MapObjectRenderer{
   }
 
   groundProfile(object,tile,byKey){
-    const sample=(x,z)=>this.surfaceResolver.sampleRenderedHeight(tile,byKey,x/TILE_SIZE,z/TILE_SIZE)*ELEVATION_HEIGHT;
+    // The actual Babylon terrain triangles are the height authority. Their
+    // barycentric Y avoids a second approximated slope under rocks and trees.
+    // The previous sampler remains a fallback for standalone/offscreen previews.
+    const sample=(x,z)=>{
+      if(!tile)return 0;
+      const worldX=Number(tile.x)*TILE_SIZE+x,worldZ=Number(tile.y)*TILE_SIZE+z;
+      const published=this.surfaceResolver.publishedSurfacePoint(tile,worldX,worldZ);
+      return published?.y??this.surfaceResolver.sampleRenderedHeight(tile,byKey,x/TILE_SIZE,z/TILE_SIZE)*ELEVATION_HEIGHT;
+    };
     const h=sample(0,0),dx=(sample(.25,0)-sample(-.25,0))/.5,dz=(sample(0,.25)-sample(0,-.25))/.5;
     const neighbors=[[0,0],[1,0],[-1,0],[0,1],[0,-1]].map(([x,y])=>byKey.get(tileKey(object.x+x,object.y+y))).filter(Boolean);
     const adjacentWater=neighbors.some(t=>Number(t.waterDepth||0)>0&&Math.abs(Number(t.elevation||0)-Number(tile?.elevation||0))<=1);

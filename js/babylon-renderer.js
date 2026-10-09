@@ -132,7 +132,8 @@ export class BabylonRenderer{
     // Water shoreline clipping reuses the exact terrain ring samples. Renderer
     // layers stay visual-only, but they now agree on one geometric surface.
     this.water=new WaterRenderer(this.scene,this.terrain);
-    this.mapObjects=new MapObjectRenderer(this.scene);
+    // Props use the same published terrain geometry as water. No second surface resolver.
+    this.mapObjects=new MapObjectRenderer(this.scene,this.terrain);
     this.environment=new EnvironmentRenderer(this.scene);
     this.objectives=new ObjectiveRenderer(this.scene);
     this.highlights=new HighlightRenderer(this.scene);
