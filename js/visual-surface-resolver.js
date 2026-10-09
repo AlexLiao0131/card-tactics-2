@@ -251,6 +251,35 @@ export class VisualSurfaceResolver{
       }
       return {wetArea,volume};
     };
+    // The published terrain owns real rugged cliff shoulders *outside* the
+    // nominal gameplay square. They MUST stay rendered, but a tile's Q proxy
+    // is normalized over its gameplay footprint, not over the extra decoration
+    // area. Clip only the volume INTEGRAL; never trim the emitted water mesh.
+    const clipToTile=(polygon,minX,maxX,minZ,maxZ)=>{
+      let result=polygon;
+      const boundaries=[
+        [p=>p.x-minX,(a,b)=> (minX-a.x)/(b.x-a.x)],
+        [p=>maxX-p.x,(a,b)=> (maxX-a.x)/(b.x-a.x)],
+        [p=>p.z-minZ,(a,b)=> (minZ-a.z)/(b.z-a.z)],
+        [p=>maxZ-p.z,(a,b)=> (maxZ-a.z)/(b.z-a.z)]
+      ];
+      for(const [signed,ratio] of boundaries){
+        if(!result.length)break;
+        const clipped=[];
+        for(let i=0;i<result.length;i++){
+          const a=result[i],b=result[(i+1)%result.length];
+          const insideA=signed(a)>=-EPSILON,insideB=signed(b)>=-EPSILON;
+          if(insideA)clipped.push(a);
+          if(insideA!==insideB){
+            const t=Math.max(0,Math.min(1,ratio(a,b)));
+            clipped.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
+              z:a.z+(b.z-a.z)*t,depth:a.depth+(b.depth-a.depth)*t});
+          }
+        }
+        result=clipped;
+      }
+      return result;
+    };
     function solveHeight(volumeAt,target,low,high){
       if(volumeAt(low)>target+EPSILON)return null;
       for(let i=0;i<50&&volumeAt(high)<target;i++)high=high*2+Math.max(1,high-low);
@@ -286,6 +315,14 @@ export class VisualSurfaceResolver{
       const transit=Math.max(incoming,outgoing);
       if(transit<=EPSILON){node.sheetRejectReason="NO_TRANSPORT_VOLUME";continue;}
       const triangles=geometry.triangles;
+      const minX=(Number(tile.x)-.5)*TILE_SIZE,maxX=minX+TILE_SIZE;
+      const minZ=(Number(tile.y)-.5)*TILE_SIZE,maxZ=minZ+TILE_SIZE;
+      const withinTile=p=>p.x>=minX-EPSILON&&p.x<=maxX+EPSILON&&p.z>=minZ-EPSILON&&p.z<=maxZ+EPSILON;
+      const coreClassification=triangles.map(tri=>tri.every(withinTile)?"CORE":"SHOULDER");
+      const renderedProjectedArea=triangles.reduce((sum,tri)=>sum+area(...tri),0);
+      const coreProjectedArea=triangles.reduce((sum,tri,i)=>sum+
+        (coreClassification[i]==="CORE"?area(...tri):integration(
+          clipToTile(tri.map(p=>({...p,depth:1})),minX,maxX,minZ,maxZ)).wetArea),0);
       let weight=0,cx=0,cy=0,cz=0;
       for(const tri of triangles){
         const w=area(...tri);if(w<=EPSILON)continue;
@@ -316,7 +353,7 @@ export class VisualSurfaceResolver{
       const lowest=-Math.max(...values),highest=-Math.min(...values);
       const target=transit*TILE_SIZE*TILE_SIZE*ELEVATION_HEIGHT;
       const calculate=(offset,locked=null,emit=false)=>{
-        let wetArea=0,volume=0;
+        let wetArea=0,coreWetArea=0,volume=0,renderedVolume=0;
         const polygons=[];
         const depths=emit?new Map():null;
         for(let triangleIndex=0;triangleIndex<triangles.length;triangleIndex++){
@@ -329,10 +366,15 @@ export class VisualSurfaceResolver{
           const wet=clipWet(points);
           if(wet.length<3)continue;
           const measurement=integration(wet);
-          wetArea+=measurement.wetArea;volume+=measurement.volume;
+          wetArea+=measurement.wetArea;
+          if(emit)renderedVolume+=measurement.volume;
+          const coreWet=coreClassification[triangleIndex]==="CORE"?measurement:
+            integration(clipToTile(wet,minX,maxX,minZ,maxZ));
+          volume+=coreWet.volume;
+          if(emit)coreWetArea+=coreWet.wetArea;
           if(emit&&measurement.wetArea>EPSILON)polygons.push({triangleIndex,points:wet});
         }
-        return {wetArea,volume,polygons,depths};
+        return {wetArea,coreWetArea,volume,renderedVolume,polygons,depths};
       };
       const baseline=solveHeight(off=>calculate(off).volume,target,lowest,highest+target/weight);
       if(baseline==null){node.sheetRejectReason="NO_WET_SOLUTION";continue;}
@@ -346,6 +388,7 @@ export class VisualSurfaceResolver{
       node.sheetStatus="CANDIDATE";
       results.set(key,{tile,key,triangles,geometryRevision:geometry.revision,
         targetVolume:target,transportVolume:transit,initialDepths:preliminary.depths,
+        nominalTileArea:TILE_SIZE*TILE_SIZE,renderedProjectedArea,coreProjectedArea,
         residual,calculate,locked:new Map(),baseline,
         boundaryEdges:edges,flow:{x:magnitude?fx/magnitude:0,z:magnitude?fz/magnitude:0},
         model:'REGISTERED_TERRAIN_TRANSIT_SHEET'});
@@ -390,6 +433,10 @@ export class VisualSurfaceResolver{
       if(!solved.polygons.length){network.get(result.key).sheetRejectReason="WET_TRIANGLES_CLIPPED";results.delete(result.key);continue;}
       result.polygons=solved.polygons;
       result.wetArea=solved.wetArea;
+      result.coreWetArea=solved.coreWetArea;
+      result.shoulderWetArea=Math.max(0,solved.wetArea-solved.coreWetArea);
+      result.shoulderProjectedArea=Math.max(0,result.renderedProjectedArea-result.coreProjectedArea);
+      result.renderedVolumeProxy=solved.renderedVolume;
       result.volumeProxyAfterSeam=solved.volume;
       result.maxDepth=Math.max(0,...solved.depths.values());
       result.minDepth=0;
