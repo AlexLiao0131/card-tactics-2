@@ -265,16 +265,26 @@ export class VisualSurfaceResolver{
       if(!tile||waterDepthOf(tile)>EPSILON)continue;
       const key=this.keyOf(tile.x,tile.y),node=network?.get(key);
       const geometry=this.getRenderedSurfaceGeometry(tile);
-      if(!node||!geometry?.triangles?.length)continue;
-      const edges=[...(node.incoming||[]),...(node.outgoing||[])];
-      // Stage 2 supports entire source-fed dry reaches. Existing pooled-water
-      // and cliff junctions retain their pre-existing renderers until the
-      // canonical cross-surface handoff is implemented and tested.
-      if(!edges.length||edges.some(edge=>edge.cascade||!edge.geometryJoinValid))continue;
-      const incoming=(node.incoming||[]).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
-      const outgoing=(node.outgoing||[]).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
+      if(!node)continue;
+      node.sheetStatus="NOT_SOLVED";
+      node.sheetRejectReason=null;
+      node.sheetRejectedEdges=[];
+      node.sheetAcceptedEdges=[];
+      if(!geometry?.triangles?.length){node.sheetRejectReason="MISSING_PUBLISHED_SURFACE";continue;}
+      const allEdges=[...(node.incoming||[]),...(node.outgoing||[])];
+      // A cliff or an invalid seam is a property of ONE edge, not the entire
+      // tile. One rugged wall must never cancel valid dry-ground streams on
+      // the other sides of a spring or confluence. Real cliff Q keeps its
+      // existing waterfall renderer; no fake ramp is constructed here.
+      const edges=allEdges.filter(edge=>!edge.cascade&&edge.geometryJoinValid);
+      node.sheetAcceptedEdges=edges.map(edge=>edge.id);
+      node.sheetRejectedEdges=allEdges.filter(edge=>!edges.includes(edge))
+        .map(edge=>({id:edge.id,reason:edge.cascade?"CASCADE":edge.geometryJoin||"INVALID_PUBLISHED_SEAM"}));
+      if(!edges.length){node.sheetRejectReason=allEdges.length?"NO_VALID_SURFACE_EDGE":"NO_Q_EDGE";continue;}
+      const incoming=(node.incoming||[]).filter(edge=>edges.includes(edge)).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
+      const outgoing=(node.outgoing||[]).filter(edge=>edges.includes(edge)).reduce((sum,e)=>sum+Number(e.transportVolume||0),0);
       const transit=Math.max(incoming,outgoing);
-      if(transit<=EPSILON)continue;
+      if(transit<=EPSILON){node.sheetRejectReason="NO_TRANSPORT_VOLUME";continue;}
       const triangles=geometry.triangles;
       let weight=0,cx=0,cy=0,cz=0;
       for(const tri of triangles){
@@ -284,7 +294,7 @@ export class VisualSurfaceResolver{
         cy+=w*(tri[0].y+tri[1].y+tri[2].y)/3;
         cz+=w*(tri[0].z+tri[1].z+tri[2].z)/3;
       }
-      if(weight<=EPSILON)continue;
+      if(weight<=EPSILON){node.sheetRejectReason="DEGENERATE_PUBLISHED_SURFACE";continue;}
       cx/=weight;cy/=weight;cz/=weight;
       let xx=0,xz=0,zz=0,xy=0,zy=0;
       for(const tri of triangles){
@@ -325,7 +335,7 @@ export class VisualSurfaceResolver{
         return {wetArea,volume,polygons,depths};
       };
       const baseline=solveHeight(off=>calculate(off).volume,target,lowest,highest+target/weight);
-      if(baseline==null)continue;
+      if(baseline==null){node.sheetRejectReason="NO_WET_SOLUTION";continue;}
       const preliminary=calculate(baseline,null,true);
       let fx=0,fz=0;
       for(const edge of edges){
@@ -333,6 +343,7 @@ export class VisualSurfaceResolver{
         fx+=(bx-ax)*edge.q;fz+=(bz-az)*edge.q;
       }
       const magnitude=Math.hypot(fx,fz);
+      node.sheetStatus="CANDIDATE";
       results.set(key,{tile,key,triangles,geometryRevision:geometry.revision,
         targetVolume:target,transportVolume:transit,initialDepths:preliminary.depths,
         residual,calculate,locked:new Map(),baseline,
@@ -369,16 +380,20 @@ export class VisualSurfaceResolver{
       const minimal=result.calculate(low,result.locked);
       // A locked boundary with excessive wet volume cannot be reconciled by
       // the local solver. Fail the sheet instead of publishing fake water.
-      if(minimal.volume>result.targetVolume+EPSILON){results.delete(result.key);continue;}
+      if(minimal.volume>result.targetVolume+EPSILON){
+        network.get(result.key).sheetRejectReason="SEAM_LOCK_EXCEEDS_VOLUME";
+        results.delete(result.key);continue;
+      }
       const offset=solveHeight(h=>result.calculate(h,result.locked).volume,result.targetVolume,low,high);
-      if(offset==null){results.delete(result.key);continue;}
+      if(offset==null){network.get(result.key).sheetRejectReason="SEAM_VOLUME_UNSOLVABLE";results.delete(result.key);continue;}
       const solved=result.calculate(offset,result.locked,true);
-      if(!solved.polygons.length){results.delete(result.key);continue;}
+      if(!solved.polygons.length){network.get(result.key).sheetRejectReason="WET_TRIANGLES_CLIPPED";results.delete(result.key);continue;}
       result.polygons=solved.polygons;
       result.wetArea=solved.wetArea;
       result.volumeProxyAfterSeam=solved.volume;
       result.maxDepth=Math.max(0,...solved.depths.values());
       result.minDepth=0;
+      network.get(result.key).sheetStatus="SOLVED";
       delete result.initialDepths;delete result.locked;delete result.residual;delete result.calculate;
     }
     // If a paired seam fails after the coupled budget solve, discard its
@@ -392,8 +407,16 @@ export class VisualSurfaceResolver{
           const other=edge.fromKey===entry.key?edge.toKey:edge.fromKey;
           return candidateKeys.has(other)&&!results.has(other);
         });
-        if(disconnected){results.delete(entry.key);changed=true;}
+        if(disconnected){
+          const node=network.get(entry.key);
+          if(node){node.sheetStatus="REJECTED";node.sheetRejectReason="NEIGHBOR_SHEET_REJECTED";}
+          results.delete(entry.key);changed=true;
+        }
       }
+    }
+    for(const node of network?.values()||[]){
+      if(node.sheetStatus==="CANDIDATE")node.sheetStatus="REJECTED";
+      if(node.sheetStatus==="NOT_SOLVED")node.sheetStatus="REJECTED";
     }
     return results;
   }

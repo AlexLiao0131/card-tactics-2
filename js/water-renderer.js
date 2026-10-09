@@ -1703,6 +1703,10 @@ export class WaterRenderer{
     const waterTiles=this.waterTiles(state);
     const components=this.surfaceComponents(waterTiles);
     const cascades=this.cascadeEdges(state,waterTiles);
+    // Keep the solved per-tile rejection/clip diagnostics when topology, Q and
+    // registered terrain geometry have not changed. runoffEdges() inventories
+    // Q every sync and otherwise replaces the diagnostic-bearing nodes.
+    const previousSheetNetwork=this.sheetFlowNetwork;
     const runoffs=this.runoffEdges(state);
     const sources=this.activeHydrologySources(state);
 
@@ -1748,6 +1752,11 @@ export class WaterRenderer{
       this.sheetFlowSurfaces=newSurfaces;
       this.sheetFlowMeshes=newMeshes;
       this.sheetFlowSignature=runoffSignature;
+    }else{
+      // Existing mesh/solver cache is still authoritative. Reuse the matching
+      // Q inventory with its solver status rather than silently resetting
+      // sheetStatus to unknown on the next render frame.
+      this.sheetFlowNetwork=previousSheetNetwork;
     }
     if(runoffSignature!==this.runoffSignature){
       this.disposeMap(this.runoffs);
