@@ -506,14 +506,36 @@
         receiverWet:entry?.mesh?.metadata?.receiverWet===true,
         hasStoredOvertoppingJunction:!!entry?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction")
       }));
-      const waterfallEdgeInventory=[...water?.cascades?.entries?.()||[]].map(([id,entry])=>({
-        id,storedWaterOvertopping:entry?.mesh?.metadata?.storedWaterOvertopping===true,
-        transportVolume:Number(entry?.mesh?.metadata?.transportVolume||0),
-        edgeDischarge:Number(entry?.mesh?.metadata?.edgeDischarge||0),
-        hydrologyEdgeReason:entry?.mesh?.metadata?.hydrologyEdgeReason||null,
-        receiverWet:entry?.mesh?.metadata?.receiverWet===true,
-        storedOvertoppingJunctionPresent:!!entry?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction")
-      }));
+      const hasStoredWaterDepthDiagnostic=t=>Number(t?.waterDepth||0)>hydrologyStorageThreshold;
+      const waterfallEdgeInventory=[...water?.cascades?.entries?.()||[]].map(([id,entry])=>{
+        const matched=/^(-?\d+),(-?\d+)->(-?\d+),(-?\d+)$/.exec(String(id));
+        const upper=matched?lookup.get(`${matched[1]},${matched[2]}`):null;
+        const lower=matched?lookup.get(`${matched[3]},${matched[4]}`):null;
+        const flux=upper&&lower?hydrology?.edgeFlowState?.(upper,lower):null;
+        const junction=water?.runoffs?.get(id);
+        const networkEdge=water?.sheetFlowNetwork?.get(upper?`${upper.x},${upper.y}`:"")
+          ?.outgoing?.find(e=>e.id===id);
+        return{
+          id,storedWaterOvertopping:entry?.mesh?.metadata?.storedWaterOvertopping===true,
+          transportVolume:Number(entry?.mesh?.metadata?.transportVolume||0),
+          edgeDischarge:Number(entry?.mesh?.metadata?.edgeDischarge||0),
+          measuredRate:Number(flux?.solverRate||0),
+          effectiveFlowRate:Number(flux?.rate||0),
+          upperDepth:upper?Number(upper.waterDepth||0):null,
+          lowerDepth:lower?Number(lower.waterDepth||0):null,
+          upstreamStoredWetPolygons:upper&&hasStoredWaterDepthDiagnostic(upper)
+            ?water?.waterSurfacePolygons?.(upper,lookup)?.length??0:0,
+          downstreamStoredWetPolygons:lower&&hasStoredWaterDepthDiagnostic(lower)
+            ?water?.waterSurfacePolygons?.(lower,lookup)?.length??0:0,
+          hydrologyEdgeReason:entry?.mesh?.metadata?.hydrologyEdgeReason||null,
+          receiverWet:entry?.mesh?.metadata?.receiverWet===true,
+          runoffJunctionMeshPresent:!!junction&&!junction.isDisposed?.(),
+          runoffJunctionKinds:junction?.metadata?.runoffSegments?.map(s=>s.kind)||[],
+          networkRate:networkEdge?.q??0,
+          networkRateKind:networkEdge?.qKind||null,
+          storedOvertoppingJunctionPresent:!!entry?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction")
+        };
+      });
       const renderOwnership=tileKey?{
         tileKey,gameplayWaterDepth:Number(worldTile?.waterDepth||0),
         hydrologyStorageThreshold,storedWaterEligible,
@@ -568,8 +590,10 @@
         sheetRejectReason:sheetNode?.sheetRejectReason||null,
         sheetAcceptedEdges:sheetNode?.sheetAcceptedEdges||[],
         sheetRejectedEdges:sheetNode?.sheetRejectedEdges||[],
-        boundaryEdges:nodeEdges.map(e=>({id:e.id,q:e.q,transportVolume:e.transportVolume,
-          geometryJoinValid:e.geometryJoinValid,geometryJoin:e.geometryJoin,cascade:e.cascade})),
+        boundaryEdges:nodeEdges.map(e=>({id:e.id,q:e.q,qKind:e.qKind||null,
+          persistentRate:e.persistentRate??null,measuredRate:e.measuredRate??null,
+          transportVolume:e.transportVolume,geometryJoinValid:e.geometryJoinValid,
+          geometryJoin:e.geometryJoin,cascade:e.cascade})),
         sourceRate:sheetNode?.sourceRate??null,qIn:sheetNode?.qIn??null,qOut:sheetNode?.qOut??null,
         registeredTerrainTriangles:geom?.triangles?.length??null,
         wetTriangleCount:sheetSolution?.polygons?.length??0,
