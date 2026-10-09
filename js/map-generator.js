@@ -18,8 +18,11 @@ export const MapGenerator=(()=>{
   // The two source types have distinct catchment sizes; low, normal and high
   // yield regimes preserve shallow creeks while allowing genuinely strong rivers.
   const SOURCE_YIELD_REGIMES=Object.freeze({
-    OFF_MAP_SOURCE:Object.freeze([[.65,1.15,.17],[1.35,2.60,.53],[2.80,4.20,.30]]),
-    SPRING_SOURCE:Object.freeze([[.45,.90,.25],[1.00,1.75,.55],[1.90,2.80,.20]])
+    // The old yields were different on paper, but the typical Q was almost
+    // indistinguishable after a 1.0-rated downstream channel bottleneck. Keep
+    // genuine small creeks; let the other watersheds have meaningful discharge.
+    OFF_MAP_SOURCE:Object.freeze([[.60,1.30,.23],[1.80,3.60,.48],[4.50,7.50,.29]]),
+    SPRING_SOURCE:Object.freeze([[.45,1.00,.34],[1.30,2.60,.48],[3.00,4.80,.18]])
   });
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   const inBounds=(w,h,x,y)=>x>=0&&y>=0&&x<w&&y<h;
@@ -203,6 +206,23 @@ export const MapGenerator=(()=>{
         .filter(next=>Number(distance.get(key(next.x,next.y)))<here)
         .sort((a,b)=>Number(distance.get(key(a.x,a.y)))-Number(distance.get(key(b.x,b.y)))||a.y-b.y||a.x-b.x)[0]||null;
       if(downstream)downstreamByKey.set(key(tile.x,tile.y),downstream);
+    }
+
+    // A permanent stream's channel capacity must be sized for the catchment
+    // which formed it. Historically only the entry carried its seeded yield;
+    // every reach downstream still had baseDischarge=1 (.8 at a ford), choking
+    // a strong spring-fed river into an identical tiny Q-only sheet. Propagate
+    // *design capacity*, not a new water source or a second Q state. Actual Q
+    // is still conserved and routed exclusively by HydrologyEngine.
+    for(const source of sources){
+      const designRate=Math.max(0,Number(source.hydrologySourceInflow||source.baseDischarge||0));
+      if(designRate<=0)continue;
+      let current=source,visited=new Set();
+      while(current&&!visited.has(key(current.x,current.y))){
+        visited.add(key(current.x,current.y));
+        current.baseDischarge=Math.max(Number(current.baseDischarge||0),designRate);
+        current=downstreamByKey.get(key(current.x,current.y))||null;
+      }
     }
 
     // Strategic roads cross the river at shallow fords. Every edge downstream of a
