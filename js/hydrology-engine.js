@@ -690,6 +690,16 @@ export const HydrologyEngine=(()=>{
     return(map?.tiles||[]).filter(tile=>tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true&&canHoldWater(tile));
   }
 
+  // Real wetted volume held in the existing D store while moving source Q
+  // crosses a channel reach. Q determines its residence requirement, but D is
+  // only filled from actual source water; no imaginary permanent D baseline.
+  function flowingChannelStorageDemand(tile){
+    if(tile?.river!==true||tile.hydrologyTransportInitialized!==true)return 0;
+    const q=Math.max(0,Number(tile.hydrologyOutflowRate||0));
+    if(q<=EPSILON)return 0;
+    const speed=Math.max(.35,Number(tile.flowSpeed||tile.baseFlowSpeed||.6));
+    return clean(Math.min(.28,q*DISCHARGE_VOLUME_PER_TURN/(speed*1.15)));
+  }
   function riverKineticHead(tile){
     // A through-flow carries a limited kinetic head on a near-level reach.
     // This is a physical routing condition, not an instruction to draw a
@@ -700,14 +710,76 @@ export const HydrologyEngine=(()=>{
   function riverRouteHasHead(from,to){
     if(!from||!to)return false;
     if(from.hydrologyTransportInitialized!==true)return true;
+    // An established downhill channel conveys its real source-supported Q
+    // across flooded backwater reaches; local D equalization is independent
+    // and must not cancel the catchment's ongoing source mass flux. Its grade
+    // is authored once by MapGenerator and verified to reach an actual outlet.
+    // A *carved storage pool* is different: it must reach its genuine outlet
+    // sill before it can emit Q. Stored flood recession still checks real head.
+    if(from.river===true&&to.river===true){
+      if(from.hydrologyNaturalChannelPool===true&&
+         elevation(from)+waterDepth(from)+riverKineticHead(from)+EPSILON<elevation(to))return false;
+      if(elevation(from)+EPSILON>=elevation(to))return true;
+    }
     return elevation(from)+waterDepth(from)+riverKineticHead(from)+EPSILON
       >=elevation(to)+waterDepth(to);
+  }
+
+  // The map-generator owns the authored downstream graph; the same formal
+  // edge that carries measured Q is used here to pass *conserved water volume*.
+  // At the beginning a reach must fill its actual moving-water residence D;
+  // only the remainder can pass downstream. The last reach drains off-map.
+  // A blocked spring pool stores incoming D until a true head opens its outlet.
+  function routeSourceChannelVolume(map,sourceTile,volume,volumeScale,by,budgets,events,source){
+    const pending=[{tile:sourceTile,volume,path:new Set()}];
+    let stored=0,drained=0,steps=0;
+    const store=(tile,value)=>{
+      const amount=clean(value);if(amount<=0)return;
+      setWaterDepth(tile,waterDepth(tile)+amount,events,source);
+      stored=clean(stored+amount);
+    };
+    while(pending.length&&steps++<Math.max(32,map.tiles.length*8)){
+      const {tile,volume:incoming,path}=pending.shift();
+      if(incoming<=0)continue;
+      const k=key(tile.x,tile.y);
+      if(path.has(k)){store(tile,incoming);continue;}
+      const seen=new Set(path);seen.add(k);
+      const target=flowingChannelStorageDemand(tile);
+      const fill=Math.min(incoming,Math.max(0,target-waterDepth(tile)));
+      store(tile,fill);
+      const carry=clean(Math.max(0,incoming-fill));
+      if(carry<=0)continue;
+      const atDrain=tile.hydrologyDrain===true||tile.drain===true;
+      const dirX=Math.sign(Number(tile.flowX||0)),dirY=Math.sign(Number(tile.flowY||0));
+      const next=atDrain?null:by.get(key(tile.x+dirX,tile.y+dirY));
+      const link=atDrain?null:Object.values(tile.hydrologyEdgeDischarge||{}).find(edge=>
+        Number(edge?.toX)===Number(next?.x)&&Number(edge?.toY)===Number(next?.y)&&Number(edge.rate||0)>EPSILON);
+      if(!atDrain&&(!next||!link||!riverRouteHasHead(tile,next))){store(tile,carry);continue;}
+      const capacity=atDrain?Number(tile.outletEffectiveCapacity??tile.channelCapacity??0):
+        Math.min(Number(tile.channelCapacity||0),Number(link.rate||0));
+      const budgetKey=`reach:${k}`;
+      const initialBudget=clean(Math.max(0,capacity)*Math.max(0,volumeScale));
+      const budget=budgets.has(budgetKey)?budgets.get(budgetKey):initialBudget;
+      const moved=clean(Math.min(carry,Math.max(0,budget)));
+      budgets.set(budgetKey,clean(Math.max(0,budget-moved)));
+      store(tile,Math.max(0,carry-moved));
+      if(moved<=0)continue;
+      if(atDrain){drained=clean(drained+moved);continue;}
+      pending.push({tile:next,volume:moved,path:seen});
+    }
+    for(const remaining of pending)store(remaining.tile,remaining.volume);
+    events.push({type:"RIVER_SOURCE_THROUGHFLOW",source,x:sourceTile.x,y:sourceTile.y,
+      inflowVolume:clean(volume),drainedVolume:drained,storedVolume:stored,
+      waterBudgetConserved:Math.abs(volume-drained-stored)<=FLOW_EPSILON});
+    return {drained,stored};
   }
 
   function advanceSources(map,{events=[],source="SOURCE_INFLOW",volumeScale=DISCHARGE_VOLUME_PER_TURN,redistributeAfter=true}={}){
     if(!map?.tiles?.length)return events;
     const scale=Math.max(0,Number(volumeScale||0));
     let injectedVolume=0,sourceCount=0,storedVolume=0,drainedVolume=0;
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const budgets=new Map();
     for(const tile of activeSourceTiles(map)){
       const rate=Math.max(0,sourceDemandRate(tile));
       const volume=clean(rate*scale);
@@ -718,8 +790,14 @@ export const HydrologyEngine=(()=>{
       // leaves every intervening reach dry. Insert the conserved volume into
       // the actual riverbed D store and let the existing head/flow/outlet
       // solver route it. No duplicate water state or invented baseline depth.
-      setWaterDepth(tile,waterDepth(tile)+volume,events,source);
-      storedVolume=clean(storedVolume+volume);
+      if(map.hydrology?.generatedRiverProfile===true&&tile.river===true&&tile.hydrologyTransportInitialized===true){
+        const routed=routeSourceChannelVolume(map,tile,volume,scale,by,budgets,events,source);
+        storedVolume=clean(storedVolume+routed.stored);
+        drainedVolume=clean(drainedVolume+routed.drained);
+      }else{
+        setWaterDepth(tile,waterDepth(tile)+volume,events,source);
+        storedVolume=clean(storedVolume+volume);
+      }
       events.push({type:"HYDROLOGY_SOURCE_INFLOW",x:tile.x,y:tile.y,source,rate,volume,
         waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile)});
     }
@@ -1032,9 +1110,16 @@ export const HydrologyEngine=(()=>{
         });
       }
 
+      // A generated river already has one sourced, slope-validated downstream
+      // channel. Solver storage can spill into banks/lakes, but must NOT split
+      // its perennial source Q into every neighboring low tile: those are
+      // different water budgets. This previously lost trunk Q to lakes before
+      // the formal off-map outlet even though the river itself was connected.
+      const authoredChannel=map.hydrology?.generatedRiverProfile===true&&
+        tile.river===true&&Math.abs(fx)+Math.abs(fy)===1;
       // Solver transfers establish real branch topology for non-river sheets,
       // basins, floodwater and newly-created source paths.
-      for(const record of Object.values(tile?.hydrologyEdgeOutflows||{})){
+      for(const record of (authoredChannel?[]:Object.values(tile?.hydrologyEdgeOutflows||{}))){
         const solverRate=Math.max(0,Number(record?.rate||0));
         if(solverRate<=EPSILON)continue;
         addCandidate(tile,list,seen,by.get(key(record.toX,record.toY)),{kind:"SOLVER",hint:solverRate});
@@ -1042,7 +1127,7 @@ export const HydrologyEngine=(()=>{
 
       // Preserve an established continuous branch across subsequent equilibrium
       // passes, provided the current hydraulic surface has not reversed uphill.
-      for(const dir of["N","E","S","W"]){
+      for(const dir of (authoredChannel?[]:["N","E","S","W"])){
         const hint=prior.get(persistentHintKey(tile,dir));if(!hint)continue;
         addCandidate(tile,list,seen,by.get(key(hint.toX,hint.toY)),{kind:"PERSISTENT",hint:hint.rate});
       }
@@ -1427,7 +1512,11 @@ export const HydrologyEngine=(()=>{
       for(const tile of ordered){
         const k=key(tile.x,tile.y);
         const incoming=Math.max(0,Number(carried.get(k)||0));
-        const floor=baselineDepth(tile);
+        // Only retained flood volume above the legitimate, source-fed travel
+        // residence can be evacuated as spare capacity. This protects only D
+        // that physically arrived; when the source/Q ceases this floor is zero.
+        const floor=Math.max(baselineDepth(tile),
+          Math.min(waterDepth(tile),flowingChannelStorageDemand(tile)));
         const localExtra=Math.max(0,waterDepth(tile)-floor);
         const available=incoming+localExtra;
 

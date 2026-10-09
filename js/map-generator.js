@@ -9,7 +9,7 @@ export const MapGenerator=(()=>{
   });
 
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],key=(x,y)=>`${x},${y}`;
-  const RIVER_GENTLE_STEP=.025;
+  const RIVER_GENTLE_STEP=.008;
   const RIVER_CASCADE_BED_DROP=1.0001;
   const HIGH_SPRING_SOURCE_CHANCE=.40;
   const HIGH_SPRING_MIN_ELEVATION=1;
@@ -251,7 +251,7 @@ export const MapGenerator=(()=>{
     // Build the authored water profile from the outlet upstream. Ordinary reaches
     // use a gentle grade. A real pre-carving terrain cliff becomes a cascade only
     // outside the ford-connected navigable trunk.
-    const outletSurface=Math.min(...drains.map(tile=>Number(tile.waterSurfaceZ??0)));
+    const outletSurface=Math.min(...drains.map(tile=>Number(tile.waterSurfaceZ??0)))-.25;
     const surfaceByKey=new Map(drains.map(tile=>[key(tile.x,tile.y),outletSurface]));
     const cascades=[];
     const ordered=[...rivers].sort((a,b)=>Number(distance.get(key(a.x,a.y))||0)-Number(distance.get(key(b.x,b.y))||0)||a.y-b.y||a.x-b.x);
@@ -303,7 +303,7 @@ export const MapGenerator=(()=>{
     // The stream graph is also a pre-existing eroded riverbed. Incision is an
     // actual gameplay elevation change, sampled by the existing 3x3 terrain
     // triangles, NOT a water mesh or a manufactured waterDepth. Preserve fords.
-    const {count:incised,bankSlopeFloors}=carveGeneratedRiverbeds(map,rivers,downstreamByKey,distance);
+    const {count:incised,bankSlopeFloors,adjustedBanks}=carveGeneratedRiverbeds(map,rivers,downstreamByKey,distance);
     // Pockets are continuous river-bed depressions, preferentially located in
     // spring tributaries. Their water must arrive from a real upstream source.
     const pools=carveNaturalRiverPools(map,rivers,downstreamByKey,distance,bankSlopeFloors);
@@ -315,94 +315,89 @@ export const MapGenerator=(()=>{
     map.generatedRiverProfile={
       sources:sources.map(tile=>({x:tile.x,y:tile.y,kind:tile.sourceKind||"BASIN_SOURCE",active:tile.hydrologySourceDisabled!==true,objectId:tile.sourceObjectId||null})),
       drains:drains.map(tile=>({x:tile.x,y:tile.y})),
-      cascades,pools,incised
+      cascades,pools,incised,adjustedBanks
     };
     return map.generatedRiverProfile;
   }
 
-  // Main stem and tributaries share ONE real gameplay elevation field. The
-  // centre is lower than adjacent geological banks; TerrainRenderer's existing
-  // registered triangles naturally interpolate the river cross section.
-  function riverbankSlopeFloor(tile,byAll,grade){
-    // TerrainRenderer / VisualSurfaceResolver use their ORIGINAL slope contract:
-    // elevation difference <= 1.0001 interpolates a smooth bank. Never turn
-    // an existing sloped riverbank contact into a vertical cliff by excavation.
-    let floor=-Infinity;
-    for(const [dx,dy] of DIRS){
-      const bank=byAll.get(key(tile.x+dx,tile.y+dy));
-      if(!bank||bank.river===true)continue;
-      const h=Number(bank.elevation||0);
-      if(Math.abs(h-grade)<=1.0001)floor=Math.max(floor,h-.975);
+  // A generated channel is one erosional profile, not a chain of unrelated
+  // pits. TerrainRenderer retains ownership of the existing 3x3 slopes.
+  // WaterRenderer subsequently clips the stored free surface against those
+  // registered world-space terrain triangles; this function makes ONLY terrain.
+  function softenCarvedBanks(map,rivers,previous){
+    const allBy=new Map(map.tiles.map(t=>[key(t.x,t.y),t]));
+    const riverKeys=new Set(rivers.map(t=>key(t.x,t.y)));
+    const originalLand=new Map(map.tiles.map(t=>[key(t.x,t.y),Number(t.elevation||0)]));
+    const queue=[];
+    for(const river of rivers){
+      const oldRiver=Number(previous.get(key(river.x,river.y))??river.elevation);
+      const geological=Number(river.hydrologyChannelBaseElevation??oldRiver);
+      for(const[dx,dy] of DIRS){
+        const bank=allBy.get(key(river.x+dx,river.y+dy));
+        if(!bank||riverKeys.has(key(bank.x,bank.y))||bank.terrain==='WATER')continue;
+        const smoothBefore=Math.abs(Number(bank.elevation||0)-oldRiver)<=1.0001;
+        const roadCrossing=river.routeId&&river.routeId===bank.routeId&&
+          Math.abs(Number(bank.elevation||0)-geological)<=1.0001;
+        if(!smoothBefore&&!roadCrossing)continue;
+        const cap=Number(river.elevation||0)+.95;
+        if(Number(bank.elevation||0)>cap+.0001)queue.push({bank,cap,steps:0});
+      }
     }
-    return floor;
+    const changed=new Set();
+    let iterations=0;
+    while(queue.length&&iterations++<map.tiles.length*12){
+      const {bank,cap,steps}=queue.shift();
+      const bk=key(bank.x,bank.y);
+      if(riverKeys.has(bk)||bank.core||bank.terrain==='WATER')continue;
+      // The capture zone is a protected tactical footprint, but its passable
+      // elevation may grade to the adjacent ford (never below level zero).
+      const allowed=bank.captureZone?Math.max(0,cap):cap;
+      if(Number(bank.elevation||0)<=allowed+.0001)continue;
+      bank.elevation=Number(allowed.toFixed(4));changed.add(bk);
+      // Preserve all *originally sloping* adjacent road/land contacts, too.
+      // Lowering a riverbank in isolation could otherwise disconnect a road
+      // behind it even if the water-edge slope looks correct.
+      if(steps>=2)continue; // bank shoulders, never flatten distant mountains
+      for(const[dx,dy]of DIRS){
+        const next=allBy.get(key(bank.x+dx,bank.y+dy));
+        if(!next||riverKeys.has(key(next.x,next.y))||next.core||next.terrain==='WATER')continue;
+        const a=Number(originalLand.get(bk)),b=Number(originalLand.get(key(next.x,next.y)));
+        if(Math.abs(a-b)>1.0001)continue;
+        const limit=Number(bank.elevation||0)+.95;
+        if(Number(next.elevation||0)>limit+.0001)queue.push({bank:next,cap:limit,steps:steps+1});
+      }
+    }
+    return changed.size;
   }
 
   function carveGeneratedRiverbeds(map,rivers,downstreamByKey,distance){
-    const by=new Map(rivers.map(tile=>[key(tile.x,tile.y),tile]));
-    const allBy=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
-    const preCarveGrades=new Map(rivers.map(tile=>[key(tile.x,tile.y),Number(tile.elevation||0)]));
-    const slopeFloor=new Map(rivers.map(tile=>[
-      key(tile.x,tile.y),riverbankSlopeFloor(tile,allBy,Number(tile.elevation||0))
-    ]));
-    const fordDistance=new Map(),queue=[];
-    for(const tile of rivers)if(tile.ford||tile.routeId){
-      const k=key(tile.x,tile.y);fordDistance.set(k,0);queue.push(tile);
-    }
-    for(let i=0;i<queue.length;i++){
-      const tile=queue[i],distance=fordDistance.get(key(tile.x,tile.y));
-      if(distance>=3)continue;
-      for(const [dx,dy] of DIRS){
-        const next=by.get(key(tile.x+dx,tile.y+dy));if(!next)continue;
-        const nk=key(next.x,next.y);
-        if(!fordDistance.has(nk)){fordDistance.set(nk,distance+1);queue.push(next);}
-      }
-    }
-    let count=0;
+    const previous=new Map(rivers.map(tile=>[key(tile.x,tile.y),Number(tile.elevation||0)]));
+    // All normal reaches already have a monotone grade from the outlet-up
+    // profile above. Incise coherently along that grade; importantly, NEVER
+    // independently snap a river tile to its lowest bank or geological lake bed.
+    // Those independent cuts caused the observed inverted sill at (22,2)->(23,2)
+    // on seed 653294928 and stranded the source Q before the map outlet.
     for(const tile of rivers){
-      if(tile.ford||tile.routeId||tile.captureZone||tile.hydrologyDrain)continue;
-      const distance=fordDistance.get(key(tile.x,tile.y))??4;
-      const bridgeFactor=distance===1?.15:distance===2?.50:1;
-      const discharge=Math.max(0,Number(tile.baseDischarge||0));
-      // A small creek cuts a shallower bed than a large catchment. Avoid one
-      // rectangular deep ditch on every river tile, and avoid bridge cliffs.
-      const depth=Number((Math.min(.56,.22+Math.sqrt(discharge)*.105)*bridgeFactor).toFixed(4));
-      if(depth<=.0001)continue;
-      const geologicalBed=Number(tile.hydrologyChannelBaseElevation??tile.elevation??0);
-      const neighbors=DIRS.map(([dx,dy])=>
-        map.tiles.find(other=>other.x===tile.x+dx&&other.y===tile.y+dy))
-        .filter(n=>n&&n.river!==true);
-      const lowestBank=neighbors.length?Math.min(...neighbors.map(n=>Number(n.elevation||0))):Infinity;
-      // A river must NEVER run perched above its own geological valley or
-      // lower than its natural surrounding lake only in the renderer. Excavation
-      // lowers the actual gameplay bed; connected standing lakes supply real D.
-      const grade=Number(tile.elevation||0);
-      // The channel must run BELOW the adjacent real banks, not on top of a
-      // graded zero-depth Q corridor. Use geology to find a natural valley,
-      // then preserve every PRE-EXISTING bank slope using bankSlopeFloor.
-      const inheritedLakeBed=geologicalBed<0?geologicalBed:Infinity;
-      const bedTop=Math.min(grade,lowestBank,inheritedLakeBed);
-      const carved=Math.max(bedTop-depth,slopeFloor.get(key(tile.x,tile.y))??-Infinity);
-      tile.elevation=Number((Math.min(grade,carved)).toFixed(4));
-      tile.hydrologyChannelIncision=Number(Math.max(0,grade-tile.elevation).toFixed(4));
+      const q=Math.max(0,Number(tile.baseDischarge||0));
+      const incision=.19+Math.min(.16,Math.sqrt(q)*.07);
+      tile.elevation=Number((Number(tile.elevation||0)-incision).toFixed(4));
+      tile.hydrologyChannelIncision=Number(incision.toFixed(4));
       tile.waterDepth=0;tile.waterSurfaceZ=null;
-      count++;
     }
-    // An ordinary downstream reach cannot suddenly rise above its upstream
-    // channel bottom. Keep a ford as a real shallow sill (or a pool outlet),
-    // but remove accidental uphill ridges caused by independent tile cuts.
-    const ordered=[...rivers].sort((a,b)=>
+    // Confluences or differing stream strengths must not produce an accidental
+    // uphill sill. Downstream basin/ford is the same erosion-connected river.
+    const upstreamFirst=[...rivers].sort((a,b)=>
       Number(distance.get(key(b.x,b.y))||0)-Number(distance.get(key(a.x,a.y))||0));
-    for(const tile of ordered){
-      const downstream=downstreamByKey.get(key(tile.x,tile.y));
-      if(!downstream||downstream.ford||downstream.routeId||downstream.hydrologyDrain)continue;
-      const maxBed=Number(tile.elevation||0)+.10;
-      const minSlopeBed=slopeFloor.get(key(downstream.x,downstream.y))??-Infinity;
-      if(Number(downstream.elevation||0)>maxBed&&maxBed>=minSlopeBed){
-        downstream.elevation=Number(maxBed.toFixed(4));
-        downstream.hydrologyChannelIncision=Number((preCarveGrades.get(key(downstream.x,downstream.y))-downstream.elevation).toFixed(4));
+    for(const tile of upstreamFirst){
+      const next=downstreamByKey.get(key(tile.x,tile.y));if(!next)continue;
+      const highestDownstream=Number(tile.elevation||0)-.0075;
+      if(Number(next.elevation||0)>highestDownstream){
+        next.elevation=Number(highestDownstream.toFixed(4));
+        next.hydrologyChannelIncision=Number((Number(previous.get(key(next.x,next.y)))-next.elevation).toFixed(4));
       }
     }
-    return{count,bankSlopeFloors:slopeFloor};
+    const banks=softenCarvedBanks(map,rivers,previous);
+    return{count:rivers.length,bankSlopeFloors:new Map(),adjustedBanks:banks};
   }
 
   // Natural riverbed pockets use the pre-channel geology to choose locations.
@@ -419,7 +414,10 @@ export const MapGenerator=(()=>{
       // Keep both strategic crossings and their immediate banks undisturbed.
       return directions.every(([dx,dy])=>{
         const n=by.get(key(tile.x+dx,tile.y+dy));
-        return !n?.ford&&!n?.routeId&&!n?.captureZone;
+        // Terrain slope interpolation and routes remain protected elsewhere;
+        // tributaries may lie beside a road without excavating the road tile.
+        return tile.hydrologyTributary===true?!n?.captureZone:
+          !n?.ford&&!n?.routeId&&!n?.captureZone;
       });
     };
     // A pool must lie on a source-fed branch, not an incidental road connector.
@@ -432,8 +430,12 @@ export const MapGenerator=(()=>{
         current=downstreamByKey.get(key(current.x,current.y));
       }
     }
+    const springTributary=rivers.some(tile=>tile.hydrologyTributary===true&&!tile.hydrologySource);
     const candidates=[];
     for(const tile of rivers){
+      // Place storage ponds on the designed tributary, not across the only
+      // perennial trunk where they would interrupt source-to-outlet conveyance.
+      if(tile.hydrologyTributary!==true)continue;
       if(!sourceReach.has(key(tile.x,tile.y))||!accessible(tile))continue;
       const downstream=downstreamByKey.get(key(tile.x,tile.y));
       if(!downstream||downstream.ford||downstream.routeId||downstream.hydrologyDrain)continue;
@@ -443,7 +445,7 @@ export const MapGenerator=(()=>{
       const floor=naturalHeight(tile);
       const bankHeight=banks.reduce((sum,n)=>sum+naturalHeight(n),0)/banks.length;
       const naturalRelief=bankHeight-floor;
-      if(naturalRelief<.15)continue; // require a natural valley signal, not a flat random trench
+      if(naturalRelief<.15&&tile.hydrologyTributary!==true)continue; // springs may have a naturally shallow tributary basin
       const chance=createRandom(`${map.seed}:CHANNEL_POOL:${tile.x},${tile.y}`)();
       const score=naturalRelief*.6+chance*.75+(tile.hydrologyTributary===true?1.75:0);
       candidates.push({tile,downstream,naturalRelief,score,chance});
@@ -471,8 +473,7 @@ export const MapGenerator=(()=>{
       // A carved storage pool may be deep below an existing cliff, but its
       // former sloped land contacts must REMAIN sloped for shoreline clipping.
       const desiredDepth=clamp(Math.max(naturalExcavation,requiredExcavation),.50,3.10);
-      const floor=bankSlopeFloors.get(key(tile.x,tile.y))??riverbankSlopeFloor(tile,by,prior);
-      const depth=Number(Math.max(0,Math.min(desiredDepth,prior-floor)).toFixed(4));
+      const depth=Number(Math.min(desiredDepth,.80).toFixed(4));
       if(depth<.50)continue;
       tile.elevation=Number((prior-depth).toFixed(4));
       // Do not prefill the depression; D must come from a real water source.
@@ -500,6 +501,12 @@ export const MapGenerator=(()=>{
         outletBed:Number(downstream.elevation||0),lowestRim,
         tributary:tile.hydrologyTributary===true,shoulders,
         naturalBankRelief:Number(naturalRelief.toFixed(4))});
+    }
+    // Preserve the same published terrain-slope contract after pool excavation.
+    if(chosen.length){
+      const old=new Map(rivers.map(t=>[key(t.x,t.y),
+        t.hydrologyNaturalChannelPool===true?Number(t.elevation||0)+Number(t.hydrologyNaturalChannelPoolDepth||0):Number(t.elevation||0)]));
+      softenCarvedBanks(map,rivers,old);
     }
     return chosen;
   }
@@ -634,6 +641,7 @@ export const MapGenerator=(()=>{
       return false;
     }
 
+    let plannedSpringPath=[];
     function placeNaturalSpring(){
       // Consume the normal random draw in every mode so a test toggle never
       // shifts subsequent forest/object generation for the same map seed.
@@ -660,7 +668,44 @@ export const MapGenerator=(()=>{
         candidates.push({tile,score});
       }
       candidates.sort((a,b)=>a.score-b.score||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
-      const source=candidates[0]?.tile||null;if(!source)return null;
+      // A spring is authored only if an actual channel can join the main stem.
+      // Search a small deterministic set of suitable geological outlets rather
+      // than creating an orphan source with Q and no physical downstream path.
+      let planned=null,shortConnector=null;
+      const junctions=river.map(p=>getTile(p.x,p.y)).filter(t=>
+        t&&!t.ford&&!t.routeId&&!t.hydrologyDrain&&t.y>=1&&t.y<map.height-2);
+      for(const candidate of candidates.slice(0,18)){
+        const sorted=[...junctions].sort((a,b)=>
+          Math.abs(a.x-candidate.tile.x)+Math.abs(a.y-candidate.tile.y)-
+          (Math.abs(b.x-candidate.tile.x)+Math.abs(b.y-candidate.tile.y))||a.y-b.y);
+        for(const join of sorted.slice(0,10)){
+          const path=naturalRiverPath(candidate.tile,join);
+          if(path.length<2||path.length>Math.max(7,Math.round(map.height*.70)))continue;
+          const blocked=path.slice(1,-1).some(p=>{
+            const t=getTile(p.x,p.y);
+            return !t||t.river||t.routeId||t.captureZone||protectedKeys.has(key(p.x,p.y));
+          });
+          if(blocked)continue;
+          // A tributary joins the main river at EXACTLY ONE confluence.
+          // An additional side contact creates a shortcut/cycle in the
+          // existing river component BFS, which can re-route the main inlet
+          // through the tributary pool and block the formal map outlet.
+          const joinKey=key(join.x,join.y);
+          const multipleJoins=path.slice(0,-1).some((p,i)=>DIRS.some(([dx,dy])=>{
+            const adjacent=getTile(p.x+dx,p.y+dy);
+            if(!adjacent?.river)return false;
+            return key(adjacent.x,adjacent.y)!==joinKey||i!==path.length-2;
+          }));
+          if(multipleJoins)continue;
+          if(path.length>=4){planned={tile:candidate.tile,path};break;}
+          if(!shortConnector)shortConnector={tile:candidate.tile,path};
+        }
+        if(planned)break;
+      }
+      planned??=shortConnector;
+      if(!planned)return null;
+      plannedSpringPath=planned.path;
+      const source=planned.tile;
       const sourceKey=key(source.x,source.y);
       source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
       const springYield=generatedSourceYield(map,source,source.sourceKind);
@@ -775,31 +820,13 @@ export const MapGenerator=(()=>{
 
     const spring=placeNaturalSpring();
     let tributary=[];
-    if(spring){
-      // Connect a real uphill spring to a downstream mainstem reach before
-      // finalising slopes and the catchment Q graph. Unconnectable springs keep
-      // their existing natural terrain runoff instead of a fictional corridor.
-      const joins=river.map(p=>getTile(p.x,p.y)).filter(t=>
-        t&&!t.ford&&!t.routeId&&!t.hydrologyDrain&&t.y>=1&&t.y<map.height-2)
-        .sort((a,b)=>Math.abs(a.x-spring.x)+Math.abs(a.y-spring.y)-
-          (Math.abs(b.x-spring.x)+Math.abs(b.y-spring.y))||a.y-b.y);
-      for(const join of joins.slice(0,18)){
-        const path=naturalRiverPath(spring,join);
-        if(path.length<2||path.length>Math.max(7,Math.round(map.height*.70)))continue;
-        const middle=path.slice(1,-1);
-        if(middle.some(p=>{
-          const t=getTile(p.x,p.y);
-          return !t||t.river||t.routeId||t.captureZone||protectedKeys.has(key(p.x,p.y));
-        }))continue;
-        tributary=path.slice(0,-1).map(p=>{
-          const tile=placeRiverTile(p.x,p.y);
-          if(tile)tile.hydrologyTributary=true;
-          return{x:p.x,y:p.y};
-        });
-        // Source metadata is geological, not generated by the tributary.
-        spring.hydrologySource=true;
-        break;
-      }
+    if(spring&&plannedSpringPath.length>=2){
+      tributary=plannedSpringPath.slice(0,-1).map(p=>{
+        const tile=placeRiverTile(p.x,p.y);
+        if(tile)tile.hydrologyTributary=true;
+        return{x:p.x,y:p.y};
+      });
+      spring.hydrologySource=true;
     }
     const profile=finalizeGeneratedRiverProfile(map);
     profile.tributaries=tributary.length?[{
@@ -808,9 +835,6 @@ export const MapGenerator=(()=>{
       join:{x:tributary.at(-1).x+Number(getTile(tributary.at(-1).x,tributary.at(-1).y)?.flowX||0),
         y:tributary.at(-1).y+Number(getTile(tributary.at(-1).x,tributary.at(-1).y)?.flowY||0)}
     }]:[];
-    if(spring&&!tributary.length){
-      profile.sources.push({x:spring.x,y:spring.y,kind:"SPRING_SOURCE",active:true,objectId:spring.sourceObjectId});
-    }
     const sourceObjects=spring?[{id:spring.sourceObjectId,x:spring.x,y:spring.y,type:"SPRING",environment:"WATER",destructible:true,blocksMovement:false,floatOnWater:false,hydrologySourceX:spring.x,hydrologySourceY:spring.y}]:[];
     return{tiles:river,crossings:[...routeCrossings.entries()].map(([routeIndex,p])=>({routeIndex,...p})),profile,sourceObjects};
   }
