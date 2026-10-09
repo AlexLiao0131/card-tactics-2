@@ -204,12 +204,21 @@ export class VisualSurfaceResolver{
       const id=`${fromKey}->${toKey}`;
       if(seen.has(id))continue;
       seen.add(id);
-      const q=Math.max(0,Number(edge.edgeDischarge??edge.persistentRate??edge.rate??0));
+      // HydrologyEngine separates sustained source Q from an actual per-turn
+      // solver transfer. edgeDischarge is intentionally ZERO for a rain pulse;
+      // nullish fallback (edgeDischarge ?? rate) therefore silently discarded
+      // real, measured runoff. Never add the two rates: edgeFlowState already
+      // gives one authoritative rate, with persistent transport taking priority.
+      const persistentRate=Math.max(0,Number(edge.persistentRate||0),Number(edge.edgeDischarge||0));
+      const transientRate=Math.max(0,Number(edge.solverRate||0),Number(edge.rate||0));
+      const q=persistentRate>EPSILON?persistentRate:transientRate;
       if(q<=EPSILON)continue;
       const a=nodes.get(fromKey),b=nodes.get(toKey);
       if(!a||!b)continue;
       const seam=this.publishedSheetBoundary(from,to);
-      const record={id,q,fromKey,toKey,cascade:edge.cascade===true,
+      const record={id,q,qKind:persistentRate>EPSILON?"PERSISTENT":"MEASURED",
+        persistentRate,measuredRate:persistentRate>EPSILON?0:transientRate,
+        fromKey,toKey,cascade:edge.cascade===true,
         transportVolume:Math.max(0,Number(edge.transportVolume??edge.volume??0)),
         geometryJoin:seam.reason,geometryJoinValid:seam.ok,terrainRevision:seam.terrainRevision,
         cliffRevision:seam.cliffRevision};

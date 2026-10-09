@@ -1322,9 +1322,15 @@ export class WaterRenderer{
 
   runoffSignatureFor(edges){
     const segmentKey=edge=>(edge.runoffSegments||[]).map(segment=>`${segment.kind}:${Number(segment.start).toFixed(4)}-${Number(segment.end).toFixed(4)}:${segment.startKind||""}:${segment.endKind||""}`).join(",");
+    // A flat measured-only edge may be in the shared Q graph without a legacy
+    // runoff mesh. The sheet cache must still invalidate when that real flow
+    // changes, not only when the subset of printable runoff/cascade edges does.
+    const networkKey=[...this.sheetFlowNetwork.values()].flatMap(node=>node.outgoing||[])
+      .map(edge=>`${edge.id}:${Number(edge.q||0).toFixed(4)}:${Number(edge.transportVolume||0).toFixed(4)}:${edge.cascade?1:0}:${edge.geometryJoin||""}:${edge.geometryJoinValid?1:0}`)
+      .sort().join("|");
     // The wet contour may move when waterDepth changes even if Q and pooled
     // flags remain unchanged; refresh the runoff with its owning water surface.
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${this.surfaceSignature||""}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.edgeDischarge.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascade?1:0}:${segmentKey(edge)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|");
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${this.surfaceSignature||""}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.edgeDischarge.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascade?1:0}:${segmentKey(edge)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|")+`#ALL_Q:${networkKey}`;
   }
 
   polygonSurfaceLevelAtPoint(point,polygon){
