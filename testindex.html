@@ -240,6 +240,8 @@
       const water=renderer?.water;if(!water)return[];
       const targets=[];
       for(const value of water.surfaceMeshes.values())if(value)targets.push(value);
+      // New Q-only per-tile sheet meshes must participate in ray diagnostics.
+      for(const value of water.sheetFlowMeshes?.values?.()||[])if(value)targets.push(value);
       for(const value of water.runoffs.values())if(value)targets.push(value?.mesh||value);
       for(const value of water.cascades.values())if(value?.mesh)targets.push(value.mesh);
       for(const value of water.sourceFootprints.values())if(value)targets.push(value?.mesh||value);
@@ -264,7 +266,9 @@
         waterHit=scene.pickWithRay(ray,mesh=>set.has(mesh));
         terrainHit=scene.pickWithRay(ray,mesh=>groundSet.has(mesh));
       }finally{for(const [mesh,previous] of changed)mesh.isPickable=previous;}
-      const pick=waterHit?.hit?waterHit:terrainHit;
+      const pick=terrainHit?.hit?terrainHit:waterHit;
+      // Inspect the actual terrain beneath the tap, even when a translucent
+      // water triangle was hit nearer to the camera or lies behind terrain.
       const pos=pick?.pickedPoint;
       const map=runtime.getBattleMap?.(),tiles=map?.tiles||[];
       const lookup=new Map(tiles.map(t=>[`${t.x},${t.y}`,t]));
@@ -277,7 +281,7 @@
       const hydrology=win.HydrologyEngine;
       const edge=to?hydrology?.edgeFlowState?.(from,to):null;
       const surface=renderer.terrain?.surfaceResolver;
-      const geom=from?surface?.getRenderedSurfaceGeometry?.(from):null;
+      const geom=worldTile?surface?.getRenderedSurfaceGeometry?.(worldTile):null;
       const direction=from&&to?{dx:Math.sign(to.x-from.x),dy:Math.sign(to.y-from.y)}:null;
       const cliff=direction?surface?.getRenderedCliffGeometry?.(from,direction):null;
       const metadata=mesh?.metadata||{};
@@ -296,10 +300,59 @@
             Math.abs(streamPath[0].x-from.x*TILE_SIZE)<1e-6&&
             Math.abs(streamPath[0].z-from.y*TILE_SIZE)<1e-6};
       }
+      const tileKey=worldTile?`${worldTile.x},${worldTile.y}`:null;
+      const water=renderer.water;
+      const sheetNode=tileKey?water?.sheetFlowNetwork?.get(tileKey):null;
+      const sheetSolution=tileKey?water?.sheetFlowSurfaces?.get(tileKey):null;
+      const sheetMesh=tileKey?water?.sheetFlowMeshes?.get(tileKey):null;
+      // Sample the SAME polygons consumed by buildSheetFlow. A missing wet
+      // polygon proves a dry/clipped point; it is not evidence of occlusion.
+      const sampleSheet=()=>{
+        if(!pos||!sheetSolution)return null;
+        for(const polygon of sheetSolution.polygons||[]){
+          const points=polygon.points||[];
+          for(let i=1;i+1<points.length;i++){
+            const a=points[0],b=points[i],c=points[i+1];
+            const det=(b.x-a.x)*(c.z-a.z)-(c.x-a.x)*(b.z-a.z);
+            if(Math.abs(det)<1e-12)continue;
+            const u=((pos.x-a.x)*(c.z-a.z)-(pos.z-a.z)*(c.x-a.x))/det;
+            const v=((pos.z-a.z)*(b.x-a.x)-(pos.x-a.x)*(b.z-a.z))/det;
+            if(u< -1e-7||v< -1e-7||u+v>1+1e-7)continue;
+            const depth=a.depth*(1-u-v)+b.depth*u+c.depth*v;
+            const terrainY=a.y*(1-u-v)+b.y*u+c.y*v;
+            return{triangleIndex:polygon.triangleIndex,visualFilmDepth:depth,
+              terrainY,predictedWaterYWithoutRenderOffset:terrainY+depth,
+              localWetPolygon:true};
+          }
+        }
+        return{localWetPolygon:false,reason:"POINT_CLIPPED_OR_DRY"};
+      };
+      const nodeEdges=sheetNode?[...(sheetNode.incoming||[]),...(sheetNode.outgoing||[])]:[];
+      const sheetFlowDiagnosis=tileKey?{
+        tileKey,waterDepth:Number(worldTile?.waterDepth||0),
+        sheetFlowMeshExists:!!sheetMesh&&!sheetMesh.isDisposed?.(),
+        sheetFlowSolutionExists:!!sheetSolution,
+        sheetStatus:sheetNode?.sheetStatus||"NO_NETWORK_NODE",
+        sheetRejectReason:sheetNode?.sheetRejectReason||null,
+        sheetAcceptedEdges:sheetNode?.sheetAcceptedEdges||[],
+        sheetRejectedEdges:sheetNode?.sheetRejectedEdges||[],
+        boundaryEdges:nodeEdges.map(e=>({id:e.id,q:e.q,transportVolume:e.transportVolume,
+          geometryJoinValid:e.geometryJoinValid,geometryJoin:e.geometryJoin,cascade:e.cascade})),
+        sourceRate:sheetNode?.sourceRate??null,qIn:sheetNode?.qIn??null,qOut:sheetNode?.qOut??null,
+        registeredTerrainTriangles:geom?.triangles?.length??null,
+        wetTriangleCount:sheetSolution?.polygons?.length??0,
+        sheetFlowWetArea:sheetSolution?.wetArea??null,
+        sheetFlowMaxDepth:sheetSolution?.maxDepth??null,
+        targetVolumeProxy:sheetSolution?.targetVolume??null,
+        resolvedVolumeProxy:sheetSolution?.volumeProxyAfterSeam??null,
+        localSurfaceSample:sampleSheet()
+      }:null;
       const report={
         label:"Card Tactics 2 - Hydrology Click Diagnostics",
         seed:currentSeed,springMode:doc.getElementById("testLabSpring")?.value,
         meshName:mesh?.name||null,meshKind:metadata.kind||null,
+        pickedTerrainMeshName:terrainHit?.hit?terrainHit.pickedMesh?.name:null,
+        sheetFlow:sheetFlowDiagnosis,
         visibleWaterMeshPicked:!!mesh,
         terrainOccludesWater:!!(waterHit?.hit&&terrainHit?.hit&&terrainHit.distance+0.0001<waterHit.distance),
         waterHitDistance:waterHit?.hit?waterHit.distance:null,
