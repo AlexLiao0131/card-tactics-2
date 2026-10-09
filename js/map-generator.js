@@ -13,8 +13,14 @@ export const MapGenerator=(()=>{
   const RIVER_CASCADE_BED_DROP=1.0001;
   const HIGH_SPRING_SOURCE_CHANCE=.40;
   const HIGH_SPRING_MIN_ELEVATION=1;
-  const HIGH_SPRING_INFLOW=1;
-  const OFF_MAP_SOURCE_INFLOW=1;
+  // Source strength is selected once from the map seed, not re-rolled every
+  // environment turn. This supplies REAL Hydrology Q (not a visual-only width).
+  // The two source types have distinct catchment sizes; low, normal and high
+  // yield regimes preserve shallow creeks while allowing genuinely strong rivers.
+  const SOURCE_YIELD_REGIMES=Object.freeze({
+    OFF_MAP_SOURCE:Object.freeze([[.65,1.15,.17],[1.35,2.60,.53],[2.80,4.20,.30]]),
+    SPRING_SOURCE:Object.freeze([[.45,.90,.25],[1.00,1.75,.55],[1.90,2.80,.20]])
+  });
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   const inBounds=(w,h,x,y)=>x>=0&&y>=0&&x<w&&y<h;
   const tileAt=(map,x,y)=>map.tiles.find(t=>t.x===x&&t.y===y)||null;
@@ -22,6 +28,21 @@ export const MapGenerator=(()=>{
   function hashSeed(seed){let h=2166136261>>>0;for(const ch of String(seed??"CARD_TACTICS")){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}return h||0x6d2b79f5;}
   function createRandom(seed){let a=hashSeed(seed)>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};}
   function randomSeed(){if(globalThis.crypto?.getRandomValues){const a=new Uint32Array(1);globalThis.crypto.getRandomValues(a);return a[0]>>>0;}return((Date.now()>>>0)^Math.floor(Math.random()*0xffffffff))>>>0;}
+  // Independent seeded stream: choosing a source strength cannot change terrain,
+  // rocks, forest generation, or spring placement for the same map seed.
+  function generatedSourceYield(map,tile,kind){
+    const regimes=SOURCE_YIELD_REGIMES[kind];
+    if(!regimes||!tile)return 0;
+    const random=createRandom(`${Number(map?.seed)>>>0}:SOURCE_YIELD:${kind}:${tile.x},${tile.y}`);
+    const choice=random();
+    let cumulative=0;
+    for(const [low,high,weight] of regimes){
+      cumulative+=weight;
+      if(choice<cumulative)return Math.round((low+(high-low)*random())*10000)/10000;
+    }
+    const last=regimes[regimes.length-1];
+    return Math.round((last[0]+(last[1]-last[0])*random())*10000)/10000;
+  }
   function preset(size){return SIZE_PRESETS[String(size||"MEDIUM").toUpperCase()]||SIZE_PRESETS.MEDIUM;}
 
   function smooth(field,w,h,passes=4){
@@ -245,6 +266,11 @@ export const MapGenerator=(()=>{
       }
     }
 
+    // Select real low spots AFTER defining the connected river grade.
+    // Only selected geological depressions retain water; ordinary reaches keep
+    // the Q-only film and strategic fords retain their original elevation.
+    const pools=carveNaturalRiverPools(map,rivers,downstreamByKey,distance);
+
     // The profile is fully authored here because only the map generator still knows
     // the terrain before the channel was carved. Hydrology's existing preserve flag
     // keeps this topology while still owning discharge, capacity, flooding and flow.
@@ -252,9 +278,77 @@ export const MapGenerator=(()=>{
     map.generatedRiverProfile={
       sources:sources.map(tile=>({x:tile.x,y:tile.y,kind:tile.sourceKind||"BASIN_SOURCE",active:tile.hydrologySourceDisabled!==true,objectId:tile.sourceObjectId||null})),
       drains:drains.map(tile=>({x:tile.x,y:tile.y})),
-      cascades
+      cascades,pools
     };
     return map.generatedRiverProfile;
+  }
+
+  // Natural riverbed pockets use the pre-channel geology to choose locations.
+  // They are real lower terrain elevations, NOT stamped waterDepth, and remain
+  // subject to the canonical source Q, storage, outlet and drowning rules.
+  function carveNaturalRiverPools(map,rivers,downstreamByKey,distance){
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const directions=DIRS;
+    const naturalHeight=tile=>Number(tile?.hydrologyChannelBaseElevation??tile?.elevation??0);
+    const accessible=tile=>{
+      if(!tile||!tile.river||tile.ford||tile.hydrologySource||tile.hydrologyDrain||tile.routeId||tile.captureZone)return false;
+      if(tile.x<=0||tile.y<=0||tile.x>=map.width-1||tile.y>=map.height-1)return false;
+      if(Number(tile.hydrologyCascadeDrop||0)>0)return false;
+      // Keep both strategic crossings and their immediate banks undisturbed.
+      return directions.every(([dx,dy])=>{
+        const n=by.get(key(tile.x+dx,tile.y+dy));
+        return !n?.ford&&!n?.routeId&&!n?.captureZone;
+      });
+    };
+    const candidates=[];
+    for(const tile of rivers){
+      if(!accessible(tile))continue;
+      const downstream=downstreamByKey.get(key(tile.x,tile.y));
+      if(!downstream||downstream.ford||downstream.routeId||downstream.hydrologyDrain)continue;
+      const banks=directions.map(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy)))
+        .filter(n=>n&&!n.river);
+      if(!banks.length)continue;
+      const floor=naturalHeight(tile);
+      const bankHeight=banks.reduce((sum,n)=>sum+naturalHeight(n),0)/banks.length;
+      const naturalRelief=bankHeight-floor;
+      if(naturalRelief<.15)continue; // require a natural valley signal, not a flat random trench
+      const chance=createRandom(`${map.seed}:CHANNEL_POOL:${tile.x},${tile.y}`)();
+      const score=naturalRelief*.6+chance*.75;
+      candidates.push({tile,downstream,naturalRelief,score,chance});
+    }
+    candidates.sort((a,b)=>b.score-a.score||Number(distance.get(key(b.tile.x,b.tile.y))||0)-Number(distance.get(key(a.tile.x,a.tile.y))||0));
+    const limit=map.size==="XLARGE"?3:map.size==="LARGE"?2:1;
+    const chosen=[],centers=[];
+    for(const candidate of candidates){
+      if(chosen.length>=limit)break;
+      if(centers.some(c=>Math.abs(c.x-candidate.tile.x)+Math.abs(c.y-candidate.tile.y)<5))continue;
+      const {tile,downstream,naturalRelief,chance}=candidate;
+      // A basin must have a real rim in EVERY accessible direction, not just
+      // along the river. Otherwise water escapes sideways through a lower bank
+      // and the supposed "deep pool" can never hold more than a few centimetres.
+      const prior=Number(tile.elevation||0);
+      const adjacent=directions.map(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy))).filter(Boolean);
+      const lowestRim=Math.min(...adjacent.map(n=>Number(n.elevation||0)));
+      // Actual valley relief controls depth: low-relief creeks develop shallow
+      // pools, pronounced rock-cut valleys can contain a rare swimmable hole.
+      // The rim is the LOWEST existing escape, not only the routed downstream.
+      const intendedStorage=.40+Math.min(1.25,naturalRelief*.48)+chance*.55;
+      const naturalExcavation=.45+naturalRelief*.30+chance*.35;
+      const requiredExcavation=prior-lowestRim+intendedStorage;
+      if(requiredExcavation>3.10)continue; // prevent arbitrary vertical shafts
+      const depth=Number(clamp(Math.max(naturalExcavation,requiredExcavation),.50,3.10).toFixed(4));
+      tile.elevation=Number((prior-depth).toFixed(4));
+      // Do not prefill the depression; D must come from a real water source.
+      tile.waterDepth=0;tile.waterSurfaceZ=null;
+      tile.hydrologyNaturalChannelPool=true;
+      tile.hydrologyNaturalChannelPoolDepth=depth;
+      centers.push(tile);
+      chosen.push({x:tile.x,y:tile.y,bed:tile.elevation,originalBed:prior,
+        depth,downstreamX:downstream.x,downstreamY:downstream.y,
+        outletBed:Number(downstream.elevation||0),lowestRim,
+        naturalBankRelief:Number(naturalRelief.toFixed(4))});
+    }
+    return chosen;
   }
 
   function createRiver(map,routes,protectedKeys,rand,{springMode="RANDOM"}={}){
@@ -416,7 +510,8 @@ export const MapGenerator=(()=>{
       const source=candidates[0]?.tile||null;if(!source)return null;
       const sourceKey=key(source.x,source.y);
       source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
-      source.hydrologySourceInflow=HIGH_SPRING_INFLOW;source.baseDischarge=HIGH_SPRING_INFLOW;source.discharge=HIGH_SPRING_INFLOW;
+      const springYield=generatedSourceYield(map,source,source.sourceKind);
+      source.hydrologySourceInflow=springYield;source.baseDischarge=springYield;source.discharge=springYield;
       source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.elevation||0);
       // Source is a protected geological object footprint. The terrain remains
       // authored by the map elevation and terrain generators; Hydrology determines
@@ -478,7 +573,13 @@ export const MapGenerator=(()=>{
     const drainSeed=chooseOffMapDrain(sourceSeed),naturalPath=naturalRiverPath(sourceSeed,drainSeed);
     if(!drainSeed||!naturalPath.length)throw new Error("Terrain-aware off-map river routing failed");
     const authoredSource=placeRiverTile(sourceSeed.x,sourceSeed.y);
-    if(authoredSource){authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="OFF_MAP_SOURCE";authoredSource.hydrologySourceInflow=OFF_MAP_SOURCE_INFLOW;authoredSource.baseDischarge=OFF_MAP_SOURCE_INFLOW;authoredSource.discharge=OFF_MAP_SOURCE_INFLOW;}
+    if(authoredSource){
+      authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="OFF_MAP_SOURCE";
+      const inletYield=generatedSourceYield(map,authoredSource,authoredSource.sourceKind);
+      authoredSource.hydrologySourceInflow=inletYield;
+      authoredSource.baseDischarge=inletYield;
+      authoredSource.discharge=inletYield;
+    }
     layPath(naturalPath.slice(1));
 
     // Every strategic route receives a real ford connected to the existing river

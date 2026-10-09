@@ -1146,7 +1146,13 @@ export const HydrologyEngine=(()=>{
       for(const previous of reverse.get(k)||[])if(!canReachOutlet.has(previous))outletQueue.push(previous);
     }
 
-    const allSources=activeSourceTiles(map),sources=allSources.filter(tile=>canReachOutlet.has(key(tile.x,tile.y))),seedRates=new Map(),seedTiles=[];
+    // An authored source-fed river must be able to send Q INTO a closed
+    // geological depression. Requiring an open outlet before routing any Q
+    // stranded inflow upstream and prevented the depression from ever filling.
+    // The edge network is still a DAG from the source and only downhill/head-
+    // valid edges exist; a terminal sink stores the arriving volume in D.
+    const storeAtRealSink=map.hydrology?.generatedRiverProfile===true;
+    const allSources=activeSourceTiles(map),sources=allSources.filter(tile=>storeAtRealSink||canReachOutlet.has(key(tile.x,tile.y))),seedRates=new Map(),seedTiles=[];
     for(const tile of sources){
       const rate=Math.max(0,sourceDemandRate(tile));
       if(rate<=EPSILON)continue;
@@ -1184,7 +1190,7 @@ export const HydrologyEngine=(()=>{
       const tile=queue.shift(),d=Number(distance.get(key(tile.x,tile.y))||0);
       for(const candidate of graph.get(key(tile.x,tile.y))||[]){
         const tk=key(candidate.to.x,candidate.to.y);
-        if(!canReachOutlet.has(tk)||distance.has(tk))continue;
+        if((!storeAtRealSink&&!canReachOutlet.has(tk))||distance.has(tk))continue;
         distance.set(tk,d+1);queue.push(candidate.to);
       }
     }
@@ -1210,7 +1216,7 @@ export const HydrologyEngine=(()=>{
       const here=Number(distance.get(k)||0);
       const candidates=(graph.get(k)||[]).filter(candidate=>{
         const tk=key(candidate.to.x,candidate.to.y);
-        return canReachOutlet.has(tk)&&Number(distance.get(tk))>here;
+        return (storeAtRealSink||canReachOutlet.has(tk))&&Number(distance.get(tk))>here;
       });
       if(!candidates.length)continue;
 
@@ -1475,6 +1481,10 @@ export const HydrologyEngine=(()=>{
         const here=Number(distance.get(k)||0);
         const downstream=riverNeighbors(tile,by)
           .filter(n=>Number(distance.get(key(n.x,n.y)))<here)
+          // A capacity spare is NOT hydraulic head. Generated river pools
+          // retain stored D until the water actually reaches a spill rim.
+          .filter(n=>tile.hydrologyTransportInitialized!==true||
+            elevation(tile)+waterDepth(tile)+incoming+riverKineticHead(tile)+EPSILON>=elevation(n)+waterDepth(n))
           .sort((a,b)=>
             Number(distance.get(key(a.x,a.y)))-Number(distance.get(key(b.x,b.y)))||
             a.y-b.y||a.x-b.x
