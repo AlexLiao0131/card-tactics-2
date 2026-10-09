@@ -1092,8 +1092,12 @@ export class WaterRenderer{
           transportVolume:Number(flow.transportVolume??flow.volume??0),surfaceDrop:Number(flow.surfaceDrop||0),
           hydraulicPower:Number(flow.hydraulicPower||0),reason:flow.reason||null
         };
+        // All published Q stays in this directed inventory for sheet-flow
+        // signatures and cascade animation, including water that crosses a
+        // real stored-water shoreline. The old non-cascade SURFACE_RUNOFF mesh
+        // must never be reintroduced when rain changes a slope from D=0 to D>0.
         edge.runoffSegments=this.runoffSegmentsForEdge(edge,state);
-        if(edge.runoffSegments.length)out.push(edge);
+        out.push(edge);
       }
     }
     this.sheetFlowNetwork=this.surfaceResolver.sheetFlowBoundaryNetwork(all,hydrologyEdges);
@@ -1373,7 +1377,13 @@ export class WaterRenderer{
     // The segments describe hydrologic connectivity, never a guessed half-grid
     // shoreline. buildRunoff clips each leg against actual registered triangles,
     // wet contour vertices, and published cliff lip/foot polylines.
-    if(!edge.cascade)return [{start:0,end:1,kind:"SURFACE_RUNOFF",startKind:edge.fromPooled?"WATERLINE_TRIANGLE":"CENTER",endKind:edge.toPooled?"WATERLINE_TRIANGLE":"CENTER",profileOffset:0}];
+    // Terrain-conforming Q-only sheets own dry slopes. The existing clipped
+    // stored-water polygons own D>0 land. A fixed-width handoff strip drawn
+    // across their shared gradient is a duplicate, and becomes a visible
+    // seaweed-shaped rail as soon as rain wets any part of the slope.
+    // Keep the REAL Q edge in runoffEdges() for signatures/flow phase, but
+    // request no legacy surface-runoff geometry for non-cascade transport.
+    if(!edge.cascade)return [];
     const segments=[];
     if(!edge.fromPooled)segments.push({start:0,end:1,kind:"CASCADE_APPROACH",startKind:"HYDROLOGY_SOURCE",endKind:"CLIFF_LIP",profileOffset:0});
     segments.push({start:0,end:1,kind:"CASCADE_LANDING",startKind:"CLIFF_FOOT",endKind:edge.toPooled?"WATERLINE_TRIANGLE":"HYDROLOGY_RECEIVER",profileOffset:1});
