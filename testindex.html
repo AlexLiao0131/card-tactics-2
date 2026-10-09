@@ -304,6 +304,16 @@
         persistentQEdges:persistent.length,persistentQTotalRate:sum(persistent.map(e=>e.rate)),
         solverQEdges:solver.length,solverQTotalRate:sum(solver.map(e=>e.rate)),
         sourceRouting:map?.hydrologyPersistentDischargeSummary||null,
+        // Geology is authored by MapGenerator; waterDepth is read live from
+        // the SAME Hydrology map after each weather/environment step.
+        naturalRiverPools:(map?.generatedRiverProfile?.pools||[]).map(pool=>{
+          const tile=tiles.find(t=>Number(t.x)===pool.x&&Number(t.y)===pool.y);
+          return{x:pool.x,y:pool.y,bed:pool.bed,outletBed:pool.outletBed,
+            lowestRim:pool.lowestRim,excavatedDepth:pool.depth,
+            actualStoredD:Number(tile?.waterDepth||0),
+            actualWaterSurface:tile?.waterSurfaceZ??null,
+            actualTerrain:tile?.terrain??null};
+        }),
         storedWaterMeshes:water?.surfaceMeshes?.size??null,
         sheetFlowMeshes:water?.sheetFlowMeshes?.size??null,
         waterfallMeshes:water?.cascades?.size??null,
@@ -624,6 +634,9 @@
         renderOwnership,
         sheetFlow:sheetFlowDiagnosis,
         waterfallEdgeInventory,
+        naturalRiverPoolAtTile:worldTile?.hydrologyNaturalChannelPool===true
+          ?{bed:Number(worldTile.elevation||0),excavatedDepth:Number(worldTile.hydrologyNaturalChannelPoolDepth||0),
+            storedD:Number(worldTile.waterDepth||0)}:null,
         environmentHistory:environmentHistory.slice(-10),
         liveWeather:runtime.debug?.state?.()||null,
         officialSystemLog:runtime.getBattleLog?.("SYSTEM")?.entries?.slice(-20)||[],
