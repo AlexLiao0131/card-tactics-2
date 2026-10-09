@@ -885,8 +885,11 @@ export class WaterRenderer{
   }
 
   waterVertexVisual(point,allMap,turbidity=0){
-    const terrain=this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
-    const depth=Number.isFinite(Number(point.depth))?Math.max(0,Number(point.depth)):Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
+    // Explicit depth is already resolved against published terrain triangles;
+    // do not resample a second terrain height (or waste a lookup per vertex).
+    const explicit=Number.isFinite(Number(point.depth));
+    const terrain=explicit?null:this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
+    const depth=explicit?Math.max(0,Number(point.depth)):Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
     const t=smooth01(depth/WATER_DEPTH_RANGE);
     let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
     const murky=clamp(Number(turbidity||0),0,1);
@@ -1100,8 +1103,17 @@ export class WaterRenderer{
   // The Q-only surface is ONE sheet per gameplay tile. All incident Q
   // branches were resolved together against TerrainRenderer's *published*
   // triangles. Rendering does not select a stream width, centreline or Y.
-  buildSheetFlow(solution,sharedMaxDepth){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[]};
+  buildSheetFlow(solution){
+    // Transport water uses the SAME stylized, lit surface material as stored
+    // water. Film depth defines its XYZ and wet/dry boundary, NOT how invisible
+    // it becomes relative to some unrelated lake elsewhere on the map.
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],
+      waterAnim:[],waterBaseXZ:[],waterSource:[]};
+    const fx=Number(solution.flow.x||0),fz=Number(solution.flow.z||0);
+    const source=solution.tile.hydrologySource===true&&solution.tile.hydrologySourceDisabled!==true
+      ?[{x:Number(solution.tile.x)*TILE_SIZE,z:Number(solution.tile.y)*TILE_SIZE,
+         rate:Number(solution.tile.hydrologySourceInflow||0)}]:[];
+    const flowSpeed=Math.min(3.2,Math.max(0,...solution.boundaryEdges.map(edge=>Number(edge.q||0))));
     for(const polygon of solution.polygons||[]){
       const first=out.positions.length/3;
       for(const vertex of polygon.points){
@@ -1110,12 +1122,22 @@ export class WaterRenderer{
           y:Number(vertex.y)+depth+SURFACE_OFFSET*.42,z:Number(vertex.z)});
         out.positions.push(point.x,point.y,point.z);
         out.normals.push(0,0,0);
-        const vx=Number(solution.flow.x||0),vz=Number(solution.flow.z||0);
-        out.uvs.push(((-vz*point.x+vx*point.z)/TILE_SIZE),
-          (vx*point.x+vz*point.z)/Math.max(EPSILON,RUNOFF_UV_REPEAT_DISTANCE));
-        // One transfer function for the whole active sheet network keeps alpha
-        // identical on both sides of any shared, physically valid seam.
-        out.colors.push(1,1,1,sharedMaxDepth>0?Math.sqrt(depth/sharedMaxDepth):0);
+        out.uvs.push(((-fz*point.x+fx*point.z)/TILE_SIZE),
+          (fx*point.x+fz*point.z)/Math.max(EPSILON,RUNOFF_UV_REPEAT_DISTANCE));
+        const water=this.waterVertexVisual({x:point.x,z:point.z,
+          depth:depth/ELEVATION_HEIGHT},null,this.turbidity(solution.tile));
+        // Physically dry clipping vertices disappear; genuine positive water
+        // has the water surface's visible colour, shine and opacity. There is
+        // NO alpha division by either global or per-tile maximum film depth.
+        out.colors.push(...water.color,depth>0?Math.max(.72,water.alpha):0);
+        // Share the existing GPU water motion. Wind/current displacement is
+        // bounded by local film thickness so it cannot pass below the actual
+        // registered terrain triangle (including its clipped boundary).
+        const waveWeight=Math.min(1,depth/(ELEVATION_HEIGHT*.5));
+        out.waterAnim.push(fx,fz,flowSpeed,waveWeight);
+        out.waterBaseXZ.push(point.x,point.z);
+        const sourceField=depth>0&&source.length?this.sourceFieldAt(point,source):{weight:0,phase:0};
+        out.waterSource.push(sourceField.weight,sourceField.phase);
       }
       for(let i=1;i<polygon.points.length-1;i++){
         const a=polygon.points[0],b=polygon.points[i],c=polygon.points[i+1];
@@ -1128,8 +1150,13 @@ export class WaterRenderer{
     const mesh=new BABYLON.Mesh(`sheet-flow-${solution.key}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions:out.positions,indices:out.indices,normals:out.normals,
       uvs:out.uvs,colors:out.colors});data.applyToMesh(mesh,false);
-    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;
+    mesh.material=this.surfaceMaterial;mesh.alphaIndex=11;
     mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+    if(this.gpuSurfaceWaves){
+      mesh.setVerticesData("waterAnim",out.waterAnim,false,4);
+      mesh.setVerticesData("waterBaseXZ",out.waterBaseXZ,false,2);
+      mesh.setVerticesData("waterSource",out.waterSource,false,2);
+    }
     mesh.visibility=solution.tile.fogged?.16:1;
     mesh.metadata={kind:"water-surface-runoff",model:solution.model,
       tileKey:solution.key,geometryRevision:solution.geometryRevision,
@@ -1137,6 +1164,9 @@ export class WaterRenderer{
       transportVolume:solution.transportVolume,targetVolumeProxy:solution.targetVolume,
       volumeProxyAfterSeam:solution.volumeProxyAfterSeam,
       wetArea:solution.wetArea,maxVisualFilmDepth:solution.maxDepth,
+      waterSurfaceMaterial:true,waterShaderWaves:this.gpuSurfaceWaves===true,
+      minVertexAlpha:Math.min(...out.colors.filter((_,i)=>i%4===3)),
+      maxVertexAlpha:Math.max(...out.colors.filter((_,i)=>i%4===3)),
       triangleCount:out.indices.length/3,gameplayDepth:false,
       terrainConforming:true,registeredTriangleOnly:true,hydrologySource:false,
       pathEndpointsAreTileCenters:false,fixedCorridorWidth:false,
@@ -1150,11 +1180,11 @@ export class WaterRenderer{
     const wetContours=[edge.from,edge.to].filter(tile=>waterDepth(tile)>EPSILON)
       .flatMap(tile=>this.waterSurfacePolygons(tile,allMap));
     const footprint=this.surfaceResolver.transportSurfaceFootprint(edge,segment,{
-      surfaceTriangles:(tile,triangles)=>this.sheetFlowSurfaces.has(keyOf(tile.x,tile.y))&&!edge.cascade
-        ?[]
-        :waterDepth(tile)>EPSILON
-          ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
-          :triangles
+      // The Q-only dry ground belongs exclusively to sheetFlowTileSurfaces.
+      // A rejected solve must not resurrect the obsolete fixed-width ribbon.
+      surfaceTriangles:(tile,triangles)=>waterDepth(tile)>EPSILON
+        ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
+        :[]
     });
     for(const {points:terrainPoints} of footprint.polygons){
       const points=this.clipSpringOutletPolygon(terrainPoints,this.springOutletLength(edge),false);
@@ -1742,10 +1772,9 @@ export class WaterRenderer{
       // Avoid retaining XYZ -> Y registry layers after Q-driven sheet rebuilds.
       this.resetWaterSeamRegistry();
       const newSurfaces=this.surfaceResolver.sheetFlowTileSurfaces(tilesOf(state),this.sheetFlowNetwork);
-      const maxDepth=Math.max(0,...[...newSurfaces.values()].map(v=>v.maxDepth));
       const newMeshes=new Map();
       for(const sheet of newSurfaces.values()){
-        const mesh=this.buildSheetFlow(sheet,maxDepth);
+        const mesh=this.buildSheetFlow(sheet);
         if(mesh)newMeshes.set(sheet.key,mesh);
       }
       this.disposeMap(this.sheetFlowMeshes);
@@ -1764,12 +1793,10 @@ export class WaterRenderer{
       this.runoffSignature=runoffSignature;
     }
 
-    const sourceSignature=this.sourceFootprintSignatureFor(sources,runoffs);
-    if(sourceSignature!==this.sourceSignature){
-      this.disposeMap(this.sourceFootprints);
-      for(const source of sources){const built=this.buildSourceFootprint(source,runoffs);if(built)this.sourceFootprints.set(`${source.tile.x},${source.tile.y}`,built);}
-      this.sourceSignature=sourceSignature;
-    }
+    // The source is now the same sheet water (including source upwelling and
+    // multiple Q exits), not an independent legacy ribbon over dry ground.
+    if(this.sourceFootprints.size)this.disposeMap(this.sourceFootprints);
+    this.sourceSignature=this.sourceFootprintSignatureFor(sources,runoffs);
 
     if(!waterTiles.length&&!runoffs.length&&!sources.length){
       this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.disposeMap(this.sourceFootprints);
