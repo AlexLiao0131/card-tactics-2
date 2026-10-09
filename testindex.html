@@ -282,6 +282,12 @@
       const persistent=tiles.flatMap(tile=>Object.values(tile.hydrologyEdgeDischarge||{}));
       const solver=tiles.flatMap(tile=>Object.values(tile.hydrologyEdgeOutflows||{}));
       const debug=runtime.debug?.state?.()||{};
+      const cascadeEntries=[...water?.cascades?.values?.()||[]];
+      const cascadesWithStoredOvertopping=cascadeEntries.filter(e=>e?.mesh?.metadata?.storedWaterOvertopping===true);
+      const cascadesWithoutTransport=cascadeEntries.filter(e=>
+        Number(e?.mesh?.metadata?.transportVolume||0)<=0.0001&&Number(e?.mesh?.metadata?.edgeDischarge||0)<=0.0001);
+      const storedOvertoppingJunctions=cascadesWithStoredOvertopping.filter(e=>
+        e?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction"));
       const focus=lastInspectedTileKey;
       const [sx,sy]=focus?.split(",").map(Number)||[];
       const nearby=focus?tiles.filter(t=>Math.abs(t.x-sx)+Math.abs(t.y-sy)<=1)
@@ -292,6 +298,7 @@
         label,seed:currentSeed,environmentStep:Number(debug.environmentSteps||0),gameRound:debug.round??null,
         weather:debug.weather,remainingWeatherTurns:debug.weatherTurnsRemaining??null,climate:debug.climate||null,
         wetTiles:tiles.filter(t=>Number(t.waterDepth||0)>0.0001).length,
+        veryShallowStoredTiles:tiles.filter(t=>Number(t.waterDepth||0)>0.0001&&Number(t.waterDepth||0)<=0.001).length,
         gameplayWaterVolume:engine?.surfaceWaterVolume?.(map)??sum(tiles.map(t=>Math.max(0,Number(t.waterDepth||0)))),
         soilWaterVolume:engine?.soilWaterVolume?.(map)??sum(tiles.map(t=>Math.max(0,Number(engine?.soilMoisture?.(t)??t.soilMoisture??0)))),
         persistentQEdges:persistent.length,persistentQTotalRate:sum(persistent.map(e=>e.rate)),
@@ -300,6 +307,11 @@
         storedWaterMeshes:water?.surfaceMeshes?.size??null,
         sheetFlowMeshes:water?.sheetFlowMeshes?.size??null,
         waterfallMeshes:water?.cascades?.size??null,
+        // A waterfall may be drawn from standing D alone (visual overtopping),
+        // even when Hydrology has recorded no transfer across that cliff edge.
+        storedOvertoppingWaterfalls:cascadesWithStoredOvertopping.length,
+        waterfallsWithoutRecordedTransfer:cascadesWithoutTransport.length,
+        storedOvertoppingJunctionMeshes:storedOvertoppingJunctions.length,
         cliffJunctionRunoffs:water?.runoffs?.size??null,
         inspectedTileKey:focus,nearbyTiles:nearby,
         officialSystemLog:runtime.getBattleLog?.("SYSTEM")?.entries?.slice(-14)||[],
@@ -396,7 +408,13 @@
       // New Q-only per-tile sheet meshes must participate in ray diagnostics.
       for(const value of water.sheetFlowMeshes?.values?.()||[])if(value)targets.push(value);
       for(const value of water.runoffs.values())if(value)targets.push(value?.mesh||value);
-      for(const value of water.cascades.values())if(value?.mesh)targets.push(value.mesh);
+      for(const value of water.cascades.values()){
+        if(value?.mesh)targets.push(value.mesh);
+        // Stage 7 stored-overflow lip/foot junctions belong to the cascade root,
+        // not water.runoffs: include them in picking diagnostics.
+        for(const mesh of value?.root?.getChildMeshes?.()||[])
+          if(mesh.metadata?.kind==="water-cascade-junction")targets.push(mesh);
+      }
       for(const value of water.sourceFootprints.values())if(value)targets.push(value?.mesh||value);
       return targets.filter(mesh=>mesh&&!mesh.isDisposed?.()&&mesh.getTotalVertices?.()>0);
     }
@@ -468,19 +486,53 @@
         mesh.metadata?.triangleClippedSurfaceFlow===true);
       const localLegacyRunoffs=legacyNonCascadeRunoffs
         .filter(mesh=>String(mesh.name||'').includes(`${tileKey}->`)||String(mesh.name||'').includes(`->${tileKey}`));
-      const standingPolygons=worldTile&&Number(worldTile.waterDepth||0)>0
+      const hydrologyStorageThreshold=0.0001;
+      const storedWaterEligible=Number(worldTile?.waterDepth||0)>hydrologyStorageThreshold;
+      const standingPolygons=storedWaterEligible
         ?water?.waterSurfacePolygons?.(worldTile,lookup)||[]:[];
+      const storedMeshEntry=tileKey?[...water?.surfaceAnimations?.values?.()||[]]
+        .find(entry=>entry?.tileKeys?.has(tileKey)&&entry?.mesh&&!entry.mesh.isDisposed?.()):null;
+      const localStoredWetAtPoint=!!pos&&standingPolygons.some(poly=>water?.pointInPolygon?.(pos,poly));
+      const localCascades=[...water?.cascades?.entries?.()||[]].filter(([id])=>{
+        const values=String(id).match(/-?\d+/g)?.map(Number)||[];
+        return !!worldTile&&values.length===4&&(
+          Math.abs(values[0]-worldTile.x)+Math.abs(values[1]-worldTile.y)<=1||
+          Math.abs(values[2]-worldTile.x)+Math.abs(values[3]-worldTile.y)<=1);
+      }).map(([id,entry])=>({
+        id,storedWaterOvertopping:entry?.mesh?.metadata?.storedWaterOvertopping===true,
+        edgeDischarge:Number(entry?.mesh?.metadata?.edgeDischarge||0),
+        transportVolume:Number(entry?.mesh?.metadata?.transportVolume||0),
+        hydrologyEdgeReason:entry?.mesh?.metadata?.hydrologyEdgeReason||null,
+        receiverWet:entry?.mesh?.metadata?.receiverWet===true,
+        hasStoredOvertoppingJunction:!!entry?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction")
+      }));
+      const waterfallEdgeInventory=[...water?.cascades?.entries?.()||[]].map(([id,entry])=>({
+        id,storedWaterOvertopping:entry?.mesh?.metadata?.storedWaterOvertopping===true,
+        transportVolume:Number(entry?.mesh?.metadata?.transportVolume||0),
+        edgeDischarge:Number(entry?.mesh?.metadata?.edgeDischarge||0),
+        hydrologyEdgeReason:entry?.mesh?.metadata?.hydrologyEdgeReason||null,
+        receiverWet:entry?.mesh?.metadata?.receiverWet===true,
+        storedOvertoppingJunctionPresent:!!entry?.root?.getChildMeshes?.().some(m=>m.metadata?.kind==="water-cascade-junction")
+      }));
       const renderOwnership=tileKey?{
         tileKey,gameplayWaterDepth:Number(worldTile?.waterDepth||0),
-        surfaceOwner:Number(worldTile?.waterDepth||0)>0?'STORED_TERRAIN_CLIPPED_SURFACE'
-          :sheetMesh?'Q_ONLY_TERRAIN_SHEET':'NO_RENDERED_SURFACE',
+        hydrologyStorageThreshold,storedWaterEligible,
+        actualStoredMeshExists:!!storedMeshEntry,
+        actualStoredMeshName:storedMeshEntry?.mesh?.name||null,
+        storedWetPolygonAtClickedPoint:localStoredWetAtPoint,
+        // Report the *actual* mesh/polygon ownership, not merely D>0.
+        surfaceOwner:storedMeshEntry
+          ?(localStoredWetAtPoint?'STORED_WET_AT_POINT':'STORED_SURFACE_OTHER_PART_OF_TILE')
+          :sheetMesh?'Q_ONLY_TERRAIN_SHEET'
+          :storedWaterEligible?'STORED_DEPTH_BUT_MESH_MISSING':'NO_RENDERED_SURFACE',
         localStoredWaterPolygons:standingPolygons.length,
         totalStoredSurfaceMeshes:water?.surfaceMeshes?.size??null,
         activeSheetFlowMeshes:water?.sheetFlowMeshes?.size??null,
         totalRunoffMeshes:runoffMeshes.length,
         legacyNonCascadeRunoffMeshes:legacyNonCascadeRunoffs.length,
         localLegacyRunoffMeshNames:localLegacyRunoffs.map(mesh=>mesh.name),
-        remainingCliffJunctionRunoffs:runoffMeshes.filter(mesh=>mesh.metadata?.cascade===true).length
+        remainingCliffJunctionRunoffs:runoffMeshes.filter(mesh=>mesh.metadata?.cascade===true).length,
+        nearbyWaterfalls:localCascades
       }:null;
       // Sample the SAME polygons consumed by buildSheetFlow. A missing wet
       // polygon proves a dry/clipped point; it is not evidence of occlusion.
@@ -509,7 +561,10 @@
         tileKey,waterDepth:Number(worldTile?.waterDepth||0),
         sheetFlowMeshExists:!!sheetMesh&&!sheetMesh.isDisposed?.(),
         sheetFlowSolutionExists:!!sheetSolution,
-        sheetStatus:sheetNode?.sheetStatus||"NO_NETWORK_NODE",
+        sheetStatus:storedWaterEligible?"STORED_WATER_EXCLUDED_FROM_Q_ONLY_SOLVER":
+          sheetNode?.sheetStatus||"NO_NETWORK_NODE",
+        sheetNetworkNodePresent:!!sheetNode,
+        sheetNetworkNodeCount:water?.sheetFlowNetwork?.size??null,
         sheetRejectReason:sheetNode?.sheetRejectReason||null,
         sheetAcceptedEdges:sheetNode?.sheetAcceptedEdges||[],
         sheetRejectedEdges:sheetNode?.sheetRejectedEdges||[],
@@ -544,6 +599,7 @@
         pickedTerrainMeshName:terrainHit?.hit?terrainHit.pickedMesh?.name:null,
         renderOwnership,
         sheetFlow:sheetFlowDiagnosis,
+        waterfallEdgeInventory,
         environmentHistory:environmentHistory.slice(-10),
         liveWeather:runtime.debug?.state?.()||null,
         officialSystemLog:runtime.getBattleLog?.("SYSTEM")?.entries?.slice(-20)||[],
