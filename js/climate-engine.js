@@ -70,17 +70,32 @@ export const ClimateEngine=(()=>{
     if(present){const effect={type,duration:null,visualOnly:true,...extra,x:tile.x,y:tile.y};if(idx>=0)list[idx]=effect;else list.push(effect);state.effects.set(k,list);}
     else if(idx>=0){list.splice(idx,1);if(list.length)state.effects.set(k,list);else state.effects.delete(k);}
   }
+  // Climate modifies current speed and source recharge; it never invents Q.
+  // Hydrology owns the formal river discharge once its route is initialized.
+  function riverDischarge(tile){
+    if(tile?.hydrologyOutflowRate!=null)return Math.max(0,Number(tile.hydrologyOutflowRate||0));
+    return Math.max(0,Number(tile?.discharge??tile?.baseDischarge??0));
+  }
+  function hasActualCurrent(tile){
+    return Number(tile?.waterDepth||0)>.0001&&
+      (riverDischarge(tile)>.0001||Object.values(tile?.hydrologyEdgeOutflows||{}).some(edge=>Number(edge?.rate||0)>.0001));
+  }
   function syncTileVisuals(state,tile){
     visualEffect(state,tile,"SNOW",snowDepth(tile)>=.15,{depth:snowDepth(tile)});
     visualEffect(state,tile,"ICE",isFrozen(tile),{thickness:iceThickness(tile)});
-    visualEffect(state,tile,"CURRENT",!!tile?.river&&Number(tile.flowSpeed||0)>=.85&&!isSolidIce(tile),{speed:Number(tile.flowSpeed||0),flowX:Number(tile.flowX||0),flowY:Number(tile.flowY||0)});
+    visualEffect(state,tile,"CURRENT",!!tile?.river&&hasActualCurrent(tile)&&Number(tile.flowSpeed||0)>=.85&&!isSolidIce(tile),{speed:Number(tile.flowSpeed||0),flowX:Number(tile.flowX||0),flowY:Number(tile.flowY||0)});
   }
-  function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(tile.iceThickness);if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=Number(tile.discharge||tile.baseDischarge);}syncTileVisuals(state,tile);}return map;}
+  function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(tile.iceThickness);if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=riverDischarge(tile);}syncTileVisuals(state,tile);}return map;}
 
   function legacyWeather(state){return window.EnvironmentEngine?.legacyWeather?.(state)||state?.weather||"CLEAR";}
   function updateRiverFlow(map,state,events=[]){
     const mult=config(state).flow;let count=0,maxSpeed=0;
-    for(const tile of map?.tiles||[]){if(!tile.river)continue;const depth=Math.max(.1,Number(tile.waterDepth||0)),depthFactor=1+Math.max(0,depth-1)*.25;tile.flowSpeed=clean(Number(tile.baseFlowSpeed||.62)*mult*depthFactor);tile.discharge=clean(Math.max(.2,Number(tile.baseDischarge||1))*mult*depthFactor);maxSpeed=Math.max(maxSpeed,tile.flowSpeed);count++;syncTileVisuals(state,tile);}
+    for(const tile of map?.tiles||[]){if(!tile.river)continue;const depth=Math.max(.1,Number(tile.waterDepth||0)),depthFactor=1+Math.max(0,depth-1)*.25;tile.flowSpeed=clean(Number(tile.baseFlowSpeed||.62)*mult*depthFactor);
+      // For an initialized hydrology river, the routed Q is authoritative.
+      // Changing weather must not replace it with a cosmetic baseDischarge.
+      if(tile.hydrologyOutflowRate!=null)tile.discharge=clean(riverDischarge(tile));
+      else tile.discharge=clean(Math.max(.2,Number(tile.baseDischarge||1))*mult*depthFactor);
+      maxSpeed=Math.max(maxSpeed,tile.flowSpeed);count++;syncTileVisuals(state,tile);}
     if(count&&mult>=1.8)events.push({type:"RIVER_SURGE",tiles:count,maxSpeed,weather:legacyWeather(state)});
   }
 
@@ -132,8 +147,9 @@ export const ClimateEngine=(()=>{
   }
 
   function currentForce(tile,state=null){
-    if(!tile?.river||isSolidIce(tile))return null;const speed=Number(tile.flowSpeed||tile.baseFlowSpeed||0);if(speed<.85)return null;
-    const distance=speed>=2.5?3:speed>=1.7?2:1;return{distance,speed,discharge:Number(tile.discharge||1),flowX:Number(tile.flowX||0),flowY:Number(tile.flowY||1)};
+    if(!tile?.river||!hasActualCurrent(tile)||isSolidIce(tile))return null;
+    const speed=Number(tile.flowSpeed||tile.baseFlowSpeed||0);if(speed<.85)return null;
+    const distance=speed>=2.5?3:speed>=1.7?2:1;return{distance,speed,discharge:riverDischarge(tile),flowX:Number(tile.flowX||0),flowY:Number(tile.flowY||0)};
   }
 
   function applyHeat(map,state,x,y,{heavy=false}={}){

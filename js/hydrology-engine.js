@@ -744,7 +744,14 @@ export const HydrologyEngine=(()=>{
     const q=Math.max(0,Number(tile.hydrologyOutflowRate||0));
     if(q<=EPSILON)return 0;
     const speed=Math.max(.35,Number(tile.flowSpeed||tile.baseFlowSpeed||.6));
-    return clean(Math.min(.28,q*DISCHARGE_VOLUME_PER_TURN/(speed*1.15)));
+    // The channel width already belongs to the authored river cross-section.
+    // Q is a rate, not a water depth: Q * duration is the actual source volume;
+    // dividing by wetted width and longitudinal speed gives the moving-water
+    // residence depth. D is still filled ONLY by conserved source water, never
+    // stamped as a visual minimum. Deep mainstem reaches require real Q.
+    const width=clamp(Number(tile.hydrologyChannelWidthFraction??1),.15,1);
+    const bankfull=Math.max(.2,Number(tile.channelBankfullDepth||0)||NATURAL_WATER_DEPTH);
+    return clean(Math.min(bankfull,q*DISCHARGE_VOLUME_PER_TURN/(speed*width)));
   }
   function riverKineticHead(tile){
     // A through-flow carries a limited kinetic head on a near-level reach.
@@ -1122,6 +1129,35 @@ export const HydrologyEngine=(()=>{
     clearPersistentEdgeDischarge(map);
 
     const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    // Generated rivers have already solved their directed source -> junction ->
+    // outlet discharge in reconcileRiverDischarge(). That formal Q is the one
+    // source of truth for persistent stream edges and every downstream consumer
+    // (water sheet, waterfalls, diagnostics). Do NOT route it through a second
+    // shortest-distance-from-sources graph: at a confluence the longer branch
+    // can enter a cell closer to another source and silently lose all its Q.
+    // Off-channel runoff remains represented by measured solver edge transfers.
+    if(map.hydrology?.generatedRiverProfile===true){
+      const routes=[];
+      for(const tile of map.tiles){
+        if(tile?.river!==true||tile.hydrologyDrain===true)continue;
+        const rate=Math.max(0,Number(tile.hydrologyOutflowRate||0));
+        if(rate<=EPSILON)continue;
+        const dx=Math.sign(Number(tile.flowX||0)),dy=Math.sign(Number(tile.flowY||0));
+        if(Math.abs(dx)+Math.abs(dy)!==1)continue;
+        const next=by.get(key(tile.x+dx,tile.y+dy));
+        if(next?.river!==true||!riverRouteHasHead(tile,next))continue;
+        const record=writePersistentEdge(tile,next,rate,{source,routeKind:"RIVER",volumeScale});
+        if(record)routes.push({fromX:tile.x,fromY:tile.y,...record});
+      }
+      const active=activeSourceTiles(map);
+      map.hydrologyPersistentDischargeSummary={
+        source,edges:routes.length,
+        totalRate:clean(routes.reduce((sum,route)=>sum+Number(route.rate||0),0)),
+        sourceRate:clean(active.reduce((sum,tile)=>sum+sourceDemandRate(tile),0)),
+        liveSourceCount:active.length,routedSourceCount:active.length,recession:false
+      };
+      return routes;
+    }
     const graph=new Map();
 
     const addCandidate=(from,list,seen,to,{kind="GRADIENT",hint=0}={})=>{
