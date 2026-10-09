@@ -543,7 +543,12 @@ export const HydrologyEngine=(()=>{
         const capacity=tile.hydrologyDrain===true
           ?Math.max(.01,Number(tile.outletEffectiveCapacity||rawCapacity))
           :rawCapacity;
-        const outflowRate=clean(Math.min(inflowRate,capacity));
+        const currentDirX=Math.sign(Number(tile.flowX||0)),currentDirY=Math.sign(Number(tile.flowY||0));
+        const candidateNext=tile.hydrologyDrain===true?null:
+          by.get(key(tile.x+currentDirX,tile.y+currentDirY));
+        const canTransport=tile.hydrologyDrain===true ||
+          (candidateNext?.river===true&&riverRouteHasHead(tile,candidateNext));
+        const outflowRate=canTransport?clean(Math.min(inflowRate,capacity)):0;
         const overflowRate=clean(Math.max(0,inflowRate-outflowRate));
 
         tile.hydrologyInflowRate=inflowRate;
@@ -674,7 +679,9 @@ export const HydrologyEngine=(()=>{
     // Baselines protect the authored river channel, not every wet tile connected to
     // a source. A spring-fed pond/basin must remain free to equalize with adjacent
     // lower terrain; otherwise its initial water becomes an immovable stencil.
-    for(const tile of map?.tiles||[])tile.hydrologyBaseWaterDepth=(tile?.river===true&&fed.has(key(tile.x,tile.y)))?clean(waterDepth(tile)):0;
+    for(const tile of map?.tiles||[])tile.hydrologyBaseWaterDepth=
+      (tile?.river===true&&tile.hydrologyTransportInitialized!==true&&fed.has(key(tile.x,tile.y)))
+        ?clean(waterDepth(tile)):0;
     return fed;
   }
   function protectedDepth(tile,fed){return fed?.has(key(tile.x,tile.y))?Math.min(waterDepth(tile),baselineDepth(tile)):0}
@@ -683,21 +690,105 @@ export const HydrologyEngine=(()=>{
     return(map?.tiles||[]).filter(tile=>tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true&&canHoldWater(tile));
   }
 
+  function riverKineticHead(tile){
+    // A through-flow carries a limited kinetic head on a near-level reach.
+    // This is a physical routing condition, not an instruction to draw a
+    // corridor; cliffs and genuine uphill dams still require stored water.
+    const speed=clamp(Number(tile?.flowSpeed??tile?.baseFlowSpeed??0),0,MAX_BASE_FLOW_SPEED);
+    return Math.min(.25,Math.max(.04,speed*speed/9.81));
+  }
+  function riverRouteHasHead(from,to){
+    if(!from||!to)return false;
+    if(from.hydrologyTransportInitialized!==true)return true;
+    return elevation(from)+waterDepth(from)+riverKineticHead(from)+EPSILON
+      >=elevation(to)+waterDepth(to);
+  }
+
+  // Supply pulses from a generated OFF_MAP_SOURCE travel through the authored
+  // channel graph. Capacity-limited edges retain ONLY the water that could not
+  // leave this turn. The conserved volume is either stored or discharged at a
+  // real outlet; it is never manufactured as D=1 on every traversed tile.
+  function routeGeneratedRiverPulse(map,sourceTile,volume,scale,by,budgets,events,source){
+    // Use the SAME persistent Hydrology Q edges as WaterRenderer, not a second
+    // `flowX/flowY` path. Real branches/confluences share a single edge budget.
+    const pending=[{tile:sourceTile,volume,path:new Set()}];
+    let drained=0,stored=0,steps=0;
+    const deposit=(tile,amount)=>{
+      const v=clean(amount);
+      if(v<=0)return;
+      setWaterDepth(tile,waterDepth(tile)+v,events,source);
+      stored=clean(stored+v);
+    };
+    while(pending.length&&steps++<Math.max(32,(map.tiles?.length||0)*8)){
+      const {tile,volume:carry,path}=pending.shift();
+      if(carry<=0)continue;
+      const k=key(tile.x,tile.y);
+      if(path.has(k)){deposit(tile,carry);continue;}
+      const seen=new Set(path);seen.add(k);
+      const atDrain=tile.hydrologyDrain===true||tile.drain===true||
+        (tile.river!==true&&(map.generated===true||map.hydrology?.openBoundary===true)&&isBoundaryTile(map,tile));
+      const links=atDrain?[]:Object.values(tile.hydrologyEdgeDischarge||{})
+        .filter(edge=>Number(edge?.rate||0)>EPSILON)
+        .map(edge=>({edge,to:by.get(key(Number(edge.toX),Number(edge.toY)))}))
+        .filter(({to})=>!!to&&!seen.has(key(to.x,to.y))&&riverRouteHasHead(tile,to))
+        .sort((a,b)=>Number(b.edge.rate)-Number(a.edge.rate));
+      if(!atDrain&&!links.length){deposit(tile,carry);continue;}
+      const capacity=atDrain?(tile.river===true
+          ?Number(tile.outletEffectiveCapacity??tile.channelCapacity??0):Infinity)
+        :tile.river===true?Number(tile.channelCapacity??0):Infinity;
+      const tileBudgetKey=`tile:${k}`;
+      const initialCapacity=Number.isFinite(capacity)?clean(Math.max(0,capacity)*scale):carry;
+      const budget=budgets.has(tileBudgetKey)?budgets.get(tileBudgetKey):initialCapacity;
+      const allowed=clean(Math.min(carry,Math.max(0,budget)));
+      budgets.set(tileBudgetKey,clean(Math.max(0,budget-allowed)));
+      deposit(tile,Math.max(0,carry-allowed));
+      if(allowed<=0)continue;
+      if(atDrain){drained=clean(drained+allowed);continue;}
+      let remaining=allowed;
+      for(const {edge,to} of links){
+        if(remaining<=0)break;
+        const linkKey=`edge:${k}->${to.x},${to.y}`;
+        const edgeBudget=budgets.has(linkKey)?budgets.get(linkKey)
+          :clean(Math.max(0,Number(edge.rate||0))*scale);
+        const sent=clean(Math.min(remaining,Math.max(0,edgeBudget)));
+        if(sent<=0)continue;
+        budgets.set(linkKey,clean(Math.max(0,edgeBudget-sent)));
+        pending.push({tile:to,volume:sent,path:seen});
+        remaining=clean(Math.max(0,remaining-sent));
+      }
+      if(remaining>0)deposit(tile,remaining);
+    }
+    for(const parcel of pending)deposit(parcel.tile,parcel.volume);
+    events.push({type:"RIVER_SOURCE_THROUGHFLOW",source,x:sourceTile.x,y:sourceTile.y,
+      inflowVolume:volume,drainedVolume:drained,storedVolume:stored,
+      waterBudgetConserved:Math.abs(volume-drained-stored)<=FLOW_EPSILON});
+    return{drained,stored};
+  }
+
   function advanceSources(map,{events=[],source="SOURCE_INFLOW",volumeScale=DISCHARGE_VOLUME_PER_TURN,redistributeAfter=true}={}){
     if(!map?.tiles?.length)return events;
     const scale=Math.max(0,Number(volumeScale||0));
-    let injectedVolume=0,sourceCount=0;
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const throughputBudgets=new Map();
+    let injectedVolume=0,sourceCount=0,storedVolume=0,drainedVolume=0;
     for(const tile of activeSourceTiles(map)){
       const rate=Math.max(0,sourceDemandRate(tile));
       const volume=clean(rate*scale);
       if(volume<=EPSILON)continue;
-      const before=waterDepth(tile);
-      setWaterDepth(tile,before+volume,events,source);
       injectedVolume=clean(injectedVolume+volume);sourceCount++;
-      events.push({type:"HYDROLOGY_SOURCE_INFLOW",x:tile.x,y:tile.y,source,rate,volume,waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile)});
+      if(map.hydrology?.generatedRiverProfile===true&&tile.hydrologyTransportInitialized===true&&tile.sourceKind==="OFF_MAP_SOURCE"){
+        const result=routeGeneratedRiverPulse(map,tile,volume,scale,by,throughputBudgets,events,source);
+        storedVolume=clean(storedVolume+result.stored);drainedVolume=clean(drainedVolume+result.drained);
+      }else{
+        setWaterDepth(tile,waterDepth(tile)+volume,events,source);
+        storedVolume=clean(storedVolume+volume);
+      }
+      events.push({type:"HYDROLOGY_SOURCE_INFLOW",x:tile.x,y:tile.y,source,rate,volume,
+        waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile)});
     }
-    if(injectedVolume>EPSILON&&redistributeAfter)redistribute(map,{source,events,riverPulse:false,volumeScale:scale});
-    if(injectedVolume>EPSILON)events.push({type:"HYDROLOGY_SOURCES_ADVANCED",source,sourceCount,injectedVolume});
+    if(storedVolume>EPSILON&&redistributeAfter)redistribute(map,{source,events,riverPulse:false,volumeScale:scale});
+    if(injectedVolume>EPSILON)events.push({type:"HYDROLOGY_SOURCES_ADVANCED",source,sourceCount,
+      injectedVolume,drainedVolume,storedVolume});
     return events;
   }
 
@@ -978,7 +1069,9 @@ export const HydrologyEngine=(()=>{
       // Equal-surface reaches may still carry a steady discharge. They are allowed
       // only when topology/solver history already establishes direction; discovery
       // without a hint remains strictly downhill.
-      if((!hinted&&head<=FLOW_EPSILON)||(hinted&&head<-FLOW_EPSILON))return;
+      if((!hinted&&head<=FLOW_EPSILON)||
+         (hinted&&head<-FLOW_EPSILON&&
+          !(kind==="RIVER"&&from.hydrologyTransportInitialized===true&&riverRouteHasHead(from,to))))return;
       seen.add(id);
       list.push({to,dir,kind,hint:Math.max(0,Number(hint||0)),head:Math.max(0,head)});
     };

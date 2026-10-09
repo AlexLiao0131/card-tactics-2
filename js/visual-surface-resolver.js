@@ -358,9 +358,33 @@ export class VisualSurfaceResolver{
       const determinant=xx*zz-xz*xz;
       const sx=determinant>EPSILON?(xy*zz-zy*xz)/determinant:0;
       const sz=determinant>EPSILON?(zy*xx-xy*xz)/determinant:0;
+      // Shallow transport has finite forward momentum. An unconstrained water
+      // level on a perfectly flat tile makes EVERY triangle wet, producing
+      // another square lake even though the only supply is a through-going Q.
+      // Fit one transverse pressure head to the REAL incoming/outgoing edge
+      // fluxes. The existing volume solver determines wetted width from Q;
+      // there is no fixed ribbon width, invented water volume or alternate XYZ.
+      let fx=0,fz=0,dominant=null;
+      for(const edge of edges){
+        const [ax,az]=edge.fromKey.split(',').map(Number),[bx,bz]=edge.toKey.split(',').map(Number);
+        const q=Math.max(0,Number(edge.q||0)),dx=bx-ax,dz=bz-az;
+        fx+=dx*q;fz+=dz*q;
+        if(!dominant||q>dominant.q)dominant={x:dx,z:dz,q};
+      }
+      let magnitude=Math.hypot(fx,fz);
+      if(magnitude<=EPSILON&&dominant){fx=dominant.x;fz=dominant.z;magnitude=Math.hypot(fx,fz);}
+      const alongX=magnitude>EPSILON?fx/magnitude:0,alongZ=magnitude>EPSILON?fz/magnitude:0;
+      const crossX=-alongZ,crossZ=alongX;
+      // Momentum/resistance shapes the free film's cross-section; actual wet
+      // extent still comes ONLY from the solved transport volume intersecting
+      // registered terrain triangles. More Q makes the wetted footprint widen.
+      const speed=Math.max(.3,Math.min(3.2,Number(tile.flowSpeed||Math.sqrt(transit))));
+      const pressureHead=ELEVATION_HEIGHT*Math.min(.48,Math.max(.30,speed*speed/(2*9.81)*4));
       const residual=new Map();
       for(const tri of triangles)for(const p of tri){
-        const k=vertexKey(p),relative=cy+sx*(p.x-cx)+sz*(p.z-cz)-p.y;
+        const lateral=((p.x-cx)*crossX+(p.z-cz)*crossZ)*2/TILE_SIZE;
+        const kineticBank=pressureHead*lateral*lateral;
+        const k=vertexKey(p),relative=cy+sx*(p.x-cx)+sz*(p.z-cz)-p.y-kineticBank;
         residual.set(k,relative);
       }
       const values=[...residual.values()];if(!values.length)continue;
@@ -393,19 +417,13 @@ export class VisualSurfaceResolver{
       const baseline=solveHeight(off=>calculate(off).volume,target,lowest,highest+target/weight);
       if(baseline==null){node.sheetRejectReason="NO_WET_SOLUTION";continue;}
       const preliminary=calculate(baseline,null,true);
-      let fx=0,fz=0;
-      for(const edge of edges){
-        const [ax,az]=edge.fromKey.split(',').map(Number),[bx,bz]=edge.toKey.split(',').map(Number);
-        fx+=(bx-ax)*edge.q;fz+=(bz-az)*edge.q;
-      }
-      const magnitude=Math.hypot(fx,fz);
       node.sheetStatus="CANDIDATE";
       results.set(key,{tile,key,triangles,geometryRevision:geometry.revision,
         targetVolume:target,transportVolume:transit,initialDepths:preliminary.depths,
         nominalTileArea:TILE_SIZE*TILE_SIZE,renderedProjectedArea,coreProjectedArea,
         residual,calculate,locked:new Map(),baseline,
         boundaryEdges:edges,flow:{x:magnitude?fx/magnitude:0,z:magnitude?fz/magnitude:0},
-        model:'REGISTERED_TERRAIN_TRANSIT_SHEET'});
+        model:'REGISTERED_TERRAIN_MOMENTUM_SHEET'});
     }
     // The same registered edge coordinates are used by both adjacent dry tiles.
     // Avoid mismatch: a seam is wet only if both sides have a valid Q edge.
@@ -424,7 +442,13 @@ export class VisualSurfaceResolver{
           if(Math.abs((dx!==0?p.x-xEdge:p.z-zEdge))<=EPSILON*10)samples.add(vertexKey(p));
         }
         for(const k of samples){
-          const shared=valid?Math.min(result.initialDepths.get(k)||0,other.initialDepths.get(k)||0):0;
+          // A boundary with no hydrology connection is NOT automatically a
+          // zero-depth shoreline: the unconstrained pressure field may already
+          // be dry (negative clearance) some distance inside this boundary.
+          // Preserve that dry offset so it can clip the surface BEFORE the
+          // gameplay grid edge instead of producing a full-square water fan.
+          const shared=valid?Math.min(result.initialDepths.get(k)||0,other.initialDepths.get(k)||0)
+            :Math.min(0,Number(result.residual.get(k)||0)+Number(result.baseline||0));
           result.locked.set(k,shared);
           if(valid)other.locked.set(k,shared);
         }

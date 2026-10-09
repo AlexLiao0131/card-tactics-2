@@ -62,8 +62,23 @@ export const MapGenerator=(()=>{
     delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;
   }
   function setWater(tile,{bed=-1,depth=1,river=false,ford=false,flowX=0,flowY=1,flowSpeed=.6,discharge=1}={}){
-    if(!tile)return;tile.elevation=Number(bed);tile.terrain="WATER";tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;tile.dryTerrain="PLAIN";
-    if(river){tile.river=true;tile.ford=!!ford;tile.flowX=Number(flowX||0);tile.flowY=Number(flowY||0);tile.baseFlowSpeed=Number(flowSpeed||.6);tile.flowSpeed=tile.baseFlowSpeed;tile.baseDischarge=Number(discharge||1);tile.discharge=tile.baseDischarge;}
+    if(!tile)return;
+    if(river){
+      // Authored river tiles are a Q path, not a pre-filled standing lake.
+      // bed+depth was the former free surface: retain the exact gameplay
+      // crossing elevation as the stream grade, without inventing D=1.
+      tile.elevation=Number(bed)+Number(depth);
+      tile.terrain=tile.dryTerrain||"PLAIN";tile.waterDepth=0;tile.waterSurfaceZ=null;
+      tile.dryTerrain=tile.terrain;
+      tile.hydrologyTransportInitialized=true;
+      tile.river=true;tile.ford=!!ford;tile.flowX=Number(flowX||0);tile.flowY=Number(flowY||0);
+      tile.baseFlowSpeed=Number(flowSpeed||.6);tile.flowSpeed=tile.baseFlowSpeed;
+      tile.baseDischarge=Number(discharge||1);tile.discharge=tile.baseDischarge;
+    }else{
+      tile.elevation=Number(bed);tile.terrain="WATER";
+      tile.waterDepth=Math.max(.1,Number(depth));tile.waterSurfaceZ=tile.elevation+tile.waterDepth;
+      tile.dryTerrain="PLAIN";
+    }
   }
 
   function applyTerrain(map,field){
@@ -197,8 +212,8 @@ export const MapGenerator=(()=>{
     for(const tile of ordered){
       const k=key(tile.x,tile.y);
       if(tile.hydrologyDrain===true){
-        const depth=tile.ford===true?.35:Math.max(.75,Math.min(2,Number(tile.waterDepth||1)));
-        tile.waterDepth=depth;tile.elevation=outletSurface-depth;tile.waterSurfaceZ=outletSurface;
+        tile.elevation=outletSurface;
+        tile.waterDepth=0;tile.waterSurfaceZ=null;
         tile.flowX=0;tile.flowY=0;
         delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;
         continue;
@@ -214,10 +229,9 @@ export const MapGenerator=(()=>{
       const surface=downstreamSurface+RIVER_GENTLE_STEP+cascadeDrop;
       surfaceByKey.set(k,surface);
 
-      const depth=tile.ford===true?.35:Math.max(.75,Math.min(2,Number(tile.waterDepth||1)));
-      tile.waterDepth=depth;
-      tile.elevation=surface-depth;
-      tile.waterSurfaceZ=surface;
+      tile.elevation=surface;
+      tile.waterDepth=0;
+      tile.waterSurfaceZ=null;
       tile.flowX=Math.sign(downstream.x-tile.x);
       tile.flowY=Math.sign(downstream.y-tile.y);
 
