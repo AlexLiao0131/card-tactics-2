@@ -7,6 +7,14 @@ export const EnvironmentEngine=(()=>{
   const CLIMATE_CHANNEL=Object.freeze({PRECIPITATION:"PRECIPITATION",FOG:"FOG",THUNDER:"THUNDER",HEAT:"HEAT",TEMPERATURE:"TEMPERATURE",WIND:"WIND"});
   const WEATHER_RULES={THUNDERSTORM:{lightningChance:.35,lightningDamage:60,metalWeight:2,waterWeight:2,treeWeight:2},TYPHOON:{lightningChance:.46,lightningDamage:70,metalWeight:2,waterWeight:2.25,treeWeight:2}};
   const WEATHER_TURNS=Object.freeze({FOG:2,RAIN:3,HEAVY_RAIN:2,THUNDERSTORM:2,TYPHOON:2,SNOW:3,BLIZZARD:2,SCORCHING_SUN:3});
+  // One environment turn is the only clock. Card weather can temporarily own
+  // the climate, while natural seasons and the day/night clock continue to tick.
+  const DAY_NIGHT_INTERVAL=4,NATURAL_WEATHER_INTERVAL=5;
+  const NATURAL_WEATHER_WEIGHTS=Object.freeze([
+    [WEATHER.CLEAR,29],[WEATHER.FOG,15],[WEATHER.RAIN,20],
+    [WEATHER.HEAVY_RAIN,10],[WEATHER.THUNDERSTORM,8],
+    [WEATHER.SNOW,8],[WEATHER.BLIZZARD,4],[WEATHER.SCORCHING_SUN,6]
+  ]);
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
   const WIND_DIRECTION=Object.freeze({CALM:"CALM",N:"N",NE:"NE",E:"E",SE:"SE",S:"S",SW:"SW",W:"W",NW:"NW"});
   const WIND_VECTORS=Object.freeze({N:{x:0,y:-1},NE:{x:1,y:-1},E:{x:1,y:0},SE:{x:1,y:1},S:{x:0,y:1},SW:{x:-1,y:1},W:{x:-1,y:0},NW:{x:-1,y:-1},CALM:{x:0,y:0}});
@@ -43,6 +51,16 @@ export const EnvironmentEngine=(()=>{
     x=Math.sign(x);y=Math.sign(y);if(x===0&&y===0)x=1;const normalized={x,y,strength};return{...normalized,direction:windDirection(normalized),calm:false};
   }
   function turns(value,fallback=null){if(value==null)return fallback;return Math.max(0,Number(value||0));}
+  function seededFraction(seed,turn,salt=0){
+    let h=(Number(seed)>>>0)^Math.imul((Number(turn)>>>0)+1,0x9e3779b9)^Math.imul(salt+1,0x85ebca6b);
+    h=Math.imul(h^(h>>>16),0x7feb352d);h=Math.imul(h^(h>>>15),0x846ca68b);
+    return((h^(h>>>16))>>>0)/4294967296;
+  }
+  function naturalWeather(map,turn){
+    let roll=seededFraction(map?.seed,turn,3)*100;
+    for(const [weather,weight] of NATURAL_WEATHER_WEIGHTS){roll-=weight;if(roll<0)return weather;}
+    return WEATHER.CLEAR;
+  }
   function climateFromWeather(weather="CLEAR",duration=null){
     const w=WEATHER[weather]?weather:WEATHER.CLEAR,d=duration==null?WEATHER_TURNS[w]??null:Math.max(0,Number(duration||0));
     const climate={
@@ -180,6 +198,11 @@ export const EnvironmentEngine=(()=>{
   }
   function applyClimatePreset(state,weather,{duration=null}={}){
     if(!state)return[];const climate=ensureClimate(state),resolved=WEATHER[weather]?weather:WEATHER.CLEAR,d=duration==null?WEATHER_TURNS[resolved]??null:Math.max(0,Number(duration||0)),touched=[];
+    // Changing a weather preset replaces the previous sky, rather than leaving
+    // an expired rain/fog/thunder channel running behind the new preset.
+    climate.precipitation={type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};
+    climate.fog={intensity:0,turnsRemaining:null};
+    climate.thunder={intensity:0,turnsRemaining:null};
     climate.heat={intensity:0,turnsRemaining:null};
     if(resolved===WEATHER.SCORCHING_SUN){setClimateChannel(state,CLIMATE_CHANNEL.HEAT,{intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.HEAT);}
     else if(resolved===WEATHER.CLEAR){
@@ -196,11 +219,33 @@ export const EnvironmentEngine=(()=>{
   function create({timeOfDay="DAY",weather="CLEAR",weatherTurns=null,climate=null,wind=null,windX=null,windY=null,windStrength=null,temperature=null}={}){
     const legacy=climateFromWeather(weather,weatherTurns),baseClimate=climate&&typeof climate==="object"?JSON.parse(JSON.stringify(climate)):legacy;
     const resolvedWind=normalizeWind(wind||baseClimate.wind||{x:windX,y:windY,strength:windStrength});
-    const state={timeOfDay,weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind}};
+    const state={timeOfDay,weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind},naturalWeather:WEATHER.CLEAR,cardClimateOverride:null};
     if(temperature!=null&&Number.isFinite(Number(temperature)))state.climate.temperature=Number(temperature);
-    ensureClimate(state);return state;
+    ensureClimate(state);state.naturalWeather=legacyWeatherRaw(state);return state;
   }
   function setTimeOfDay(state,timeOfDay){state.timeOfDay=timeOfDay==="NIGHT"?"NIGHT":"DAY";}
+  function advanceNaturalCycles(map,state,turn,events){
+    if(turn>0&&turn%DAY_NIGHT_INTERVAL===0){
+      setTimeOfDay(state,state.timeOfDay==="DAY"?"NIGHT":"DAY");
+      events.push({type:"DAY_NIGHT_CHANGED",timeOfDay:state.timeOfDay,environmentTurn:turn});
+    }
+    if(turn>0&&turn%NATURAL_WEATHER_INTERVAL===0){
+      state.naturalWeather=naturalWeather(map,turn);
+      events.push({type:"NATURAL_WEATHER_SCHEDULED",weather:state.naturalWeather,environmentTurn:turn});
+    }
+    // The natural schedule continues behind a card; only the card's climate is
+    // authoritative until its own duration completes. No parallel climate state.
+    if(state.cardClimateOverride?.remaining>0)return;
+    if(state.cardClimateOverride){
+      state.cardClimateOverride=null;
+      const resumed=state.naturalWeather||WEATHER.CLEAR;
+      applyClimatePreset(state,resumed,{duration:null});
+      events.push({type:"NATURAL_WEATHER_RESUMED",weather:resumed,environmentTurn:turn});
+    }else if(turn>0&&turn%NATURAL_WEATHER_INTERVAL===0){
+      applyClimatePreset(state,state.naturalWeather,{duration:null});
+      events.push({type:"NATURAL_WEATHER_CHANGED",weather:state.naturalWeather,environmentTurn:turn});
+    }
+  }
   const fillCapacity=tile=>HydrologyEngine.fillCapacity(tile);
   const addWater=(tile,amount,events=[])=>HydrologyEngine.addWater(tile,amount,events);
   const removeWater=(tile,amount,events=[])=>HydrologyEngine.removeWater(tile,amount,events);
@@ -447,19 +492,36 @@ export const EnvironmentEngine=(()=>{
     recordDestroyedObjects(state,events);return events;
   }
   function advanceEnvironmentTurn(map,state){
-    if(!map||!state)return[];const events=[];ensureClimate(state);expireClimate(state,events);
+    if(!map||!state)return[];const events=[];ensureClimate(state);
+    const environmentTurn=Math.max(0,Number(state.climate?.turn||0))+1;
+    advanceNaturalCycles(map,state,environmentTurn,events);
+    // Expiration is disabled during a card override: the fixed card duration
+    // below is its authoritative timer (ordinary natural channel timers still
+    // expire normally when no card is active).
+    if(!state.cardClimateOverride)expireClimate(state,events);
+    if(window.HydrologyEngine?.updateSourceYields)HydrologyEngine.updateSourceYields(map,{
+      environmentTurn,weather:legacyWeatherRaw(state),precipitation:precipitationAt(state).type,
+      heat:Number(state.climate?.heat?.intensity||0),events
+    });
     // A hydrology source is a real volume source, not only a discharge label.
     // Inject it once per environment turn, then let the canonical Hydrology flow
     // decide where that water settles, overflows and drains.
     if(window.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
-    weatherPulse(map,state,events);decrementClimate(state);
+    weatherPulse(map,state,events);
+    if(state.cardClimateOverride){
+      state.cardClimateOverride.remaining=Math.max(0,state.cardClimateOverride.remaining-1);
+    }else decrementClimate(state);
     if(window.HydrologyEngine?.sourceRecessionActive?.(map)&&!events.some(event=>event?.type==="HYDROLOGY_REBALANCED")){
       HydrologyEngine.advanceSourceRecession(map,{events,source:"SPRING_SOURCE_RECESSION"});
     }
     advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
   }
-  function setWeather(state,weather,map=null,{duration=null,applyPulse=true}={}){
+  function setWeather(state,weather,map=null,{duration=null,applyPulse=true,source="MANUAL"}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];
+    // Explicit weather spells and the existing test-console time controls take
+    // precedence over the autonomous climate scheduler for their full duration.
+    if(source!=="NATURAL"&&duration!=null)state.cardClimateOverride={weather:resolved,remaining:Math.max(1,Number(duration??WEATHER_TURNS[resolved]??1))};
+    else if(source==="NATURAL")state.cardClimateOverride=null;
     if(isRain(state)||isSnow(state)){
       for(const [k,list] of [...state.effects.entries()]){
         if(!list.some(e=>e.type===EFFECT.BURNING))continue;
@@ -638,8 +700,8 @@ export const EnvironmentEngine=(()=>{
   }
   function isLit(state,x,y){if(state.timeOfDay!=="NIGHT")return true;return lightSources(state).some(light=>Math.abs(light.x-x)+Math.abs(light.y-y)<=light.radius);}
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
-  function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);return range;}
+  function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);if(state?.timeOfDay==="NIGHT")range=Math.min(range,4);return range;}
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

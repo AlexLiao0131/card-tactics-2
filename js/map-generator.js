@@ -307,6 +307,15 @@ export const MapGenerator=(()=>{
     // Pockets are continuous river-bed depressions, preferentially located in
     // spring tributaries. Their water must arrive from a real upstream source.
     const pools=carveNaturalRiverPools(map,rivers,downstreamByKey,distance,bankSlopeFloors);
+    // Substrate and cross-section width are authored with the channel geology,
+    // never inferred from its current WATER presentation or a material texture.
+    for(const tile of rivers){
+      const streamSize=Math.sqrt(Math.max(0,Number(tile.baseDischarge||0)));
+      tile.hydrologyChannelWidthFraction=Number(clamp(.22+streamSize*.08,.23,.75).toFixed(4));
+      const roll=createRandom(`${map.seed}:RIVERBED:${tile.x},${tile.y}`)();
+      const rockLikelihood=tile.hydrologyChannelBaseElevation>=2?.62:.22;
+      tile.hydrologyBedMaterial=roll<rockLikelihood?"ROCK":roll<rockLikelihood+.40?"GRAVEL":"SILT";
+    }
 
     // The profile is fully authored here because only the map generator still knows
     // the terrain before the channel was carved. Hydrology's existing preserve flag
@@ -709,7 +718,8 @@ export const MapGenerator=(()=>{
       const sourceKey=key(source.x,source.y);
       source.hydrologySource=true;source.hydrologyAuthoredSource=true;source.sourceKind="SPRING_SOURCE";
       const springYield=generatedSourceYield(map,source,source.sourceKind);
-      source.hydrologySourceInflow=springYield;source.baseDischarge=springYield;source.discharge=springYield;
+      source.hydrologySourceInflow=springYield;source.hydrologyBaseSourceInflow=springYield;
+      source.baseDischarge=springYield;source.discharge=springYield;
       source.sourceObjectId=`generated_spring_${source.x}_${source.y}`;source.hydrologySourceNaturalElevation=Number(source.elevation||0);
       // Source is a protected geological object footprint. The terrain remains
       // authored by the map elevation and terrain generators; Hydrology determines
@@ -775,6 +785,7 @@ export const MapGenerator=(()=>{
       authoredSource.hydrologyAuthoredSource=true;authoredSource.sourceKind="OFF_MAP_SOURCE";
       const inletYield=generatedSourceYield(map,authoredSource,authoredSource.sourceKind);
       authoredSource.hydrologySourceInflow=inletYield;
+      authoredSource.hydrologyBaseSourceInflow=inletYield;
       authoredSource.baseDischarge=inletYield;
       authoredSource.discharge=inletYield;
     }
@@ -818,6 +829,79 @@ export const MapGenerator=(()=>{
       }
     });
 
+    // Extra upstream entry mouths are real connected tributaries. The design
+    // count and positions vary by seed, but no new inlet is authored without a
+    // single downstream junction in the canonical river network.
+    function additionalBoundaryInlets(){
+      const random=createRandom(`${map.seed}:BOUNDARY_INLET_COUNT`);
+      const desired=1+Math.floor(random()*(map.width>=26?3:2));
+      const branches=[];
+      if(desired<=1)return branches;
+      const candidates=[];
+      for(let x=2;x<=map.width-3;x++){
+        const start=getTile(x,0);
+        if(!start||start.river||protectedKeys.has(key(x,0))||Math.abs(x-sourceSeed.x)<4)continue;
+        candidates.push({start,score:naturalHeight(start)*1.8+random()*2});
+      }
+      candidates.sort((a,b)=>a.score-b.score||a.start.x-b.start.x);
+      function connect(start,join){
+        const startKey=key(start.x,start.y),goal=key(join.x,join.y);
+        const queue=[{tile:start,cost:0}],cost=new Map([[startKey,0]]),parent=new Map();
+        while(queue.length){
+          queue.sort((a,b)=>a.cost-b.cost||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+          const current=queue.shift(),here=key(current.tile.x,current.tile.y);
+          if(current.cost>Number(cost.get(here))+1e-8)continue;
+          if(here===goal)break;
+          for(const[dx,dy]of DIRS){
+            const next=getTile(current.tile.x+dx,current.tile.y+dy);
+            if(!next||next.x<2||next.x>map.width-3||next.y>Math.ceil(map.height*.55))continue;
+            const k=key(next.x,next.y),atGoal=k===goal;
+            if(!atGoal&&(next.river||next.captureZone||next.routeId||protectedKeys.has(k)))continue;
+            // There is only one contact between the new stream and its trunk.
+            if(!atGoal&&DIRS.some(([ox,oy])=>{
+              const near=getTile(next.x+ox,next.y+oy);
+              return near?.river===true&&key(near.x,near.y)!==goal;
+            }))continue;
+            const uphill=Math.max(0,naturalHeight(next)-naturalHeight(current.tile));
+            const step=1+uphill*2.5+Math.max(0,current.tile.y-next.y)*1.4;
+            const nc=current.cost+step;
+            if(nc>=Number(cost.get(k)??Infinity)-1e-8)continue;
+            cost.set(k,nc);parent.set(k,here);queue.push({tile:next,cost:nc});
+          }
+        }
+        if(!cost.has(goal))return null;
+        const path=[];let cursor=goal;
+        while(cursor){const[x,y]=cursor.split(',').map(Number);path.push({x,y});if(cursor===startKey)break;cursor=parent.get(cursor);}
+        path.reverse();
+        return path.length>=3&&path.length<=map.height+5?{path,cost:cost.get(goal)}:null;
+      }
+      for(const{start}of candidates){
+        if(branches.length>=desired-1)break;
+        if(branches.some(b=>Math.abs(b.start.x-start.x)<4))continue;
+        const joins=river.map(p=>getTile(p.x,p.y)).filter(tile=>
+          tile&&!tile.ford&&!tile.routeId&&!tile.captureZone&&
+          tile.y>=2&&tile.y<=Math.floor(map.height*.55)&&!tile.hydrologySource)
+          .sort((a,b)=>Math.abs(start.x-a.x)+a.y*.5-(Math.abs(start.x-b.x)+b.y*.5));
+        let best=null;
+        for(const join of joins.slice(0,24)){
+          const candidate=connect(start,join);
+          if(candidate&&(!best||candidate.cost<best.cost))best=candidate;
+        }
+        if(!best)continue;
+        for(const point of best.path.slice(0,-1)){
+          const tile=placeRiverTile(point.x,point.y);
+          if(tile)tile.hydrologyInletBranch=true;
+        }
+        const inlet=getTile(start.x,start.y),rate=generatedSourceYield(map,inlet,"OFF_MAP_SOURCE");
+        inlet.hydrologyAuthoredSource=true;inlet.sourceKind="OFF_MAP_SOURCE";
+        inlet.hydrologySourceInflow=rate;inlet.hydrologyBaseSourceInflow=rate;
+        inlet.baseDischarge=rate;inlet.discharge=rate;
+        branches.push({start:{x:inlet.x,y:inlet.y},join:best.path.at(-1),length:best.path.length});
+      }
+      return branches;
+    }
+    const inletBranches=additionalBoundaryInlets();
+
     const spring=placeNaturalSpring();
     let tributary=[];
     if(spring&&plannedSpringPath.length>=2){
@@ -829,6 +913,7 @@ export const MapGenerator=(()=>{
       spring.hydrologySource=true;
     }
     const profile=finalizeGeneratedRiverProfile(map);
+    profile.inletBranches=inletBranches;
     profile.tributaries=tributary.length?[{
       kind:"SPRING_FED",source:{x:spring.x,y:spring.y},
       cells:tributary,

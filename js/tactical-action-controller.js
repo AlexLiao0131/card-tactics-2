@@ -85,6 +85,10 @@
       const fixedOrigin=skill?.utilityAction?.type==="CARRY_ALLY"||skill?.approach;
       const origins=fixedOrigin?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       return ctx.combatTargets(unit).filter(target=>{
+        // A future movement origin must not grant clairvoyance about a core or
+        // an enemy unit which no current friendly observer has revealed.
+        if(target.team!==unit.team&&skill?.ignoreFogOfWar!==true&&
+           !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
         if(skill?.utilityAction?.type==="CARRY_ALLY"&&(target?.id===unit?.id||!canLiftTarget(unit,target)))return false;
         if(skill?.utilityAction?.type==="LIFT_DROP"&&!canLiftTarget(unit,target))return false;
@@ -150,8 +154,11 @@
     function mapTargetTiles(attacker,skill){
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
-      if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>!!transportReleasePlan(attacker,tile));
+      const known=tile=>skill?.ignoreFogOfWar===true||
+        TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState);
+      if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>known(tile)&&!!transportReleasePlan(attacker,tile));
       if(skill?.utilityAction?.type==="TELEPORT_TO_TILE")return map.tiles.filter(tile=>{
+        if(!known(tile))return false;
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);if(d<range.min||d>range.max)return false;
         if(ctx.unitAt(tile.x,tile.y))return false;
         if(!TacticalEngine.canOccupyTerrain(attacker,tile))return false;
@@ -159,6 +166,7 @@
         return skill.requiresVision===false||TacticalEngine.canSee(map,attacker,tile,environmentState);
       });
       return map.tiles.filter(tile=>{
+        if(!known(tile))return false;
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
         if(d<range.min||d>range.max)return false;
         if(skill.shape==="LINE"){

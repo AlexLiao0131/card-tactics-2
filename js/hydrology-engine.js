@@ -32,8 +32,16 @@ export const HydrologyEngine=(()=>{
   const baseTerrain=t=>t?.terrain==="WATER"?(t?.dryTerrain||"PLAIN"):t?.terrain;
   const soilCapacity=t=>baseTerrain(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
   const soilMoisture=t=>clamp(t?.soilMoisture??(t?.terrain==="MUD"?SOIL_SATURATION_CAPACITY:0),0,soilCapacity(t));
-  const hasSoil=t=>!!t&&(terrainHasSoil(t.terrain)||(t.terrain==="WATER"&&terrainHasSoil(t.dryTerrain)));
+  const hasSoil=t=>!!t&&!(t.river===true&&t.hydrologyBedMaterial==="ROCK")&&
+    (terrainHasSoil(t.terrain)||(t.terrain==="WATER"&&terrainHasSoil(t.dryTerrain)));
   const infiltrationRate=t=>{
+    // Geological substrate is hydrology data, independent of the visible
+    // MixMaterial and the WATER/dryTerrain presentation toggle.
+    if(t?.river===true){
+      if(t.hydrologyBedMaterial==="ROCK")return 0;
+      if(t.hydrologyBedMaterial==="GRAVEL")return .006;
+      if(t.hydrologyBedMaterial==="SILT")return .013;
+    }
     switch(baseTerrain(t)){
       case "SAND":return SAND_INFILTRATION_PER_TURN;
       case "FOREST":return FOREST_INFILTRATION_PER_TURN;
@@ -449,6 +457,11 @@ export const HydrologyEngine=(()=>{
   }
 
   function sourceDemandRate(tile){
+    // Dynamic watershed yield is an explicit physical boundary condition.
+    // ClimateEngine can still update discharge for visual current speed, but
+    // that must never silently replace the rate sampled for this turn.
+    if(tile?.hydrologySourceYieldTurn!=null&&Number.isFinite(Number(tile.hydrologyRequestedSourceInflow)))
+      return Math.max(0,Number(tile.hydrologyRequestedSourceInflow));
     const observed=Math.max(0,Number(tile?.discharge??tile?.baseDischarge??tile?.hydrologySourceInflow??DEFAULT_SOURCE_DISCHARGE));
     const lastOut=Number(tile?.hydrologyOutflowRate);
     let requested=Number(tile?.hydrologyRequestedSourceInflow);
@@ -463,6 +476,39 @@ export const HydrologyEngine=(()=>{
 
     tile.hydrologyRequestedSourceInflow=clean(requested);
     return tile.hydrologyRequestedSourceInflow;
+  }
+
+  function updateSourceYields(map,{environmentTurn=0,weather="CLEAR",precipitation="NONE",heat=0,events=[]}={}){
+    if(!map?.tiles?.length)return events;
+    const turn=Math.max(0,Number(environmentTurn||0));
+    let changed=0;
+    for(const tile of activeSourceTiles(map)){
+      if(tile.hydrologyBaseSourceInflow==null){
+        tile.hydrologyBaseSourceInflow=clean(Math.max(0,Number(tile.hydrologySourceInflow??tile.baseDischarge??DEFAULT_SOURCE_DISCHARGE)));
+      }
+      const spring=tile.sourceKind==="SPRING_SOURCE";
+      const rainfall=precipitation==="HEAVY_RAIN"?.075:precipitation==="RAIN"?.04:precipitation==="SNOW"?.016:0;
+      const depletion=Math.max(0,Number(heat||0))>0?.09:precipitation==="NONE"?.028:.003;
+      const previous=Number(tile.hydrologyAquiferLevel??1);
+      const recharge=rainfall-depletion;
+      const aquifer=clamp(previous+recharge,spring?0:.28,1.75);
+      const phase=(Number(map.seed||0)>>>0)*.000001+tile.x*1.817+tile.y*2.299;
+      // Seeded, low-amplitude variation with continuity between adjacent turns.
+      const variation=1+.075*Math.sin(turn*.61+phase)+.035*Math.sin(turn*.23+phase*1.7);
+      const newRate=clean(Number(tile.hydrologyBaseSourceInflow)*aquifer*variation);
+      const oldRate=Number(tile.hydrologySourceInflow||0);
+      tile.hydrologyAquiferLevel=Number(aquifer.toFixed(5));
+      tile.hydrologySourceInflow=newRate;
+      tile.hydrologyRequestedSourceInflow=newRate;
+      tile.hydrologySourceYieldTurn=turn;
+      tile.discharge=newRate;
+      if(Math.abs(newRate-oldRate)>FLOW_EPSILON)changed++;
+    }
+    if(changed){
+      reconcileRiverDischarge(map,{events,applyOverflow:false,source:"SOURCE_YIELD_CYCLE"});
+      events.push({type:"HYDROLOGY_SOURCE_YIELD_CHANGED",environmentTurn:turn,sourcesChanged:changed,weather});
+    }
+    return events;
   }
 
   function riverFlowBudget(map,{volumeScale=DISCHARGE_VOLUME_PER_TURN}={}){
@@ -1763,7 +1809,16 @@ export const HydrologyEngine=(()=>{
 
   function evaporateUnfedWater(map,{amount=EVAPORATION_PER_CLEAR_TURN,source="CLIMATE_EVAPORATION"}={}){
     const events=[];if(!map?.tiles?.length)return events;const fed=sourceFedWaterKeys(map),rate=Math.max(0,Number(amount||0));let evaporated=0,changedTiles=0;
-    for(const tile of map.tiles){const before=waterDepth(tile);if(before<=EPSILON)continue;const floor=protectedDepth(tile,fed),removable=Math.max(0,before-floor);if(removable<=EPSILON)continue;const removed=Math.min(removable,rate);if(removed<=EPSILON)continue;tile.waterDepth=clean(before-removed);evaporated+=removed;changedTiles++;events.push({type:"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterDepth>0?elevation(tile)+tile.waterDepth:null,source});sync(tile,events);}
+    for(const tile of map.tiles){const before=waterDepth(tile);if(before<=EPSILON)continue;const floor=protectedDepth(tile,fed),removable=Math.max(0,before-floor);if(removable<=EPSILON)continue;
+      // Evaporation is proportional to exposed water area. A narrow channel
+      // occupies less area than a flooded tile; its width evolves with level.
+      // The existing 3x3 terrain geometry remains the rendering authority.
+      const bankHeight=Number(tile.channelBankElevation);
+      const bankDepth=Number.isFinite(bankHeight)?Math.max(.15,bankHeight-elevation(tile)):1;
+      const baseWidth=clamp(Number(tile.hydrologyChannelWidthFraction??.40),.15,.85);
+      const wetFraction=tile.river===true?clamp(baseWidth+(1-baseWidth)*(before/bankDepth),baseWidth,1):1;
+      const removed=Math.min(removable,rate*wetFraction);if(removed<=EPSILON)continue;
+      tile.waterDepth=clean(before-removed);evaporated+=removed;changedTiles++;events.push({type:"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterDepth>0?elevation(tile)+tile.waterDepth:null,source});sync(tile,events);}
     if(changedTiles){redistribute(map,{source,events});events.push({type:"SURFACE_WATER_EVAPORATED",source,changedTiles,amount:clean(evaporated)});}return events;
   }
 
@@ -1806,7 +1861,7 @@ export const HydrologyEngine=(()=>{
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     PLAIN_INFILTRATION_PER_TURN,FOREST_INFILTRATION_PER_TURN,MUD_INFILTRATION_PER_TURN,SAND_INFILTRATION_PER_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });

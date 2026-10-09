@@ -23,6 +23,20 @@ export const ClimateEngine=(()=>{
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
   const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
+  // Daylight affects solar evaporation without creating another water store.
+  // Even the strongest sun card has less evaporation at night than in daylight.
+  function evaporationExposure(state,map=null){
+    const daylight=state?.timeOfDay==="NIGHT"?.38:1.20;
+    const heat=Math.max(0,Number(state?.climate?.heat?.intensity||0));
+    const cloud=precipitationType(state)!=="NONE"?.45:fogIntensity(state)>0?.60:1;
+    const wind=Math.min(1.25,1+windStrength(state)*.025);
+    const turn=Math.max(0,Number(state?.climate?.turn||0));
+    // Smooth small fluctuations; do not re-roll evaporation independently for
+    // each tile or make evaporation change wildly between adjacent turns.
+    const phase=(Number(map?.seed||0)>>>0)*.00000013;
+    const variation=.95+.05*Math.sin(turn*.65+phase);
+    return Math.max(.04,daylight*(1+heat*1.75)*cloud*wind*variation);
+  }
   function precipitationType(state){
     const type=state?.climate?.precipitation?.type;
     if(type)return type;
@@ -95,9 +109,8 @@ export const ClimateEngine=(()=>{
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
 
     if(precipitationType(state)==="NONE"&&window.HydrologyEngine?.evaporateUnfedWater){
-      const fogFactor=fogIntensity(state)>0?.5:1;
       const evaporation=HydrologyEngine.evaporateUnfedWater(map,{
-        amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*fogFactor*Number(cfg.evaporation||1),
+        amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*evaporationExposure(state,map),
         source:"CLIMATE_EVAPORATION"
       });
       events.push(...evaporation);
@@ -146,6 +159,6 @@ export const ClimateEngine=(()=>{
     return events;
   }
 
-  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
+  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,evaporationExposure,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
 })();
 globalThis.ClimateEngine=ClimateEngine;

@@ -22,7 +22,10 @@ function create(ctx){
     if(CardDatabase.isCharacter(card))return hasDeploymentTile(s);
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER")return true;
-    return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0;
+    // Targeted magic requires an actual friendly observer. No observer means
+    // a player cannot fire a tornado at the enemy core from the opening hand.
+    return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0&&
+      (s.units||[]).some(unit=>unit?.alive&&unit.team===TEAM.PLAYER);
   }
   function hasPlayableCard(){
     const s=state();
@@ -50,7 +53,7 @@ function create(ctx){
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER"){
-      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
+      if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false,source:"CARD"}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }
     if(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD","WHIRLPOOL"].includes(card.effect?.type)){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
     return false;
@@ -104,7 +107,13 @@ function create(ctx){
   }
 
   function resolveAt(card,center){
-    const s=state();if(resolvingPresentation||!card||s.phase!==PHASE.CARD||ctx.getPendingCard()!==card)return false;const effect=card.effect||{},centerTile=TacticalEngine.tile(s.map,center.x,center.y);if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
+    const s=state();if(resolvingPresentation||!card||s.phase!==PHASE.CARD||ctx.getPendingCard()!==card)return false;const effect=card.effect||{},centerTile=TacticalEngine.tile(s.map,center.x,center.y);
+    // Authority belongs at the commit boundary, NOT to the client highlight.
+    // All area spells (including tornado/meteor/flood) need current team LOS.
+    if(!centerTile||!TacticalEngine.teamCanSee(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState)){
+      ctx.pushLog(`${card.name} 無法施放：該位置不在己方目前視野內。`,"SYSTEM");return false;
+    }
+    if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
     const presentation=effect.presentation||null;
     if(effect.type==="AREA_DAMAGE"){
       const generation=++presentationGeneration;

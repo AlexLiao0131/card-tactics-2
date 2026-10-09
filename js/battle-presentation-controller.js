@@ -24,17 +24,21 @@ function create(ctx){
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function visibilityModel(){
     const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`)),observers=viewerObservers(s);
+    // Deployment planning preserves the full terrain view until a friendly
+    // observer exists. Once deployed, battle fog is permanent and independent
+    // from weather FOG; the latter only reduces existing LOS range.
     if(!observers.length)return{active:false,visible:allVisible,observerless:true};
-    if(!s.environmentState||!window.EnvironmentEngine?.visionRange)return{active:false,visible:allVisible,observerless:false};
-    const limit=Number(EnvironmentEngine.visionRange(s.environmentState)),globalLimited=Number.isFinite(limit);
-    if(!globalLimited)return{active:false,visible:allVisible,observerless:false};
-    const visible=new Set();for(const tile of s.map.tiles||[])if(observers.some(observer=>(observer.x===tile.x&&observer.y===tile.y)||TacticalEngine.canSee(s.map,observer,tile,s.environmentState)))visible.add(`${tile.x},${tile.y}`);return{active:true,visible,observerless:false};
+    const visible=new Set();for(const tile of s.map.tiles||[])
+      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState))
+        visible.add(`${tile.x},${tile.y}`);
+    return{active:true,visible,observerless:false};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
   function unitVisibleToPlayer(unit,visibility=visibilityModel()){
     if(!unit?.alive)return false;
     if(unit.team===viewerTeam)return true;
-    if(visibility.observerless)return true;
+    // Show the terrain for deployment planning, not undiscovered enemy units.
+    if(visibility.observerless)return false;
     const s=ctx.state(),observers=viewerObservers(s);
     if(!visibility.active){
       if(globalThis.EffectEngine?.isStealthed?.(unit))return observers.some(observer=>TacticalEngine.canSee(s.map,observer,unit,s.environmentState));
@@ -95,7 +99,7 @@ function create(ctx){
     return[...environmentLights,...equipmentLightSources(s)].map(light=>({...light,visible:visibility.observerless||viewerObservers(s).some(observer=>TacticalEngine.canSeeLight(s.map,observer,light,s.environmentState)),transmission:visibility.observerless?1:Math.max(0,...viewerObservers(s).map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))}));
   }
   function battleSnapshot(){
-    const s=ctx.state(),visibility=visibilityModel(),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetableEntities(s.selected,s.selectedSkill):[],targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="map-target"&&s.selectedSkill?ctx.mapTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),reachable:reachable.has(tile.x+","+tile.y),targetRange:targetRange.includes(tile),attackable,deployable,inspected:!!(s.inspectedTile&&s.inspectedTile.x===tile.x&&s.inspectedTile.y===tile.y),effects:effects.map(effect=>effect.type),effectDetails:effects.map(effect=>({
+    const s=ctx.state(),visibility=visibilityModel(),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetableEntities(s.selected,s.selectedSkill):[],targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="map-target"&&s.selectedSkill?ctx.mapTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&tileVisible(tile,visibility)&&visibility.active&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),reachable:reachable.has(tile.x+","+tile.y),targetRange:targetRange.includes(tile),attackable,deployable,inspected:!!(s.inspectedTile&&s.inspectedTile.x===tile.x&&s.inspectedTile.y===tile.y),effects:effects.map(effect=>effect.type),effectDetails:effects.map(effect=>({
       type:String(effect?.type||""),
       intensity:effect?.intensity==null?null:Number(effect.intensity),
       duration:effect?.duration==null?null:Number(effect.duration),

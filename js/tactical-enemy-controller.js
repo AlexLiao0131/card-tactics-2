@@ -31,6 +31,7 @@
       };
 
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
+        TacticalEngine.teamCanSee(ctx.map(),ctx.state().units,actor.team,target,ctx.actionState?.().environmentState||null)&&
         TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null)
       );
 
