@@ -305,6 +305,29 @@
       const sheetNode=tileKey?water?.sheetFlowNetwork?.get(tileKey):null;
       const sheetSolution=tileKey?water?.sheetFlowSurfaces?.get(tileKey):null;
       const sheetMesh=tileKey?water?.sheetFlowMeshes?.get(tileKey):null;
+      // Diagnose the actual rendering owner after rainfall changes D on slopes.
+      // A fixed corridor could previously be picked as an ordinary runoff
+      // even though the real terrain-clipped standing surface also existed.
+      const runoffMeshes=[...water?.runoffs?.values?.()||[]]
+        .map(entry=>entry?.mesh||entry).filter(mesh=>mesh&&!mesh.isDisposed?.());
+      const legacyNonCascadeRunoffs=runoffMeshes.filter(mesh=>
+        mesh.metadata?.triangleClippedSurfaceFlow===true);
+      const localLegacyRunoffs=legacyNonCascadeRunoffs
+        .filter(mesh=>String(mesh.name||'').includes(`${tileKey}->`)||String(mesh.name||'').includes(`->${tileKey}`));
+      const standingPolygons=worldTile&&Number(worldTile.waterDepth||0)>0
+        ?water?.waterSurfacePolygons?.(worldTile,lookup)||[]:[];
+      const renderOwnership=tileKey?{
+        tileKey,gameplayWaterDepth:Number(worldTile?.waterDepth||0),
+        surfaceOwner:Number(worldTile?.waterDepth||0)>0?'STORED_TERRAIN_CLIPPED_SURFACE'
+          :sheetMesh?'Q_ONLY_TERRAIN_SHEET':'NO_RENDERED_SURFACE',
+        localStoredWaterPolygons:standingPolygons.length,
+        totalStoredSurfaceMeshes:water?.surfaceMeshes?.size??null,
+        activeSheetFlowMeshes:water?.sheetFlowMeshes?.size??null,
+        totalRunoffMeshes:runoffMeshes.length,
+        legacyNonCascadeRunoffMeshes:legacyNonCascadeRunoffs.length,
+        localLegacyRunoffMeshNames:localLegacyRunoffs.map(mesh=>mesh.name),
+        remainingCliffJunctionRunoffs:runoffMeshes.filter(mesh=>mesh.metadata?.cascade===true).length
+      }:null;
       // Sample the SAME polygons consumed by buildSheetFlow. A missing wet
       // polygon proves a dry/clipped point; it is not evidence of occlusion.
       const sampleSheet=()=>{
@@ -365,6 +388,7 @@
         seed:currentSeed,springMode:doc.getElementById("testLabSpring")?.value,
         meshName:mesh?.name||null,meshKind:metadata.kind||null,
         pickedTerrainMeshName:terrainHit?.hit?terrainHit.pickedMesh?.name:null,
+        renderOwnership,
         sheetFlow:sheetFlowDiagnosis,
         visibleWaterMeshPicked:!!mesh,
         terrainOccludesWater:!!(waterHit?.hit&&terrainHit?.hit&&terrainHit.distance+0.0001<waterHit.distance),
