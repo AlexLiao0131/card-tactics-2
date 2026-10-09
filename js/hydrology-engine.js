@@ -704,85 +704,22 @@ export const HydrologyEngine=(()=>{
       >=elevation(to)+waterDepth(to);
   }
 
-  // Supply pulses from a generated OFF_MAP_SOURCE travel through the authored
-  // channel graph. Capacity-limited edges retain ONLY the water that could not
-  // leave this turn. The conserved volume is either stored or discharged at a
-  // real outlet; it is never manufactured as D=1 on every traversed tile.
-  function routeGeneratedRiverPulse(map,sourceTile,volume,scale,by,budgets,events,source){
-    // Use the SAME persistent Hydrology Q edges as WaterRenderer, not a second
-    // `flowX/flowY` path. Real branches/confluences share a single edge budget.
-    const pending=[{tile:sourceTile,volume,path:new Set()}];
-    let drained=0,stored=0,steps=0;
-    const deposit=(tile,amount)=>{
-      const v=clean(amount);
-      if(v<=0)return;
-      setWaterDepth(tile,waterDepth(tile)+v,events,source);
-      stored=clean(stored+v);
-    };
-    while(pending.length&&steps++<Math.max(32,(map.tiles?.length||0)*8)){
-      const {tile,volume:carry,path}=pending.shift();
-      if(carry<=0)continue;
-      const k=key(tile.x,tile.y);
-      if(path.has(k)){deposit(tile,carry);continue;}
-      const seen=new Set(path);seen.add(k);
-      const atDrain=tile.hydrologyDrain===true||tile.drain===true||
-        (tile.river!==true&&(map.generated===true||map.hydrology?.openBoundary===true)&&isBoundaryTile(map,tile));
-      const links=atDrain?[]:Object.values(tile.hydrologyEdgeDischarge||{})
-        .filter(edge=>Number(edge?.rate||0)>EPSILON)
-        .map(edge=>({edge,to:by.get(key(Number(edge.toX),Number(edge.toY)))}))
-        .filter(({to})=>!!to&&!seen.has(key(to.x,to.y))&&riverRouteHasHead(tile,to))
-        .sort((a,b)=>Number(b.edge.rate)-Number(a.edge.rate));
-      if(!atDrain&&!links.length){deposit(tile,carry);continue;}
-      const capacity=atDrain?(tile.river===true
-          ?Number(tile.outletEffectiveCapacity??tile.channelCapacity??0):Infinity)
-        :tile.river===true?Number(tile.channelCapacity??0):Infinity;
-      const tileBudgetKey=`tile:${k}`;
-      const initialCapacity=Number.isFinite(capacity)?clean(Math.max(0,capacity)*scale):carry;
-      const budget=budgets.has(tileBudgetKey)?budgets.get(tileBudgetKey):initialCapacity;
-      const allowed=clean(Math.min(carry,Math.max(0,budget)));
-      budgets.set(tileBudgetKey,clean(Math.max(0,budget-allowed)));
-      deposit(tile,Math.max(0,carry-allowed));
-      if(allowed<=0)continue;
-      if(atDrain){drained=clean(drained+allowed);continue;}
-      let remaining=allowed;
-      for(const {edge,to} of links){
-        if(remaining<=0)break;
-        const linkKey=`edge:${k}->${to.x},${to.y}`;
-        const edgeBudget=budgets.has(linkKey)?budgets.get(linkKey)
-          :clean(Math.max(0,Number(edge.rate||0))*scale);
-        const sent=clean(Math.min(remaining,Math.max(0,edgeBudget)));
-        if(sent<=0)continue;
-        budgets.set(linkKey,clean(Math.max(0,edgeBudget-sent)));
-        pending.push({tile:to,volume:sent,path:seen});
-        remaining=clean(Math.max(0,remaining-sent));
-      }
-      if(remaining>0)deposit(tile,remaining);
-    }
-    for(const parcel of pending)deposit(parcel.tile,parcel.volume);
-    events.push({type:"RIVER_SOURCE_THROUGHFLOW",source,x:sourceTile.x,y:sourceTile.y,
-      inflowVolume:volume,drainedVolume:drained,storedVolume:stored,
-      waterBudgetConserved:Math.abs(volume-drained-stored)<=FLOW_EPSILON});
-    return{drained,stored};
-  }
-
   function advanceSources(map,{events=[],source="SOURCE_INFLOW",volumeScale=DISCHARGE_VOLUME_PER_TURN,redistributeAfter=true}={}){
     if(!map?.tiles?.length)return events;
     const scale=Math.max(0,Number(volumeScale||0));
-    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
-    const throughputBudgets=new Map();
     let injectedVolume=0,sourceCount=0,storedVolume=0,drainedVolume=0;
     for(const tile of activeSourceTiles(map)){
       const rate=Math.max(0,sourceDemandRate(tile));
       const volume=clean(rate*scale);
       if(volume<=EPSILON)continue;
       injectedVolume=clean(injectedVolume+volume);sourceCount++;
-      if(map.hydrology?.generatedRiverProfile===true&&tile.hydrologyTransportInitialized===true&&tile.sourceKind==="OFF_MAP_SOURCE"){
-        const result=routeGeneratedRiverPulse(map,tile,volume,scale,by,throughputBudgets,events,source);
-        storedVolume=clean(storedVolume+result.stored);drainedVolume=clean(drainedVolume+result.drained);
-      }else{
-        setWaterDepth(tile,waterDepth(tile)+volume,events,source);
-        storedVolume=clean(storedVolume+volume);
-      }
+      // A pre-eroded channel must actually carry and retain water. Source Q
+      // is not enough: stamping its full pulse directly at the off-map drain
+      // leaves every intervening reach dry. Insert the conserved volume into
+      // the actual riverbed D store and let the existing head/flow/outlet
+      // solver route it. No duplicate water state or invented baseline depth.
+      setWaterDepth(tile,waterDepth(tile)+volume,events,source);
+      storedVolume=clean(storedVolume+volume);
       events.push({type:"HYDROLOGY_SOURCE_INFLOW",x:tile.x,y:tile.y,source,rate,volume,
         waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile)});
     }
@@ -955,6 +892,10 @@ export const HydrologyEngine=(()=>{
       const aSnap=snapshots.get(key(tile.x,tile.y));
       for(const[dx,dy]of FLOW_DIRS){
         const other=by.get(key(tile.x+dx,tile.y+dy));if(!other||!canHoldWater(other))continue;
+        // Authored rivers move physical D along their existing directed Q network
+        // once per hydrology step. Numerical lake equilibration must not move it
+        // through an entire river in 256 solver iterations in the same turn.
+        if(map.hydrology?.generatedRiverProfile===true&&tile.river===true&&other.river===true)continue;
         const bSnap=snapshots.get(key(other.x,other.y));
         const minA=fed.has(key(tile.x,tile.y))?baselineDepth(tile):0,minB=fed.has(key(other.x,other.y))?baselineDepth(other):0;
         const target=pairTargetDepths(tile,other,aSnap.depth,bSnap.depth,minA,minB);
@@ -1408,7 +1349,53 @@ export const HydrologyEngine=(()=>{
     return clean(absorbed);
   }
 
+  // Generated channels have a finite residence time. Route only the D that
+  // physically exists at the START of this hydrology step, once per directed
+  // edge. Source water cannot teleport across the entire river to the outlet.
+  // Existing Q edges supply direction/capacity; D is the ONLY volume store.
+  function releaseGeneratedRiverStorage(map,events,source,volumeScale){
+    const by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
+    const delta=new Map();
+    let moved=0,edges=0;
+    for(const tile of map.tiles||[]){
+      if(tile?.river!==true||tile.hydrologyDrain===true)continue;
+      const dx=Math.sign(Number(tile.flowX||0)),dy=Math.sign(Number(tile.flowY||0));
+      if(Math.abs(dx)+Math.abs(dy)!==1)continue;
+      const next=by.get(key(tile.x+dx,tile.y+dy));
+      if(next?.river!==true||!riverRouteHasHead(tile,next))continue;
+      const currentDepth=waterDepth(tile);
+      const available=Math.max(0,currentDepth-baselineDepth(tile));
+      if(available<=EPSILON)continue;
+      // Stored water can still drain after a spring is stopped. It has real
+      // hydrostatic head and a real outlet; zero external source Q does not
+      // lock a filled pool forever.
+      const surfaceHead=Math.max(0,elevation(tile)+currentDepth-elevation(next)-waterDepth(next));
+      const gravityRate=surfaceHead>EPSILON
+        ?Math.min(Math.max(0,Number(tile.channelCapacity||0)),Math.sqrt(2*9.81*surfaceHead)*.45):0;
+      const rate=Math.max(0,Number(tile.hydrologyOutflowRate||0),gravityRate);
+      if(rate<=EPSILON)continue;
+      const capacityVolume=rate*Math.max(0,Number(volumeScale||0));
+      // A fraction of moving water stays in each channel reach for this turn.
+      // This is actual conserved D, not a protected/prefilled minimum depth.
+      const residenceFactor=tile.ford===true?.88:.64;
+      const sent=clean(Math.min(available*residenceFactor,capacityVolume));
+      if(sent<=EPSILON)continue;
+      const sourceKey=key(tile.x,tile.y),destKey=key(next.x,next.y);
+      delta.set(sourceKey,(delta.get(sourceKey)||0)-sent);
+      delta.set(destKey,(delta.get(destKey)||0)+sent);
+      moved+=sent;edges++;
+    }
+    for(const [k,change] of delta){
+      const tile=by.get(k);
+      if(tile)setWaterDepth(tile,waterDepth(tile)+change,events,source);
+    }
+    if(edges)events.push({type:"RIVER_STORED_FLOW",source,edges,moved:clean(moved),drained:0});
+    return edges?[{tiles:edges,moved:clean(moved),drained:0}]:[];
+  }
+
   function releaseStoredRiverWater(map,events=[],source="RIVER_RECESSION",volumeScale=DISCHARGE_VOLUME_PER_TURN){
+    if(map?.hydrology?.generatedRiverProfile===true)
+      return releaseGeneratedRiverStorage(map,events,source,volumeScale);
     const reports=[];
     for(const component of riverComponents(map)){
       const by=new Map(component.map(tile=>[key(tile.x,tile.y),tile]));
