@@ -343,6 +343,11 @@
         wetTriangleCount:sheetSolution?.polygons?.length??0,
         sheetFlowWetArea:sheetSolution?.wetArea??null,
         sheetFlowMaxDepth:sheetSolution?.maxDepth??null,
+        actualMeshMaterialName:sheetMesh?.material?.name??null,
+        actualMeshVertexAlphaMin:sheetMesh?.metadata?.minVertexAlpha??null,
+        actualMeshVertexAlphaMax:sheetMesh?.metadata?.maxVertexAlpha??null,
+        usingSharedWaterSurfaceMaterial:sheetMesh?.material===water?.surfaceMaterial,
+        legacySourceRibbonMeshes:water?.sourceFootprints?.size??null,
         targetVolumeProxy:sheetSolution?.targetVolume??null,
         resolvedVolumeProxy:sheetSolution?.volumeProxyAfterSeam??null,
         localSurfaceSample:sampleSheet()
@@ -356,7 +361,11 @@
         visibleWaterMeshPicked:!!mesh,
         terrainOccludesWater:!!(waterHit?.hit&&terrainHit?.hit&&terrainHit.distance+0.0001<waterHit.distance),
         waterHitDistance:waterHit?.hit?waterHit.distance:null,
+        actualWaterHitY:waterHit?.hit?waterHit.pickedPoint?.y??null:null,
         terrainHitDistance:terrainHit?.hit?terrainHit.distance:null,
+        actualWaterHitHeightMinusTerrain:waterHit?.hit&&terrainHit?.hit
+          ?Number(waterHit.pickedPoint.y)-Number(terrainHit.pickedPoint.y):null,
+        terrainHitIsInspectionAnchor:true,
         worldPoint:pos?{x:pos.x,y:pos.y,z:pos.z}:null,
         renderedTerrainYAtPoint:measuredGroundY,
         waterHeightMinusTerrain:pos&&Number.isFinite(measuredGroundY)?pos.y-measuredGroundY:null,
