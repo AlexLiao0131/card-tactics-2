@@ -18,7 +18,8 @@
   <script type="module">
     const {TILE_SIZE,ELEVATION_HEIGHT}=await import("./js/coordinate-system.js");
     const frame=document.getElementById("game"),boot=document.getElementById("boot");
-    let markerRaf=0,refreshing=false,currentSeed=null,latestHydrologyLog=null;
+    let markerRaf=0,refreshing=false,advancing=false,currentSeed=null,latestHydrologyLog=null;
+    let environmentHistory=[],lastInspectedTileKey=null;
 
     const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     const waitFor=async test=>{
@@ -63,6 +64,16 @@
         .water-inspect-panel button{padding:5px 8px;min-height:30px;border:1px solid #8ca1bb;border-radius:6px;background:#182332;color:#fff}
         .water-inspect-panel pre{margin:0;padding:9px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.5 ui-monospace,monospace;user-select:text;-webkit-user-select:text}
         .test-lab-toolbar button.inspection-on{background:#175a57;border-color:#61e7d1}
+        .test-lab-weather-panel{position:absolute;top:76px;left:8px;z-index:185;width:min(410px,calc(100vw - 16px));max-height:62vh;overflow:auto;display:none;padding:10px;gap:8px;flex-direction:column;border:1px solid #8babbc;border-radius:10px;background:#07111bf5;box-shadow:0 8px 30px #000b;pointer-events:auto}
+        .test-lab-weather-panel.open{display:flex}
+        .test-lab-weather-panel .weather-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+        .test-lab-weather-panel label{font-size:11px;color:#d8e5ed;display:flex;align-items:center;gap:5px}
+        .test-lab-weather-panel select,.test-lab-weather-panel input,.test-lab-weather-panel button{min-height:34px;padding:5px 7px;border:1px solid #66839b;border-radius:7px;background:#172b3b;color:#fff;font-weight:750}
+        .test-lab-weather-panel button{border-color:#e0c175;white-space:nowrap}
+        .test-lab-weather-panel button:disabled{opacity:.5}
+        #testLabWeatherTurns{width:53px}
+        #testLabWeatherStatus{font:11px/1.45 system-ui,sans-serif;color:#aee4ff}
+        #testLabTimelineText{margin:0;padding:7px;max-height:23vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #344d64;border-radius:6px;background:#020b13;color:#c7e6f5;font:10px/1.4 ui-monospace,monospace}
         .hydrology-test-marker-layer{position:absolute;z-index:170;inset:0;pointer-events:none;overflow:hidden}
         .hydrology-test-marker{position:absolute;left:0;top:0;transform:translate(-50%,-100%);padding:4px 6px;border:1px solid #fff8;border-radius:7px;background:#07111be8;box-shadow:0 3px 14px #000a;color:#fff;font-size:9px;font-weight:900;line-height:1.15;white-space:nowrap;text-shadow:0 1px 2px #000}
         .hydrology-test-marker:after{content:"";position:absolute;left:50%;top:100%;height:18px;border-left:2px solid currentColor;opacity:.8}
@@ -76,6 +87,8 @@
           .test-lab-seed{width:100px}.test-lab-info{font-size:8px}.test-lab-legend{display:none}
           body.card-tactics-test-mode .battle-view-controls{top:82px!important}
           .hydrology-test-marker{font-size:8px;padding:3px 5px}
+          .test-lab-weather-panel{top:122px;max-height:65vh}
+          .test-lab-weather-panel button,.test-lab-weather-panel select{font-size:11px}
         }
       `;
       doc.head.appendChild(style);
@@ -116,12 +129,45 @@
           <button id="testLabRebuild" type="button">重建 Seed</button>
           <label style="font-size:10px;color:#e2eef9">泉眼 <select id="testLabSpring" aria-label="泉眼生成模式"><option value="ALWAYS" selected>強制產生</option><option value="RANDOM">自然機率</option><option value="NEVER">不產生</option></select></label>
           <button id="testLabInspect" type="button" class="inspection-on" aria-pressed="true">點選診斷：開</button>
+          <button id="testLabWeatherToggle" type="button" aria-expanded="false">🌧 氣候／回合</button>
           <div>
             <div class="test-lab-title">TEST LAB｜水文</div>
             <div id="testLabInfo" class="test-lab-info">XLARGE 32×22｜等待生成</div>
             <div class="test-lab-legend"><span><i style="background:#ffd768"></i>入口</span><span><i style="background:#65e6ff"></i>泉眼</span><span><i style="background:#ff7d7d"></i>出口</span></div>
           </div>`;
         battle.appendChild(toolbar);
+      }
+      let weatherPanel=doc.getElementById("testLabWeatherPanel");
+      if(!weatherPanel){
+        weatherPanel=doc.createElement("section");weatherPanel.id="testLabWeatherPanel";weatherPanel.className="test-lab-weather-panel";
+        weatherPanel.innerHTML=`
+          <strong style="font-size:13px;color:#fff0c5">正式水文｜氣候與環境回合</strong>
+          <div class="weather-row">
+            <label>天氣 <select id="testLabWeather" aria-label="測試天氣">
+              <option value="CLEAR">晴朗</option><option value="RAIN">小雨</option><option value="HEAVY_RAIN" selected>豪雨（降雨卡對應）</option>
+              <option value="THUNDERSTORM">雷雨</option><option value="TYPHOON">颱風</option>
+              <option value="SNOW">降雪</option><option value="BLIZZARD">暴風雪</option>
+              <option value="FOG">迷霧</option><option value="SCORCHING_SUN">烈日</option>
+            </select></label>
+            <label>持續 <input id="testLabWeatherTurns" type="number" min="1" max="99" value="5" inputmode="numeric" /> 回合</label>
+          </div>
+          <div class="weather-row">
+            <label>套用方式 <select id="testLabWeatherMode"><option value="CARD" selected>同氣候卡（下回合降雨）</option><option value="PULSE">TEST 即時脈衝</option></select></label>
+            <button id="testLabApplyWeather" type="button">設定天氣</button>
+          </div>
+          <div class="weather-row">
+            <label>風向 <select id="testLabWindDirection"><option value="CALM" selected>無風</option><option value="N">北向</option><option value="NE">東北</option><option value="E">東向</option><option value="SE">東南</option><option value="S">南向</option><option value="SW">西南</option><option value="W">西向</option><option value="NW">西北</option></select></label>
+            <label>風力 <input id="testLabWindStrength" type="number" min="0" max="8" step="0.5" value="1" inputmode="decimal" style="width:55px" /></label>
+            <button id="testLabApplyWind" type="button">設定風況</button>
+          </div>
+          <div class="weather-row">
+            <button id="testLabAdvanceOne" type="button">環境回合 +1</button>
+            <button id="testLabAdvanceFive" type="button">環境回合 +5</button>
+            <button id="testLabCopyTimeline" type="button">複製水文變化 LOG</button>
+          </div>
+          <div id="testLabWeatherStatus" role="status">只推進環境時間，不跑敵方 AI／戰棋回合。</div>
+          <pre id="testLabTimelineText">尚未推進環境回合。</pre>`;
+        battle.appendChild(weatherPanel);
       }
       let layer=doc.getElementById("hydrologyTestMarkers");
       if(!layer){layer=doc.createElement("div");layer.id="hydrologyTestMarkers";layer.className="hydrology-test-marker-layer";battle.appendChild(layer);}
@@ -132,7 +178,12 @@
         battle.appendChild(panel);
       }
       return{
-        toolbar,layer,panel,
+        toolbar,layer,panel,weatherPanel,weatherToggle:doc.getElementById("testLabWeatherToggle"),
+        weather:doc.getElementById("testLabWeather"),weatherTurns:doc.getElementById("testLabWeatherTurns"),
+        weatherMode:doc.getElementById("testLabWeatherMode"),
+        windDirection:doc.getElementById("testLabWindDirection"),windStrength:doc.getElementById("testLabWindStrength"),applyWind:doc.getElementById("testLabApplyWind"),
+        applyWeather:doc.getElementById("testLabApplyWeather"),advanceOne:doc.getElementById("testLabAdvanceOne"),
+        advanceFive:doc.getElementById("testLabAdvanceFive"),copyTimeline:doc.getElementById("testLabCopyTimeline"),
         spring:doc.getElementById("testLabSpring"),
         inspect:doc.getElementById("testLabInspect"),
         refresh:doc.getElementById("testLabRefresh"),
@@ -190,7 +241,8 @@
     }
 
     async function generateTestMap(win,doc,{reuseSeed=false}={}){
-      if(refreshing)return;refreshing=true;
+      if(refreshing||advancing)return;refreshing=true;
+      environmentHistory=[];lastInspectedTileKey=null;latestHydrologyLog=null;
       const runtime=win.CardTacticsRuntime,{refresh,rebuild,seed:seedInput,info,spring}=ensureOverlay(doc);
       refresh.disabled=true;rebuild.disabled=true;
       const requested=reuseSeed?normalizeSeed(seedInput.value):null;
@@ -203,11 +255,13 @@
         // ALWAYS bypasses only the probability gate, not terrain constraints.
         win.CardTacticsBattleSetup={stageId:"versus_core_battle",mapSize:"XLARGE",seed,hydrologyTest:true,springMode:spring.value};
         runtime.resetBattle();
-        runtime.debug?.setWeather?.("CLEAR",999);
+        runtime.debug?.setWeather?.("CLEAR",999,{applyPulse:false});
         runtime.debug?.setWind?.("CALM",0);
         showBattle(doc,win);
         await new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
         rebuildMarkers(doc,runtime);
+        recordHydrologyFrame(win,runtime,"重建地圖");
+        refreshWeatherPanel(win,doc,runtime);
         const records=markerRecords(runtime),entries=records.filter(r=>r.kind==="entry").length,springs=records.filter(r=>r.kind==="spring").length,outlets=records.filter(r=>r.kind==="outlet").length;
         const elapsed=Math.round(performance.now()-started);
         info.textContent=`XLARGE 32×22｜Seed ${seed}｜泉眼模式 ${spring.options[spring.selectedIndex].text}｜入口 ${entries}｜泉眼 ${springs}｜出口 ${outlets}｜${elapsed} ms${spring.value==="ALWAYS"&&!springs?"｜此 Seed 無符合原生規則的泉眼位置":""}`;
@@ -220,7 +274,106 @@
       }
     }
 
-    // The test page reads the live Renderer and Hydrology; it never mutates game state.
+    // TEST LAB only invokes the actual Battle Runtime's debug hooks to advance
+    // game weather and hydrology. No second weather scheduler or flow engine.
+    function hydrologyFrame(win,runtime,label){
+      const map=runtime.getBattleMap?.(),tiles=map?.tiles||[],engine=win.HydrologyEngine,water=win.CardTacticsRenderer?.water;
+      const sum=(values)=>values.reduce((a,b)=>a+Number(b||0),0);
+      const persistent=tiles.flatMap(tile=>Object.values(tile.hydrologyEdgeDischarge||{}));
+      const solver=tiles.flatMap(tile=>Object.values(tile.hydrologyEdgeOutflows||{}));
+      const debug=runtime.debug?.state?.()||{};
+      const focus=lastInspectedTileKey;
+      const [sx,sy]=focus?.split(",").map(Number)||[];
+      const nearby=focus?tiles.filter(t=>Math.abs(t.x-sx)+Math.abs(t.y-sy)<=1)
+        .map(t=>({x:t.x,y:t.y,terrain:t.terrain,D:Number(t.waterDepth||0),soil:Number(engine?.soilMoisture?.(t)??t.soilMoisture??0),
+          persistentQ:sum(Object.values(t.hydrologyEdgeDischarge||{}).map(e=>e.rate)),
+          solverQ:sum(Object.values(t.hydrologyEdgeOutflows||{}).map(e=>e.rate))})):[];
+      return{
+        label,seed:currentSeed,environmentStep:Number(debug.environmentSteps||0),gameRound:debug.round??null,
+        weather:debug.weather,remainingWeatherTurns:debug.weatherTurnsRemaining??null,climate:debug.climate||null,
+        wetTiles:tiles.filter(t=>Number(t.waterDepth||0)>0.0001).length,
+        gameplayWaterVolume:engine?.surfaceWaterVolume?.(map)??sum(tiles.map(t=>Math.max(0,Number(t.waterDepth||0)))),
+        soilWaterVolume:engine?.soilWaterVolume?.(map)??sum(tiles.map(t=>Math.max(0,Number(engine?.soilMoisture?.(t)??t.soilMoisture??0)))),
+        persistentQEdges:persistent.length,persistentQTotalRate:sum(persistent.map(e=>e.rate)),
+        solverQEdges:solver.length,solverQTotalRate:sum(solver.map(e=>e.rate)),
+        sourceRouting:map?.hydrologyPersistentDischargeSummary||null,
+        storedWaterMeshes:water?.surfaceMeshes?.size??null,
+        sheetFlowMeshes:water?.sheetFlowMeshes?.size??null,
+        waterfallMeshes:water?.cascades?.size??null,
+        cliffJunctionRunoffs:water?.runoffs?.size??null,
+        inspectedTileKey:focus,nearbyTiles:nearby,
+        officialSystemLog:runtime.getBattleLog?.("SYSTEM")?.entries?.slice(-14)||[],
+        officialDetailLog:runtime.getBattleLog?.("DETAIL")?.entries?.slice(-14)||[]
+      };
+    }
+
+    function recordHydrologyFrame(win,runtime,label){
+      const item=hydrologyFrame(win,runtime,label);environmentHistory.push(item);
+      if(environmentHistory.length>60)environmentHistory.shift();
+      return item;
+    }
+
+    function refreshWeatherPanel(win,doc,runtime){
+      const status=doc.getElementById("testLabWeatherStatus"),out=doc.getElementById("testLabTimelineText");
+      if(!status||!out)return;
+      const last=environmentHistory.at(-1),debug=runtime.debug?.state?.()||{};
+      const fmt=v=>Number(v||0).toFixed(3);
+      status.textContent=`天氣 ${debug.weather||"?"}｜剩餘 ${debug.weatherTurnsRemaining??"—"}T｜環境推進 ${debug.environmentSteps||0} 回｜D ${fmt(last?.gameplayWaterVolume)}｜Soil ${fmt(last?.soilWaterVolume)}｜Q ${fmt(last?.persistentQTotalRate)}｜薄流 ${last?.sheetFlowMeshes??"—"}｜瀑布 ${last?.waterfallMeshes??"—"}`;
+      out.textContent=environmentHistory.slice(-10).map(item=>
+        `${item.label}｜步數 ${item.environmentStep}｜${item.weather}｜D ${fmt(item.gameplayWaterVolume)}｜土壤 ${fmt(item.soilWaterVolume)}｜Q ${fmt(item.persistentQTotalRate)}｜薄流 ${item.sheetFlowMeshes}｜瀑布 ${item.waterfallMeshes}`
+      ).join("\n")||"尚未推進環境回合。";
+    }
+
+    function setWeatherLabBusy(overlay,busy){
+      for(const control of [overlay.applyWeather,overlay.applyWind,overlay.advanceOne,overlay.advanceFive,overlay.refresh,overlay.rebuild,overlay.spring])if(control)control.disabled=busy;
+    }
+
+    async function applyWeatherInLab(win,doc,runtime){
+      if(refreshing||advancing)return;
+      const overlay=ensureOverlay(doc);
+      const weather=overlay.weather.value,turns=Math.max(1,Math.min(99,Math.floor(Number(overlay.weatherTurns.value)||5)));
+      const cardEquivalent=overlay.weatherMode.value==="CARD";
+      advancing=true;setWeatherLabBusy(overlay,true);
+      try{
+        const ok=runtime.debug?.setWeather?.(weather,turns,{applyPulse:!cardEquivalent});
+        if(!ok)throw new Error("正式 Battle Runtime 未能切換天氣");
+        await new Promise(resolve=>win.requestAnimationFrame(resolve));
+        recordHydrologyFrame(win,runtime,`天氣→${weather} (${cardEquivalent?"卡牌式":"即時"})`);
+        rebuildMarkers(doc,runtime);refreshWeatherPanel(win,doc,runtime);
+      }catch(error){doc.getElementById("testLabWeatherStatus").textContent=`天氣切換失敗：${error?.message||error}`;console.error(error);}
+      finally{advancing=false;setWeatherLabBusy(overlay,false);}
+    }
+
+    async function applyWindInLab(win,doc,runtime){
+      if(refreshing||advancing)return;
+      const overlay=ensureOverlay(doc),direction=overlay.windDirection.value;
+      const strength=direction==="CALM"?0:Math.max(0,Math.min(8,Number(overlay.windStrength.value)||0));
+      advancing=true;setWeatherLabBusy(overlay,true);
+      try{
+        if(!runtime.debug?.setWind?.(direction,strength))throw new Error("正式 Battle Runtime 未能設定風況");
+        await new Promise(resolve=>win.requestAnimationFrame(resolve));
+        recordHydrologyFrame(win,runtime,`風況→${direction} ${strength}`);refreshWeatherPanel(win,doc,runtime);
+      }catch(error){doc.getElementById("testLabWeatherStatus").textContent=`風況切換失敗：${error?.message||error}`;console.error(error);}
+      finally{advancing=false;setWeatherLabBusy(overlay,false);}
+    }
+
+    async function advanceWeatherInLab(win,doc,runtime,count){
+      if(refreshing||advancing)return;
+      const overlay=ensureOverlay(doc);advancing=true;setWeatherLabBusy(overlay,true);
+      try{
+        for(let step=0;step<count;step++){
+          if(!runtime.debug?.advanceEnvironmentTurns?.(1))throw new Error("正式 Battle Runtime 沒有可用的環境回合接口");
+          // Yield to the actual Babylon renderer each step so the water and
+          // cliff meshes are regenerated and the iPhone UI does not freeze.
+          await new Promise(resolve=>win.requestAnimationFrame(resolve));
+          const snapshot=recordHydrologyFrame(win,runtime,`環境回合 +${step+1}/${count}`);
+          rebuildMarkers(doc,runtime);refreshWeatherPanel(win,doc,runtime);
+          if(snapshot.environmentStep==null)break;
+        }
+      }catch(error){doc.getElementById("testLabWeatherStatus").textContent=`推進失敗：${error?.message||error}`;console.error(error);}
+      finally{advancing=false;setWeatherLabBusy(overlay,false);}
+    }
+
     function tileSnapshot(tile,hydrology){
       if(!tile)return null;
       const flux=field=>Object.fromEntries(Object.entries(tile[field]||{}).map(([dir,record])=>[dir,{
@@ -301,6 +454,7 @@
             Math.abs(streamPath[0].z-from.y*TILE_SIZE)<1e-6};
       }
       const tileKey=worldTile?`${worldTile.x},${worldTile.y}`:null;
+      if(tileKey)lastInspectedTileKey=tileKey;
       const water=renderer.water;
       const sheetNode=tileKey?water?.sheetFlowNetwork?.get(tileKey):null;
       const sheetSolution=tileKey?water?.sheetFlowSurfaces?.get(tileKey):null;
@@ -390,6 +544,10 @@
         pickedTerrainMeshName:terrainHit?.hit?terrainHit.pickedMesh?.name:null,
         renderOwnership,
         sheetFlow:sheetFlowDiagnosis,
+        environmentHistory:environmentHistory.slice(-10),
+        liveWeather:runtime.debug?.state?.()||null,
+        officialSystemLog:runtime.getBattleLog?.("SYSTEM")?.entries?.slice(-20)||[],
+        officialDetailLog:runtime.getBattleLog?.("DETAIL")?.entries?.slice(-20)||[],
         visibleWaterMeshPicked:!!mesh,
         terrainOccludesWater:!!(waterHit?.hit&&terrainHit?.hit&&terrainHit.distance+0.0001<waterHit.distance),
         waterHitDistance:waterHit?.hit?waterHit.distance:null,
@@ -466,6 +624,31 @@
         overlay.rebuild.onclick=()=>generateTestMap(win,doc,{reuseSeed:true});
         overlay.seed.onkeydown=event=>{if(event.key==="Enter")generateTestMap(win,doc,{reuseSeed:true});};
         overlay.spring.onchange=()=>generateTestMap(win,doc,{reuseSeed:true});
+        overlay.weatherToggle.onclick=()=>{
+          const isOpen=overlay.weatherPanel.classList.toggle("open");
+          overlay.weatherToggle.setAttribute("aria-expanded",String(isOpen));
+          if(isOpen){
+            // Mobile toolbar wraps into several rows; dock the climate controls
+            // below its ACTUAL bounding rect, never on top of the seed buttons.
+            const y=Math.max(8,overlay.toolbar.getBoundingClientRect().bottom-doc.getElementById("battleScreen").getBoundingClientRect().top+8);
+            overlay.weatherPanel.style.top=`${y}px`;
+            overlay.weatherPanel.style.maxHeight=`${Math.max(175,win.innerHeight-y-16)}px`;
+          }
+          refreshWeatherPanel(win,doc,win.CardTacticsRuntime);
+        };
+        overlay.applyWeather.onclick=()=>applyWeatherInLab(win,doc,win.CardTacticsRuntime);
+        overlay.applyWind.onclick=()=>applyWindInLab(win,doc,win.CardTacticsRuntime);
+        overlay.advanceOne.onclick=()=>advanceWeatherInLab(win,doc,win.CardTacticsRuntime,1);
+        overlay.advanceFive.onclick=()=>advanceWeatherInLab(win,doc,win.CardTacticsRuntime,5);
+        overlay.copyTimeline.onclick=async()=>{
+          const report={label:"Card Tactics 2 - Environment/Hydrology Timeline",seed:currentSeed,history:environmentHistory,
+            latestGameSystemLog:win.CardTacticsRuntime.getBattleLog?.("SYSTEM")?.entries||[],
+            latestGameDetailLog:win.CardTacticsRuntime.getBattleLog?.("DETAIL")?.entries||[]};
+          const content=JSON.stringify(report,null,2);
+          try{await navigator.clipboard.writeText(content);}
+          catch(_){const t=doc.createElement("textarea");t.value=content;t.style.position="fixed";t.style.left="-9999px";doc.body.appendChild(t);t.select();doc.execCommand("copy");t.remove();}
+          overlay.copyTimeline.textContent="已複製";
+        };
         installWaterInspection(win,doc,win.CardTacticsRuntime);
         await generateTestMap(win,doc,{reuseSeed:false});
         startMarkerLoop(win,doc,win.CardTacticsRuntime);
