@@ -1237,16 +1237,35 @@ export class WaterRenderer{
     const originX=Number(from.x)*TILE_SIZE,originZ=Number(from.y)*TILE_SIZE;
     const across=p=>(Number(p.x)-originX)*px+(Number(p.z)-originZ)*pz;
     for(const span of spans){
-      const distances=this.wallColumnDistances(span,metrics),columns=distances.map(d=>this.wallSampleAtDistance(metrics,d));
+      const lipDistances=this.wallColumnDistances(span,metrics);
+      // Each interval follows an actual registered rock segment. The intermediate
+      // samples are interpolated ON that segment, never on a guessed square edge.
+      // A partial wet span with only two end columns needs an interior water
+      // column; otherwise both feathered wet banks have zero alpha.
+      const distances=[];
+      for(let i=0;i<lipDistances.length;i++){
+        distances.push(lipDistances[i]);
+        if(i+1<lipDistances.length)distances.push((lipDistances[i]+lipDistances[i+1])*.5);
+      }
+      const columns=distances.map(d=>this.wallSampleAtDistance(metrics,d));
       if(columns.length<2)continue;
       const valid=[],base=positions.length/3,steps=8;
+      // Presentation width comes from THIS exact published cliff wet span, not
+      // from the tile-scale Q corridor. Stored-water spills can wet only part
+      // of an irregular lip, and their centre need not match the tile centre.
+      // Use the same wall samples as buildCascade; Q/D are never changed.
+      const lateral=columns.map(sample=>across(sample.lip));
+      const spanLeft=Math.min(...lateral),spanRight=Math.max(...lateral);
+      const spanCenter=(spanLeft+spanRight)*.5;
+      const spanHalfWidth=Math.max(EPSILON,(spanRight-spanLeft)*.5);
       // Column-major order guarantees every edge of the actual rugged lip/foot
       // is represented in the runoff approach and landing, too.
       for(let row=0;row<=steps;row++){
         const t=row/steps;
         for(const sample of columns){
           const seam=approach?sample.lip:sample.foot;
-          const sideDistance=across(sample.lip),side=sideDistance/width;
+          const sideDistance=across(sample.lip);
+          const side=(sideDistance-spanCenter)/spanHalfWidth;
           const anchor={x:(approach?from.x:to.x)*TILE_SIZE+px*sideDistance,
             z:(approach?from.y:to.y)*TILE_SIZE+pz*sideDistance};
           let targetPoint=anchor,fullPath=true;
@@ -1313,7 +1332,7 @@ export class WaterRenderer{
     const fromNetwork=this.sheetFlowNetwork?.get(keyOf(from.x,from.y));
     const toNetwork=this.sheetFlowNetwork?.get(keyOf(to.x,to.y));
     const publishedEdge=fromNetwork?.outgoing.find(item=>item.id===edge.id);
-    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="WATERLINE_TRIANGLE"||segment.endKind==="WATERLINE_TRIANGLE"),registeredCliffSeam:!!metrics,sharedWallColumns:true,
+    mesh.metadata={kind:"water-surface-runoff",hydrologyEdgeReason:edge.reason,edgeDischarge:edge.edgeDischarge,persistentRate:edge.persistentRate,transportVolume:edge.transportVolume,surfaceDrop:edge.surfaceDrop,terrainConforming:true,registeredTriangleOnly:true,triangleClippedSurfaceFlow:segments.some(segment=>segment.kind==="SURFACE_RUNOFF"),gameplayDepth:false,pooledSurfaceExcluded:true,poolBoundaryHandoff:true,cascade:edge.cascade===true,cascadeApproach:segments.some(segment=>segment.kind==="CASCADE_APPROACH"),cascadeLanding:segments.some(segment=>segment.kind==="CASCADE_LANDING"),softWetFootprint:true,hardRailGeometry:false,transportOnly:!edge.fromPooled&&!edge.toPooled,shallowStoredTransport:(!edge.fromPooled&&edge.fromStored)||(!edge.toPooled&&edge.toStored),continuousFlowUv:true,flowPathStart:Number(edge.flowPathStart||0),runoffSegments:segments.map(segment=>({start:segment.start,end:segment.end,kind:segment.kind,startKind:segment.startKind,endKind:segment.endKind})),exactShorelineHandoff:segments.some(segment=>segment.startKind==="WATERLINE_TRIANGLE"||segment.endKind==="WATERLINE_TRIANGLE"),registeredCliffSeam:!!metrics,sharedWallColumns:true,actualWetCliffSpanUv:true,
       sheetBoundaryQ:{incoming:Number(fromNetwork?.qIn||0),outgoing:Number(fromNetwork?.qOut||0),receiverIncoming:Number(toNetwork?.qIn||0),receiverOutgoing:Number(toNetwork?.qOut||0),sourceRate:Number(fromNetwork?.sourceRate||0)},
       publishedGeometryJoin:publishedEdge?.geometryJoin||"NO_PUBLISHED_Q_EDGE",publishedGeometryJoinValid:publishedEdge?.geometryJoinValid===true,
       publishedTerrainRevision:Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0),publishedCliffRevision:Number(this.surfaceResolver.renderedCliffGeometryRevision||0)};
