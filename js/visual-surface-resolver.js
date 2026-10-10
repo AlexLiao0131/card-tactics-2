@@ -277,6 +277,22 @@ export class VisualSurfaceResolver{
     const widthFromRate=q=>TILE_SIZE*(.21+.19*clamp01(Math.log1p(q)/Math.log(32)));
     const filmHeight=(q,speed)=>ELEVATION_HEIGHT*(.033+.067*clamp01(Math.log1p(q)/Math.log(32)))
       /Math.sqrt(Math.max(.5,Math.min(2.5,Number(speed)||1)));
+    // MapGenerator has ALREADY carved a persistent riverbed and authored its
+    // hydraulic cross-section. That bed, not Q, determines the channel route
+    // and maximum shallow-flow width. Greater discharge enters real D through
+    // HydrologyEngine; it must not turn into an arbitrarily wide visual sheet.
+    const riverHalfWidth=(tile,neighbor,q)=>{
+      const nominal=widthFromRate(q);
+      if(tile?.river!==true)return nominal;
+      const fraction=value=>Math.max(.15,Math.min(.85,Number(value?.hydrologyChannelWidthFraction??.4)));
+      const channelFraction=neighbor?.river===true
+        ?Math.min(fraction(tile),fraction(neighbor)):fraction(tile);
+      return Math.min(nominal,TILE_SIZE*channelFraction*.5);
+    };
+    const mapLimits=(tiles||[]).reduce((v,t)=>({
+      minX:Math.min(v.minX,Number(t.x)),maxX:Math.max(v.maxX,Number(t.x)),
+      minY:Math.min(v.minY,Number(t.y)),maxY:Math.max(v.maxY,Number(t.y))
+    }),{minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity});
     const exposedEdge=(tile,record)=>{
       const other=record.fromKey===this.keyOf(tile.x,tile.y)?record.toKey:record.fromKey;
       const neighbor=all.get(other);
@@ -310,8 +326,38 @@ export class VisualSurfaceResolver{
       return{record,neighbor,dx,dz,q,wall,wallEdge,
         x:anchor?.x??(Number(tile.x)+dx*.5)*TILE_SIZE,
         z:anchor?.z??(Number(tile.y)+dz*.5)*TILE_SIZE,
-        width:widthFromRate(q),height:filmHeight(q,speed),
+        width:riverHalfWidth(tile,neighbor,q),height:filmHeight(q,speed),
         stored:hasStoredWaterDepth(neighbor)};
+    };
+    // The OFF_MAP_SOURCE and formal outlet have no neighbouring map tile and
+    // therefore no Q edge outside the grid. Their existing riverbed still runs
+    // to the published map boundary. Extend only the same real, directed Q
+    // corridor to that boundary; never invent an extra hydrology transfer.
+    const riverTerminalPort=(tile,key,ports)=>{
+      if(tile?.river!==true)return null;
+      const isSource=tile.hydrologySource===true&&tile.hydrologySourceDisabled!==true&&tile.sourceKind==="OFF_MAP_SOURCE";
+      const isDrain=tile.hydrologyDrain===true;
+      if(!isSource&&!isDrain)return null;
+      const edges=[
+        {dx:-1,dz:0,on:tile.x===mapLimits.minX},
+        {dx:1,dz:0,on:tile.x===mapLimits.maxX},
+        {dx:0,dz:-1,on:tile.y===mapLimits.minY},
+        {dx:0,dz:1,on:tile.y===mapLimits.maxY}
+      ].filter(edge=>edge.on);
+      if(!edges.length)return null;
+      const directed=ports.filter(port=>port.neighbor?.river===true&&
+        (isSource?port.record.fromKey===key:port.record.toKey===key));
+      if(!directed.length)return null;
+      const ordered=directed.flatMap(port=>edges.map(side=>({port,side,
+        alignment:-port.dx*side.dx-port.dz*side.dz})))
+        .sort((a,b)=>b.alignment-a.alignment||b.port.q-a.port.q);
+      if(!ordered.length)return null;
+      const {port,side}=ordered[0];
+      return{...port,neighbor:null,dx:side.dx,dz:side.dz,
+        x:(Number(tile.x)+side.dx*.5)*TILE_SIZE,
+        z:(Number(tile.y)+side.dz*.5)*TILE_SIZE,
+        stored:false,boundaryExtension:true,
+        width:riverHalfWidth(tile,port.neighbor,port.q)};
     };
     for(const tile of tiles||[]){
       if(!tile)continue;
@@ -321,6 +367,8 @@ export class VisualSurfaceResolver{
       const records=[...(node?.incoming||[]),...(node?.outgoing||[])];
       const ports=records.filter(record=>record.geometryJoinValid||record.cascade)
         .map(record=>exposedEdge(tile,record)).filter(Boolean);
+      const terminal=riverTerminalPort(tile,key,ports);
+      if(terminal)ports.push(terminal);
       // A real cliff is a terminal lip/foot for the Q film, not a horizontal
       // connection. Cascade mesh continues to own the vertical rock face.
       if(!stored&&!ports.length)continue;
@@ -329,8 +377,13 @@ export class VisualSurfaceResolver{
       // surface falls below a rugged lip. Preserve D everywhere already wet;
       // only the actual outgoing cascade corridor gains a shallow transport
       // film to reach the rock. This is presentation, not stored waterDepth.
-      const cascadePorts=stored?ports.filter(port=>port.record.cascade&&
-        port.record.fromKey===key&&this.getRenderedCliffGeometry(tile,{dx:port.dx,dy:port.dz})):[];
+      // D keeps the existing free surface. Only a real river Q corridor (or
+      // registered cascade) can bridge a DRY strip of a stored river tile,
+      // and only where the authored bed remains exposed.
+      const transportPorts=stored?ports.filter(port=>port.boundaryExtension||
+        (tile.river===true&&port.neighbor?.river===true)||
+        (port.record.cascade&&port.record.fromKey===key&&
+          this.getRenderedCliffGeometry(tile,{dx:port.dx,dy:port.dz}))):[];
       const flowFilmAt=(point,wetPorts)=>{
           let depth=0;
           for(const port of wetPorts){
@@ -346,6 +399,11 @@ export class VisualSurfaceResolver{
             // a rectangular band simply floating above every terrain ridge.
             const channelBed=this.publishedSurfacePoint(tile,px,pz)?.y??Number(point.y);
             const bankRise=Math.max(0,Number(point.y)-channelBed);
+            // A Q-only river cannot visually overrun a real bank. Overtopping
+            // belongs to conserved D, not the transport-film approximation.
+            const bankY=Number(tile.channelBankElevation)*ELEVATION_HEIGHT;
+            if(tile.river===true&&Number.isFinite(bankY)&&
+               bankY>channelBed+EPSILON&&Number(point.y)>bankY+EPSILON)continue;
             depth=Math.max(depth,port.height*coverage-bankRise);
           }
           return Math.max(0,depth);
@@ -358,7 +416,7 @@ export class VisualSurfaceResolver{
           // outgoing Q cascade cannot raise existing D water or recolour its
           // depth gradient with a transient transport film.
           if(dWaterY>=terrainY)return dWaterY;
-          const film=flowFilmAt(point,cascadePorts);
+          const film=flowFilmAt(point,transportPorts);
           if(film<=EPSILON)return dWaterY;
           // Q is only a shallow passage across the DRY shoulder separating
           // the real D waterline from a cliff lip. Taper its film to zero at
@@ -369,6 +427,9 @@ export class VisualSurfaceResolver{
         }
         :point=>{
           const depth=flowFilmAt(point,ports);
+          // A nearby D waterline is NOT permission to flood the whole Q tile.
+          // Only the actual wet river/transport footprint may meet that D.
+          if(depth<=EPSILON)return Number(point.y);
           // D is authoritative at Q/D contact. Blend WORLD WATER HEIGHT,
           // not the stored edge's clearance above its own rock. Moving a
           // fixed clearance onto a sloping Q terrain lifts the water with
@@ -382,13 +443,14 @@ export class VisualSurfaceResolver{
             const transition=TILE_SIZE*.5;
             if(inward< -EPSILON||inward>transition)continue;
             const lateral=port.dx!==0?Math.abs(point.z-port.z):Math.abs(point.x-port.x);
-            if(lateral>TILE_SIZE*.5+EPSILON)continue;
+            if(lateral>port.width+EPSILON)continue;
             const edgeX=port.dx!==0?port.x:point.x;
             const edgeZ=port.dz!==0?port.z:point.z;
             const edgeBed=this.publishedSurfacePoint(port.neighbor,edgeX,edgeZ);
             if(!edgeBed)continue;
             const level=Number(storedLevelAtWorld(port.neighbor,edgeX,edgeZ))*ELEVATION_HEIGHT;
-            if(!Number.isFinite(level))continue;
+            // A DRY D shoreline is not a real flood boundary to borrow from.
+            if(!Number.isFinite(level)||level<=Number(edgeBed.y)+EPSILON)continue;
             const weight=1-smooth01(inward/transition);
             // The nearest connected D edge determines the handoff. A second
             // D neighbour at a corner cannot override the first one merely
@@ -455,7 +517,7 @@ export class VisualSurfaceResolver{
       // vertex-only clipping then marks a visibly flowing segment as dry.
       // Sample its existing triangle planes at edge midpoints (not a new
       // terrain approximation). D-only surfaces keep their exact old mesh.
-      const refine=!stored||cascadePorts.length>0;
+      const refine=!stored||transportPorts.length>0;
       const mid=(a,b)=>({x:(a.x+b.x)*.5,y:(a.y+b.y)*.5,z:(a.z+b.z)*.5});
       for(let i=0;i<geometry.triangles.length;i++){
         const triangle=geometry.triangles[i];
@@ -481,6 +543,7 @@ export class VisualSurfaceResolver{
         node.sheetAcceptedEdges=ports.map(port=>port.record.id);
         node.sheetRejectedEdges=records.filter(record=>!ports.some(port=>port.record===record)).map(record=>({id:record.id,reason:record.geometryJoin||"UNAVAILABLE"}));}
       result.set(key,{tile,key,polygons,wetArea,maxDepth,clippedPoints,stored,cascadeLipSpans,
+        authoredRiverbed:tile.river===true,riverTerminalExtension:!!terminal,
         geometryRevision:geometry.revision,model:"PUBLISHED_UNIFIED_DQ",
         boundaryEdges:records,nominalTileArea:TILE_SIZE*TILE_SIZE,
         gameplayDepth:stored});
