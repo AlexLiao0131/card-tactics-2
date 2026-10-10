@@ -405,10 +405,39 @@ export class WaterRenderer{
   }
 
   tileMotion(tile){
-    let x=Number(tile?.flowX||0),z=Number(tile?.flowY||0);
-    const speed=clamp(tile?.flowSpeed||0,0,3.2),length=Math.hypot(x,z);
-    if(speed<=EPSILON||length<=EPSILON)return{x:0,z:0,speed:0};
-    return{x:x/length,z:z/length,speed};
+    // The D/Q boundary network is already the unique inventory of real
+    // directed transfers. River flowX/flowY identifies only the authored main
+    // route, so it cannot describe lateral lake intake, backwater or branches.
+    const tileKey=keyOf(tile?.x,tile?.y),node=this.sheetFlowNetwork?.get(tileKey);
+    if(!node)return{x:0,z:0,speed:0};
+    let vx=0,vz=0,inVolume=0,outVolume=0;
+    const transport=(edge,incoming)=>{
+      if(!edge||(!edge.geometryJoinValid&&!edge.cascade))return;
+      // Hydrology has already converted Q to the volume moved in this step.
+      // Do not duplicate its per-turn unit conversion in a renderer.
+      const volume=Math.max(0,Number(edge.transportVolume||0));
+      if(volume<=EPSILON)return;
+      const otherKey=incoming?edge.fromKey:edge.toKey;
+      const [ex,ez]=String(otherKey||"").split(",").map(Number);
+      if(!Number.isFinite(ex)||!Number.isFinite(ez))return;
+      const dx=incoming?Number(tile.x)-ex:ex-Number(tile.x);
+      const dz=incoming?Number(tile.y)-ez:ez-Number(tile.y);
+      if(Math.abs(dx)+Math.abs(dz)!==1)return;
+      vx+=dx*volume;vz+=dz*volume;
+      if(incoming)inVolume+=volume;else outVolume+=volume;
+    };
+    for(const edge of node.incoming||[])transport(edge,true);
+    for(const edge of node.outgoing||[])transport(edge,false);
+    const length=Math.hypot(vx,vz);
+    if(length<=EPSILON)return{x:0,z:0,speed:0};
+    // Convert the already-measured discharge volume to a surface advection
+    // speed through this tile's existing wetted channel cross-section.
+    // This never creates a second Q value or changes the gameplay D store.
+    const moved=Math.max(inVolume,outVolume);
+    const depth=Math.max(.15,waterDepth(tile));
+    const width=clamp(Number(tile?.hydrologyChannelWidthFraction??1),.15,1);
+    const speed=clamp(moved/(depth*width),0,3.2);
+    return{x:vx/length,z:vz/length,speed};
   }
 
   accumulateVertexMotion(out,index,tile){
@@ -422,10 +451,10 @@ export class WaterRenderer{
   componentFlow(component){
     let vx=0,vz=0,speedSum=0,count=0;
     for(const tile of component?.tiles||[]){
-      const fx=Number(tile?.flowX||0),fz=Number(tile?.flowY||0),speed=Math.max(0,Number(tile?.flowSpeed||0));
-      const length=Math.hypot(fx,fz);
-      if(length<=EPSILON||speed<=EPSILON)continue;
-      vx+=fx/length*speed;vz+=fz/length*speed;speedSum+=speed;count++;
+      const motion=this.tileMotion(tile);
+      if(motion.speed<=EPSILON)continue;
+      vx+=motion.x*motion.speed;vz+=motion.z*motion.speed;
+      speedSum+=motion.speed;count++;
     }
     const length=Math.hypot(vx,vz);
     if(length>EPSILON)return{x:vx/length,z:vz/length,speed:speedSum/Math.max(1,count),flowing:true};
