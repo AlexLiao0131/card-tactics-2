@@ -184,111 +184,6 @@ export class VisualSurfaceResolver{
       terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision};
   }
 
-
-  // Shared wet/dry contour clipping. D supplies a waterline clearance and
-  // Q supplies its solved moving-film clearance; both clip the SAME registered
-  // terrain polygons with exactly the same inclusion / intersection rule.
-  clipPublishedClearancePolygon(vertices,wet,interpolate,clearanceOf=p=>p.clearance){
-    if(!Array.isArray(vertices)||vertices.length<3)return[];
-    const inside=p=>wet?clearanceOf(p)>0:clearanceOf(p)<=0;
-    const result=[];
-    for(let i=0;i<vertices.length;i++){
-      const a=vertices[i],b=vertices[(i+1)%vertices.length],aIn=inside(a),bIn=inside(b);
-      if(aIn)result.push(a);
-      if(aIn!==bIn){
-        const da=clearanceOf(a),db=clearanceOf(b),t=da/(da-db);
-        result.push(interpolate(a,b,t));
-      }
-    }
-    return result;
-  }
-
-  // Canonical stored-water/terrain intersection, on TerrainRenderer's exact
-  // published triangles. WaterRenderer supplies only its already-calculated
-  // local water level; no new hydrology, interpolated terrain or visible mesh.
-  clipPublishedWaterTriangle(triangle,levelAtWorld,wet=true){
-    if(!Array.isArray(triangle)||triangle.length!==3||typeof levelAtWorld!=="function")return[];
-    const vertices=triangle.map(point=>{
-      const level=Number(levelAtWorld(Number(point.x),Number(point.z)));
-      if(!Number.isFinite(level))return null;
-      const waterY=level*ELEVATION_HEIGHT,terrainY=Number(point.y);
-      return{x:Number(point.x),y:terrainY,z:Number(point.z),terrainY,waterY,level,clearance:waterY-terrainY};
-    });
-    if(vertices.some(vertex=>!vertex))return[];
-    return this.clipPublishedClearancePolygon(vertices,wet,(a,b,t)=>{
-      const x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;
-      const waterY=a.waterY+(b.waterY-a.waterY)*t;
-      const terrainY=a.terrainY+(b.terrainY-a.terrainY)*t;
-      return{x,y:terrainY,z,terrainY,waterY,level:waterY/ELEVATION_HEIGHT,clearance:0};
-    });
-  }
-
-  // D>0 and moving Q-only now use this same geometric definition of an actual
-  // shoreline: intersection of registered ground XYZ with the published level.
-  publishedStoredWaterPolygons(tile,levelAtWorld){
-    if(!hasStoredWaterDepth(tile))return[];
-    const geometry=this.getRenderedSurfaceGeometry(tile);
-    if(!geometry?.triangles?.length)return[];
-    const polygons=[];
-    for(const triangle of geometry.triangles){
-      const clipped=this.clipPublishedWaterTriangle(triangle,levelAtWorld,true);
-      if(clipped.length<3)continue;
-      polygons.push(clipped.map(point=>({
-        x:point.x,z:point.z,level:point.level,
-        depth:Math.max(0,point.clearance/ELEVATION_HEIGHT),
-        clipped:point.clearance<=.001*ELEVATION_HEIGHT*2,
-        mode:"TERRAIN_INTERSECTION"
-      })));
-    }
-    return polygons;
-  }
-
-  // One visual water-polygon contract for every horizontal water surface.
-  // Stored D owns its existing published-ground waterline. Q-only sheets own
-  // their already-solved film clearance, but both emit the SAME level/depth/
-  // shoreline format for one WaterRenderer triangulation, shading and motion.
-  // This is a disposable presentation projection, never another Hydrology D.
-  presentationWaterPolygons(tile,levelAtWorld,sheet=null){
-    if(hasStoredWaterDepth(tile))return this.publishedStoredWaterPolygons(tile,levelAtWorld);
-    if(!tile||!sheet||sheet.key!==this.keyOf(tile.x,tile.y))return[];
-    const polygons=[];
-    for(const polygon of sheet.polygons||[]){
-      if(!polygon?.points||polygon.points.length<3)continue;
-      polygons.push(polygon.points.map(vertex=>{
-        const depthWorld=Math.max(0,Number(vertex.depth||0));
-        return{
-          x:Number(vertex.x),z:Number(vertex.z),
-          level:(Number(vertex.y)+depthWorld)/ELEVATION_HEIGHT,
-          depth:depthWorld/ELEVATION_HEIGHT,
-          clipped:depthWorld<=EPSILON,
-          mode:"TERRAIN_INTERSECTION",owner:"TRANSIT_Q"
-        };
-      }));
-    }
-    return polygons;
-  }
-
-  // The Q/D edge contract must use the same registered XZ and waterline as D's
-  // clipped polygons, never a guessed tile midpoint or a fabricated D depth.
-  publishedStoredHandoff(from,to,storedLevelAtWorld){
-    if(!from||!to)return{ok:false,reason:"MISSING_TILE",samples:[]};
-    const fromStored=hasStoredWaterDepth(from),toStored=hasStoredWaterDepth(to);
-    if(fromStored===toStored)return{ok:false,reason:"NOT_Q_D_BOUNDARY",samples:[]};
-    const seam=this.publishedSheetBoundary(from,to);
-    if(!seam.ok)return seam;
-    if(typeof storedLevelAtWorld!=="function")return{ok:false,reason:"MISSING_STORED_LEVEL",samples:[]};
-    const stored=fromStored?from:to;
-    const samples=seam.samples.map(point=>{
-      const level=Number(storedLevelAtWorld(stored,point.x,point.z));
-      return{...point,storedLevel:level,depth:level*ELEVATION_HEIGHT-point.y};
-    });
-    if(samples.some(sample=>!Number.isFinite(sample.depth)))return{ok:false,reason:"INVALID_STORED_LEVEL",samples:[]};
-    return{ok:true,reason:"PUBLISHED_Q_D_WATERLINE",samples,
-      wetSamples:samples.filter(sample=>sample.depth>EPSILON).length,
-      terrainRevision:this.renderedSurfaceGeometryRevision,
-      cliffRevision:this.renderedCliffGeometryRevision};
-  }
-
   // Read-only TILE-scale inventory of REAL hydrology edges. This deliberately
   // does not create microcell storage or a second water state. It will feed the
   // shared sheet-flow solve; every incident Q edge is represented once.
@@ -342,13 +237,24 @@ export class VisualSurfaceResolver{
   // one-turn *transit proxy*, never a replacement for gameplay waterDepth.
   // The surface is fitted to the actual registered terrain triangles, then
   // clipped and volume-normalized; all sheet XYZ is derived from those faces.
-  sheetFlowTileSurfaces(tiles,network,{storedLevelAtWorld=null}={}){
+  sheetFlowTileSurfaces(tiles,network){
     const results=new Map();
     const area=(a,b,c)=>Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))/2;
     const vertexKey=p=>`${Number(p.x).toFixed(9)},${Number(p.z).toFixed(9)}`;
-    const clipWet=triangle=>this.clipPublishedClearancePolygon(triangle,true,
-      (a,b,t)=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
-        z:a.z+(b.z-a.z)*t,depth:0}),point=>point.depth);
+    const clipWet=triangle=>{
+      const out=[];
+      for(let i=0;i<triangle.length;i++){
+        const a=triangle[i],b=triangle[(i+1)%triangle.length];
+        const aWet=a.depth>0,bWet=b.depth>0;
+        if(aWet)out.push(a);
+        if(aWet!==bWet){
+          const t=a.depth/(a.depth-b.depth);
+          out.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
+            z:a.z+(b.z-a.z)*t,depth:0});
+        }
+      }
+      return out;
+    };
     // Film depth on each emitted triangle is affine. Its volume is exactly
     // the projected triangle area multiplied by average positive depth.
     const integration=polygon=>{
@@ -516,7 +422,6 @@ export class VisualSurfaceResolver{
         targetVolume:target,transportVolume:transit,initialDepths:preliminary.depths,
         nominalTileArea:TILE_SIZE*TILE_SIZE,renderedProjectedArea,coreProjectedArea,
         residual,calculate,locked:new Map(),baseline,
-        storedHandoffLocks:new Map(),storedHandoffDryFallback:new Map(),
         boundaryEdges:edges,flow:{x:magnitude?fx/magnitude:0,z:magnitude?fz/magnitude:0},
         model:'REGISTERED_TERRAIN_MOMENTUM_SHEET'});
     }
@@ -527,35 +432,23 @@ export class VisualSurfaceResolver{
       const t=result.tile;
       for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){
         const neighbor=tileByKey.get(this.keyOf(t.x+dx,t.y+dz));
-        const neighborKey=neighbor?this.keyOf(neighbor.x,neighbor.y):null;
-        const other=neighbor&&results.get(neighborKey);
-        const forward=`${result.key}->${neighborKey}`,reverse=`${neighborKey}->${result.key}`;
-        const realQ=result.boundaryEdges.some(edge=>(edge.id===forward||edge.id===reverse)&&edge.geometryJoinValid);
-        const valid=!!other&&realQ;
+        const other=neighbor&&results.get(this.keyOf(neighbor.x,neighbor.y));
+        const forward=`${result.key}->${other?.key}`,reverse=`${other?.key}->${result.key}`;
+        const valid=!!other&&result.boundaryEdges.some(edge=>(edge.id===forward||edge.id===reverse)&&edge.geometryJoinValid);
         if(valid&&result.key>other.key)continue;
-        // Only a real non-cascade Q edge to stored D can receive this shared
-        // waterline. Ordinary neighbouring lake tiles do not wet dry land.
-        const handoff=!other&&realQ&&hasStoredWaterDepth(neighbor)&&typeof storedLevelAtWorld==="function"
-          ?this.publishedStoredHandoff(t,neighbor,storedLevelAtWorld):null;
         const xEdge=(t.x+dx*.5)*TILE_SIZE,zEdge=(t.y+dz*.5)*TILE_SIZE;
-        const samples=new Map();
+        const samples=new Set();
         for(const tri of result.triangles)for(const p of tri){
-          if(Math.abs((dx!==0?p.x-xEdge:p.z-zEdge))<=EPSILON*10)samples.set(vertexKey(p),p);
+          if(Math.abs((dx!==0?p.x-xEdge:p.z-zEdge))<=EPSILON*10)samples.add(vertexKey(p));
         }
-        for(const [k,p] of samples){
-          // An unrelated boundary must remain dry. A Q/D contact must use the
-          // exact same level sampled by D's registered-terrain clipping.
-          const dry=Math.min(0,Number(result.residual.get(k)||0)+Number(result.baseline||0));
-          let shared=valid?Math.min(result.initialDepths.get(k)||0,other.initialDepths.get(k)||0):dry;
-          if(handoff?.ok){
-            const level=Number(storedLevelAtWorld(neighbor,p.x,p.z));
-            const depth=level*ELEVATION_HEIGHT-Number(p.y);
-            if(Number.isFinite(depth)&&depth>EPSILON){
-              shared=depth;
-              result.storedHandoffLocks.set(k,depth);
-              result.storedHandoffDryFallback.set(k,dry);
-            }
-          }
+        for(const k of samples){
+          // A boundary with no hydrology connection is NOT automatically a
+          // zero-depth shoreline: the unconstrained pressure field may already
+          // be dry (negative clearance) some distance inside this boundary.
+          // Preserve that dry offset so it can clip the surface BEFORE the
+          // gameplay grid edge instead of producing a full-square water fan.
+          const shared=valid?Math.min(result.initialDepths.get(k)||0,other.initialDepths.get(k)||0)
+            :Math.min(0,Number(result.residual.get(k)||0)+Number(result.baseline||0));
           result.locked.set(k,shared);
           if(valid)other.locked.set(k,shared);
         }
@@ -565,17 +458,7 @@ export class VisualSurfaceResolver{
     for(const result of results.values()){
       const values=[...result.residual.values()];
       const low=-Math.max(...values),high=-Math.min(...values)+result.targetVolume/(TILE_SIZE*TILE_SIZE*ELEVATION_HEIGHT);
-      let minimal=result.calculate(low,result.locked);
-      // A real D shoreline can be deeper than the available Q transit proxy.
-      // If forcing it would violate the proxy budget, drop the optional Q/D
-      // join while preserving the ORIGINAL dry-boundary sheet. Never invent D
-      // or silently reject a valid spring branch because its neighbour is wet.
-      if(minimal.volume>result.targetVolume+EPSILON&&result.storedHandoffLocks.size){
-        for(const [key,dry] of result.storedHandoffDryFallback)result.locked.set(key,dry);
-        result.storedHandoffLocks.clear();
-        network.get(result.key).storedHandoffReason="INSUFFICIENT_Q_TRANSIT_VOLUME";
-        minimal=result.calculate(low,result.locked);
-      }
+      const minimal=result.calculate(low,result.locked);
       // A locked boundary with excessive wet volume cannot be reconciled by
       // the local solver. Fail the sheet instead of publishing fake water.
       if(minimal.volume>result.targetVolume+EPSILON){
@@ -595,11 +478,6 @@ export class VisualSurfaceResolver{
       result.volumeProxyAfterSeam=solved.volume;
       result.maxDepth=Math.max(0,...solved.depths.values());
       result.minDepth=0;
-      result.storedHandoffSamples=result.storedHandoffLocks.size;
-      // Render-only keys from the same published XYZ graph. The renderer uses
-      // them to match the D surface's existing (not invented) polygon offset.
-      result.storedHandoffKeys=new Set(result.storedHandoffLocks.keys());
-      if(result.storedHandoffSamples)network.get(result.key).storedHandoffReason="PUBLISHED_Q_D_WATERLINE";
       network.get(result.key).sheetStatus="SOLVED";
       delete result.initialDepths;delete result.locked;delete result.residual;delete result.calculate;
     }
@@ -1419,9 +1297,6 @@ export class VisualSurfaceResolver{
       gameplayGridSubdivision:false,
       renderedSurfaceGeometryRegistry:true,
       waterConsumesExactTerrainTriangles:true,
-      unifiedQDStoredWaterline:true,
-      storedWaterClipOwner:"VisualSurfaceResolver",
-      qDSeamBudgetGuard:true,
       renderedCliffGeometryRegistry:true,
       waterConsumesExactCliffVertices:true,
       waterConsumesExactCliffFaces:true
