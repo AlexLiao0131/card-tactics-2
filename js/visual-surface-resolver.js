@@ -321,30 +321,34 @@ export class VisualSurfaceResolver{
             const bankRise=Math.max(0,Number(point.y)-channelBed);
             depth=Math.max(depth,port.height*coverage-bankRise);
           }
-          // Use the stored receiver's OWN waterline at every vertex on the
-          // shared boundary. An exact seam is a constraint of this same field;
-          // it is not an independent after-the-fact polygon edge lock.
+          // D is authoritative at Q/D contact. Blend WORLD WATER HEIGHT,
+          // not the stored edge's clearance above its own rock. Moving a
+          // fixed clearance onto a sloping Q terrain lifts the water with
+          // the hillside, producing a visible colour/depth step at the seam.
+          // The same published triangles then determine depth on both sides.
+          let storedWeight=0,storedWaterY=0;
           for(const port of ports){
             if(!port.stored||!port.record.geometryJoinValid)continue;
             const inward=port.dx!==0
               ?(port.x-point.x)*port.dx:(port.z-point.z)*port.dz;
-            if(inward< -EPSILON||inward>TILE_SIZE*.28)continue;
+            const transition=TILE_SIZE*.5;
+            if(inward< -EPSILON||inward>transition)continue;
             const lateral=port.dx!==0?Math.abs(point.z-port.z):Math.abs(point.x-port.x);
             if(lateral>TILE_SIZE*.5+EPSILON)continue;
             const edgeX=port.dx!==0?port.x:point.x;
             const edgeZ=port.dz!==0?port.z:point.z;
             const edgeBed=this.publishedSurfacePoint(port.neighbor,edgeX,edgeZ);
             if(!edgeBed)continue;
-            const edgeLevel=Number(storedLevelAtWorld(port.neighbor,edgeX,edgeZ))*ELEVATION_HEIGHT;
-            const seamClearance=edgeLevel-edgeBed.y;
-            const blend=clamp01(inward/(TILE_SIZE*.28));
-            const clearance=seamClearance*(1-blend)+depth*blend;
-            depth=clearance;
-            // A dry stored shoreline is a real boundary, even if the Q film
-            // would otherwise overlap it; do not add a second water skirt.
-            if(inward<=EPSILON)break;
+            const level=Number(storedLevelAtWorld(port.neighbor,edgeX,edgeZ))*ELEVATION_HEIGHT;
+            if(!Number.isFinite(level))continue;
+            const weight=1-smooth01(inward/transition);
+            // The nearest connected D edge determines the handoff. A second
+            // D neighbour at a corner cannot override the first one merely
+            // because the input edge list happens to be ordered differently.
+            if(weight>storedWeight){storedWeight=weight;storedWaterY=level;}
           }
-          return Number(point.y)+depth;
+          const qWaterY=Number(point.y)+depth;
+          return qWaterY*(1-storedWeight)+storedWaterY*storedWeight;
         };
       const polygons=[];
       let wetArea=0,maxDepth=0,clippedPoints=0;

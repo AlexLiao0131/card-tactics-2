@@ -937,13 +937,34 @@ export class WaterRenderer{
     const seam=this.canonicalWaterPoint({x:Number(point.x),y,z:Number(point.z)});
     const cacheKey=`${seam.x.toFixed(5)}:${seam.y.toFixed(5)}:${seam.z.toFixed(5)}`;
     const existing=cache.get(cacheKey);
-    if(existing!=null){this.accumulateVertexMotion(out,existing,tile);return existing;}
+    if(existing!=null){
+      // Shared coordinates can arrive from either tile. A stored D vertex
+      // owns the colour/alpha/depth-driven animation at a D/Q seam, regardless
+      // of tile iteration order. Q still contributes its real flow direction.
+      if(hasAnyWater(tile)&&!out.storedVertexAuthority[existing]){
+        const visual=this.waterVertexVisual(point,allMap,turbidity);
+        out.colors[existing*4]=visual.color[0];
+        out.colors[existing*4+1]=visual.color[1];
+        out.colors[existing*4+2]=visual.color[2];
+        out.colors[existing*4+3]=visual.alpha;
+        const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap);
+        out.waveWeights[existing]=onCliffLip?0:smooth01(visual.depth/.34);
+        const sourceField=visual.depth<=EPSILON||onCliffLip
+          ?{weight:0,phase:0}:this.sourceFieldAt(point,sources);
+        out.sourceWeights[existing]=sourceField.weight;
+        out.sourcePhases[existing]=sourceField.phase;
+        out.storedVertexAuthority[existing]=true;
+      }
+      this.accumulateVertexMotion(out,existing,tile);
+      return existing;
+    }
 
     const visual=this.waterVertexVisual(point,allMap,turbidity);
     const index=out.positions.length/3;
     out.positions.push(seam.x,seam.y,seam.z);
     out.uvs.push(seam.x/(TILE_SIZE*3.25),seam.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
+    out.storedVertexAuthority.push(hasAnyWater(tile));
     const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap);
     out.waveWeights.push(onCliffLip?0:smooth01(visual.depth/.34));
     const sourceField=visual.depth<=EPSILON||onCliffLip?{weight:0,phase:0}:this.sourceFieldAt(point,sources);
@@ -967,7 +988,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state,presentation){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
     const cache=new Map(),allMap=this.allByKey(state),sources=this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
