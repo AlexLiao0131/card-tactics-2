@@ -302,11 +302,15 @@ export class VisualSurfaceResolver{
       // connection. Cascade mesh continues to own the vertical rock face.
       if(!stored&&!ports.length)continue;
       const center={x:Number(tile.x)*TILE_SIZE,z:Number(tile.y)*TILE_SIZE};
-      const waterAt=stored
-        ?point=>Number(storedLevelAtWorld(tile,point.x,point.z))*ELEVATION_HEIGHT
-        :point=>{
+      // A real Q transfer may cross a published cliff even when the D free
+      // surface falls below a rugged lip. Preserve D everywhere already wet;
+      // only the actual outgoing cascade corridor gains a shallow transport
+      // film to reach the rock. This is presentation, not stored waterDepth.
+      const cascadePorts=stored?ports.filter(port=>port.record.cascade&&
+        port.record.fromKey===key&&this.getRenderedCliffGeometry(tile,{dx:port.dx,dy:port.dz})):[];
+      const flowFilmAt=(point,wetPorts)=>{
           let depth=0;
-          for(const port of ports){
+          for(const port of wetPorts){
             const vx=port.x-center.x,vz=port.z-center.z,length2=vx*vx+vz*vz;
             if(length2<=EPSILON)continue;
             const t=clamp01(((point.x-center.x)*vx+(point.z-center.z)*vz)/length2);
@@ -321,6 +325,19 @@ export class VisualSurfaceResolver{
             const bankRise=Math.max(0,Number(point.y)-channelBed);
             depth=Math.max(depth,port.height*coverage-bankRise);
           }
+          return Math.max(0,depth);
+        };
+      const waterAt=stored
+        ?point=>{
+          const dWaterY=Number(storedLevelAtWorld(tile,point.x,point.z))*ELEVATION_HEIGHT;
+          const film=flowFilmAt(point,cascadePorts);
+          // A dry point outside the outgoing Q corridor must retain its
+          // NEGATIVE D clearance. Clamping to terrain height here would
+          // expand the original D shoreline all the way to dry vertices.
+          return film>EPSILON?Math.max(dWaterY,Number(point.y)+film):dWaterY;
+        }
+        :point=>{
+          const depth=flowFilmAt(point,ports);
           // D is authoritative at Q/D contact. Blend WORLD WATER HEIGHT,
           // not the stored edge's clearance above its own rock. Moving a
           // fixed clearance onto a sloping Q terrain lifts the water with
@@ -352,16 +369,30 @@ export class VisualSurfaceResolver{
         };
       const polygons=[];
       let wetArea=0,maxDepth=0,clippedPoints=0;
+      // The published terrain has only 18 triangles per tile. A narrow Q
+      // channel can pass BETWEEN all of a triangle's original vertices;
+      // vertex-only clipping then marks a visibly flowing segment as dry.
+      // Sample its existing triangle planes at edge midpoints (not a new
+      // terrain approximation). D-only surfaces keep their exact old mesh.
+      const refine=!stored||cascadePorts.length>0;
+      const mid=(a,b)=>({x:(a.x+b.x)*.5,y:(a.y+b.y)*.5,z:(a.z+b.z)*.5});
       for(let i=0;i<geometry.triangles.length;i++){
-        const polygon=this.clipPublishedWaterTriangle(geometry.triangles[i],waterAt);
-        if(polygon.length<3)continue;
-        polygon.triangleIndex=i;
-        polygons.push(polygon);
-        clippedPoints+=polygon.filter(point=>point.clipped).length;
-        maxDepth=Math.max(maxDepth,...polygon.map(point=>point.depth));
-        for(let j=1;j+1<polygon.length;j++){
-          const a=polygon[0],b=polygon[j],c=polygon[j+1];
-          wetArea+=Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))*.5;
+        const triangle=geometry.triangles[i];
+        const triangles=refine?(()=>{
+          const [a,b,c]=triangle,ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);
+          return[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]];
+        })():[triangle];
+        for(const part of triangles){
+          const polygon=this.clipPublishedWaterTriangle(part,waterAt);
+          if(polygon.length<3)continue;
+          polygon.triangleIndex=i;
+          polygons.push(polygon);
+          clippedPoints+=polygon.filter(point=>point.clipped).length;
+          maxDepth=Math.max(maxDepth,...polygon.map(point=>point.depth));
+          for(let j=1;j+1<polygon.length;j++){
+            const a=polygon[0],b=polygon[j],c=polygon[j+1];
+            wetArea+=Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))*.5;
+          }
         }
       }
       if(!polygons.length){if(node)node.sheetStatus=stored?"STORED_DRY_GEOMETRY":"NO_WET_GEOMETRY";continue;}

@@ -69,6 +69,9 @@ export class WaterRenderer{
     // Derived, read-only topology for the current hydrology snapshot. Not a
     // second water state: no volumes or gameplay depth are written here.
     this.sheetFlowNetwork=new Map();
+    // The exact shared water polygons already used by buildSurface. Cascades
+    // must inspect this SAME D/Q wet shape, not the old D-only shoreline.
+    this.surfacePresentation=new Map();
     this.sheetFlowSurfaces=new Map();
     this.sheetFlowMeshes=new Map();
     this.surfaceSignature="";
@@ -1442,7 +1445,10 @@ export class WaterRenderer{
   }
 
   cascadeSpillIntervals(edge,state,wall,polygons=null){
-    const allMap=this.allByKey(state),waterPolygons=polygons||this.waterSurfacePolygons(edge.tile,allMap),metrics=this.wallPathMetrics(wall);
+    const allMap=this.allByKey(state);
+    const waterPolygons=polygons??this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
+      ??this.waterSurfacePolygons(edge.tile,allMap);
+    const metrics=this.wallPathMetrics(wall);
     if(!metrics)return[];
     const spans=[];
     for(let i=0;i<metrics.count-1;i++){
@@ -1531,8 +1537,11 @@ export class WaterRenderer{
     const dir=this.cascadeDirection(edge);if(!dir)return null;
     const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,dir);
     const metrics=this.wallPathMetrics(wall);if(!metrics)return null;
-    const allMap=this.allByKey(state),upstreamPolygons=this.waterSurfacePolygons(edge.tile,allMap),spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
-    const downstreamPolygons=edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[];
+    const allMap=this.allByKey(state),upstreamPolygons=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
+      ??this.waterSurfacePolygons(edge.tile,allMap);
+    const spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
+    const downstreamPolygons=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y))?.polygons
+      ??(edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[]);
     const positions=[],indices=[],normals=[],uvs=[],impactGroups=[];
     // The rock triangles in wall.segments[].faces are captured from the actual
     // Babylon cliff mesh. A bilinear lip/foot strip does not share its interior
@@ -1704,6 +1713,7 @@ export class WaterRenderer{
       const tiles=tilesOf(state),allMap=this.allByKey(state);
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
         (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap));
+      this.surfacePresentation=presentation;
       const components=this.presentationComponents(presentation);
       // Keep TEST's read-only per-tile diagnostic shape; these are NOT second
       // geometry solvers or Mesh owners. The water polygons below are still
@@ -1756,6 +1766,7 @@ export class WaterRenderer{
     if(!this.surfaceMeshes.size&&!runoffs.length&&!sources.length){
       this.disposeMap(this.cascades);this.disposeMap(this.runoffs);
       this.sheetFlowSurfaces.clear();this.sheetFlowMeshes.clear();
+      this.surfacePresentation.clear();
       this.resetWaterSeamRegistry();
       this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
     }
