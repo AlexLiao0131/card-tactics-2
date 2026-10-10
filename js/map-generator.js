@@ -752,7 +752,10 @@ export const MapGenerator=(()=>{
         flowX:0,
         flowY:1,
         flowSpeed:isRoute?.45:.62,
-        discharge:isRoute?.8:1
+        // Retain the real authored inflow on a spring/entry source. The river-bed
+        // conversion must not reset its discharge to the generic 1.0.
+        discharge:tile.hydrologyAuthoredSource===true&&Number.isFinite(Number(tile.hydrologySourceInflow))
+          ?Math.max(0,Number(tile.hydrologySourceInflow)):(isRoute?.8:1)
       });
 
       const tileKey=key(tile.x,tile.y);
