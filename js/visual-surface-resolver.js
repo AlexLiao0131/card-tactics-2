@@ -5,6 +5,8 @@ const EPSILON=1e-8;
 // WaterRenderer and the Q-only sheet must agree on that same ownership boundary.
 // Geometric EPSILON remains separate; it is for triangle clipping precision.
 export const STORED_WATER_DEPTH_EPSILON=0.0001;
+// D and measured Q use one published-rock test for a submerged cliff seam.
+export const CONNECTED_STORED_WATER_MAX_DROP=.18;
 export const hasStoredWaterDepth=tile=>waterDepthOf(tile)>STORED_WATER_DEPTH_EPSILON;
 const MAX_VISUAL_SLOPE_DELTA=1.0001;
 const WATERBED_DEPTH_RANGE=1.5;
@@ -150,6 +152,26 @@ export class VisualSurfaceResolver{
     return null;
   }
 
+  // The same published rock lip decides whether two REAL D surfaces meet above
+  // a submerged cliff. Q-only flow may never use this exemption: exposed cliffs
+  // and actual surface drops still need the waterfall/transport geometry.
+  submergedStoredWaterCliff(from,to){
+    if(!from||!to||!hasStoredWaterDepth(from)||!hasStoredWaterDepth(to))return null;
+    const dx=Number(to.x)-Number(from.x),dy=Number(to.y)-Number(from.y);
+    if(Math.abs(dx)+Math.abs(dy)!==1)return null;
+    const cliff=this.getRenderedCliffGeometry(from,{dx,dy})||
+      this.getRenderedCliffGeometry(to,{dx:-dx,dy:-dy});
+    if(!cliff)return null;
+    const surfaceA=this.waterSurfaceOf(from),surfaceB=this.waterSurfaceOf(to);
+    if(!Number.isFinite(surfaceA)||!Number.isFinite(surfaceB)||
+       Math.abs(surfaceA-surfaceB)>=CONNECTED_STORED_WATER_MAX_DROP)return null;
+    const waterY=Math.min(surfaceA,surfaceB)*ELEVATION_HEIGHT;
+    if(!Array.isArray(cliff.lip)||cliff.lip.length<2||
+       cliff.lip.some(point=>!Number.isFinite(Number(point.y))||
+         waterY<=Number(point.y)+EPSILON))return null;
+    return{cliff,waterY,surfaceA,surfaceB};
+  }
+
   // One edge has ONE set of XZ sample coordinates on both sides. A cliff is
   // not a sloping seam: its two independently published lip/foot heights must
   // not be averaged into a fictitious surface crossing.
@@ -159,6 +181,16 @@ export class VisualSurfaceResolver{
     if(Math.abs(dx)+Math.abs(dz)!==1)return{ok:false,reason:"NON_ADJACENT",samples:[]};
     if(this.getRenderedCliffGeometry(from,{dx,dy:dz})||
        this.getRenderedCliffGeometry(to,{dx:-dx,dy:-dz})){
+      const submerged=this.submergedStoredWaterCliff(from,to);
+      if(submerged){
+        // Two different terrain heights are NOT a terrain seam. The single
+        // submerged-water surface is the join, over the existing published lip.
+        return{ok:true,reason:"SUBMERGED_STORED_WATER_SEAM",
+          samples:submerged.cliff.lip.map((point,i)=>({x:Number(point.x),
+            y:submerged.waterY,z:Number(point.z),t:Number(point.t??i/Math.max(1,submerged.cliff.lip.length-1))})),
+          terrainRevision:this.renderedSurfaceGeometryRevision,
+          cliffRevision:this.renderedCliffGeometryRevision};
+      }
       return{ok:false,reason:"REGISTERED_CLIFF_BOUNDARY",samples:[],
         terrainRevision:this.renderedSurfaceGeometryRevision,cliffRevision:this.renderedCliffGeometryRevision};
     }

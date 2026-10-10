@@ -1,5 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
-import { VisualSurfaceResolver, hasStoredWaterDepth } from "./visual-surface-resolver.js";
+import { VisualSurfaceResolver, hasStoredWaterDepth, CONNECTED_STORED_WATER_MAX_DROP } from "./visual-surface-resolver.js";
 
 const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
@@ -11,7 +11,7 @@ const logicalSurface=tile=>tile?.waterSurfaceZ==null
 
 const SURFACE_OFFSET=.016;
 const EPSILON=.001;
-const WATERFALL_MIN_DROP=.18;
+const WATERFALL_MIN_DROP=CONNECTED_STORED_WATER_MAX_DROP;
 const WATER_DEPTH_RANGE=1.5;
 const WATER_SHALLOW_COLOR=Object.freeze([.43,.78,.72]);
 const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
@@ -662,22 +662,12 @@ export class WaterRenderer{
   continuousWaterEdge(a,b){
     if(!a||!b||!this.isRenderableWater(a)||!this.isRenderableWater(b))return false;
     const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
-    // A visible cliff blocks a water surface only while its published rock lip
-    // protrudes above the WATER. Fully submerged rock is still the floor of a
-    // connected lake; splitting D at that rock edge creates separate floating
-    // slabs even though both stored free surfaces meet above the same sill.
+    // Both D and measured Q use the SAME shared published-rock seam rule.
+    // A submerged cliff is the bed of one water body, not a second water mesh.
     const wall=this.surfaceResolver.getRenderedCliffGeometry(a,{dx,dy})||
        this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy});
-    if(wall){
-      const lip=wall.lip||[];
-      const surfaceA=visualSurface(a),surfaceB=visualSurface(b);
-      const sharedWaterY=Math.min(surfaceA,surfaceB)*ELEVATION_HEIGHT;
-      if(lip.length<2||lip.some(point=>!Number.isFinite(Number(point.y))||
-          sharedWaterY<=Number(point.y)+EPSILON))return false;
-      // An active drop remains a waterfall rather than a smoothed lake.
-      if(Math.abs(surfaceA-surfaceB)>=WATERFALL_MIN_DROP)return false;
-      return !this.isCascadeBoundary(a,b);
-    }
+    if(wall)return !!this.surfaceResolver.submergedStoredWaterCliff(a,b)&&
+      !this.isCascadeBoundary(a,b);
     return this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
   }
 
