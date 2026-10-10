@@ -1450,6 +1450,13 @@ export class WaterRenderer{
       ??this.waterSurfacePolygons(edge.tile,allMap);
     const metrics=this.wallPathMetrics(wall);
     if(!metrics)return[];
+    const edgeId=`${edge.tile.x},${edge.tile.y}->${edge.receiver.x},${edge.receiver.y}`;
+    const solved=this.surfacePresentation?.get(keyOf(edge.tile.x,edge.tile.y));
+    // Authoritative waterfall wet spans are solved against the published,
+    // crooked rock lip together with the horizontal D/Q water surface. They
+    // replace an independently projected tile-centre/straight-edge fallback.
+    if(solved?.cascadeLipSpans&&Object.hasOwn(solved.cascadeLipSpans,edgeId))
+      return solved.cascadeLipSpans[edgeId];
     const spans=[];
     for(let i=0;i<metrics.count-1;i++){
       const a=metrics.lip[i],b=metrics.lip[i+1],segmentStart=metrics.cumulative[i],length=metrics.cumulative[i+1]-segmentStart;

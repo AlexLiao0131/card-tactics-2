@@ -284,9 +284,32 @@ export class VisualSurfaceResolver{
       const dx=Number(neighbor.x)-Number(tile.x),dz=Number(neighbor.y)-Number(tile.y);
       const q=Number(record.q||0);
       const speed=Math.max(.5,Number(tile.flowSpeed||1),Number(neighbor.flowSpeed||0));
-      return{record,neighbor,dx,dz,q,
-        x:(Number(tile.x)+dx*.5)*TILE_SIZE,
-        z:(Number(tile.y)+dz*.5)*TILE_SIZE,
+      // A cascade terminates at TerrainRenderer's published, irregular lip/foot,
+      // NOT at the nominal square tile boundary. The upstream film meets lip;
+      // downstream film begins at foot. Both consume one rock geometry record.
+      const upstream=all.get(record.fromKey),downstream=all.get(record.toKey);
+      const wall=record.cascade&&upstream&&downstream
+        ?this.getRenderedCliffGeometry(upstream,{dx:Number(downstream.x)-Number(upstream.x),
+          dy:Number(downstream.y)-Number(upstream.y)}):null;
+      const lipSide=record.fromKey===this.keyOf(tile.x,tile.y);
+      const wallEdge=wall?.[lipSide?"lip":"foot"];
+      let anchor=null;
+      if(wallEdge?.length>=2){
+        const lengths=[0];
+        for(let i=1;i<wallEdge.length;i++)lengths.push(lengths.at(-1)+
+          Math.hypot(Number(wallEdge[i].x)-Number(wallEdge[i-1].x),
+                     Number(wallEdge[i].z)-Number(wallEdge[i-1].z)));
+        const half=lengths.at(-1)*.5;
+        for(let i=1;i<wallEdge.length;i++)if(half<=lengths[i]+EPSILON){
+          const t=(half-lengths[i-1])/Math.max(EPSILON,lengths[i]-lengths[i-1]);
+          anchor={x:Number(wallEdge[i-1].x)+(Number(wallEdge[i].x)-Number(wallEdge[i-1].x))*t,
+            z:Number(wallEdge[i-1].z)+(Number(wallEdge[i].z)-Number(wallEdge[i-1].z))*t};
+          break;
+        }
+      }
+      return{record,neighbor,dx,dz,q,wall,wallEdge,
+        x:anchor?.x??(Number(tile.x)+dx*.5)*TILE_SIZE,
+        z:anchor?.z??(Number(tile.y)+dz*.5)*TILE_SIZE,
         width:widthFromRate(q),height:filmHeight(q,speed),
         stored:hasStoredWaterDepth(neighbor)};
     };
@@ -330,11 +353,19 @@ export class VisualSurfaceResolver{
       const waterAt=stored
         ?point=>{
           const dWaterY=Number(storedLevelAtWorld(tile,point.x,point.z))*ELEVATION_HEIGHT;
+          const terrainY=Number(point.y);
+          // D owns ALL of its submerged river/lake geometry. Even a large
+          // outgoing Q cascade cannot raise existing D water or recolour its
+          // depth gradient with a transient transport film.
+          if(dWaterY>=terrainY)return dWaterY;
           const film=flowFilmAt(point,cascadePorts);
-          // A dry point outside the outgoing Q corridor must retain its
-          // NEGATIVE D clearance. Clamping to terrain height here would
-          // expand the original D shoreline all the way to dry vertices.
-          return film>EPSILON?Math.max(dWaterY,Number(point.y)+film):dWaterY;
+          if(film<=EPSILON)return dWaterY;
+          // Q is only a shallow passage across the DRY shoulder separating
+          // the real D waterline from a cliff lip. Taper its film to zero at
+          // D's shoreline, without creating a second pooled-water elevation.
+          const dryRise=terrainY-dWaterY;
+          const taper=smooth01(dryRise/Math.max(film,EPSILON));
+          return terrainY+film*taper;
         }
         :point=>{
           const depth=flowFilmAt(point,ports);
@@ -367,6 +398,56 @@ export class VisualSurfaceResolver{
           const qWaterY=Number(point.y)+depth;
           return qWaterY*(1-storedWeight)+storedWaterY*storedWeight;
         };
+      // The vertical waterfall inherits the EXACT wet interval on the rock
+      // lip from this same D/Q surface field. Sampling the registered curved
+      // lip also detects a narrow Q channel that crosses between original
+      // terrain vertices. No second flat-grid spill-width approximation.
+      const cascadeLipSpans={};
+      for(const port of ports){
+        if(!port.record.cascade||port.record.fromKey!==key||!port.wall?.lip?.length)continue;
+        const lip=port.wall.lip,spans=[];
+        let distance=0;
+        for(let i=0;i<lip.length-1;i++){
+          const a=lip[i],b=lip[i+1];
+          const length=Math.hypot(Number(b.x)-Number(a.x),Number(b.z)-Number(a.z));
+          if(length<=EPSILON)continue;
+          // 1/4 wall-column sampling resolves films thinner than a rock segment.
+          const subdivisions=8,at=t=>({
+            x:Number(a.x)+(Number(b.x)-Number(a.x))*t,
+            y:Number(a.y)+(Number(b.y)-Number(a.y))*t,
+            z:Number(a.z)+(Number(b.z)-Number(a.z))*t
+          });
+          const clearance=t=>{const p=at(t);return Number(waterAt(p))-p.y;};
+          let prevT=0,prevClear=clearance(0);
+          for(let j=1;j<=subdivisions;j++){
+            const nextT=j/subdivisions,nextClear=clearance(nextT);
+            const wetA=prevClear>EPSILON,wetB=nextClear>EPSILON;
+            if(wetA||wetB){
+              let start=prevT,end=nextT;
+              if(wetA!==wetB){
+                let lo=prevT,hi=nextT;
+                for(let k=0;k<14;k++){
+                  const mid=(lo+hi)*.5;
+                  if((clearance(mid)>EPSILON)===wetA)lo=mid;
+                  else hi=mid;
+                }
+                const cross=(lo+hi)*.5;
+                if(wetA)end=cross;else start=cross;
+              }
+              if(end-start>EPSILON)spans.push({start:distance+length*start,end:distance+length*end});
+            }
+            prevT=nextT;prevClear=nextClear;
+          }
+          distance+=length;
+        }
+        const merged=[];
+        for(const span of spans){
+          const last=merged.at(-1);
+          if(last&&span.start<=last.end+1e-5)last.end=Math.max(last.end,span.end);
+          else merged.push({...span});
+        }
+        cascadeLipSpans[port.record.id]=merged;
+      }
       const polygons=[];
       let wetArea=0,maxDepth=0,clippedPoints=0;
       // The published terrain has only 18 triangles per tile. A narrow Q
@@ -399,7 +480,7 @@ export class VisualSurfaceResolver{
       if(node){node.sheetStatus=stored?"STORED_D":"UNIFIED_Q_FILM";
         node.sheetAcceptedEdges=ports.map(port=>port.record.id);
         node.sheetRejectedEdges=records.filter(record=>!ports.some(port=>port.record===record)).map(record=>({id:record.id,reason:record.geometryJoin||"UNAVAILABLE"}));}
-      result.set(key,{tile,key,polygons,wetArea,maxDepth,clippedPoints,stored,
+      result.set(key,{tile,key,polygons,wetArea,maxDepth,clippedPoints,stored,cascadeLipSpans,
         geometryRevision:geometry.revision,model:"PUBLISHED_UNIFIED_DQ",
         boundaryEdges:records,nominalTileArea:TILE_SIZE*TILE_SIZE,
         gameplayDepth:stored});
