@@ -662,11 +662,22 @@ export class WaterRenderer{
   continuousWaterEdge(a,b){
     if(!a||!b||!this.isRenderableWater(a)||!this.isRenderableWater(b))return false;
     const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
-    // A published rock face is a hard water-surface discontinuity even when Q
-    // is zero. Flow rate controls transport, NOT whether adjacent free surfaces
-    // are allowed to average through a cliff.
-    if(this.surfaceResolver.getRenderedCliffGeometry(a,{dx,dy})||
-       this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy}))return false;
+    // A visible cliff blocks a water surface only while its published rock lip
+    // protrudes above the WATER. Fully submerged rock is still the floor of a
+    // connected lake; splitting D at that rock edge creates separate floating
+    // slabs even though both stored free surfaces meet above the same sill.
+    const wall=this.surfaceResolver.getRenderedCliffGeometry(a,{dx,dy})||
+       this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy});
+    if(wall){
+      const lip=wall.lip||[];
+      const surfaceA=visualSurface(a),surfaceB=visualSurface(b);
+      const sharedWaterY=Math.min(surfaceA,surfaceB)*ELEVATION_HEIGHT;
+      if(lip.length<2||lip.some(point=>!Number.isFinite(Number(point.y))||
+          sharedWaterY<=Number(point.y)+EPSILON))return false;
+      // An active drop remains a waterfall rather than a smoothed lake.
+      if(Math.abs(surfaceA-surfaceB)>=WATERFALL_MIN_DROP)return false;
+      return !this.isCascadeBoundary(a,b);
+    }
     return this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
   }
 
