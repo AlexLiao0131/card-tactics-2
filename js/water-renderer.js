@@ -71,7 +71,6 @@ export class WaterRenderer{
     this.sheetFlowNetwork=new Map();
     this.sheetFlowSurfaces=new Map();
     this.sheetFlowMeshes=new Map();
-    this.sheetFlowSignature="";
     this.surfaceSignature="";
     this.cascadeSignature="";
     this.runoffSignature="";
@@ -668,32 +667,34 @@ export class WaterRenderer{
     return this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
   }
 
-  surfaceComponents(waterTiles){
-    const map=this.byKey(waterTiles);
-    const unseen=new Set(waterTiles.map(tile=>keyOf(tile.x,tile.y)));
-    const out=[];
-
-    while(unseen.size){
-      const firstKey=unseen.values().next().value;
-      unseen.delete(firstKey);
-      const first=map.get(firstKey);
-      const group=this.surfaceGroup(first);
-      const queue=[first],tiles=[];
-
+  // All D and Q tiles use one surface connectivity and one horizontal Mesh
+  // builder. Published cliffs are NOT continuous horizontal water boundaries.
+  presentationComponents(presentation){
+    const tiles=[...presentation.values()].map(item=>item.tile);
+    const by=this.byKey(tiles),remaining=new Set(by.keys()),out=[];
+    const canJoin=(tile,next)=>{
+      if(hasAnyWater(tile)&&hasAnyWater(next))return this.continuousWaterEdge(tile,next);
+      const a=keyOf(tile.x,tile.y),b=keyOf(next.x,next.y);
+      return[...(this.sheetFlowNetwork.get(a)?.incoming||[]),
+             ...(this.sheetFlowNetwork.get(a)?.outgoing||[])]
+        .some(edge=>edge.geometryJoinValid&&!edge.cascade&&
+          ((edge.fromKey===a&&edge.toKey===b)||(edge.fromKey===b&&edge.toKey===a)));
+    };
+    while(remaining.size){
+      const first=by.get(remaining.values().next().value);
+      const group=this.surfaceGroup(first),queue=[first],members=[];
+      remaining.delete(keyOf(first.x,first.y));
       while(queue.length){
-        const tile=queue.shift();
-        tiles.push(tile);
+        const tile=queue.shift();members.push(tile);
         for(const dir of DIRS){
-          const n=map.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-          if(!n||this.surfaceGroup(n)!==group||!this.continuousWaterEdge(tile,n))continue;
-          const k=keyOf(n.x,n.y);
-          if(!unseen.has(k))continue;
-          unseen.delete(k);
-          queue.push(n);
+          const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
+          if(!neighbor||this.surfaceGroup(neighbor)!==group||!canJoin(tile,neighbor))continue;
+          const neighborKey=keyOf(neighbor.x,neighbor.y);
+          if(!remaining.delete(neighborKey))continue;
+          queue.push(neighbor);
         }
       }
-
-      out.push({id:`${group}:${out.length}`,group,tiles});
+      out.push({id:`${group}:${out.length}`,group,tiles:members});
     }
     return out;
   }
@@ -965,14 +966,15 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
-  buildSurface(component,state){
+  buildSurface(component,state,presentation){
     const out={positions:[],indices:[],normals:[],uvs:[],colors:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
-    const cache=new Map(),allMap=this.allByKey(state),sources=this.activeHydrologySources(state),componentTurbidity=average(component.tiles.map(tile=>this.turbidity(tile)));
+    const cache=new Map(),allMap=this.allByKey(state),sources=this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
+      ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
     for(const tile of component.tiles){
       const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
       terrainTriangles+=geometry?.triangles?.length||0;
-      for(const polygon of this.waterSurfacePolygons(tile,allMap)){
+      for(const polygon of presentation.get(keyOf(tile.x,tile.y))?.polygons||[]){
         waterPolygons++;clippedPoints+=polygon.filter(point=>point.clipped).length;
         const vertices=polygon.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile,sources));
         for(let i=1;i<vertices.length-1;i++)this.pushTriangle(out,vertices[0],vertices[i],vertices[i+1]);
@@ -982,11 +984,13 @@ export class WaterRenderer{
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=10;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
-    mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
+    mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
+      unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
+      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);mesh.setVerticesData("waterSource",waterSource,false,2);}
-    this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),specialActive:false});
+    this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.filter(hasAnyWater).map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),specialActive:false});
     mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSourceUpwelling=sources.length>0;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;mesh.freezeWorldMatrix();return mesh;
   }
 
@@ -1108,95 +1112,14 @@ export class WaterRenderer{
     return this.assignRunoffPathPhases(out);
   }
 
-  // The Q-only surface is ONE sheet per gameplay tile. All incident Q
-  // branches were resolved together against TerrainRenderer's *published*
-  // triangles. Rendering does not select a stream width, centreline or Y.
-  buildSheetFlow(solution){
-    // Transport water uses the SAME stylized, lit surface material as stored
-    // water. Film depth defines its XYZ and wet/dry boundary, NOT how invisible
-    // it becomes relative to some unrelated lake elsewhere on the map.
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],
-      waterAnim:[],waterBaseXZ:[],waterSource:[]};
-    const fx=Number(solution.flow.x||0),fz=Number(solution.flow.z||0);
-    const source=solution.tile.hydrologySource===true&&solution.tile.hydrologySourceDisabled!==true
-      ?[{x:Number(solution.tile.x)*TILE_SIZE,z:Number(solution.tile.y)*TILE_SIZE,
-         rate:Number(solution.tile.hydrologySourceInflow||0)}]:[];
-    const flowSpeed=Math.min(3.2,Math.max(0,...solution.boundaryEdges.map(edge=>Number(edge.q||0))));
-    for(const polygon of solution.polygons||[]){
-      const first=out.positions.length/3;
-      for(const vertex of polygon.points){
-        const depth=Math.max(0,Number(vertex.depth||0));
-        const point=this.canonicalWaterPoint({x:Number(vertex.x),
-          y:Number(vertex.y)+depth+SURFACE_OFFSET*.42,z:Number(vertex.z)});
-        out.positions.push(point.x,point.y,point.z);
-        out.normals.push(0,0,0);
-        out.uvs.push(((-fz*point.x+fx*point.z)/TILE_SIZE),
-          (fx*point.x+fz*point.z)/Math.max(EPSILON,RUNOFF_UV_REPEAT_DISTANCE));
-        const water=this.waterVertexVisual({x:point.x,z:point.z,
-          depth:depth/ELEVATION_HEIGHT},null,this.turbidity(solution.tile));
-        // Physically dry clipping vertices disappear; genuine positive water
-        // has the water surface's visible colour, shine and opacity. There is
-        // NO alpha division by either global or per-tile maximum film depth.
-        out.colors.push(...water.color,depth>0?Math.max(.72,water.alpha):0);
-        // Share the existing GPU water motion. Wind/current displacement is
-        // bounded by local film thickness so it cannot pass below the actual
-        // registered terrain triangle (including its clipped boundary).
-        const waveWeight=Math.min(1,depth/(ELEVATION_HEIGHT*.5));
-        out.waterAnim.push(fx,fz,flowSpeed,waveWeight);
-        out.waterBaseXZ.push(point.x,point.z);
-        const sourceField=depth>0&&source.length?this.sourceFieldAt(point,source):{weight:0,phase:0};
-        out.waterSource.push(sourceField.weight,sourceField.phase);
-      }
-      for(let i=1;i<polygon.points.length-1;i++){
-        const a=polygon.points[0],b=polygon.points[i],c=polygon.points[i+1];
-        if(Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))>1e-10)
-          out.indices.push(first,first+i,first+i+1);
-      }
-    }
-    if(!out.indices.length)return null;
-    BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
-    const mesh=new BABYLON.Mesh(`sheet-flow-${solution.key}`,this.scene),data=new BABYLON.VertexData();
-    Object.assign(data,{positions:out.positions,indices:out.indices,normals:out.normals,
-      uvs:out.uvs,colors:out.colors});data.applyToMesh(mesh,false);
-    mesh.material=this.surfaceMaterial;mesh.alphaIndex=11;
-    mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
-    if(this.gpuSurfaceWaves){
-      mesh.setVerticesData("waterAnim",out.waterAnim,false,4);
-      mesh.setVerticesData("waterBaseXZ",out.waterBaseXZ,false,2);
-      mesh.setVerticesData("waterSource",out.waterSource,false,2);
-    }
-    mesh.visibility=solution.tile.fogged?.16:1;
-    mesh.metadata={kind:"water-surface-runoff",model:solution.model,
-      tileKey:solution.key,geometryRevision:solution.geometryRevision,
-      sourceEdges:solution.boundaryEdges.map(edge=>edge.id),
-      transportVolume:solution.transportVolume,targetVolumeProxy:solution.targetVolume,
-      volumeProxyAfterSeam:solution.volumeProxyAfterSeam,
-      wetArea:solution.wetArea,coreWetArea:solution.coreWetArea,
-      shoulderWetArea:solution.shoulderWetArea,
-      renderedProjectedArea:solution.renderedProjectedArea,
-      coreProjectedArea:solution.coreProjectedArea,
-      nominalTileArea:solution.nominalTileArea,
-      shoulderProjectedArea:solution.shoulderProjectedArea,
-      renderedVolumeProxy:solution.renderedVolumeProxy,
-      volumeProxyBasis:"GAMEPLAY_TILE_XZ",maxVisualFilmDepth:solution.maxDepth,
-      waterSurfaceMaterial:true,waterShaderWaves:this.gpuSurfaceWaves===true,
-      minVertexAlpha:Math.min(...out.colors.filter((_,i)=>i%4===3)),
-      maxVertexAlpha:Math.max(...out.colors.filter((_,i)=>i%4===3)),
-      triangleCount:out.indices.length/3,gameplayDepth:false,
-      terrainConforming:true,registeredTriangleOnly:true,hydrologySource:false,
-      pathEndpointsAreTileCenters:false,fixedCorridorWidth:false,
-      mergedTileQ:true,sharedTerrainCoordinates:true};
-    return mesh;
-  }
-
   appendTerrainConformingRunoff(edge,segment,width,positions,indices,normals,uvs,colors,allMap){
     // The shared VisualSurfaceResolver owns the Q-only wet footprint. This
     // renderer only converts its published terrain XYZ polygons to Babylon.
     const wetContours=[edge.from,edge.to].filter(tile=>waterDepth(tile)>EPSILON)
       .flatMap(tile=>this.waterSurfacePolygons(tile,allMap));
     const footprint=this.surfaceResolver.transportSurfaceFootprint(edge,segment,{
-      // The Q-only dry ground belongs exclusively to sheetFlowTileSurfaces.
-      // A rejected solve must not resurrect the obsolete fixed-width ribbon.
+      // Q-only ground belongs to the unified published-water intersection.
+      // This legacy waterfall junction must not paint a second Q ribbon.
       surfaceTriangles:(tile,triangles)=>waterDepth(tile)>EPSILON
         ?triangles.map(triangle=>this.clipTerrainTriangleAtWaterline(tile,triangle,allMap,false)).filter(polygon=>polygon.length>=3)
         :[]
@@ -1725,6 +1648,9 @@ export class WaterRenderer{
       waterDepth(tile).toFixed(4),
       hasAnyWater(tile)?visualSurface(tile).toFixed(4):"dry",
       Number(tile.flowX||0),Number(tile.flowY||0),Number(tile.flowSpeed||0).toFixed(3),
+      Number(tile.waterTurbidity||0).toFixed(3),
+      tile.hydrologySource===true&&tile.hydrologySourceDisabled!==true?1:0,
+      Number(tile.hydrologySourceInflow||0).toFixed(4),
       tile.hydrologyCascadeToX??"n",tile.hydrologyCascadeToY??"n",Number(tile.hydrologyCascadeDrop||0).toFixed(3),
       ...["N","E","S","W"].map(dir=>{const f=tile.hydrologyEdgeOutflows?.[dir];return f?`${dir}>${f.toX},${f.toY}:${Number(f.rate||0).toFixed(3)}:${Number(f.cliffDrop||0).toFixed(3)}`:`${dir}-`; }),
       tile.fogged?1:0
@@ -1732,7 +1658,10 @@ export class WaterRenderer{
     const groups=components.map(component=>
       `${component.id}:${component.tiles.map(tile=>keyOf(tile.x,tile.y)).sort().join(",")}`
     ).sort().join("|");
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${groups}#${terrain}`;
+    const qEdges=[...this.sheetFlowNetwork.values()].flatMap(node=>node.outgoing||[])
+      .map(edge=>`${edge.id}:${Number(edge.q||0).toFixed(4)}:${edge.geometryJoinValid?1:0}:${edge.cascade?1:0}`)
+      .sort().join("|");
+    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${groups}#${terrain}#Q:${qEdges}`;
   }
 
   cascadeSignatureFor(edges){
@@ -1743,25 +1672,43 @@ export class WaterRenderer{
   sync(state,presentationEvents=[]){
     this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
-    const components=this.surfaceComponents(waterTiles);
-    const cascades=this.cascadeEdges(state,waterTiles);
-    // Keep the solved per-tile rejection/clip diagnostics when topology, Q and
-    // registered terrain geometry have not changed. runoffEdges() inventories
-    // Q every sync and otherwise replaces the diagnostic-bearing nodes.
-    const previousSheetNetwork=this.sheetFlowNetwork;
+    const oldNetwork=this.sheetFlowNetwork;
     const runoffs=this.runoffEdges(state);
+    const cascades=this.cascadeEdges(state,waterTiles);
     const sources=this.activeHydrologySources(state);
-
-    const surfaceSignature=this.surfaceSignatureFor(components,state);
+    // This signature uses the true D/Q inputs, not the generated polygons.
+    // Terrain and Q change on turns, not on every animation frame.
+    const surfaceSignature=this.surfaceSignatureFor([],state);
     if(surfaceSignature!==this.surfaceSignature){
+      const tiles=tilesOf(state),allMap=this.allByKey(state);
+      const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
+        (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap));
+      const components=this.presentationComponents(presentation);
+      // Keep TEST's read-only per-tile diagnostic shape; these are NOT second
+      // geometry solvers or Mesh owners. The water polygons below are still
+      // consumed directly from the one shared presentation map.
+      this.sheetFlowSurfaces=new Map([...presentation]
+        .filter(([,entry])=>!entry.stored)
+        .map(([key,entry])=>[key,{...entry,maxDepth:entry.maxDepth*ELEVATION_HEIGHT,
+          polygons:entry.polygons.map((points,i)=>({
+            triangleIndex:points.triangleIndex??i,
+            points:points.map(point=>({...point,depth:point.depth*ELEVATION_HEIGHT}))
+          }))
+        }]));
       this.disposeSurfaceMeshes();
+      this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
       for(const component of components){
-        const mesh=this.buildSurface(component,state);
-        if(mesh)this.surfaceMeshes.set(component.id,mesh);
+        const mesh=this.buildSurface(component,state,presentation);
+        if(!mesh)continue;
+        this.surfaceMeshes.set(component.id,mesh);
+        for(const tile of component.tiles){
+          const key=keyOf(tile.x,tile.y);
+          if(this.sheetFlowSurfaces.has(key))this.sheetFlowMeshes.set(key,mesh);
+        }
       }
       this.surfaceSignature=surfaceSignature;
-    }
+    }else this.sheetFlowNetwork=oldNetwork;
     this.syncRogueWaveEvents(presentationEvents,state);
     this.syncWhirlpools(state);
     for(const entry of this.surfaceAnimations.values()){
@@ -1776,43 +1723,18 @@ export class WaterRenderer{
       for(const edge of cascades){const built=this.buildCascade(edge,state);if(built)this.cascades.set(edge.id,built);}
       this.cascadeSignature=cascadeSignature;
     }
-
     const runoffSignature=this.runoffSignatureFor(runoffs);
-    // Recalculate only when terrain revision, Q topology, waterline, or
-    // presentation input changes. Never sample old terrain XYZ after rebuild.
-    if(runoffSignature!==this.sheetFlowSignature){
-      // Avoid retaining XYZ -> Y registry layers after Q-driven sheet rebuilds.
-      this.resetWaterSeamRegistry();
-      const newSurfaces=this.surfaceResolver.sheetFlowTileSurfaces(tilesOf(state),this.sheetFlowNetwork);
-      const newMeshes=new Map();
-      for(const sheet of newSurfaces.values()){
-        const mesh=this.buildSheetFlow(sheet);
-        if(mesh)newMeshes.set(sheet.key,mesh);
-      }
-      this.disposeMap(this.sheetFlowMeshes);
-      this.sheetFlowSurfaces=newSurfaces;
-      this.sheetFlowMeshes=newMeshes;
-      this.sheetFlowSignature=runoffSignature;
-    }else{
-      // Existing mesh/solver cache is still authoritative. Reuse the matching
-      // Q inventory with its solver status rather than silently resetting
-      // sheetStatus to unknown on the next render frame.
-      this.sheetFlowNetwork=previousSheetNetwork;
-    }
     if(runoffSignature!==this.runoffSignature){
       this.disposeMap(this.runoffs);
       for(const edge of runoffs){const built=this.buildRunoff(edge,state);if(built)this.runoffs.set(edge.id,built);}
       this.runoffSignature=runoffSignature;
     }
-
-    // The source is now the same sheet water (including source upwelling and
-    // multiple Q exits), not an independent legacy ribbon over dry ground.
     if(this.sourceFootprints.size)this.disposeMap(this.sourceFootprints);
     this.sourceSignature=this.sourceFootprintSignatureFor(sources,runoffs);
 
-    if(!waterTiles.length&&!runoffs.length&&!sources.length){
-      this.disposeSurfaceMeshes();this.disposeMap(this.cascades);this.disposeMap(this.runoffs);this.disposeMap(this.sourceFootprints);
-      this.disposeMap(this.sheetFlowMeshes);this.sheetFlowSurfaces.clear();this.sheetFlowSignature="";
+    if(!this.surfaceMeshes.size&&!runoffs.length&&!sources.length){
+      this.disposeMap(this.cascades);this.disposeMap(this.runoffs);
+      this.sheetFlowSurfaces.clear();this.sheetFlowMeshes.clear();
       this.resetWaterSeamRegistry();
       this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
     }
@@ -1881,7 +1803,9 @@ export class WaterRenderer{
       dedicatedRunoffMaterial:true,
       fixedCascadeWidth:false,
       persistentPerEdgeDischarge:true,
-      sheetFlowSurfaceMeshes:this.sheetFlowMeshes.size,
+      sheetFlowSurfaceMeshes:0,
+      unifiedDQSurfaceMeshes:true,
+      qSurfaceMeshAliases:this.sheetFlowMeshes.size,
       sheetFlowBoundaryInventory:true,
       sheetFlowActiveTiles:[...this.sheetFlowNetwork.values()].filter(tile=>tile.incoming.length||tile.outgoing.length).length,
       sheetFlowGeometryRejectedEdges:new Set([...this.sheetFlowNetwork.values()].flatMap(tile=>tile.outgoing)
