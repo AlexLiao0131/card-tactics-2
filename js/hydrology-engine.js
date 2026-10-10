@@ -416,7 +416,7 @@ export const HydrologyEngine=(()=>{
         // water actually arrived. At low stage a partly dry outlet passes
         // less water; rising water restores the full authored capacity.
         const capacity=Math.max(0,Number(tile.outletEffectiveCapacity??tile.channelCapacity??0));
-        const bankfull=Math.max(EPSILON,Number(tile.channelBankfullDepth||NATURAL_WATER_DEPTH));
+        const bankfull=Math.max(.20,Number(tile.channelBankfullDepth??NATURAL_WATER_DEPTH));
         const stage=waterDepth(tile);
         const throughRate=map?.hydrology?.generatedRiverProfile===true
           ?capacity*Math.sqrt(clamp(stage/bankfull,0,1))
@@ -436,24 +436,29 @@ export const HydrologyEngine=(()=>{
     for(const tile of tiles){
       if(tile?.river!==true)continue;
 
-      const baseDepth=Math.max(.20,Number(tile.hydrologyBaseWaterDepth||0)||waterDepth(tile)||NATURAL_WATER_DEPTH);
-      const baselineSurface=elevation(tile)+baseDepth;
+      // Channel design geometry comes from the authored riverbed, NEVER from
+      // today's D. In particular an overflowing river must not raise its own
+      // bankfull threshold or reduce its own design conveyance.
+      const incision=Math.max(0,Number(tile.hydrologyChannelIncision||0));
+      const designDepth=Math.max(.20,incision||Number(tile.hydrologyBaseWaterDepth||0)||NATURAL_WATER_DEPTH);
       const banks=[];
 
       for(const[dx,dy]of DIRS){
         const neighbor=by.get(key(tile.x+dx,tile.y+dy));
         if(!neighbor||neighbor.river===true)continue;
-        // Bank elevation is terrain geometry, not current flood-water surface.
-        banks.push(elevation(neighbor));
+        // Use the same physical shared sill as a river/lake transfer.
+        // A lower adjacent lake is an OPEN side, not a retaining bank
+        // below the bed; the sill cannot be lower than the riverbed.
+        banks.push(Math.max(elevation(tile),elevation(neighbor)));
       }
 
-      const bankElevation=banks.length?Math.min(...banks):baselineSurface+.5;
-      const bankHeadroom=Math.max(0,bankElevation-baselineSurface);
-      const bankfullDepth=Math.max(baseDepth,baseDepth+bankHeadroom);
+      const bankElevation=banks.length?Math.min(...banks):elevation(tile)+designDepth;
+      const bankfullDepth=Math.max(0,bankElevation-elevation(tile));
 
-      // Fixed-width channel approximation of Manning-like behavior:
-      // Q grows faster than linearly with usable water depth.
-      const depthRatio=Math.max(1,bankfullDepth/baseDepth);
+      // Bankfull is a static terrain cross-section. Design capacity is the
+      // maximum permitted Q; the moving D and hydraulic head independently
+      // determine how much water can actually pass in the current step.
+      const depthRatio=Math.max(1,bankfullDepth/designDepth);
       const capacityFactor=clamp(
         Math.pow(depthRatio,5/3),
         MIN_CHANNEL_CAPACITY_FACTOR,
@@ -1576,12 +1581,16 @@ export const HydrologyEngine=(()=>{
         const sill=Math.max(elevation(tile),elevation(other));
         const isLake=lakeBodies.has(key(other.x,other.y));
         const entrance=`${key(tile.x,tile.y)}>${key(other.x,other.y)}`;
-        const bankfull=Math.max(.2,Number(tile.channelBankfullDepth||.2));
-        // Other cells touching this SAME lake are shoreline, not independent
-        // full-strength river off-takes. Exceptional flood stage can open them.
+        // The first authored mouth feeds a lake as ordinary throughflow.
+        // Other connected shoreline cells are NOT independent full-strength
+        // outlets: crossing the side sill also requires overtopping the static
+        // carved shoulder (the bank/bed incision authored by MapGenerator).
+        // Neither this threshold nor the bankfull geometry depends on live D.
+        const bankLip=Math.max(sill,Number(tile.channelBankElevation??sill))+
+          Math.max(0,Number(tile.hydrologyChannelIncision||0));
         if(isLake&&!mouths.has(entrance)&&
-           waterline(tile)<sill+bankfull-EPSILON&&
-           waterline(other)<sill+bankfull-EPSILON)continue;
+           waterline(tile)<=bankLip+EPSILON&&
+           waterline(other)<=bankLip+EPSILON)continue;
         const difference=waterline(tile)-waterline(other);
         if(Math.abs(difference)<=EPSILON)continue;
         const from=difference>0?tile:other,to=difference>0?other:tile;
