@@ -71,10 +71,12 @@ function create(ctx){
     const shownHp=unit.hallucination?Math.max(1,Number(unit.perceivedHp||maxHp)):unit.hp,shownMaxHp=unit.hallucination?Math.max(1,Number(unit.perceivedMaxHp||maxHp)):maxHp;
     return{id:unit.id,team,name:unit.character.name,visualId:unit.character.visualId||null,facing:TacticalEngine.ensureFacing(unit),hp:shownHp,maxHp:shownMaxHp,mana:unit.mana,maxMana:unit.maxMana,resources:UnitRuntimeEngine.resourceSnapshot(unit),move:Number(combat.move||0),x:unit.x,y:unit.y,z:Number(unit.z??(tile?.elevation||0)),renderZ:Number(vertical?.renderZ??unitRenderZ(unit,tile)),verticalMode:vertical?.mode||null,verticalLayer:vertical?.layer||null,immersionDepth:Number(vertical?.immersionDepth||0),verticalSurfaceZ:Number(vertical?.surfaceZ??tile?.elevation??0),collisionHeight:Number(unit.character?.collision?.height||0),terrain:tile?TERRAINS[tile.terrain]?.name||tile.terrain:"",elevation:Number(tile?.elevation||0),stealthed:!!globalThis.EffectEngine?.isStealthed?.(unit),friendlyToViewer:unit.team===viewerTeam,actionState,stats:{atk:Number(combat.atk||0),def:Number(combat.def||0),matk:Number(combat.matk||0),mdef:Number(combat.mdef||0),hit:baseHit,eva:BattleEngine.evasion(unit.character),crit:BattleEngine.critChance(unit.character,{}),spd:BattleEngine.actionSpeed(unit.character,{})},skills:unitSkillPresentation(unit),preview};
   }
-  function equipmentLightSources(s){
+  function equipmentLightSources(s,visibility){
     const out=[];
     for(const unit of s?.units||[]){
-      if(!unit?.alive)continue;
+      // Do not reveal hidden enemy positions with an equipped light. The same
+      // visibility owner already gates the unit mesh and its own-tile glow.
+      if(!unitVisibleToPlayer(unit,visibility))continue;
       for(const light of globalThis.EquipmentDatabase?.lightSources?.(unit.character)||[]){
         out.push({
           x:Number(unit.x||0),y:Number(unit.y||0),
@@ -125,7 +127,7 @@ function create(ctx){
       .map(unit=>({x:unit.x,y:unit.y,cells:[{x:unit.x,y:unit.y}],source:"UNIT_TILE_LIGHT",sourceId:unit.id,
         intensity:unit.team===viewerTeam?.70:.45,color:unit.team===viewerTeam?[.57,.78,1]:[1,.70,.43],steady:true}));
     // Lighting is world presentation, not enemy intel. Mist scatter uses real optical transmission.
-    return[...environmentLights,...equipmentLightSources(s),...structureLights,...unitLights].map(light=>({
+    return[...environmentLights,...equipmentLightSources(s,visibility),...structureLights,...unitLights].map(light=>({
       ...light,visible:true,
       transmission:Math.max(0,...sourceObservers.map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))
     }));

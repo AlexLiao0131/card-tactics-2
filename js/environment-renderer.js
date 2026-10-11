@@ -92,6 +92,22 @@ function hash01(value){
 }
 
 
+// Light colours are serialized from equipment as CSS hex and from effects as
+// RGB triplets. Normalize both through the same rendering path; the equipment
+// data remains the sole authority for tint, range, and strength.
+function lightColor(color,fallback=[1,.5,.25]){
+  if(Array.isArray(color)&&color.length>=3){
+    const rgb=color.slice(0,3).map(value=>Number(value));
+    if(rgb.every(Number.isFinite))return rgb.map(value=>clamp(value,0,1));
+  }
+  if(typeof color==="string"){
+    const hex=color.trim().replace(/^#/,"");
+    if(/^[0-9a-f]{3}$/i.test(hex))return[0,1,2].map(i=>parseInt(hex[i]+hex[i],16)/255);
+    if(/^[0-9a-f]{6}$/i.test(hex))return[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)/255);
+  }
+  return fallback;
+}
+
 export class EnvironmentRenderer{
   constructor(scene,surfaceResolver=null){
     this.scene=scene;
@@ -503,13 +519,18 @@ export class EnvironmentRenderer{
     for(const light of this.fireLights)if(light.isEnabled()){const phase=Number(light.metadata?.phase||0),flicker=light.metadata?.steady?1:.90+.12*Math.sin(this.weatherTime*8.7+phase)+.035*Math.sin(this.weatherTime*17.3+phase*.6);light.intensity=Number(light.metadata?.baseIntensity||1)*flicker;light.range=Number(light.metadata?.baseRange||light.range)*(light.metadata?.steady?1:.97+.045*Math.sin(this.weatherTime*5.1+phase));}
   }
 
-  // Each structure gets its persistent physical light. Nearby fire tiles
-  // share one physical light per *connected flame cluster*, while every fire
-  // tile independently contributes its exact 3x3 colour field below. No
-  // camera-distance ranking or arbitrary scene-wide four-light budget.
+  // Persistent sites and equipped light-emitting items use the same physical
+  // lighting pipeline. Fire groups share a light per connected cluster, while
+  // every burning cell independently tints its exact 3x3 ground footprint.
+  // No camera-distance ranking, four-light pool, or character-specific branch.
   syncFireLights(state){
-    const structures=(state?.presentation?.environment?.lightSources||[])
-      .filter(source=>source.source==="CORE_LIGHT"||source.source==="CAPTURE_LIGHT");
+    const lights=state?.presentation?.environment?.lightSources||[];
+    const structures=lights.filter(source=>source.source==="CORE_LIGHT"||source.source==="CAPTURE_LIGHT");
+    // EquipmentDatabase already supplies radius, colour and intensity via the
+    // battle snapshot. Keep an equipped item's light attached to its unit and
+    // steady across frames, rather than discarding it with the unit-tile glow.
+    const equipment=lights.filter(source=>source.source==="EQUIPMENT_LIGHT"&&source.visible!==false&&Number(source.radius||0)>0)
+      .map(source=>({...source,steady:true}));
     const fires=this.groupedEffectTiles(state,["BURNING","FIRE_TORNADO"],{diagonal:true,surfaceTolerance:.30})
       .map((group,index)=>{
         const x=group.reduce((sum,tile)=>sum+Number(tile.x),0)/group.length;
@@ -519,12 +540,12 @@ export class EnvironmentRenderer{
         return {x,y,radius,source:"FIRE_CLUSTER",sourceId:index,intensity:Math.min(1.4,.72+group.length*.09),
           color:[1,.39,.10],vertical,steady:false};
       });
-    const sources=[...structures,...fires];
+    const sources=[...structures,...equipment,...fires];
     const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
     for(let i=0;i<sources.length;i++){
       let light=this.fireLights[i];
       if(!light){light=new BABYLON.PointLight(`objective-site-light-${i}`,BABYLON.Vector3.Zero(),this.scene);this.fireLights.push(light);}
-      const source=sources[i],tile=byKey.get(`${source.x},${source.y}`),tint=Array.isArray(source.color)?source.color:[1,.5,.25];
+      const source=sources[i],tile=byKey.get(`${source.x},${source.y}`),tint=lightColor(source.color);
       light.diffuse.set(Number(tint[0]),Number(tint[1]),Number(tint[2]));
       light.specular.set(Number(tint[0])*.14,Number(tint[1])*.14,Number(tint[2])*.14);
       light.position.set(source.x*TILE_SIZE,Number(source.vertical??(surfaceOf(tile||{})*ELEVATION_HEIGHT))+1.1,source.y*TILE_SIZE);
@@ -570,7 +591,7 @@ export class EnvironmentRenderer{
     };
     for(const source of state?.presentation?.environment?.lightSources||[]){
       if(source.visible===false)continue;
-      const color=Array.isArray(source.color)?source.color:[1,.46,.14];
+      const color=lightColor(source.color,[1,.46,.14]);
       const intensity=Math.max(0,Math.min(3,Number(source.intensity??1)));
       if(source.footprint==="FIRE_3X3"||source.source==="BURNING"||source.source==="FIRE_TORNADO"){
         for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)
