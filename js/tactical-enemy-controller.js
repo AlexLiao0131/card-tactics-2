@@ -31,7 +31,7 @@
       };
 
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
-        TacticalEngine.teamCanSee(ctx.map(),ctx.state().units,actor.team,target,ctx.actionState?.().environmentState||null)&&
+        TacticalEngine.teamCanSee(ctx.map(),ctx.state().units,actor.team,target,ctx.actionState?.().environmentState||null,ctx.state())&&
         TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null)
       );
 
@@ -56,7 +56,7 @@
         if(actor.moved||!actor.alive)return[];
         const state=ctx.state();
         const objectives=state.units
-          .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&TacticalEngine.canSee(state.map,actor,unit,state.environmentState||null))
+          .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&TacticalEngine.teamCanSee(state.map,state.units,actor.team,unit,state.environmentState||null,state))
           .map(unit=>({x:unit.x,y:unit.y}));
 
         if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"){

@@ -1,6 +1,6 @@
 export const STAGES={
   prototype_battle:{
-    id:"prototype_battle",name:"Prototype Battle",mapId:"prototype_field",environment:{timeOfDay:"NIGHT"},
+    id:"prototype_battle",name:"Prototype Battle",intelMode:"FULL_VISIBILITY",mapId:"prototype_field",environment:{timeOfDay:"NIGHT"},
     playerSpawns:[],enemySpawns:[],
     enemyDeck:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card"],
     battleDeck:["livia_card","ophi_card","nereia_card","leon_card","kahn_card","cassandra_card","thunderstorm_card","typhoon_card","scorching_sun_card","wildfire_card","tornado_card","whirlpool_card","miracle_card","fog_card","starfall_card","moon_goddess_blessing_card"],
@@ -14,7 +14,7 @@ export const STAGES={
   },
 
   versus_core_battle:{
-    id:"versus_core_battle",name:"Core Conquest",mode:"VERSUS",ruleset:"CORE_CAPTURE",
+    id:"versus_core_battle",name:"Core Conquest",mode:"VERSUS",ruleset:"CORE_CAPTURE",intelMode:"DYNAMIC_INTEL",intelRules:{coreVisionRange:5,captureVisionRange:3},
     battlefield:{type:"PROCEDURAL",generator:"VERSUS_CORE",defaultSize:"MEDIUM"},
     environment:{
       timeOfDay:"DAY",

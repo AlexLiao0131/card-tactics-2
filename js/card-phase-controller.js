@@ -110,7 +110,7 @@ function create(ctx){
     const s=state();if(resolvingPresentation||!card||s.phase!==PHASE.CARD||ctx.getPendingCard()!==card)return false;const effect=card.effect||{},centerTile=TacticalEngine.tile(s.map,center.x,center.y);
     // Authority belongs at the commit boundary, NOT to the client highlight.
     // All area spells (including tornado/meteor/flood) need current team LOS.
-    if(!centerTile||!TacticalEngine.teamCanSee(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState)){
+    if(!centerTile||!TacticalEngine.teamCanSee(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState,s)){
       ctx.pushLog(`${card.name} 無法施放：該位置不在己方目前視野內。`,"SYSTEM");return false;
     }
     if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");

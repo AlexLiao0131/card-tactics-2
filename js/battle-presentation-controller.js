@@ -23,30 +23,28 @@ function create(ctx){
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function visibilityModel(){
-    const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`)),observers=viewerObservers(s);
-    // Deployment planning preserves the full terrain view until a friendly
-    // observer exists. Once deployed, battle fog is permanent and independent
-    // from weather FOG; the latter only reduces existing LOS range.
-    if(!observers.length)return{active:false,visible:allVisible,observerless:true};
-    const visible=new Set();for(const tile of s.map.tiles||[])
-      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState))
-        visible.add(`${tile.x},${tile.y}`);
-    return{active:true,visible,observerless:false};
+    const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));
+    const intelMode=s.stage?.intelMode||(s.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
+    // This mask only governs tactical knowledge. Terrain/weather never inherit it.
+    if(intelMode!=="DYNAMIC_INTEL")return{active:false,visible:allVisible,observerless:false};
+    const observers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
+    const visible=new Set();
+    for(const tile of s.map?.tiles||[])
+      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s))visible.add(`${tile.x},${tile.y}`);
+    return{active:true,visible,observerless:!observers.length};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
   function unitVisibleToPlayer(unit,visibility=visibilityModel()){
     if(!unit?.alive)return false;
     if(unit.team===viewerTeam)return true;
-    // Show the terrain for deployment planning, not undiscovered enemy units.
-    if(visibility.observerless)return false;
-    const s=ctx.state(),observers=viewerObservers(s);
+    const s=ctx.state();
     if(!visibility.active){
-      if(globalThis.EffectEngine?.isStealthed?.(unit))return observers.some(observer=>TacticalEngine.canSee(s.map,observer,unit,s.environmentState));
+      if(globalThis.EffectEngine?.isStealthed?.(unit))
+        return TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,unit,s.environmentState,s);
       return true;
     }
-    const tile=TacticalEngine.tile(s.map,unit.x,unit.y);
-    if(!tileVisible(tile,visibility))return false;
-    return observers.some(observer=>TacticalEngine.canSee(s.map,observer,unit,s.environmentState));
+    // Immediately drop enemy rendering when team LOS breaks; never cache old positions.
+    return !visibility.observerless&&TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,unit,s.environmentState,s);
   }
   function tileInteractions(tile,effects){const s=ctx.state(),environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),notes=[];if(environment==="GRASS"){if(EnvironmentEngine.isRain(s.environmentState))notes.push("草木受雨勢影響，小火無法形成持續燃燒。");else notes.push("草木可被 FIRE／HEAVY_FIRE 點燃。");}if(environment==="WATER"){notes.push("小火會被熄滅；HEAVY_FIRE 先融冰，再使液態水沸騰並逐步蒸發。");notes.push("降雨先使平地飽和成泥濘；土壤飽和或湖水溢流後才形成地表積水。");notes.push("水域可傳導雷元素；河道在豪雨／雷雨／颱風時會形成急流。 ");}if(environment==="STONE")notes.push("EXPLOSION 可產生岩石破片；高山厚雪可被爆炸／衝擊觸發雪崩。");if(tile.terrain==="MUD")notes.push("泥濘提高一般移動成本；雨勢結束後逐步乾燥。");for(const effect of effects||[]){const note=TILE_EFFECT_INFO[effect.type]?.interaction;if(note&&!notes.includes(note))notes.push(note);}return notes;}
   function tileAnnotation(tile){if(!tile)return"";const s=ctx.state(),terrain=TERRAINS[tile.terrain]||{},environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],object=(s.map.objects||[]).find(o=>!o.destroyed&&o.x===tile.x&&o.y===tile.y),depth=HydrologyEngine.waterDepth(tile),surface=HydrologyEngine.waterSurfaceZ(tile),lines=[`地圖格 (${tile.x},${tile.y})｜${terrain.name||tile.terrain}｜H${Number(tile.elevation||0)}`,`移動成本：${terrain.passable===false?"不可通行":terrain.moveCost??"-"}｜迴避修正：${Number(terrain.evasion||0)>=0?"+":""}${Number(terrain.evasion||0)}${terrain.rangedAccuracy?`｜遠程命中 +${terrain.rangedAccuracy}`:""}`,`環境材質：${TILE_ENVIRONMENT_NAME[environment]||environment}｜天候：${WEATHER_NAME[s.environmentState?.weather]||s.environmentState?.weather||"晴朗"}｜風況：${globalThis.EnvironmentEngine?.windLabel?.(EnvironmentEngine.windAt?.(s.environmentState)||{})||"無風"}`];if(depth>0)lines.push(`水文：地面 H${Number(tile.elevation||0)}｜水深 ${Number(depth).toFixed(2)}｜水面 H${Number(surface).toFixed(2)}`);if(Number(tile.snowDepth||0)>0)lines.push(`積雪：${Number(tile.snowDepth).toFixed(2)}`);if(Number(tile.iceThickness||0)>0)lines.push(`冰厚：${Number(tile.iceThickness).toFixed(2)}`);if(tile.river)lines.push(`河流：流速 ${Number(tile.flowSpeed||0).toFixed(2)}${tile.ford?"｜淺灘／渡口":""}`);if(object)lines.push(`地圖物件：${object.name||object.id}${object.destructible?"｜可破壞":""}`);if(effects.length)lines.push("目前效果："+effects.map(effect=>{const info=TILE_EFFECT_INFO[effect.type],duration=effect.duration==null?"":`（剩 ${effect.duration} 回合）`,damage=effect.damage?`／傷害 ${effect.damage}`:"";return`${info?.name||effect.type}${duration}${damage}`;}).join("、"));else lines.push("目前效果：無");const interactions=tileInteractions(tile,effects);lines.push(`環境互動：${interactions.length?interactions.join(" "):"目前沒有特殊互動。"}`);return lines.join("\n");}
@@ -96,10 +94,26 @@ function create(ctx){
   }
   function presentationLightSources(s,visibility){
     const environmentLights=s.environmentState?EnvironmentEngine.lightSources(s.environmentState):[];
-    return[...environmentLights,...equipmentLightSources(s)].map(light=>({...light,visible:visibility.observerless||viewerObservers(s).some(observer=>TacticalEngine.canSeeLight(s.map,observer,light,s.environmentState)),transmission:visibility.observerless?1:Math.max(0,...viewerObservers(s).map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))}));
+    const sourceObservers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
+    const structureLights=[];
+    for(const core of s.cores||[]){
+      if(Number(core.hp||0)<=0)continue;
+      structureLights.push({x:core.x,y:core.y,radius:3,source:"CORE_LIGHT",sourceId:core.id,steady:true,intensity:.9,color:core.owner==="PLAYER"?[.22,.53,1]:[1,.22,.25]});
+    }
+    for(const point of DeploymentEngine.points(s.stage)){
+      const held=point.owner==="PLAYER"||point.owner==="ENEMY";
+      if(!held||point.capturable===false||!DeploymentEngine.defenders(s.stage,s.units,point,point.owner).length)continue;
+      for(const pos of point.captureTiles||[])
+        structureLights.push({x:pos.x,y:pos.y,radius:2,source:"CAPTURE_LIGHT",sourceId:point.id,steady:true,intensity:.65,color:point.owner==="PLAYER"?[.28,.64,1]:[1,.38,.24]});
+    }
+    // Lighting is world presentation, not enemy intel. Mist scatter uses real optical transmission.
+    return[...environmentLights,...equipmentLightSources(s),...structureLights].map(light=>({
+      ...light,visible:true,
+      transmission:Math.max(0,...sourceObservers.map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))
+    }));
   }
   function battleSnapshot(){
-    const s=ctx.state(),visibility=visibilityModel(),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetableEntities(s.selected,s.selectedSkill):[],targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="map-target"&&s.selectedSkill?ctx.mapTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&tileVisible(tile,visibility)&&visibility.active&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),reachable:reachable.has(tile.x+","+tile.y),targetRange:targetRange.includes(tile),attackable,deployable,inspected:!!(s.inspectedTile&&s.inspectedTile.x===tile.x&&s.inspectedTile.y===tile.y),effects:effects.map(effect=>effect.type),effectDetails:effects.map(effect=>({
+    const s=ctx.state(),visibility=visibilityModel(),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetableEntities(s.selected,s.selectedSkill):[],targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="map-target"&&s.selectedSkill?ctx.mapTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&(s.units||[]).some(u=>u.alive&&u.team===viewerTeam)&&TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s)&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&unitVisibleToPlayer(unit,visibility)&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),reachable:reachable.has(tile.x+","+tile.y),targetRange:targetRange.includes(tile),attackable,deployable,inspected:!!(s.inspectedTile&&s.inspectedTile.x===tile.x&&s.inspectedTile.y===tile.y),effects:effects.map(effect=>effect.type),effectDetails:effects.map(effect=>({
       type:String(effect?.type||""),
       intensity:effect?.intensity==null?null:Number(effect.intensity),
       duration:effect?.duration==null?null:Number(effect.duration),
@@ -119,7 +133,7 @@ function create(ctx){
       strength:effect?.strength==null?null:Number(effect.strength),
       pullDistance:effect?.pullDistance==null?null:Number(effect.pullDistance),
       submergeTurns:effect?.submergeTurns==null?null:Number(effect.submergeTurns)
-    })),fogged:visibility.active&&!tileVisible(tile,visibility),visionBlocked:!!s.environmentState&&!!EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked,deploymentAreaOwner:points.find(point=>(point.area||[]).some(t=>t.x===tile.x&&t.y===tile.y))?.owner||null,capturePoint:capturePoint?{id:capturePoint.id,name:capturePoint.name,owner:capturePoint.owner}:null,core:core?{id:core.id,owner:core.owner,name:core.name,hp:core.hp,maxHp:core.maxHp}:null};});
+    })),fogged:false,visionBlocked:!!s.environmentState&&!!EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked,deploymentAreaOwner:points.find(point=>(point.area||[]).some(t=>t.x===tile.x&&t.y===tile.y))?.owner||null,capturePoint:capturePoint?{id:capturePoint.id,name:capturePoint.name,owner:capturePoint.owner}:null,core:core?{id:core.id,owner:core.owner,name:core.name,hp:core.hp,maxHp:core.maxHp}:null};});
     return{revision:s.renderRevision,phase:s.phase,round:s.round,mode:s.mode,map:{id:s.map.id,width:s.map.width,height:s.map.height,tiles,objects:(s.map.objects||[]).map(o=>({...o}))},cores:s.cores.map(core=>({...core})),presentation:{deploymentPoints:points.map(point=>({id:point.id,name:point.name,owner:point.owner,capturable:point.capturable!==false,area:(point.area||[]).map(t=>({...t})),captureTiles:(point.captureTiles||[]).map(t=>({...t}))})),environment:{lightSources:presentationLightSources(s,visibility),weather:s.environmentState?.weather||"CLEAR",weatherTurnsRemaining:s.environmentState?.weatherTurnsRemaining??null,timeOfDay:s.environmentState?.timeOfDay||"DAY",wind:globalThis.EnvironmentEngine?.climateSnapshot?.(s.environmentState)?.wind||null},enemyHandCount:s.enemyCardState?.zones?.hand?.length||0,enemyDeckCount:s.enemyCardState?.zones?.deck?.length||0},units:s.units.filter(u=>u.alive&&unitVisibleToPlayer(u,visibility)).map(u=>{
       const tile=TacticalEngine.tile(s.map,u.x,u.y),vertical=globalThis.VerticalMobilityEngine?.describe?.(u,tile)||null;
       const normalMaxHp=Number(u.character.combat.hp||u.hp||1),shownHp=u.hallucination?Math.max(1,Number(u.perceivedHp||normalMaxHp)):u.hp,shownMaxHp=u.hallucination?Math.max(1,Number(u.perceivedMaxHp||normalMaxHp)):normalMaxHp;

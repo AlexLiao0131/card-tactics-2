@@ -491,7 +491,7 @@ export class EnvironmentRenderer{
     const target=this.scene.activeCamera?.getTarget?.(),cameraKey=target?`${Math.round(target.x)},${Math.round(target.z)}`:"";
     if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireLights(this.lastState);this.syncFireGlows(this.lastState);}
 
-    for(const light of this.fireLights)if(light.isEnabled()){const phase=Number(light.metadata?.phase||0),flicker=.90+.12*Math.sin(this.weatherTime*8.7+phase)+.035*Math.sin(this.weatherTime*17.3+phase*.6);light.intensity=Number(light.metadata?.baseIntensity||1)*flicker;light.range=Number(light.metadata?.baseRange||light.range)*( .97+.045*Math.sin(this.weatherTime*5.1+phase));}
+    for(const light of this.fireLights)if(light.isEnabled()){const phase=Number(light.metadata?.phase||0),flicker=light.metadata?.steady?1:.90+.12*Math.sin(this.weatherTime*8.7+phase)+.035*Math.sin(this.weatherTime*17.3+phase*.6);light.intensity=Number(light.metadata?.baseIntensity||1)*flicker;light.range=Number(light.metadata?.baseRange||light.range)*(light.metadata?.steady?1:.97+.045*Math.sin(this.weatherTime*5.1+phase));}
   }
 
   syncFireLights(state){
@@ -508,9 +508,12 @@ export class EnvironmentRenderer{
       let light=this.fireLights[i];
       if(!light){light=new BABYLON.PointLight(`environment-fire-light-${i}`,BABYLON.Vector3.Zero(),this.scene);light.diffuse=new BABYLON.Color3(1,.40,.09);light.specular=new BABYLON.Color3(.16,.06,.01);this.fireLights.push(light);}
       const source=selected[i],tile=byKey.get(`${source.x},${source.y}`);
+      const tint=Array.isArray(source.color)?source.color:[1,.40,.09];
+      light.diffuse.set(Number(tint[0]),Number(tint[1]),Number(tint[2]));
+      light.specular.set(Number(tint[0])*.16,Number(tint[1])*.16,Number(tint[2])*.16);
       light.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+1,source.y*TILE_SIZE);
       const baseRange=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;light.range=baseRange;
-      light.metadata={baseIntensity:state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18,baseRange,phase:source.x*.7+source.y};
+      light.metadata={baseIntensity:(state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18)*Math.max(0,Number(source.intensity??1)),baseRange,phase:source.x*.7+source.y,steady:source.steady===true};
       light.intensity=light.metadata.baseIntensity;light.setEnabled(true);
     }
     for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
