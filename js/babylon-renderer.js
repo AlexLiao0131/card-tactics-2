@@ -436,8 +436,8 @@ export class BabylonRenderer{
     this.syncSubsystem("terrain",()=>this.terrain.sync(state));
     this.syncSubsystem("water",()=>this.water.sync(state,presentationEvents));
     this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
-    this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
     this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
+    this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
     this.syncSubsystem("shadows",()=>this.syncShadows());
     this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
 

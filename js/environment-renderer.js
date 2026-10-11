@@ -126,6 +126,7 @@ export class EnvironmentRenderer{
     // Physical structure lights are stable. Unlimited flame/character cells use
     // one aggregated colour field instead of one GPU PointLight per map tile.
     this.fireLights=[];
+    this.physicalLightsById=new Map();
     this.lightFieldMesh=null;
     this.lightFieldMaterial=this.makeLightFieldMaterial();
     this.lightFieldSignature="";
@@ -152,6 +153,7 @@ export class EnvironmentRenderer{
       woodDebris:this.mat("env-tornado-wood",new BABYLON.Color3(.28,.16,.075),.96,new BABYLON.Color3(.035,.018,.006)),
       steam:this.mat("env-steam",new BABYLON.Color3(.80,.86,.88),.26),
       electric:this.mat("env-electric",new BABYLON.Color3(.45,.80,1),.68,new BABYLON.Color3(.22,.55,.95)),
+      lightningBolt:this.mat("weather-lightning-bolt",new BABYLON.Color3(.88,.95,1),1,new BABYLON.Color3(.94,.98,1)),
       snow:this.surfaceMat("env-snow",new BABYLON.Color3(.92,.96,1),.94),
       ice:this.surfaceMat("env-ice",new BABYLON.Color3(.48,.82,.96),.45,new BABYLON.Color3(.12,.28,.36)),
       fragments:this.mat("env-fragments",new BABYLON.Color3(.48,.46,.43),.9),
@@ -164,6 +166,8 @@ export class EnvironmentRenderer{
       shockwave:this.mat("meteor-shockwave",new BABYLON.Color3(1,.72,.34),.62,new BABYLON.Color3(.72,.32,.05)),
       meteorDust:this.mat("meteor-dust",new BABYLON.Color3(.31,.25,.20),.72)
     };
+    this.materials.lightningBolt.disableLighting=true;
+    this.materials.lightningBolt.fogEnabled=false;
     this.visibilityHazeMaterial=this.makeVisibilityHazeMaterial();
     this.rainTexture=this.makeRainTexture();
     this.snowTexture=this.makeSnowTexture();
@@ -179,6 +183,7 @@ export class EnvironmentRenderer{
     this.lightningFlash.diffuse=new BABYLON.Color3(.72,.88,1);
     this.lightningFlash.groundColor=new BABYLON.Color3(.30,.38,.52);
     this.lightningFlash.intensity=0;
+    this.lightningFlash.setEnabled(false);
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
@@ -409,12 +414,15 @@ export class EnvironmentRenderer{
     const wx=x*TILE_SIZE,wz=y*TILE_SIZE,targetY=this.lightningTargetY(state,x,y),points=[],segments=10;
     for(let i=0;i<=segments;i++){const t=i/segments,envelope=Math.sin(Math.PI*t),seed=hash01(`${state?.revision||0}:${x}:${y}:${i}`),seed2=hash01(`z:${state?.revision||0}:${x}:${y}:${i}`);points.push(new BABYLON.Vector3(wx+(seed-.5)*.42*envelope,targetY+6.3*(1-t),wz+(seed2-.5)*.42*envelope));}
     const bolt=BABYLON.MeshBuilder.CreateLines(`weather-lightning-${state?.revision||0}-${x}-${y}`,{points},this.scene);bolt.color=new BABYLON.Color3(.78,.91,1);bolt.alpha=.98;bolt.isPickable=false;
+    // Camera-independent bolt width; LinesMesh alone can be subpixel on iPhone.
+    const body=BABYLON.MeshBuilder.CreateTube(`weather-lightning-body-${event.sequence||0}`,{path:points,radius:.055,tessellation:6,cap:BABYLON.Mesh.CAP_ALL},this.scene);
+    body.material=this.materials.lightningBolt;body.isPickable=false;body.visibility=.98;
     const branchPoints=[points[6],new BABYLON.Vector3(points[6].x+.34,targetY+1.65,points[6].z-.22),new BABYLON.Vector3(points[6].x+.55,targetY+1.18,points[6].z-.33)];const branch=BABYLON.MeshBuilder.CreateLines(`weather-lightning-branch-${state?.revision||0}-${x}-${y}`,{points:branchPoints},this.scene);branch.color=new BABYLON.Color3(.58,.82,1);branch.alpha=.72;branch.isPickable=false;
-    this.lightningBursts.push({meshes:[bolt,branch],age:0,duration:.42,flashes:[
+    this.lightningBursts.push({meshes:[bolt,branch,body],age:0,duration:.62,flashes:[
       {start:0,end:.055,power:2.75,alpha:1},
       {start:.095,end:.145,power:1.55,alpha:.72},
       {start:.195,end:.285,power:2.35,alpha:.94}
-    ]});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.75);
+    ]});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.75);this.lightningFlash.setEnabled(true);
   }
 
   meteorTargetY(state,x,y){
@@ -486,7 +494,7 @@ export class EnvironmentRenderer{
 
   syncPresentationEvents(events,state){
     for(const event of events||[]){
-      if(event?.type==="LIGHTNING_STRIKE"){const token=`${state?.revision||0}:${event.x}:${event.y}:${event.unitId||event.unit?.id||""}`;if(token===this.lastLightningToken)continue;this.lastLightningToken=token;this.createLightningBurst(event,state);continue;}
+      if(event?.type==="LIGHTNING_STRIKE"){const token=String(event.sequence??`${state?.revision||0}:${event.x}:${event.y}:${event.unitId||event.unit?.id||""}`);if(token===this.lastLightningToken)continue;this.lastLightningToken=token;this.createLightningBurst(event,state);continue;}
       if(event?.type==="METEOR_STRIKE"){const token=String(event.sequence??`${state?.revision||0}:${event.x}:${event.y}`);if(this.seenPresentationSequences.has(token))continue;this.seenPresentationSequences.add(token);while(this.seenPresentationSequences.size>64)this.seenPresentationSequences.delete(this.seenPresentationSequences.values().next().value);this.createMeteorStrike(event,state);}
     }
   }
@@ -502,11 +510,12 @@ export class EnvironmentRenderer{
         screenFlash=Math.max(screenFlash,Number(flash.power||0)*(.50+.50*pulse));
         boltAlpha=Math.max(boltAlpha,Number(flash.alpha||1)*(.58+.42*pulse));
       }
-      for(const mesh of burst.meshes)mesh.alpha=clamp(boltAlpha,0,1);
+      for(const mesh of burst.meshes){mesh.alpha=clamp(boltAlpha,0,1);mesh.visibility=clamp(boltAlpha,0,1);}
       if(p>=1){for(const mesh of burst.meshes)mesh.dispose();}else keep.push(burst);
     }
     this.lightningBursts=keep;
     this.lightningFlash.intensity=screenFlash;
+    this.lightningFlash.setEnabled(screenFlash>0);
   }
 
   updateWeatherFrame(dt){
@@ -542,23 +551,72 @@ export class EnvironmentRenderer{
       });
     const sources=[...structures,...equipment,...fires];
     const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
-    for(let i=0;i<sources.length;i++){
-      let light=this.fireLights[i];
-      if(!light){light=new BABYLON.PointLight(`objective-site-light-${i}`,BABYLON.Vector3.Zero(),this.scene);this.fireLights.push(light);}
-      const source=sources[i],tile=byKey.get(`${source.x},${source.y}`),tint=lightColor(source.color);
+    const active=new Set();
+    for(const source of sources){
+      const identity=`${source.source}:${source.unitId?`${source.unitId}:`:""}${source.sourceId??`${source.x},${source.y}`}`;
+      active.add(identity);
+      let light=this.physicalLightsById.get(identity);
+      if(!light){
+        light=new BABYLON.PointLight(`environment-light-${identity}`,BABYLON.Vector3.Zero(),this.scene);
+        this.physicalLightsById.set(identity,light);
+      }
+      const tile=byKey.get(`${source.x},${source.y}`),tint=lightColor(source.color);
       light.diffuse.set(Number(tint[0]),Number(tint[1]),Number(tint[2]));
       light.specular.set(Number(tint[0])*.14,Number(tint[1])*.14,Number(tint[2])*.14);
       light.position.set(source.x*TILE_SIZE,Number(source.vertical??(surfaceOf(tile||{})*ELEVATION_HEIGHT))+1.1,source.y*TILE_SIZE);
       const baseRange=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;
       light.range=baseRange;
-      light.metadata={baseIntensity:(state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18)*Math.max(0,Number(source.intensity??1)),baseRange,phase:source.x*.7+source.y,steady:source.steady===true};
-      light.intensity=light.metadata.baseIntensity;light.setEnabled(true);
+      light.metadata={source:source.source,sourceId:source.sourceId,
+        baseIntensity:(state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18)*Math.max(0,Number(source.intensity??1)),
+        baseRange,phase:source.x*.7+source.y,steady:source.steady===true};
+      light.intensity=light.metadata.baseIntensity;
+      light.setEnabled(true);
     }
-    for(let i=sources.length;i<this.fireLights.length;i++){
-      this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);
+    for(const [identity,light] of this.physicalLightsById){
+      if(active.has(identity))continue;
+      light.setEnabled(false);
+      light.dispose();
+      this.physicalLightsById.delete(identity);
     }
-    if(sources.length)for(const material of this.scene.materials)
-      if(Number.isFinite(material.maxSimultaneousLights)&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+    this.fireLights=[...this.physicalLightsById.values()];
+    this.syncSpatialLightMembership();
+
+  }
+
+  // Spatial ownership resolves Babylon's per-mesh light budget without
+  // arbitrarily discarding entire capture sites when new lights are added.
+  // This is presentation-only: terrain tint is the existing per-cell light field.
+  syncSpatialLightMembership(){
+    const lights=this.fireLights.filter(light=>light.isEnabled());
+    const meshes=(this.scene.meshes||[]).filter(mesh=>!mesh.isDisposed?.()&&
+      mesh.metadata?.kind!=="environment-light-field"&&mesh.name!=="terrain-surface");
+    const memberships=new Map(lights.map(light=>[light,[]]));
+    const activePerMaterial=new Map();
+    for(const mesh of meshes){
+      if(mesh.material?.disableLighting===true)continue;
+      // Force world matrices to reflect moved units and camera-independent
+      // actual mesh bounds. Never infer a tile's height from saved game data.
+      const bounds=mesh.getBoundingInfo?.()?.boundingSphere;
+      const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
+      if(!center)continue;
+      const radius=Math.max(0,Number(bounds?.radiusWorld||0));
+      let count=0;
+      for(const light of lights){
+        const dx=Number(center.x)-Number(light.position.x),dy=Number(center.y)-Number(light.position.y),dz=Number(center.z)-Number(light.position.z);
+        if(dx*dx+dy*dy+dz*dz>Math.pow(Number(light.range||0)+radius,2))continue;
+        memberships.get(light).push(mesh);count++;
+      }
+      if(mesh.material&&count)activePerMaterial.set(mesh.material,Math.max(count,activePerMaterial.get(mesh.material)||0));
+    }
+    for(const light of lights)light.includedOnlyMeshes=memberships.get(light);
+    // There are three global scene lights (sun, hemi, fill). The default
+    // StandardMaterial cap is per mesh, not per scene. Expand only if an
+    // actual mesh has more overlapping local lights; most keep the mobile 8.
+    for(const [material,count] of activePerMaterial){
+      if(!Number.isFinite(material.maxSimultaneousLights))continue;
+      const required=count+3+(this.lightningFlash?.isEnabled?.()?1:0);
+      if(material.maxSimultaneousLights<required)material.maxSimultaneousLights=required;
+    }
   }
 
   makeLightFieldMaterial(){

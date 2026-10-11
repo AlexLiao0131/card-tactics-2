@@ -34,23 +34,9 @@ function create(ctx){
     return{active:true,visible,observerless:!observers.length};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
-  function unitVisibleToPlayer(unit,visibility=visibilityModel()){
-    if(!unit?.alive)return false;
-    if(unit.team===viewerTeam)return true;
-    const s=ctx.state();
-    if(!visibility.active){
-      // FULL_VISIBILITY is the chess-board intel rule, not immunity to actual
-      // environmental concealment. Dense fog, blizzards and locally blocking
-      // smoke/steam must still obey the authoritative tactical LOS.
-      const weatherObscured=!!globalThis.EnvironmentEngine?.isFog?.(s.environmentState)
-        ||!!globalThis.EnvironmentEngine?.isBlizzard?.(s.environmentState);
-      const locallyBlocked=!!globalThis.EnvironmentEngine?.visionModifier?.(s.environmentState,unit.x,unit.y)?.blocked;
-      if(weatherObscured||locallyBlocked||globalThis.EffectEngine?.isStealthed?.(unit))
-        return TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,unit,s.environmentState,s);
-      return true;
-    }
-    // Immediately drop enemy rendering when team LOS breaks; never cache old positions.
-    return !visibility.observerless&&TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,unit,s.environmentState,s);
+  function unitVisibleToPlayer(unit){
+    // TacticalEngine owns visibility; Renderer/Presentation may only read it.
+    return TacticalEngine.teamCanIdentifyUnit(ctx.state(),viewerTeam,unit);
   }
   function tileInteractions(tile,effects){const s=ctx.state(),environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),notes=[];if(environment==="GRASS"){if(EnvironmentEngine.isRain(s.environmentState))notes.push("草木受雨勢影響，小火無法形成持續燃燒。");else notes.push("草木可被 FIRE／HEAVY_FIRE 點燃。");}if(environment==="WATER"){notes.push("小火會被熄滅；HEAVY_FIRE 先融冰，再使液態水沸騰並逐步蒸發。");notes.push("降雨先使平地飽和成泥濘；土壤飽和或湖水溢流後才形成地表積水。");notes.push("水域可傳導雷元素；河道在豪雨／雷雨／颱風時會形成急流。 ");}if(environment==="STONE")notes.push("EXPLOSION 可產生岩石破片；高山厚雪可被爆炸／衝擊觸發雪崩。");if(tile.terrain==="MUD")notes.push("泥濘提高一般移動成本；雨勢結束後逐步乾燥。");for(const effect of effects||[]){const note=TILE_EFFECT_INFO[effect.type]?.interaction;if(note&&!notes.includes(note))notes.push(note);}return notes;}
   function tileAnnotation(tile){if(!tile)return"";const s=ctx.state(),terrain=TERRAINS[tile.terrain]||{},environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],object=(s.map.objects||[]).find(o=>!o.destroyed&&o.x===tile.x&&o.y===tile.y),depth=HydrologyEngine.waterDepth(tile),surface=HydrologyEngine.waterSurfaceZ(tile),lines=[`地圖格 (${tile.x},${tile.y})｜${terrain.name||tile.terrain}｜H${Number(tile.elevation||0)}`,`移動成本：${terrain.passable===false?"不可通行":terrain.moveCost??"-"}｜迴避修正：${Number(terrain.evasion||0)>=0?"+":""}${Number(terrain.evasion||0)}${terrain.rangedAccuracy?`｜遠程命中 +${terrain.rangedAccuracy}`:""}`,`環境材質：${TILE_ENVIRONMENT_NAME[environment]||environment}｜天候：${WEATHER_NAME[s.environmentState?.weather]||s.environmentState?.weather||"晴朗"}｜風況：${globalThis.EnvironmentEngine?.windLabel?.(EnvironmentEngine.windAt?.(s.environmentState)||{})||"無風"}`];if(depth>0)lines.push(`水文：地面 H${Number(tile.elevation||0)}｜水深 ${Number(depth).toFixed(2)}｜水面 H${Number(surface).toFixed(2)}`);if(Number(tile.snowDepth||0)>0)lines.push(`積雪：${Number(tile.snowDepth).toFixed(2)}`);if(Number(tile.iceThickness||0)>0)lines.push(`冰厚：${Number(tile.iceThickness).toFixed(2)}`);if(tile.river)lines.push(`河流：流速 ${Number(tile.flowSpeed||0).toFixed(2)}${tile.ford?"｜淺灘／渡口":""}`);if(object)lines.push(`地圖物件：${object.name||object.id}${object.destructible?"｜可破壞":""}`);if(effects.length)lines.push("目前效果："+effects.map(effect=>{const info=TILE_EFFECT_INFO[effect.type],duration=effect.duration==null?"":`（剩 ${effect.duration} 回合）`,damage=effect.damage?`／傷害 ${effect.damage}`:"";return`${info?.name||effect.type}${duration}${damage}`;}).join("、"));else lines.push("目前效果：無");const interactions=tileInteractions(tile,effects);lines.push(`環境互動：${interactions.length?interactions.join(" "):"目前沒有特殊互動。"}`);return lines.join("\n");}
@@ -120,9 +106,12 @@ function create(ctx){
       const cells=(home?.area||[]).length?home.area:[{x:core.x,y:core.y}];
       structureLights.push({x:core.x,y:core.y,radius:coverRadius(core,cells,3),cells:cells.map(cell=>({x:cell.x,y:cell.y})),source:"CORE_LIGHT",sourceId:core.id,steady:true,intensity:1.8,color:core.owner==="PLAYER"?[.42,.66,1]:[1,.40,.36]});
     }
+    // The captured site's ownership governs physical illumination. An empty
+    // garrison still retains the site; losing the capture changes its owner.
+    // Its *tactical vision* remains separately defender-gated by TacticalEngine.
     for(const point of points){
       const held=point.owner==="PLAYER"||point.owner==="ENEMY";
-      if(!held||point.capturable===false||!DeploymentEngine.defenders(s.stage,s.units,point,point.owner).length)continue;
+      if(!held||point.capturable===false)continue;
       const center=point.captureTiles?.[0];if(!center)continue;
       const cells=(point.area||[]).length?point.area:[center];
       structureLights.push({x:center.x,y:center.y,radius:coverRadius(center,cells,2),cells:cells.map(cell=>({x:cell.x,y:cell.y})),source:"CAPTURE_LIGHT",sourceId:point.id,steady:true,intensity:1.65,color:point.owner==="PLAYER"?[.42,.72,1]:[1,.52,.32]});

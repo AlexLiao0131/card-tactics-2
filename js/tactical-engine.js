@@ -229,6 +229,40 @@ export const TacticalEngine=(()=>{
       return canSee(m,observer,target,environmentState);
     });
   }
+  // A viewer's battlefield-intel mode and physical LOS are different rules.
+  // This is the only enemy-identity visibility decision used by presentation:
+  // FULL_VISIBILITY reveals an unobscured chessboard, but never bypasses
+  // stealth detection, weather-limited sight, or a smoke/steam optical barrier.
+  function teamCanIdentifyUnit(world,team,target,environmentState=world?.environmentState){
+    if(!target?.alive)return false;
+    if(target.team===team)return true;
+    const map=world?.map;if(!map)return false;
+    const mode=world?.stage?.intelMode||(world?.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
+    if(mode!=="FULL_VISIBILITY"||globalThis.EffectEngine?.isStealthed?.(target))
+      return teamCanSee(map,world.units,team,target,environmentState,world);
+    // A fog card and naturally generated fog share the SAME EnvironmentEngine
+    // climate channels; neither has a caster-exemption or separate intel mask.
+    if(globalThis.EnvironmentEngine?.isFog?.(environmentState)||
+       globalThis.EnvironmentEngine?.isBlizzard?.(environmentState))
+      return teamCanSee(map,world.units,team,target,environmentState,world);
+    const observers=[...(world.units||[]).filter(unit=>unit?.alive&&unit.team===team),...teamVisionSources(world,team)];
+    // Tactical terrain blocking is not a permanent fog-of-war in a fully
+    // revealed stage. Only actual atmospheric blockers conceal a contact.
+    const opticallyBlocked=observer=>{
+      if(D(observer,target)<=LOCAL_AWARENESS_RANGE)return false;
+      if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return true;
+      return lineCells(observer,target).some(p=>visionBlocked(environmentState,p.x,p.y));
+    };
+    return !observers.length||observers.some(observer=>!opticallyBlocked(observer));
+  }
+  // AI perception is actor-scoped for STEALTH. An ally spotting a thief does
+  // not make every other unit able to pursue the thief. Non-stealth units keep
+  // the established team observation network.
+  function actorCanTrackTarget(map,units,actor,target,environmentState=null,world=null){
+    if(!actor?.alive||!target?.alive)return false;
+    if(globalThis.EffectEngine?.isStealthed?.(target))return canSee(map,actor,target,environmentState);
+    return teamCanSee(map,units,actor.team,target,environmentState,world);
+  }
   // Positional card spells need an actual living allied observation source and a
   // finite projection range even on fully revealed chess boards. "Cast range" is
   // independent from the spell's damage / environment-effect radius.
@@ -273,6 +307,6 @@ export const TacticalEngine=(()=>{
   function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

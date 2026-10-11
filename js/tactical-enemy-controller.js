@@ -31,7 +31,7 @@
       };
 
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
-        TacticalEngine.teamCanSee(ctx.map(),ctx.state().units,actor.team,target,ctx.actionState?.().environmentState||null,ctx.state())&&
+        TacticalEngine.actorCanTrackTarget(ctx.map(),ctx.state().units,actor,target,ctx.actionState?.().environmentState||null,ctx.state())&&
         TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null)
       );
 
@@ -57,9 +57,7 @@
         const state=ctx.state();
         const objectives=state.units
           .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&
-            (globalThis.EffectEngine?.isStealthed?.(unit)
-              ?TacticalEngine.canSee(state.map,actor,unit,state.environmentState||null)
-              :TacticalEngine.teamCanSee(state.map,state.units,actor.team,unit,state.environmentState||null,state)))
+            TacticalEngine.actorCanTrackTarget(state.map,state.units,actor,unit,state.environmentState||null,state))
           .map(unit=>({x:unit.x,y:unit.y}));
 
         if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"){
@@ -216,7 +214,7 @@
           afterStep(()=>{
             const unit=ctx.createEnemyCardUnit(card,tile);
             if(!CardPhaseEngine.commit(cards,card)){CardPhaseEngine.end(cards);done?.();return;}
-            state.units.push(unit);
+            state.units.push(unit);ctx.onUnitCreated?.(unit);
             ctx.pushLog(`敵方使用「${card.name}」部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶。`,"SYSTEM");
             ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});
             showStep("DEPLOY",`${card.name} 部署 → (${tile.x},${tile.y})｜本回合待命`,{cardId:card.id,unitId:unit.id});

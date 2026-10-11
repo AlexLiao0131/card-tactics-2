@@ -168,7 +168,7 @@ function create(ctx){
     if(!CardPhaseEngine.commit(s.cardState,card))return false;
     const itemIds=globalThis.ItemInventoryEngine?.claimBattleLoadout?.(card.id)||[];
     globalThis.ItemRuntimeEngine?.initializeUnitInventory?.(unit,itemIds,{owned:true,source:"PREPARATION"});
-    s.units.push(unit);UnitRuntimeEngine.reconcileCompanions(s.units);
+    s.units.push(unit);ctx.onUnitCreated?.(unit);UnitRuntimeEngine.reconcileCompanions(s.units);
     ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶${itemIds.length?`｜攜帶道具 ${itemIds.length} 件`:""}。`,"SYSTEM");
     ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});globalThis.EncounterRewardEngine?.resolveDominion?.(unit,s.units,{playerCardState:()=>s.cardState,pushLog:ctx.pushLog});ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
   }
