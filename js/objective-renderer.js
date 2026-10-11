@@ -94,15 +94,11 @@ export class ObjectiveRenderer{
     }
     return null;
   }
-  // Keep the original solid cylinder. A surface-projected decal has no side
-  // walls, and turns a capture point into a flat sticker on uneven terrain.
-  // Position the entire rigid marker above the *actual published* terrain
-  // across its footprint, rather than using tile.elevation or a second height
-  // field. Only the support height varies; ownership and capture coordinates do not.
-  footprintSupportY(data,cx,cz){
+  // Build a height sampler from the *published* terrain triangles covering the
+  // capture footprint. The renderer's actual terrain mesh remains the only
+  // spatial authority; this does not recompute terrain from grid elevations.
+  footprintSurface(data,cx,cz){
     if(!data)return null;
-    // Preselect local published triangles once, instead of scanning the whole
-    // XLARGE terrain mesh for each perimeter sample on every water update.
     const triangles=[];
     for(let i=0;i<data.indices.length;i+=3){
       if(this.triangleMayTouch(data,i,cx-MARKER_RADIUS,cx+MARKER_RADIUS,
@@ -124,21 +120,71 @@ export class ObjectiveRenderer{
     for(let i=0;i<MARKER_SEGMENTS;i++){
       const angle=2*Math.PI*i/MARKER_SEGMENTS;
       const cos=Math.cos(angle),sin=Math.sin(angle);
-      const edge=sample(cx+cos*MARKER_RADIUS,cz+sin*MARKER_RADIUS);
-      const middle=sample(cx+cos*MARKER_RADIUS*.5,cz+sin*MARKER_RADIUS*.5);
-      if(Number.isFinite(edge))highest=highest==null?edge:Math.max(highest,edge);
-      if(Number.isFinite(middle))highest=highest==null?middle:Math.max(highest,middle);
+      for(const radius of [MARKER_RADIUS*.5,MARKER_RADIUS]){
+        const height=sample(cx+cos*radius,cz+sin*radius);
+        if(Number.isFinite(height))highest=highest==null?height:Math.max(highest,height);
+      }
     }
-    return highest;
+    // A rendered terrain vertex can be a local peak between ring samples.
+    // Include such peaks so the level top never intersects the terrain.
+    const radiusSquared=MARKER_RADIUS*MARKER_RADIUS+1e-8;
+    for(const tri of triangles)for(const point of tri){
+      if((point.x-cx)**2+(point.z-cz)**2<=radiusSquared)
+        highest=highest==null?point.y:Math.max(highest,point.y);
+    }
+    return{sample,highest};
   }
   captureMesh(id){
+    // Preserve the original 32-sided cylinder, its flat upper cap and solid
+    // side walls; only its underside is adjusted to meet the rendered terrain.
     const mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${id}`,
-      {diameter:MARKER_RADIUS*2,height:MARKER_HEIGHT,tessellation:MARKER_SEGMENTS},this.scene);
+      {diameter:MARKER_RADIUS*2,height:MARKER_HEIGHT,tessellation:MARKER_SEGMENTS,
+        updatable:true},this.scene);
     mesh.isPickable=false;
-    mesh.metadata={kind:"capture-point",shape:"RAISED_CYLINDER",terrainPositioned:true,
-      // Preserve the distinction: rigid 3D geometry, not a terrain-projected decal.
-      terrainConforming:false};
+    mesh.metadata={kind:"capture-point",shape:"TERRAIN_SUPPORTED_CYLINDER",
+      terrainConforming:false,terrainSupportedUnderside:true,
+      originalPositions:Float32Array.from(mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind))};
     return mesh;
+  }
+  // A rigid cylinder raised to the footprint's highest point floats above
+  // lower ground. Keep its top perfectly level, but lower the bottom vertices
+  // to the *same* terrain surface at each vertex (including the bottom centre).
+  // This fills the gap with real side-wall geometry instead of a flat decal.
+  positionCapture(mesh,cx,cz,terrain,tile){
+    const footprint=this.footprintSurface(terrain,cx,cz);
+    const fallback=Number(tile.elevation||0)*ELEVATION_HEIGHT;
+    const waterY=this.waterY(tile);
+    const groundAt=(x,z)=>{
+      const sampled=footprint?.sample(x,z);
+      return Math.max(Number.isFinite(sampled)?sampled:fallback,waterY);
+    };
+    const supportY=Math.max(footprint?.highest??fallback,waterY);
+    const centreY=supportY+MARKER_CLEARANCE+MARKER_HEIGHT*.5;
+    const original=mesh.metadata.originalPositions;
+    const positions=Float32Array.from(original),normals=[];
+    let minGroundClearance=Infinity,maxWallHeight=0,minWallHeight=Infinity;
+    for(let i=0;i<positions.length;i+=3){
+      // Babylon.CreateCylinder duplicates top/side/bottom vertices to keep
+      // hard normals at the cap. Change *only* the bottom copy in each group.
+      if(original[i+1]>-MARKER_HEIGHT*.5+1e-5)continue;
+      const ground=groundAt(cx+Number(original[i]),cz+Number(original[i+2]));
+      const underside=ground+MARKER_CLEARANCE;
+      positions[i+1]=underside-centreY;
+      minGroundClearance=Math.min(minGroundClearance,underside-ground);
+      const wallHeight=supportY+MARKER_HEIGHT-ground;
+      minWallHeight=Math.min(minWallHeight,wallHeight);
+      maxWallHeight=Math.max(maxWallHeight,wallHeight);
+    }
+    BABYLON.VertexData.ComputeNormals(positions,mesh.getIndices(),normals);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,true,false);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals);
+    mesh.position.set(cx,centreY,cz);
+    mesh.metadata={...mesh.metadata,publishedTerrainGeometry:footprint?.highest!=null,
+      supportWorldY:supportY,minimumGroundClearance:Number.isFinite(minGroundClearance)?minGroundClearance:null,
+      centreBottomWorldY:groundAt(cx,cz)+MARKER_CLEARANCE,
+      topWorldY:centreY+MARKER_HEIGHT*.5,
+      minimumWallHeight:Number.isFinite(minWallHeight)?minWallHeight:null,
+      maximumWallHeight:maxWallHeight};
   }
   signature(state,byKey){
     const cores=(state?.cores||[]).map(core=>[
@@ -184,14 +230,7 @@ export class ObjectiveRenderer{
       let mesh=this.points.get(point.id);
       if(!mesh){mesh=this.captureMesh(point.id);this.points.set(point.id,mesh);}
       const cx=capture.x*TILE_SIZE,cz=capture.y*TILE_SIZE;
-      const publishedSupportY=this.footprintSupportY(terrain,cx,cz);
-      const fallbackY=Number(tile.elevation||0)*ELEVATION_HEIGHT;
-      const supportY=Math.max(publishedSupportY??fallbackY,this.waterY(tile));
-      // Position the puck's *bottom* above the published terrain, leaving its
-      // original cylindrical side wall visible and preventing slope burial.
-      mesh.position.set(cx,supportY+MARKER_CLEARANCE+MARKER_HEIGHT*.5,cz);
-      mesh.metadata={...mesh.metadata,publishedTerrainGeometry:publishedSupportY!=null,
-        supportWorldY:supportY};
+      this.positionCapture(mesh,cx,cz,terrain,tile);
       mesh.material=this.materials[ownerKey(point.owner)];
     }
     for(const[id,mesh]of this.points)if(!pointAlive.has(id)){mesh.dispose();this.points.delete(id);}
@@ -224,16 +263,21 @@ export class ObjectiveRenderer{
         meshVisible:!!mesh&&mesh.isVisible!==false&&Number(mesh.visibility??1)>0,
         meshEnabled:mesh?.isEnabled?.()??null,terrainConforming:!!mesh?.metadata?.terrainConforming,
         geometryShape:mesh?.metadata?.shape||null,
-        placement:"RIGID_CYLINDER_ON_RENDERED_TERRAIN",
+        placement:"LEVEL_TOP_WITH_TERRAIN_SUPPORTED_UNDERSIDE",
+        terrainSupportedUnderside:!!mesh?.metadata?.terrainSupportedUnderside,
         groundSupportWorldY:mesh?.metadata?.supportWorldY??null,
+        topWorldY:mesh?.metadata?.topWorldY??null,
+        minimumWallHeight:mesh?.metadata?.minimumWallHeight??null,
+        maximumWallHeight:mesh?.metadata?.maximumWallHeight??null,
+        centreBottomClearance:mesh?.metadata?.centreBottomWorldY!=null&&groundY!=null
+          ?mesh.metadata.centreBottomWorldY-groundY:null,
         fallback:!!mesh&&fallback,triangleCount:(mesh?.getTotalIndices?.()||0)/3,
         vertexCount:data.length/3,groundWorldY:groundY,
         waterWorldY:Number.isFinite(waterY)?waterY:null,
         vertexYMin:vertexYs.length?Math.min(...vertexYs):null,
         vertexYMax:vertexYs.length?Math.max(...vertexYs):null,
         surfaceClearance:vertexYs.length&&groundY!=null?Math.min(...vertexYs)-groundY:null,
-        minimumBottomClearance:vertexYs.length&&Number.isFinite(mesh?.metadata?.supportWorldY)
-          ?Math.min(...vertexYs)-mesh.metadata.supportWorldY:null,
+        minimumBottomClearance:mesh?.metadata?.minimumGroundClearance??null,
         upwardNormals:upNormals.length?upNormals.filter(y=>y>.05).length/upNormals.length:null,
         material:mat?{name:mat.name,disableLighting:!!mat.disableLighting,
           backFaceCulling:mat.backFaceCulling,
