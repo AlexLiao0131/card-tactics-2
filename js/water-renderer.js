@@ -1474,6 +1474,34 @@ export class WaterRenderer{
     return values.filter((value,index)=>index===0||Math.abs(value-values[index-1])>EPSILON);
   }
 
+  // Rock below the receiver's REAL stored D is a submerged river/lake bed,
+  // even if Hydrology measured transport across that edge this turn. Intersect
+  // the published wet lip span with only the exposed crest; no extra water
+  // state or separate terrain/sample geometry is introduced.
+  exposedCascadeIntervals(edge,metrics,spans){
+    if(!hasAnyWater(edge?.receiver))return spans;
+    const receivingWaterY=visualSurface(edge.receiver)*ELEVATION_HEIGHT;
+    if(!Number.isFinite(receivingWaterY))return spans;
+    const visible=[];
+    for(const span of spans||[]){
+      for(let i=0;i<metrics.count-1;i++){
+        const start=Math.max(Number(span.start),metrics.cumulative[i]);
+        const end=Math.min(Number(span.end),metrics.cumulative[i+1]);
+        if(end-start<=EPSILON)continue;
+        const lipA=this.wallSampleAtDistance(metrics,start)?.lip;
+        const lipB=this.wallSampleAtDistance(metrics,end)?.lip;
+        if(!lipA||!lipB)continue;
+        const a=Number(lipA.y)-receivingWaterY-EPSILON;
+        const b=Number(lipB.y)-receivingWaterY-EPSILON;
+        if(a<=0&&b<=0)continue;
+        const crossing=start+(end-start)*a/(a-b);
+        const first=a>0?start:crossing, last=b>0?end:crossing;
+        if(last-first>EPSILON)visible.push({start:first,end:last});
+      }
+    }
+    return this.mergeDistanceSpans(visible);
+  }
+
   cascadeSpillIntervals(edge,state,wall,polygons=null){
     const allMap=this.allByKey(state);
     const waterPolygons=polygons??this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
@@ -1486,7 +1514,7 @@ export class WaterRenderer{
     // crooked rock lip together with the horizontal D/Q water surface. They
     // replace an independently projected tile-centre/straight-edge fallback.
     if(solved?.cascadeLipSpans&&Object.hasOwn(solved.cascadeLipSpans,edgeId))
-      return solved.cascadeLipSpans[edgeId];
+      return this.exposedCascadeIntervals(edge,metrics,solved.cascadeLipSpans[edgeId]);
     const spans=[];
     for(let i=0;i<metrics.count-1;i++){
       const a=metrics.lip[i],b=metrics.lip[i+1],segmentStart=metrics.cumulative[i],length=metrics.cumulative[i+1]-segmentStart;
@@ -1497,7 +1525,7 @@ export class WaterRenderer{
     }
 
     const merged=this.mergeDistanceSpans(spans);
-    if(merged.length)return merged;
+    if(merged.length)return this.exposedCascadeIntervals(edge,metrics,merged);
 
     // Never widen a real lake/river surface merely because Q is present: that was
     // the v6 path that could create a waterfall on a dry protrusion inside a lake.
@@ -1516,7 +1544,8 @@ export class WaterRenderer{
     const right=this.wallSampleAtLateral(metrics,edge.tile,edge.receiver,width);
     if(!left||!right)return[];
     const start=Math.min(left.distance,right.distance),end=Math.max(left.distance,right.distance);
-    return end-start>EPSILON?[{start,end,transportFootprint:true,sharedRunoffLip:true}]:[];
+    return end-start>EPSILON
+      ?this.exposedCascadeIntervals(edge,metrics,[{start,end,transportFootprint:true,sharedRunoffLip:true}]):[];
   }
 
   resetWaterSeamRegistry(){this.waterSeamRegistry.clear();}
@@ -1579,6 +1608,11 @@ export class WaterRenderer{
     const spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
     const downstreamPolygons=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y))?.polygons
       ??(edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[]);
+    // A rock-face foot can lie outside the clipped receiver polygon in XZ.
+    // Never interpret that missing sample as a dry rock floor when the receiver
+    // actually stores D. Use the real waterline as a minimum stop height.
+    const receiverWaterY=hasAnyWater(edge.receiver)
+      ?visualSurface(edge.receiver)*ELEVATION_HEIGHT:-Infinity;
     const positions=[],indices=[],normals=[],uvs=[],impactGroups=[];
     // The rock triangles in wall.segments[].faces are captured from the actual
     // Babylon cliff mesh. A bilinear lip/foot strip does not share its interior
@@ -1635,7 +1669,9 @@ export class WaterRenderer{
         const topY=storedTop==null?sample.lip.y+SURFACE_OFFSET*.42:Number(storedTop)*ELEVATION_HEIGHT+SURFACE_OFFSET;
         topEdge.push({lip:sample.lip,topY});
         const downstream=this.waterSurfaceLevelAtPoint(sample.foot,downstreamPolygons,null);
-        const landY=downstream==null?sample.foot.y+SURFACE_OFFSET*.42:Number(downstream)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+        const landY=Math.max(sample.foot.y+SURFACE_OFFSET*.42,
+          receiverWaterY+SURFACE_OFFSET,
+          downstream==null?-Infinity:Number(downstream)*ELEVATION_HEIGHT+SURFACE_OFFSET);
         impactPoints.push({x:sample.foot.x,y:landY,z:sample.foot.z});
       }
       for(let i=0;i<topEdge.length-1;i++){
@@ -1663,8 +1699,10 @@ export class WaterRenderer{
         if(s1<=span.start+EPSILON||s0>=span.end-EPSILON)continue;
         const downstream0=this.waterSurfaceLevelAtPoint(metrics.foot[i],downstreamPolygons,null);
         const downstream1=this.waterSurfaceLevelAtPoint(metrics.foot[i+1],downstreamPolygons,null);
-        const floor0=downstream0==null?metrics.foot[i].y:Math.max(metrics.foot[i].y,Number(downstream0)*ELEVATION_HEIGHT);
-        const floor1=downstream1==null?metrics.foot[i+1].y:Math.max(metrics.foot[i+1].y,Number(downstream1)*ELEVATION_HEIGHT);
+        const floor0=Math.max(metrics.foot[i].y,receiverWaterY,
+          downstream0==null?-Infinity:Number(downstream0)*ELEVATION_HEIGHT);
+        const floor1=Math.max(metrics.foot[i+1].y,receiverWaterY,
+          downstream1==null?-Infinity:Number(downstream1)*ELEVATION_HEIGHT);
         for(const face of section.faces){
           let polygon=(face.vertices||[]).map(p=>({
             x:Number(p.x),y:Number(p.y),z:Number(p.z),v:Number(p.v),
