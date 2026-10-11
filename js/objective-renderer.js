@@ -13,7 +13,7 @@ export class ObjectiveRenderer{
     this.materials={
       PLAYER:this.mat("objective-player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("objective-enemy",new BABYLON.Color3(.90,.24,.24)),
-      NEUTRAL:this.mat("objective-neutral",new BABYLON.Color3(.72,.62,.26))
+      NEUTRAL:this.mat("objective-neutral",new BABYLON.Color3(.86,.70,.18))
     };
     // BabylonRenderer currently syncs objectives before terrain. Read the
     // authoritative terrain-surface mesh after terrain has published it, in the
@@ -28,7 +28,17 @@ export class ObjectiveRenderer{
       this.refresh(this.latestState);
     });
   }
-  mat(name,color){const m=new BABYLON.StandardMaterial(name,this.scene);m.diffuseColor=color;m.emissiveColor=color.scale(.18);return m;}
+  mat(name,color){
+    const m=new BABYLON.StandardMaterial(name,this.scene);
+    // Capture-point markers are tactical UI indicators, not shaded terrain.
+    // Keep the ownership colour readable under forests, heavy rain and fog.
+    m.diffuseColor=color.scale(.4);
+    m.emissiveColor=color.scale(.75);
+    m.specularColor=new BABYLON.Color3(0,0,0);
+    m.disableLighting=true;
+    m.backFaceCulling=false;
+    return m;
+  }
   surfaceY(tile){return surfaceZ(tile)*ELEVATION_HEIGHT;}
   waterY(tile){
     const depth=Math.max(0,Number(tile?.waterDepth||0));
@@ -124,6 +134,7 @@ export class ObjectiveRenderer{
       // Initial frame before TerrainRenderer has published its first mesh.
       const mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${id}`,{diameter:1.35,height:.09,tessellation:32},this.scene);
       mesh.position.set(cx,this.surfaceY(tile)+.07,cz);mesh.isPickable=false;
+      mesh.metadata={kind:"capture-point",terrainConforming:false,geometryFallback:"TERRAIN_NOT_PUBLISHED"};
       return mesh;
     }
     const mesh=new BABYLON.Mesh(`capture-${id}`,this.scene),normals=[];
@@ -184,5 +195,64 @@ export class ObjectiveRenderer{
       mesh.material=this.materials[ownerKey(point.owner)];
     }
     for(const[id,mesh]of this.points)if(!pointAlive.has(id)){mesh.dispose();this.points.delete(id);}
+  }
+
+  // Read-only diagnostics for the existing Test Lab. Never generates a new
+  // terrain mesh or changes capture ownership / gameplay coordinates.
+  diagnostics(worldPoint=null){
+    const state=this.latestState,tiles=state?.map?.tiles||[];
+    const byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
+    const terrain=this.terrainData();
+    const points=(state?.presentation?.deploymentPoints||[])
+      .filter(point=>point.capturable!==false&&point.captureTiles?.[0]);
+    const inventory=points.map(point=>{
+      const tileRef=point.captureTiles[0],tile=byKey.get(tileKey(tileRef.x,tileRef.y));
+      const cx=tileRef.x*TILE_SIZE,cz=tileRef.y*TILE_SIZE;
+      const mesh=this.points.get(point.id),data=mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
+      const normals=mesh?.getVerticesData?.(BABYLON.VertexBuffer.NormalKind)||[];
+      const groundY=this.pointHeight(terrain,cx,cz),waterY=this.waterY(tile);
+      const fallback=!mesh?.metadata?.terrainConforming;
+      const vertexYs=[];
+      for(let i=1;i<data.length;i+=3)vertexYs.push(Number(data[i])+(mesh?.position?.y||0));
+      const upNormals=[];
+      for(let i=1;i<normals.length;i+=3)upNormals.push(Number(normals[i]));
+      const mat=mesh?.material,colour=mat?.emissiveColor;
+      return{
+        id:point.id,name:point.name||null,owner:ownerKey(point.owner),tile:{x:tileRef.x,y:tileRef.y},
+        expectedWorld:{x:cx,z:cz},renderedWorld:mesh?{x:mesh.position.x,y:mesh.position.y,z:mesh.position.z}:null,
+        meshExists:!!mesh&&!mesh.isDisposed?.(),meshName:mesh?.name||null,
+        meshVisible:!!mesh&&mesh.isVisible!==false&&Number(mesh.visibility??1)>0,
+        meshEnabled:mesh?.isEnabled?.()??null,terrainConforming:!!mesh?.metadata?.terrainConforming,
+        fallback:!!mesh&&fallback,triangleCount:(mesh?.getTotalIndices?.()||0)/3,
+        vertexCount:data.length/3,groundWorldY:groundY,
+        waterWorldY:Number.isFinite(waterY)?waterY:null,
+        vertexYMin:vertexYs.length?Math.min(...vertexYs):null,
+        vertexYMax:vertexYs.length?Math.max(...vertexYs):null,
+        surfaceClearance:vertexYs.length&&groundY!=null?Math.min(...vertexYs)-groundY:null,
+        upwardNormals:upNormals.length?upNormals.filter(y=>y>.05).length/upNormals.length:null,
+        material:mat?{name:mat.name,disableLighting:!!mat.disableLighting,
+          backFaceCulling:mat.backFaceCulling,
+          emissiveColor:colour?{r:colour.r,g:colour.g,b:colour.b}:null,
+          alpha:mat.alpha??null}:null
+      };
+    });
+    const w=worldPoint?.x,z=worldPoint?.z;
+    const nearest=Number.isFinite(w)&&Number.isFinite(z)?
+      inventory.map(point=>({...point,distanceXZ:Math.hypot(point.expectedWorld.x-w,point.expectedWorld.z-z)}))
+        .sort((a,b)=>a.distanceXZ-b.distanceXZ)[0]||null:null;
+    return{
+      expectedCaptureCount:points.length,actualMeshCount:this.points.size,coreCount:this.cores.size,
+      publishedTerrainMesh:terrain?.mesh?.name||null,
+      publishedTerrainTriangleCount:terrain?.indices?.length/3??null,
+      nearestCapture:nearest&&nearest.distanceXZ<=TILE_SIZE*.9?nearest:null,
+      captures:inventory,
+      cores:(state?.cores||[]).map(core=>{
+        const mesh=this.cores.get(core.id),tile=byKey.get(tileKey(core.x,core.y));
+        return{id:core.id,owner:ownerKey(core.owner),tile:{x:core.x,y:core.y},
+          meshExists:!!mesh&&!mesh.isDisposed?.(),meshWorldY:mesh?.position?.y??null,
+          groundWorldY:this.pointHeight(terrain,core.x*TILE_SIZE,core.y*TILE_SIZE),
+          waterWorldY:Number.isFinite(this.waterY(tile))?this.waterY(tile):null};
+      })
+    };
   }
 }
