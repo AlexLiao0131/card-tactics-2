@@ -56,7 +56,10 @@
         if(actor.moved||!actor.alive)return[];
         const state=ctx.state();
         const objectives=state.units
-          .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&TacticalEngine.teamCanSee(state.map,state.units,actor.team,unit,state.environmentState||null,state))
+          .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&
+            (globalThis.EffectEngine?.isStealthed?.(unit)
+              ?TacticalEngine.canSee(state.map,actor,unit,state.environmentState||null)
+              :TacticalEngine.teamCanSee(state.map,state.units,actor.team,unit,state.environmentState||null,state)))
           .map(unit=>({x:unit.x,y:unit.y}));
 
         if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"){

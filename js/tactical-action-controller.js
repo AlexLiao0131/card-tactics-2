@@ -193,9 +193,8 @@
       }
       if(action.type==="ENTER_STEALTH"){
         ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
-        const adjacent=(units||[]).some(u=>u?.alive&&u.team!==attacker.team&&Math.abs(u.x-attacker.x)+Math.abs(u.y-attacker.y)<=1);
-        if(adjacent){globalThis.EffectEngine?.breakStealth?.(attacker,"PROXIMITY");ctx.pushLog(`${attacker.character.name} 嘗試再次潛行，但敵人就在身旁，潛行立即解除。`,"BATTLE");}
-        else ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，再次進入潛行。`,"BATTLE");
+        globalThis.EffectEngine?.resolveProximityReveal?.(attacker,units);
+        ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，再次進入潛行。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
       if(action.type==="STEAL_CARD"){
@@ -494,6 +493,10 @@
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
       const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill:ctx.canUseSkill}).map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))})).filter(candidate=>candidate.skills.length);
+      // When no ally can support, resolve the selected single-target attack
+      // immediately. The support-confirmation flow only has work when there
+      // are actual support candidates; otherwise it appears to do nothing.
+      if(!candidates.length){executeEngagement(attacker,defender,skill,[]);return;}
       ctx.setPendingEngagement({attacker,defender,skill,candidates});
       ctx.setSupportSelection(new Map());
       ctx.setMode("support-select");

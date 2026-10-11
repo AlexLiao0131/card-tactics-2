@@ -169,20 +169,53 @@ export const EffectEngine=(()=>{
   function breakStealth(unit,reason="ACTION"){
     if(!unit?.effects)return false;const before=unit.effects.length;unit.effects=unit.effects.filter(e=>e.type!=="STEALTH");if(before!==unit.effects.length){syncModifiers(unit);return true}return false;
   }
+  // Stealth is a persistent effect. A spotted contact is scoped to one
+  // observer, never broadcast to that observer's team or converted into an
+  // effect removal. The existing effect list owns encounter checks and spots.
+  function stealthDistance(a,b){return Math.abs(Number(a?.x)-Number(b?.x))+Math.abs(Number(a?.y)-Number(b?.y));}
+  function detectionRange(observer,stealth){
+    const senseRange=state(observer).reduce((n,e)=>Math.max(n,Math.max(0,Number(e?.revealStealthRange||0))),0);
+    return Math.max(Math.max(0,Number(stealth?.detectionRange??1)),senseRange);
+  }
+  function stealthDetectionChance(observer,target,stealth){
+    const see=observer?.character?.attributes||{},hide=target?.character?.attributes||{};
+    // Tuneable per STEALTH effect; perception (WIL/LUK) versus agility (AGI/LUK).
+    const base=Number(stealth?.detectionChance??30);
+    const chance=base+(Number(see.wil||0)-Number(hide.agi||0))*1.5+(Number(see.luk||0)-Number(hide.luk||0))*.5;
+    return Math.max(5,Math.min(85,Number.isFinite(chance)?chance:30));
+  }
   function directTargetAllowed(observer,target){
     if(!isStealthed(target)||observer?.team===target?.team)return true;
-    const stealth=state(target).find(e=>e.type==="STEALTH"),normalRange=Math.max(0,Number(stealth?.detectionRange??1));
-    const senseRange=state(observer).reduce((max,effect)=>Math.max(max,Number(effect?.revealStealthRange||0)),0),range=Math.max(normalRange,senseRange);
-    return Math.abs(Number(observer?.x)-Number(target?.x))+Math.abs(Number(observer?.y)-Number(target?.y))<=range;
+    if(!observer?.id||!observer.alive||!target?.alive)return false;
+    const stealth=state(target).find(e=>e.type==="STEALTH");
+    if(stealthDistance(observer,target)>detectionRange(observer,stealth))return false;
+    return (stealth?.detectedBy||[]).includes(observer.id);
+  }
+  function checkStealthContact(observer,target){
+    if(!observer?.alive||!target?.alive||observer.id===target.id||observer.team===target.team||!isStealthed(target))return false;
+    const stealth=state(target).find(e=>e.type==="STEALTH"),id=observer.id;
+    stealth.checkedBy??=[];stealth.detectedBy??=[];
+    if(stealthDistance(observer,target)>detectionRange(observer,stealth)){
+      stealth.checkedBy=stealth.checkedBy.filter(value=>value!==id);
+      stealth.detectedBy=stealth.detectedBy.filter(value=>value!==id);
+      return false;
+    }
+    // Roll once upon first contact, not every frame / UI render / attack query.
+    if(stealth.checkedBy.includes(id))return false;
+    stealth.checkedBy.push(id);
+    if(Math.random()*100>=stealthDetectionChance(observer,target,stealth))return false;
+    stealth.detectedBy.push(id);
+    return true;
   }
   function resolveProximityReveal(mover,units=[]){
-    if(!mover?.alive)return[];const revealed=[];
-    if(isStealthed(mover)){
-      const stealth=state(mover).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));
-      if((units||[]).some(unit=>unit?.alive&&unit.team!==mover.team&&Math.abs(unit.x-mover.x)+Math.abs(unit.y-mover.y)<=range)&&breakStealth(mover,"PROXIMITY"))revealed.push(mover);
+    if(!mover?.alive)return[];
+    const discovered=[];
+    for(const observer of units||[]){
+      if(!observer?.alive||observer.id===mover.id||observer.team===mover.team)continue;
+      if(checkStealthContact(observer,mover))discovered.push({observer,target:mover});
+      if(checkStealthContact(mover,observer))discovered.push({observer:mover,target:observer});
     }
-    for(const unit of units){if(!unit?.alive||unit.id===mover.id||unit.team===mover.team||!isStealthed(unit))continue;const stealth=state(unit).find(e=>e.type==="STEALTH"),range=Math.max(0,Number(stealth?.detectionRange??1));if(Math.abs(unit.x-mover.x)+Math.abs(unit.y-mover.y)<=range&&breakStealth(unit,"PROXIMITY"))revealed.push(unit);}
-    return revealed;
+    return discovered;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
   return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};

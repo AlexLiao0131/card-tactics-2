@@ -61,7 +61,8 @@ export const BattleResolution=(()=>{
   function resolveAction(c,a){
     TacticalEngine.ensureFacing(a.actor);TacticalEngine.ensureFacing(a.target);
     globalThis.EffectEngine?.breakStealth?.(a.actor,"ACTION");
-    if(a.target?.character&&Math.abs(a.actor.x-a.target.x)+Math.abs(a.actor.y-a.target.y)<=1)globalThis.EffectEngine?.breakStealth?.(a.target,"PROXIMITY");
+    // Taking an adjacent attack never cancels the target's stealth status.
+    // Individual observers must succeed at probabilistic contact detection.
     if(a.role!=="INITIATOR")TacticalEngine.faceToward(a.actor,a.target);
     if(!isPrimaryIncomingAction(c,a))return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
