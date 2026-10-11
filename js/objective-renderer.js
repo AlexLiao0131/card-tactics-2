@@ -3,8 +3,9 @@ const ownerKey=owner=>owner==="PLAYER"?"PLAYER":owner==="ENEMY"?"ENEMY":"NEUTRAL
 const tileKey=(x,y)=>`${x},${y}`;
 const surfaceZ=tile=>tile?.waterSurfaceZ==null?Number(tile?.elevation||0):Math.max(Number(tile?.elevation||0),Number(tile.waterSurfaceZ));
 const MARKER_RADIUS=.675;
-const MARKER_CLEARANCE=.026;
+const MARKER_CLEARANCE=.025;
 const MARKER_SEGMENTS=32;
+const MARKER_HEIGHT=.09;
 
 export class ObjectiveRenderer{
   constructor(scene){
@@ -14,6 +15,13 @@ export class ObjectiveRenderer{
       PLAYER:this.mat("objective-player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("objective-enemy",new BABYLON.Color3(.90,.24,.24)),
       NEUTRAL:this.mat("objective-neutral",new BABYLON.Color3(.86,.70,.18))
+    };
+    // Cores are solid lit crystals. Do not share an unlit tactical marker material
+    // or their faces lose the scene's directional shading and specular highlights.
+    this.coreMaterials={
+      PLAYER:this.mat("core-player",new BABYLON.Color3(.20,.55,.95),true),
+      ENEMY:this.mat("core-enemy",new BABYLON.Color3(.90,.24,.24),true),
+      NEUTRAL:this.mat("core-neutral",new BABYLON.Color3(.86,.70,.18),true)
     };
     // BabylonRenderer currently syncs objectives before terrain. Read the
     // authoritative terrain-surface mesh after terrain has published it, in the
@@ -28,15 +36,16 @@ export class ObjectiveRenderer{
       this.refresh(this.latestState);
     });
   }
-  mat(name,color){
+  mat(name,color,crystal=false){
     const m=new BABYLON.StandardMaterial(name,this.scene);
-    // Capture-point markers are tactical UI indicators, not shaded terrain.
-    // Keep the ownership colour readable under forests, heavy rain and fog.
-    m.diffuseColor=color.scale(.4);
-    m.emissiveColor=color.scale(.75);
-    m.specularColor=new BABYLON.Color3(0,0,0);
-    m.disableLighting=true;
-    m.backFaceCulling=false;
+    // Restore the original physically raised, light-responsive materials.
+    // Emission keeps team ownership legible without disabling 3D shading.
+    m.diffuseColor=color;
+    m.emissiveColor=color.scale(.18);
+    if(crystal){
+      m.specularColor=new BABYLON.Color3(.32,.32,.32);
+      m.specularPower=36;
+    }
     return m;
   }
   surfaceY(tile){return surfaceZ(tile)*ELEVATION_HEIGHT;}
@@ -85,65 +94,50 @@ export class ObjectiveRenderer{
     }
     return null;
   }
-  // Project a circular capture marker onto the existing published terrain
-  // triangles. Clipping each triangle prevents a flat disc from being buried by
-  // any micro-slope and avoids inventing another interpolated height field.
-  markerGeometry(data,cx,cz,waterY){
+  // Keep the original solid cylinder. A surface-projected decal has no side
+  // walls, and turns a capture point into a flat sticker on uneven terrain.
+  // Position the entire rigid marker above the *actual published* terrain
+  // across its footprint, rather than using tile.elevation or a second height
+  // field. Only the support height varies; ownership and capture coordinates do not.
+  footprintSupportY(data,cx,cz){
     if(!data)return null;
-    const ring=Array.from({length:MARKER_SEGMENTS},(_,i)=>{
-      const angle=i*Math.PI*2/MARKER_SEGMENTS;
-      return{x:cx+Math.cos(angle)*MARKER_RADIUS,z:cz+Math.sin(angle)*MARKER_RADIUS};
-    });
-    const positions=[],indices=[];
-    const clip=(polygon,a,b)=>{
-      const side=p=>(b.x-a.x)*(p.z-a.z)-(b.z-a.z)*(p.x-a.x);
-      const clipped=[];
-      for(let i=0;i<polygon.length;i++){
-        const p=polygon[i],q=polygon[(i+1)%polygon.length],d=side(p),e=side(q),inside=d>=-1e-8,nextInside=e>=-1e-8;
-        if(inside)clipped.push(p);
-        if(inside!==nextInside){
-          const t=d/(d-e);
-          clipped.push({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t,z:p.z+(q.z-p.z)*t});
-        }
-      }
-      return clipped;
-    };
+    // Preselect local published triangles once, instead of scanning the whole
+    // XLARGE terrain mesh for each perimeter sample on every water update.
+    const triangles=[];
     for(let i=0;i<data.indices.length;i+=3){
-      if(!this.triangleMayTouch(data,i,cx-MARKER_RADIUS,cx+MARKER_RADIUS,
-        cz-MARKER_RADIUS,cz+MARKER_RADIUS))continue;
-      let polygon=this.terrainTriangle(data,i);
-      for(let side=0;side<ring.length&&polygon.length>=3;side++)polygon=clip(polygon,ring[side],ring[(side+1)%ring.length]);
-      if(polygon.length<3)continue;
-      const base=positions.length/3;
-      for(const point of polygon)positions.push(point.x-cx,Math.max(point.y,waterY)+MARKER_CLEARANCE,point.z-cz);
-      for(let j=1;j<polygon.length-1;j++){
-        const a=polygon[0],b=polygon[j],c=polygon[j+1];
-        const area=(b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x);
-        if(Math.abs(area)<1e-10)continue;
-        // Babylon's vertical normal is positive for clockwise XZ triangles.
-        if(area>0)indices.push(base,base+j+1,base+j);
-        else indices.push(base,base+j,base+j+1);
+      if(this.triangleMayTouch(data,i,cx-MARKER_RADIUS,cx+MARKER_RADIUS,
+        cz-MARKER_RADIUS,cz+MARKER_RADIUS))triangles.push(this.terrainTriangle(data,i));
+    }
+    const sample=(x,z)=>{
+      for(const [a,b,c] of triangles){
+        const dx1=b.x-a.x,dz1=b.z-a.z,dx2=c.x-a.x,dz2=c.z-a.z;
+        const den=dx1*dz2-dz1*dx2;
+        if(Math.abs(den)<1e-12)continue;
+        const u=((x-a.x)*dz2-(z-a.z)*dx2)/den;
+        const v=(dx1*(z-a.z)-dz1*(x-a.x))/den;
+        if(u>=-1e-6&&v>=-1e-6&&u+v<=1+1e-6)
+          return a.y+(b.y-a.y)*u+(c.y-a.y)*v;
       }
+      return null;
+    };
+    let highest=sample(cx,cz);
+    for(let i=0;i<MARKER_SEGMENTS;i++){
+      const angle=2*Math.PI*i/MARKER_SEGMENTS;
+      const cos=Math.cos(angle),sin=Math.sin(angle);
+      const edge=sample(cx+cos*MARKER_RADIUS,cz+sin*MARKER_RADIUS);
+      const middle=sample(cx+cos*MARKER_RADIUS*.5,cz+sin*MARKER_RADIUS*.5);
+      if(Number.isFinite(edge))highest=highest==null?edge:Math.max(highest,edge);
+      if(Number.isFinite(middle))highest=highest==null?middle:Math.max(highest,middle);
     }
-    return indices.length?{positions,indices}:null;
+    return highest;
   }
-  captureMesh(id,tile,data){
-    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
-    const geometry=this.markerGeometry(data,cx,cz,this.waterY(tile));
-    if(!geometry){
-      // Initial frame before TerrainRenderer has published its first mesh.
-      const mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${id}`,{diameter:1.35,height:.09,tessellation:32},this.scene);
-      mesh.position.set(cx,this.surfaceY(tile)+.07,cz);mesh.isPickable=false;
-      mesh.metadata={kind:"capture-point",terrainConforming:false,geometryFallback:"TERRAIN_NOT_PUBLISHED"};
-      return mesh;
-    }
-    const mesh=new BABYLON.Mesh(`capture-${id}`,this.scene),normals=[];
-    BABYLON.VertexData.ComputeNormals(geometry.positions,geometry.indices,normals);
-    const vertexData=new BABYLON.VertexData();
-    vertexData.positions=geometry.positions;vertexData.indices=geometry.indices;vertexData.normals=normals;
-    vertexData.applyToMesh(mesh,false);
-    mesh.position.set(cx,0,cz);mesh.isPickable=false;mesh.receiveShadows=false;
-    mesh.metadata={kind:"capture-point",terrainConforming:true,publishedTerrainGeometry:true};
+  captureMesh(id){
+    const mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${id}`,
+      {diameter:MARKER_RADIUS*2,height:MARKER_HEIGHT,tessellation:MARKER_SEGMENTS},this.scene);
+    mesh.isPickable=false;
+    mesh.metadata={kind:"capture-point",shape:"RAISED_CYLINDER",terrainPositioned:true,
+      // Preserve the distinction: rigid 3D geometry, not a terrain-projected decal.
+      terrainConforming:false};
     return mesh;
   }
   signature(state,byKey){
@@ -174,7 +168,7 @@ export class ObjectiveRenderer{
       if(!mesh){mesh=BABYLON.MeshBuilder.CreateBox(`core-${core.id}`,{width:1.22,depth:1.22,height:1.65},this.scene);mesh.isPickable=false;this.cores.set(core.id,mesh);}
       const tile=byKey.get(tileKey(core.x,core.y)),cx=core.x*TILE_SIZE,cz=core.y*TILE_SIZE;
       const publishedY=this.pointHeight(terrain,cx,cz);
-      mesh.material=this.materials[ownerKey(core.owner)];
+      mesh.material=this.coreMaterials[ownerKey(core.owner)];
       const supportY=Math.max(publishedY??Number(tile?.elevation||0)*ELEVATION_HEIGHT,this.waterY(tile));
       mesh.position.set(cx,supportY+.825,cz);
       mesh.visibility=core.hp>0?1:.2;
@@ -187,11 +181,17 @@ export class ObjectiveRenderer{
       const capture=point.captureTiles?.[0];if(!capture)continue;
       const tile=byKey.get(tileKey(capture.x,capture.y));if(!tile)continue;
       pointAlive.add(point.id);
-      // Ownership changes update the shared material. Terrain / water-level
-      // changes rebuild the one conforming marker through this same path.
       let mesh=this.points.get(point.id);
-      if(mesh)mesh.dispose();
-      mesh=this.captureMesh(point.id,tile,terrain);this.points.set(point.id,mesh);
+      if(!mesh){mesh=this.captureMesh(point.id);this.points.set(point.id,mesh);}
+      const cx=capture.x*TILE_SIZE,cz=capture.y*TILE_SIZE;
+      const publishedSupportY=this.footprintSupportY(terrain,cx,cz);
+      const fallbackY=Number(tile.elevation||0)*ELEVATION_HEIGHT;
+      const supportY=Math.max(publishedSupportY??fallbackY,this.waterY(tile));
+      // Position the puck's *bottom* above the published terrain, leaving its
+      // original cylindrical side wall visible and preventing slope burial.
+      mesh.position.set(cx,supportY+MARKER_CLEARANCE+MARKER_HEIGHT*.5,cz);
+      mesh.metadata={...mesh.metadata,publishedTerrainGeometry:publishedSupportY!=null,
+        supportWorldY:supportY};
       mesh.material=this.materials[ownerKey(point.owner)];
     }
     for(const[id,mesh]of this.points)if(!pointAlive.has(id)){mesh.dispose();this.points.delete(id);}
@@ -211,7 +211,7 @@ export class ObjectiveRenderer{
       const mesh=this.points.get(point.id),data=mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
       const normals=mesh?.getVerticesData?.(BABYLON.VertexBuffer.NormalKind)||[];
       const groundY=this.pointHeight(terrain,cx,cz),waterY=this.waterY(tile);
-      const fallback=!mesh?.metadata?.terrainConforming;
+      const fallback=mesh?.metadata?.publishedTerrainGeometry!==true;
       const vertexYs=[];
       for(let i=1;i<data.length;i+=3)vertexYs.push(Number(data[i])+(mesh?.position?.y||0));
       const upNormals=[];
@@ -223,16 +223,22 @@ export class ObjectiveRenderer{
         meshExists:!!mesh&&!mesh.isDisposed?.(),meshName:mesh?.name||null,
         meshVisible:!!mesh&&mesh.isVisible!==false&&Number(mesh.visibility??1)>0,
         meshEnabled:mesh?.isEnabled?.()??null,terrainConforming:!!mesh?.metadata?.terrainConforming,
+        geometryShape:mesh?.metadata?.shape||null,
+        placement:"RIGID_CYLINDER_ON_RENDERED_TERRAIN",
+        groundSupportWorldY:mesh?.metadata?.supportWorldY??null,
         fallback:!!mesh&&fallback,triangleCount:(mesh?.getTotalIndices?.()||0)/3,
         vertexCount:data.length/3,groundWorldY:groundY,
         waterWorldY:Number.isFinite(waterY)?waterY:null,
         vertexYMin:vertexYs.length?Math.min(...vertexYs):null,
         vertexYMax:vertexYs.length?Math.max(...vertexYs):null,
         surfaceClearance:vertexYs.length&&groundY!=null?Math.min(...vertexYs)-groundY:null,
+        minimumBottomClearance:vertexYs.length&&Number.isFinite(mesh?.metadata?.supportWorldY)
+          ?Math.min(...vertexYs)-mesh.metadata.supportWorldY:null,
         upwardNormals:upNormals.length?upNormals.filter(y=>y>.05).length/upNormals.length:null,
         material:mat?{name:mat.name,disableLighting:!!mat.disableLighting,
           backFaceCulling:mat.backFaceCulling,
           emissiveColor:colour?{r:colour.r,g:colour.g,b:colour.b}:null,
+          diffuseColor:mat.diffuseColor?{r:mat.diffuseColor.r,g:mat.diffuseColor.g,b:mat.diffuseColor.b}:null,
           alpha:mat.alpha??null}:null
       };
     });
@@ -250,6 +256,8 @@ export class ObjectiveRenderer{
         const mesh=this.cores.get(core.id),tile=byKey.get(tileKey(core.x,core.y));
         return{id:core.id,owner:ownerKey(core.owner),tile:{x:core.x,y:core.y},
           meshExists:!!mesh&&!mesh.isDisposed?.(),meshWorldY:mesh?.position?.y??null,
+          material:mesh?.material?{name:mesh.material.name,disableLighting:!!mesh.material.disableLighting,
+            specularPower:mesh.material.specularPower??null}:null,
           groundWorldY:this.pointHeight(terrain,core.x*TILE_SIZE,core.y*TILE_SIZE),
           waterWorldY:Number.isFinite(this.waterY(tile))?this.waterY(tile):null};
       })
