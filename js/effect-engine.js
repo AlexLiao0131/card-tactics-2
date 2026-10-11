@@ -132,6 +132,38 @@ export const EffectEngine=(()=>{
     unit.grantedSkills=(unit.grantedSkills||[]).filter(g=>g.remaining==null||g.remaining>0);
     return events;
   }
+  // Synchronize time-conditional passive statuses through the normal effect list.
+  // _nightStealthArmed only tracks whether this night has already granted its
+  // one automatic activation; breaking stealth never instantly re-applies it.
+  function syncConditionalPassives(units,environmentState,{rearmTeam=null}={}){
+    const night=environmentState?.timeOfDay==="NIGHT";
+    let changed=0;
+    for(const unit of units||[]){
+      if(!unit?.alive)continue;
+      for(const passive of SkillDatabase.passiveList(unit.character?.passives||[])){
+        const rule=passive?.nightStealth;if(!rule)continue;
+        const statusId=rule.id||passive.id;
+        if(!night){
+          unit._nightStealthArmed=false;
+          if(state(unit).some(effect=>effect.id===statusId&&effect.type==="STEALTH")){
+            unit.effects=state(unit).filter(effect=>effect.id!==statusId||effect.type!=="STEALTH");
+            syncModifiers(unit);changed++;
+          }
+          continue;
+        }
+        const rearm=rearmTeam!=null&&unit.team===rearmTeam;
+        if(!unit._nightStealthArmed||rearm){
+          unit._nightStealthArmed=true;
+          // Do not stack with a pre-existing stealth status.
+          if(!state(unit).some(effect=>effect.type==="STEALTH")){
+            applyStealth(unit,{id:statusId,detectionRange:Math.max(0,Number(rule.detectionRange??1))});
+            changed++;
+          }
+        }
+      }
+    }
+    return changed;
+  }
   function isStealthed(unit){return state(unit).some(e=>e.type==="STEALTH");}
   function applyStealth(unit,{id="STEALTH",detectionRange=1,source=null}={}){return addEffect(unit,{id,type:"STEALTH",classification:"POSITIVE",detectionRange},source);}
   function breakStealth(unit,reason="ACTION"){
@@ -153,6 +185,6 @@ export const EffectEngine=(()=>{
     return revealed;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

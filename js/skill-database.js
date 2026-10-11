@@ -135,6 +135,7 @@ export const PASSIVES={
   STIGMATA:{id:"STIGMATA",name:"聖痕",category:"PASSIVE",description:"伊莉絲的治療、淨化與祝福會留下恩寵；恩寵抵消下一個可防禦的負面狀態後消失。",skillTriggers:[{whenTags:["HEALING","PURIFICATION","BLESSING"],relations:["SELF","ALLY"],effect:{type:"BUFF",id:"GRACE",name:"恩寵",classification:"POSITIVE",duration:2,negativeEffectGuard:{charges:1}}}]},
   CHURCH_GUARDIAN:{id:"CHURCH_GUARDIAN",name:"聖殿援護",category:"PASSIVE",defenseProfiles:[{id:"church_guard_ally",method:"GUARD",name:"聖殿援護",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.55},PIERCE:{damageMultiplier:.60},SHOT:{damageMultiplier:.55},STRIKE:{damageMultiplier:.70},MAGIC:{damageMultiplier:.80}}}]},
   PATIENT:{id:"PATIENT",name:"病患",category:"PASSIVE",description:"不完整的遠古人類病患。吸血後可暫時恢復為5V規格。",bloodRestoration:{grade:"5V",duration:3,values:{str:20,agi:20,int:20,wil:20,vit:20}}},
+  NIGHT_VEIL:{id:"NIGHT_VEIL",name:"夜色隱蔽",category:"PASSIVE",description:"夜晚自動潛行，攻擊或靠近敵人後會暴露，下個己方回合若仍是夜晚則再次隱蔽；入夜時夜視提升至最多10格。不能穿透牆壁、濃煙或暴風雪。",nightStealth:{id:"NIGHT_VEIL",detectionRange:1},nightVision:{rangeBonus:4,maxRange:10}},
   INCOMPLETE_HIGH_DIMENSION_CORRUPTION:{id:"INCOMPLETE_HIGH_DIMENSION_CORRUPTION",name:"不完全污染",category:"PASSIVE",description:"高維污染並未完全覆寫薇爾莎的三維人格。她仍能維持自我與一般人溝通；Sanity 下降時則逐步接近完整魔族狀態。"}
 };
 export const SkillDatabase=(()=>{

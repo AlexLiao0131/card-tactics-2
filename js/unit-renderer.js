@@ -1553,7 +1553,7 @@ export class UnitRenderer{
       const verticalMode=String(unit.verticalMode||""),submerged=verticalMode==="DIVING"||verticalMode==="SINKING";
       const scale=(unit.selected?1.13:unit.finished?.92:1)*(submerged?.9:1);
       entry.baseScale=scale;
-      const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.45:1;
+      const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.80:1;
       const verticalOpacity=submerged?.48:1;
       this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity*verticalOpacity);
       this.updateVerticalCue(entry,unit);
