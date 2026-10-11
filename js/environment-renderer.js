@@ -570,7 +570,8 @@ export class EnvironmentRenderer{
         baseIntensity:(state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18)*Math.max(0,Number(source.intensity??1)),
         baseRange,phase:source.x*.7+source.y,steady:source.steady===true};
       light.intensity=light.metadata.baseIntensity;
-      light.setEnabled(true);
+      // Activation is decided after the spatial receivers have been resolved.
+      // Babylon treats includedOnlyMeshes=[] as UNRESTRICTED, not as "none".
     }
     for(const [identity,light] of this.physicalLightsById){
       if(active.has(identity))continue;
@@ -587,15 +588,20 @@ export class EnvironmentRenderer{
   // arbitrarily discarding entire capture sites when new lights are added.
   // This is presentation-only: terrain tint is the existing per-cell light field.
   syncSpatialLightMembership(){
-    const lights=this.fireLights.filter(light=>light.isEnabled());
+    // Evaluate every authored physical light, including ones that had no
+    // receiver in the preceding snapshot; a newly moved/created unit can make
+    // those lights relevant again on this very update.
+    const lights=this.fireLights;
     const meshes=(this.scene.meshes||[]).filter(mesh=>!mesh.isDisposed?.()&&
       mesh.metadata?.kind!=="environment-light-field"&&mesh.name!=="terrain-surface");
     const memberships=new Map(lights.map(light=>[light,[]]));
     const activePerMaterial=new Map();
     for(const mesh of meshes){
       if(mesh.material?.disableLighting===true)continue;
-      // Force world matrices to reflect moved units and camera-independent
-      // actual mesh bounds. Never infer a tile's height from saved game data.
+      // Bounds are cached in WORLD space. Update them before assigning lights:
+      // a capture marker or newly deployed FIGURE may have changed position
+      // since Babylon's previous render frame.
+      mesh.computeWorldMatrix?.(true);
       const bounds=mesh.getBoundingInfo?.()?.boundingSphere;
       const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
       if(!center)continue;
@@ -608,7 +614,23 @@ export class EnvironmentRenderer{
       }
       if(mesh.material&&count)activePerMaterial.set(mesh.material,Math.max(count,activePerMaterial.get(mesh.material)||0));
     }
-    for(const light of lights)light.includedOnlyMeshes=memberships.get(light);
+    for(const light of lights){
+      const receivers=memberships.get(light)||[];
+      if(!receivers.length){
+        // A zero-length includedOnlyMeshes list does NOT exclude all meshes
+        // in Babylon. A source with no local 3D receiver has its OWN terrain
+        // illumination in the shared cell-light field, so it needs no GPU
+        // point-light slot until a receiver actually enters its range.
+        light.setEnabled(false);
+        continue;
+      }
+      // Only rebind an inclusion array when actual receivers have changed;
+      // Babylon resynchronizes mesh light sources on each assignment.
+      const previous=light.includedOnlyMeshes||[];
+      if(previous.length!==receivers.length||previous.some((mesh,i)=>mesh!==receivers[i]))
+        light.includedOnlyMeshes=receivers;
+      light.setEnabled(true);
+    }
     // There are three global scene lights (sun, hemi, fill). The default
     // StandardMaterial cap is per mesh, not per scene. Expand only if an
     // actual mesh has more overlapping local lights; most keep the mobile 8.
@@ -688,9 +710,15 @@ export class EnvironmentRenderer{
       // One broad material alpha with RGB vertex values produces a colour
       // reflection on exactly the surface triangles belonging to each cell.
       const base=positions.length/3;
+      // Store colour as chromaticity and emission as alpha, instead of
+      // multiplying the same energy into BOTH RGB and alpha. The old encoding
+      // made visible output proportional to radiance^2, which darkened captured
+      // deployments after terrain was intentionally removed from PointLights.
+      const peak=Math.max(0,...lit),alpha=Math.min(1,peak);
+      const tint=peak>1e-8?lit.map(channel=>Math.min(1,channel/peak)):[0,0,0];
       for(const offset of offsets){
         positions.push(sourceVertices[offset],sourceVertices[offset+1]+.014,sourceVertices[offset+2]);
-        colors.push(Math.min(1,lit[0]),Math.min(1,lit[1]),Math.min(1,lit[2]),Math.min(.88,Math.max(...lit)*.65));
+        colors.push(tint[0],tint[1],tint[2],alpha);
       }
       indices.push(base,base+1,base+2);
     }
