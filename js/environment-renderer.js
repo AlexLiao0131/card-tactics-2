@@ -1122,14 +1122,20 @@ export class EnvironmentRenderer{
 
   visibilityHazeProfile(state){
     const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY";
-    return VISIBILITY_HAZE_PROFILE[timeOfDay]?.[weather]||null;
+    // Atmospheric cover comes from weather, never from the tactical FOV mask.
+    // A fog climate channel may coexist with precipitation: it still deserves
+    // its own ground-hugging mist without replacing rain or snow particles.
+    const fogIntensity=Math.max(0,Number(environment.fogIntensity||0));
+    const profile=VISIBILITY_HAZE_PROFILE[timeOfDay]?.[fogIntensity>0?"FOG":weather]||null;
+    if(!profile)return null;
+    return {...profile,alpha:clamp(profile.alpha*(fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,.72)};
   }
 
   visibilityHazeStateSignature(state){
     const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY",profile=this.visibilityHazeProfile(state);
     if(!profile)return`${timeOfDay}|${weather}|OFF`;
-    return`${timeOfDay}|${weather}|`+(state?.map?.tiles||[]).map(tile=>[
-      tile.x,tile.y,tile.fogged?1:0,
+    return`${timeOfDay}|${weather}|${Number(environment.fogIntensity||0).toFixed(3)}|`+(state?.map?.tiles||[]).map(tile=>[
+      tile.x,tile.y,
       Number(tile.elevation||0).toFixed(3),
       tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3)
     ].join(":" )).join("|");
@@ -1141,28 +1147,19 @@ export class EnvironmentRenderer{
   }
 
   visibilityHazeAlpha(tile,byKey,ox,oz,profile){
-    if(!tile?.fogged)return 0;
-    let factor=1;
-    const edgeX=Math.abs(Math.abs(Number(ox||0))-.5)<=1e-6?Math.sign(Number(ox||0)):0;
-    const edgeZ=Math.abs(Math.abs(Number(oz||0))-.5)<=1e-6?Math.sign(Number(oz||0)):0;
-    const visibleNeighbor=(dx,dy)=>{
-      const neighbor=byKey.get(this.surfaceResolver.keyOf(Number(tile.x)+dx,Number(tile.y)+dy));
-      return !!neighbor&&!neighbor.fogged;
-    };
-    if(edgeX&&visibleNeighbor(edgeX,0))factor*=Number(profile.edgeFactor||.25);
-    if(edgeZ&&visibleNeighbor(0,edgeZ))factor*=Number(profile.edgeFactor||.25);
-    if(edgeX&&edgeZ&&visibleNeighbor(edgeX,edgeZ))factor*=.72;
-    return clamp(Number(profile.alpha||0)*factor,0,1);
+    // Natural fog blankets the terrain continuously; FOV is a separate intel
+    // rule. Never fade at every grid seam just because tile.fogged is false.
+    return tile?clamp(Number(profile.alpha||0),0,1):0;
   }
 
   buildVisibilityHaze(state,profile){
-    const tiles=state?.map?.tiles||[],foggedTiles=tiles.filter(tile=>tile?.fogged);
-    if(!foggedTiles.length)return null;
+    const tiles=state?.map?.tiles||[];
+    if(!tiles.length)return null;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
     const positions=[],indices=[],colors=[];
     let activeTiles=0;
 
-    for(const tile of foggedTiles){
+    for(const tile of tiles){
       const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
       const baseIndex=positions.length/3;
       const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
@@ -1190,9 +1187,9 @@ export class EnvironmentRenderer{
     mesh.metadata={
       kind:"weather-visibility-haze",
       activeTiles,
-      fovDriven:true,
+      weatherDriven:true,
       mergedMesh:true,
-      softBoundary:true,
+      continuousAcrossTiles:true,
       gameplayVisibilityOwner:"TacticalEngine"
     };
     return mesh;
@@ -1214,7 +1211,8 @@ export class EnvironmentRenderer{
     // renderer only applies atmospheric transmission on top of that same
     // Environment weather state, so sky, fog and mist no longer fight over the
     // background. TacticalEngine/FOV remains the sole gameplay visibility owner.
-    const profile=SCENE_FOG_PROFILE[timeOfDay]?.[weather]||null;
+    const climateFog=Number(environment.fogIntensity||0)>0;
+    const profile=SCENE_FOG_PROFILE[timeOfDay]?.[climateFog?"FOG":weather]||null;
     if(profile){
       this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
       this.scene.fogDensity=Number(profile.density||0);
