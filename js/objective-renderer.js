@@ -2,17 +2,139 @@ import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 const ownerKey=owner=>owner==="PLAYER"?"PLAYER":owner==="ENEMY"?"ENEMY":"NEUTRAL";
 const tileKey=(x,y)=>`${x},${y}`;
 const surfaceZ=tile=>tile?.waterSurfaceZ==null?Number(tile?.elevation||0):Math.max(Number(tile?.elevation||0),Number(tile.waterSurfaceZ));
+const MARKER_RADIUS=.675;
+const MARKER_CLEARANCE=.026;
+const MARKER_SEGMENTS=32;
+
 export class ObjectiveRenderer{
   constructor(scene){
     this.scene=scene;this.cores=new Map();this.points=new Map();this.signatureValue=null;
+    this.latestState=null;this.terrainMesh=null;this.terrainDataCache=null;
     this.materials={
       PLAYER:this.mat("objective-player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("objective-enemy",new BABYLON.Color3(.90,.24,.24)),
       NEUTRAL:this.mat("objective-neutral",new BABYLON.Color3(.72,.62,.26))
     };
+    // BabylonRenderer currently syncs objectives before terrain. Read the
+    // authoritative terrain-surface mesh after terrain has published it, in the
+    // same scene frame. This is still this ObjectiveRenderer's single sync path.
+    scene.onBeforeRenderObservable.add(()=>{
+      if(!this.latestState)return;
+      const mesh=this.publishedTerrainMesh();
+      if(mesh===this.terrainMesh)return;
+      this.terrainMesh=mesh;
+      this.terrainDataCache=null;
+      this.signatureValue=null;
+      this.refresh(this.latestState);
+    });
   }
   mat(name,color){const m=new BABYLON.StandardMaterial(name,this.scene);m.diffuseColor=color;m.emissiveColor=color.scale(.18);return m;}
   surfaceY(tile){return surfaceZ(tile)*ELEVATION_HEIGHT;}
+  waterY(tile){
+    const depth=Math.max(0,Number(tile?.waterDepth||0));
+    return depth>.0001?(tile?.waterSurfaceZ==null?Number(tile?.elevation||0)+depth:Number(tile.waterSurfaceZ))*ELEVATION_HEIGHT:-Infinity;
+  }
+  publishedTerrainMesh(){
+    const mesh=this.scene.getMeshByName("terrain-surface");
+    return mesh?.metadata?.kind==="terrain-surface"?mesh:null;
+  }
+  terrainData(){
+    const mesh=this.publishedTerrainMesh();
+    if(!mesh)return null;
+    if(this.terrainDataCache?.mesh===mesh)return this.terrainDataCache;
+    const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind),indices=mesh.getIndices();
+    this.terrainDataCache=positions?.length&&indices?.length?{mesh,positions,indices}:null;
+    return this.terrainDataCache;
+  }
+  // The triangle vertices are the actual TerrainRenderer -> Babylon output,
+  // not tile.elevation or a second terrain-height approximation.
+  terrainTriangle(data,i){
+    const {positions,indices}=data;
+    return[0,1,2].map(j=>{
+      const offset=indices[i+j]*3;
+      return{x:Number(positions[offset]),y:Number(positions[offset+1]),z:Number(positions[offset+2])};
+    });
+  }
+  triangleMayTouch(data,i,minX,maxX,minZ,maxZ){
+    const {positions,indices}=data;
+    const a=indices[i]*3,b=indices[i+1]*3,c=indices[i+2]*3;
+    return Math.max(positions[a],positions[b],positions[c])>=minX&&
+      Math.min(positions[a],positions[b],positions[c])<=maxX&&
+      Math.max(positions[a+2],positions[b+2],positions[c+2])>=minZ&&
+      Math.min(positions[a+2],positions[b+2],positions[c+2])<=maxZ;
+  }
+  pointHeight(data,x,z){
+    if(!data)return null;
+    for(let i=0;i<data.indices.length;i+=3){
+      if(!this.triangleMayTouch(data,i,x-1e-6,x+1e-6,z-1e-6,z+1e-6))continue;
+      const [a,b,c]=this.terrainTriangle(data,i);
+      const dx1=b.x-a.x,dz1=b.z-a.z,dx2=c.x-a.x,dz2=c.z-a.z,den=dx1*dz2-dz1*dx2;
+      if(Math.abs(den)<1e-12)continue;
+      const u=((x-a.x)*dz2-(z-a.z)*dx2)/den,v=(dx1*(z-a.z)-dz1*(x-a.x))/den;
+      if(u>=-1e-6&&v>=-1e-6&&u+v<=1+1e-6)return a.y+(b.y-a.y)*u+(c.y-a.y)*v;
+    }
+    return null;
+  }
+  // Project a circular capture marker onto the existing published terrain
+  // triangles. Clipping each triangle prevents a flat disc from being buried by
+  // any micro-slope and avoids inventing another interpolated height field.
+  markerGeometry(data,cx,cz,waterY){
+    if(!data)return null;
+    const ring=Array.from({length:MARKER_SEGMENTS},(_,i)=>{
+      const angle=i*Math.PI*2/MARKER_SEGMENTS;
+      return{x:cx+Math.cos(angle)*MARKER_RADIUS,z:cz+Math.sin(angle)*MARKER_RADIUS};
+    });
+    const positions=[],indices=[];
+    const clip=(polygon,a,b)=>{
+      const side=p=>(b.x-a.x)*(p.z-a.z)-(b.z-a.z)*(p.x-a.x);
+      const clipped=[];
+      for(let i=0;i<polygon.length;i++){
+        const p=polygon[i],q=polygon[(i+1)%polygon.length],d=side(p),e=side(q),inside=d>=-1e-8,nextInside=e>=-1e-8;
+        if(inside)clipped.push(p);
+        if(inside!==nextInside){
+          const t=d/(d-e);
+          clipped.push({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t,z:p.z+(q.z-p.z)*t});
+        }
+      }
+      return clipped;
+    };
+    for(let i=0;i<data.indices.length;i+=3){
+      if(!this.triangleMayTouch(data,i,cx-MARKER_RADIUS,cx+MARKER_RADIUS,
+        cz-MARKER_RADIUS,cz+MARKER_RADIUS))continue;
+      let polygon=this.terrainTriangle(data,i);
+      for(let side=0;side<ring.length&&polygon.length>=3;side++)polygon=clip(polygon,ring[side],ring[(side+1)%ring.length]);
+      if(polygon.length<3)continue;
+      const base=positions.length/3;
+      for(const point of polygon)positions.push(point.x-cx,Math.max(point.y,waterY)+MARKER_CLEARANCE,point.z-cz);
+      for(let j=1;j<polygon.length-1;j++){
+        const a=polygon[0],b=polygon[j],c=polygon[j+1];
+        const area=(b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x);
+        if(Math.abs(area)<1e-10)continue;
+        // Babylon's vertical normal is positive for clockwise XZ triangles.
+        if(area>0)indices.push(base,base+j+1,base+j);
+        else indices.push(base,base+j,base+j+1);
+      }
+    }
+    return indices.length?{positions,indices}:null;
+  }
+  captureMesh(id,tile,data){
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const geometry=this.markerGeometry(data,cx,cz,this.waterY(tile));
+    if(!geometry){
+      // Initial frame before TerrainRenderer has published its first mesh.
+      const mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${id}`,{diameter:1.35,height:.09,tessellation:32},this.scene);
+      mesh.position.set(cx,this.surfaceY(tile)+.07,cz);mesh.isPickable=false;
+      return mesh;
+    }
+    const mesh=new BABYLON.Mesh(`capture-${id}`,this.scene),normals=[];
+    BABYLON.VertexData.ComputeNormals(geometry.positions,geometry.indices,normals);
+    const vertexData=new BABYLON.VertexData();
+    vertexData.positions=geometry.positions;vertexData.indices=geometry.indices;vertexData.normals=normals;
+    vertexData.applyToMesh(mesh,false);
+    mesh.position.set(cx,0,cz);mesh.isPickable=false;mesh.receiveShadows=false;
+    mesh.metadata={kind:"capture-point",terrainConforming:true,publishedTerrainGeometry:true};
+    return mesh;
+  }
   signature(state,byKey){
     const cores=(state?.cores||[]).map(core=>[
       "C",core.id,ownerKey(core.owner),core.hp>0?1:0,core.x,core.y,
@@ -25,18 +147,25 @@ export class ObjectiveRenderer{
     return [...cores,...points].sort().join(";");
   }
   sync(state){
+    this.latestState=state;
+    this.refresh(state);
+  }
+  refresh(state){
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
     const signature=this.signature(state,byKey);
     if(signature===this.signatureValue)return;
     this.signatureValue=signature;
+    const terrain=this.terrainData();
 
     const coreAlive=new Set();
     for(const core of state?.cores||[]){
       coreAlive.add(core.id);let mesh=this.cores.get(core.id);
       if(!mesh){mesh=BABYLON.MeshBuilder.CreateBox(`core-${core.id}`,{width:1.22,depth:1.22,height:1.65},this.scene);mesh.isPickable=false;this.cores.set(core.id,mesh);}
-      const tile=byKey.get(tileKey(core.x,core.y));
+      const tile=byKey.get(tileKey(core.x,core.y)),cx=core.x*TILE_SIZE,cz=core.y*TILE_SIZE;
+      const publishedY=this.pointHeight(terrain,cx,cz);
       mesh.material=this.materials[ownerKey(core.owner)];
-      mesh.position.set(core.x*TILE_SIZE,this.surfaceY(tile)+.825,core.y*TILE_SIZE);
+      const supportY=Math.max(publishedY??Number(tile?.elevation||0)*ELEVATION_HEIGHT,this.waterY(tile));
+      mesh.position.set(cx,supportY+.825,cz);
       mesh.visibility=core.hp>0?1:.2;
     }
     for(const[id,mesh]of this.cores)if(!coreAlive.has(id)){mesh.dispose();this.cores.delete(id);}
@@ -45,11 +174,14 @@ export class ObjectiveRenderer{
     for(const point of state?.presentation?.deploymentPoints||[]){
       if(point.capturable===false)continue;
       const capture=point.captureTiles?.[0];if(!capture)continue;
-      pointAlive.add(point.id);let mesh=this.points.get(point.id);
-      if(!mesh){mesh=BABYLON.MeshBuilder.CreateCylinder(`capture-${point.id}`,{diameter:1.35,height:.09,tessellation:32},this.scene);mesh.isPickable=false;this.points.set(point.id,mesh);}
-      const tile=byKey.get(tileKey(capture.x,capture.y));
+      const tile=byKey.get(tileKey(capture.x,capture.y));if(!tile)continue;
+      pointAlive.add(point.id);
+      // Ownership changes update the shared material. Terrain / water-level
+      // changes rebuild the one conforming marker through this same path.
+      let mesh=this.points.get(point.id);
+      if(mesh)mesh.dispose();
+      mesh=this.captureMesh(point.id,tile,terrain);this.points.set(point.id,mesh);
       mesh.material=this.materials[ownerKey(point.owner)];
-      mesh.position.set(capture.x*TILE_SIZE,this.surfaceY(tile)+.07,capture.y*TILE_SIZE);
     }
     for(const[id,mesh]of this.points)if(!pointAlive.has(id)){mesh.dispose();this.points.delete(id);}
   }
