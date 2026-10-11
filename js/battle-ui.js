@@ -23,6 +23,7 @@ export class BattleUI{
   bind(runtime,renderer){
     this.runtime=runtime;this.renderer=renderer;
     this.endTurn.onclick=()=>runtime.endPlayerTurn();
+    q("nextUnit").onclick=()=>runtime.selectNextAvailableUnit?.();
     q("rotateLeft").onclick=()=>renderer.rotate(-1);
     q("rotateRight").onclick=()=>renderer.rotate(1);
     q("projectionToggle").onclick=()=>renderer.toggleProjection();
@@ -88,6 +89,9 @@ export class BattleUI{
     if(!this.runtime)return;
     const snapshot=this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
     const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");
+    const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team==="PLAYER"&&!unit.finished);
+    next.disabled=phase!=="PLAYER_TURN"||eligible.length===0;
+    next.title=eligible.length?`選取下一位未完成行動角色（剩 ${eligible.length} 位）`:"目前沒有可行動角色";
     const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
     coreHud.classList.toggle("available",hasCores);
     coreHud.setAttribute("aria-hidden",String(!hasCores));

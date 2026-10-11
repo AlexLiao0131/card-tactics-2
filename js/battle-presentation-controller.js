@@ -93,7 +93,13 @@ function create(ctx){
     return out;
   }
   function presentationLightSources(s,visibility){
-    const environmentLights=s.environmentState?EnvironmentEngine.lightSources(s.environmentState):[];
+    // Fire affects the burning cell and its eight neighbors, never a guessed
+    // world-space radius. This is presentation only; existing gameplay LOS
+    // and EnvironmentEngine lightRadius remain unchanged.
+    const environmentLights=(s.environmentState?EnvironmentEngine.lightSources(s.environmentState):[]).map(light=>{
+      const flame=light.source==="BURNING"||light.source==="FIRE_TORNADO";
+      return flame?{...light,footprint:"FIRE_3X3",intensity:light.source==="FIRE_TORNADO"?1.2:.94,color:[1,.45,.14]}:light;
+    });
     const sourceObservers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
     const structureLights=[];
     const points=DeploymentEngine.points(s.stage);
@@ -103,16 +109,23 @@ function create(ctx){
     for(const core of s.cores||[]){
       if(Number(core.hp||0)<=0)continue;
       const home=points.filter(p=>p.owner===core.owner).sort((a,b)=>Math.hypot((a.captureTiles?.[0]?.x??99)-core.x,(a.captureTiles?.[0]?.y??99)-core.y)-Math.hypot((b.captureTiles?.[0]?.x??99)-core.x,(b.captureTiles?.[0]?.y??99)-core.y))[0];
-      structureLights.push({x:core.x,y:core.y,radius:coverRadius(core,home?.area||[],3),source:"CORE_LIGHT",sourceId:core.id,steady:true,intensity:1.8,color:core.owner==="PLAYER"?[.42,.66,1]:[1,.40,.36]});
+      const cells=(home?.area||[]).length?home.area:[{x:core.x,y:core.y}];
+      structureLights.push({x:core.x,y:core.y,radius:coverRadius(core,cells,3),cells:cells.map(cell=>({x:cell.x,y:cell.y})),source:"CORE_LIGHT",sourceId:core.id,steady:true,intensity:1.8,color:core.owner==="PLAYER"?[.42,.66,1]:[1,.40,.36]});
     }
     for(const point of points){
       const held=point.owner==="PLAYER"||point.owner==="ENEMY";
       if(!held||point.capturable===false||!DeploymentEngine.defenders(s.stage,s.units,point,point.owner).length)continue;
       const center=point.captureTiles?.[0];if(!center)continue;
-      structureLights.push({x:center.x,y:center.y,radius:coverRadius(center,point.area||[],2),source:"CAPTURE_LIGHT",sourceId:point.id,steady:true,intensity:1.65,color:point.owner==="PLAYER"?[.42,.72,1]:[1,.52,.32]});
+      const cells=(point.area||[]).length?point.area:[center];
+      structureLights.push({x:center.x,y:center.y,radius:coverRadius(center,cells,2),cells:cells.map(cell=>({x:cell.x,y:cell.y})),source:"CAPTURE_LIGHT",sourceId:point.id,steady:true,intensity:1.65,color:point.owner==="PLAYER"?[.42,.72,1]:[1,.52,.32]});
     }
+    // Units illuminate only their own occupied tile. A hidden hostile is not
+    // published: its illumination cannot leak tactical intelligence to a viewer.
+    const unitLights=(s.units||[]).filter(unit=>unit?.alive&&unitVisibleToPlayer(unit,visibility))
+      .map(unit=>({x:unit.x,y:unit.y,cells:[{x:unit.x,y:unit.y}],source:"UNIT_TILE_LIGHT",sourceId:unit.id,
+        intensity:unit.team===viewerTeam?.70:.45,color:unit.team===viewerTeam?[.57,.78,1]:[1,.70,.43],steady:true}));
     // Lighting is world presentation, not enemy intel. Mist scatter uses real optical transmission.
-    return[...environmentLights,...equipmentLightSources(s),...structureLights].map(light=>({
+    return[...environmentLights,...equipmentLightSources(s),...structureLights,...unitLights].map(light=>({
       ...light,visible:true,
       transmission:Math.max(0,...sourceObservers.map(observer=>TacticalEngine.lightTransmission(s.map,observer,light,s.environmentState)))
     }));

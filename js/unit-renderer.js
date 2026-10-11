@@ -1553,9 +1553,12 @@ export class UnitRenderer{
       const verticalMode=String(unit.verticalMode||""),submerged=verticalMode==="DIVING"||verticalMode==="SINKING";
       const scale=(unit.selected?1.13:unit.finished?.92:1)*(submerged?.9:1);
       entry.baseScale=scale;
-      const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.80:1;
+      // Friendly visibility is a UI readability rule, not enemy intelligence.
+      // A finished or friendly-stealthed unit must stay findable on a dark map.
+      const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.94:1;
+      const actionOpacity=unit.finished?(unit.friendlyToViewer?.88:.62):1;
       const verticalOpacity=submerged?.48:1;
-      this.setVisibility(entry,(unit.finished?.62:1)*stealthOpacity*verticalOpacity);
+      this.setVisibility(entry,actionOpacity*stealthOpacity*verticalOpacity);
       this.updateVerticalCue(entry,unit);
 
       entry.basePosition.copyFrom(this.positionFor(entry,unit));

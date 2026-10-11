@@ -107,7 +107,14 @@ export class EnvironmentRenderer{
     this.impactAccumulator=0;
     this.lightningBursts=[];
     this.lastLightningToken="";
+    // Physical structure lights are stable. Unlimited flame/character cells use
+    // one aggregated colour field instead of one GPU PointLight per map tile.
     this.fireLights=[];
+    this.lightFieldMesh=null;
+    this.lightFieldMaterial=this.makeLightFieldMaterial();
+    this.lightFieldSignature="";
+    this.lightFieldTerrain=null;
+    this.lightFieldCells=0;
     this.fireGlows=new Map();
     this.fireCameraKey="";
     this.friendlyMaterialSignature="";
@@ -489,39 +496,135 @@ export class EnvironmentRenderer{
   updateWeatherFrame(dt){
     this.updateRainImpacts(dt);this.updateLightning(dt);this.updateMeteor(dt);
     const target=this.scene.activeCamera?.getTarget?.(),cameraKey=target?`${Math.round(target.x)},${Math.round(target.z)}`:"";
-    if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireLights(this.lastState);this.syncFireGlows(this.lastState);}
+    // The camera only changes atmospheric glow sorting. Fixed lights and
+    // actual lit cells must never blink when the camera moves.
+    if(this.lastState&&cameraKey!==this.fireCameraKey){this.fireCameraKey=cameraKey;this.syncFireGlows(this.lastState);}
 
     for(const light of this.fireLights)if(light.isEnabled()){const phase=Number(light.metadata?.phase||0),flicker=light.metadata?.steady?1:.90+.12*Math.sin(this.weatherTime*8.7+phase)+.035*Math.sin(this.weatherTime*17.3+phase*.6);light.intensity=Number(light.metadata?.baseIntensity||1)*flicker;light.range=Number(light.metadata?.baseRange||light.range)*(light.metadata?.steady?1:.97+.045*Math.sin(this.weatherTime*5.1+phase));}
   }
 
+  // Each structure gets its persistent physical light. Nearby fire tiles
+  // share one physical light per *connected flame cluster*, while every fire
+  // tile independently contributes its exact 3x3 colour field below. No
+  // camera-distance ranking or arbitrary scene-wide four-light budget.
   syncFireLights(state){
-    const sources=state?.presentation?.environment?.lightSources||[],byKey=new Map((state?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t]));
-    // Four shared lights cover distinct fire clusters; never one light per tile.
-    const selected=[];
-    const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
-    const distance=source=>Math.hypot(source.x*TILE_SIZE-focus.x,source.y*TILE_SIZE-focus.z);
-    // Give a nearby Core / capture site its actual deployment-area illumination
-    // before dense decorative fire sources consume the four-light mobile pool.
-    const inSite=source=>source.steady&&distance(source)<=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;
-    for(const source of [...sources].sort((a,b)=>Number(!!inSite(b))-Number(!!inSite(a))||distance(a)-distance(b)||b.radius-a.radius||a.y-b.y||a.x-b.x)){
-      if(selected.some(other=>Math.hypot(other.x-source.x,other.y-source.y)<2))continue;
-      selected.push(source);if(selected.length===4)break;
-    }
-    for(let i=0;i<selected.length;i++){
+    const structures=(state?.presentation?.environment?.lightSources||[])
+      .filter(source=>source.source==="CORE_LIGHT"||source.source==="CAPTURE_LIGHT");
+    const fires=this.groupedEffectTiles(state,["BURNING","FIRE_TORNADO"],{diagonal:true,surfaceTolerance:.30})
+      .map((group,index)=>{
+        const x=group.reduce((sum,tile)=>sum+Number(tile.x),0)/group.length;
+        const y=group.reduce((sum,tile)=>sum+Number(tile.y),0)/group.length;
+        const radius=Math.max(1.5,...group.map(tile=>Math.hypot(tile.x-x,tile.y-y)+1.35));
+        const vertical=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length;
+        return {x,y,radius,source:"FIRE_CLUSTER",sourceId:index,intensity:Math.min(1.4,.72+group.length*.09),
+          color:[1,.39,.10],vertical,steady:false};
+      });
+    const sources=[...structures,...fires];
+    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
+    for(let i=0;i<sources.length;i++){
       let light=this.fireLights[i];
-      if(!light){light=new BABYLON.PointLight(`environment-fire-light-${i}`,BABYLON.Vector3.Zero(),this.scene);light.diffuse=new BABYLON.Color3(1,.40,.09);light.specular=new BABYLON.Color3(.16,.06,.01);this.fireLights.push(light);}
-      const source=selected[i],tile=byKey.get(`${source.x},${source.y}`);
-      const tint=Array.isArray(source.color)?source.color:[1,.40,.09];
+      if(!light){light=new BABYLON.PointLight(`objective-site-light-${i}`,BABYLON.Vector3.Zero(),this.scene);this.fireLights.push(light);}
+      const source=sources[i],tile=byKey.get(`${source.x},${source.y}`),tint=Array.isArray(source.color)?source.color:[1,.5,.25];
       light.diffuse.set(Number(tint[0]),Number(tint[1]),Number(tint[2]));
-      light.specular.set(Number(tint[0])*.16,Number(tint[1])*.16,Number(tint[2])*.16);
-      light.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+1,source.y*TILE_SIZE);
-      const baseRange=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;light.range=baseRange;
+      light.specular.set(Number(tint[0])*.14,Number(tint[1])*.14,Number(tint[2])*.14);
+      light.position.set(source.x*TILE_SIZE,Number(source.vertical??(surfaceOf(tile||{})*ELEVATION_HEIGHT))+1.1,source.y*TILE_SIZE);
+      const baseRange=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;
+      light.range=baseRange;
       light.metadata={baseIntensity:(state?.presentation?.environment?.timeOfDay==="NIGHT"?1.55:1.18)*Math.max(0,Number(source.intensity??1)),baseRange,phase:source.x*.7+source.y,steady:source.steady===true};
       light.intensity=light.metadata.baseIntensity;light.setEnabled(true);
     }
-    for(let i=selected.length;i<this.fireLights.length;i++){this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);}
-    // Three scene lights + lightning flash + up to four local fire lights.
-    if(selected.length)for(const material of this.scene.materials)if(Number.isFinite(material.maxSimultaneousLights)&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+    for(let i=sources.length;i<this.fireLights.length;i++){
+      this.fireLights[i].intensity=0;this.fireLights[i].setEnabled(false);
+    }
+    if(sources.length)for(const material of this.scene.materials)
+      if(Number.isFinite(material.maxSimultaneousLights)&&material.maxSimultaneousLights<8)material.maxSimultaneousLights=8;
+  }
+
+  makeLightFieldMaterial(){
+    const material=new BABYLON.StandardMaterial("environment-cell-light-field",this.scene);
+    material.diffuseColor=BABYLON.Color3.White();
+    material.emissiveColor=BABYLON.Color3.White();
+    material.specularColor=BABYLON.Color3.Black();
+    material.disableLighting=true;
+    material.alphaMode=BABYLON.Engine.ALPHA_ADD;
+    material.transparencyMode=BABYLON.Material.MATERIAL_ALPHABLEND;
+    material.disableDepthWrite=true;
+    material.backFaceCulling=false;
+    material.fogEnabled=true;
+    return material;
+  }
+
+  // Aggregate the authoritative light sources into exact illuminated grid cells.
+  // FIRE_3X3 = source + eight neighbors; buildings = the actual deployment
+  // area; character readability = its *own* occupied tile only. The field is
+  // one drawable mesh independent of map light counts, with no second terrain
+  // renderer, simulated environmental state or per-unit physical GPU lights.
+  litCellColors(state){
+    const map=new Map(),night=state?.presentation?.environment?.timeOfDay==="NIGHT";
+    const daylightFactor=night?1:.32;
+    const stamp=(x,y,color,energy)=>{
+      if(!Number.isInteger(Number(x))||!Number.isInteger(Number(y)))return;
+      const key=`${x},${y}`,existing=map.get(key)||[0,0,0];
+      for(let i=0;i<3;i++)existing[i]=Math.min(1.65,existing[i]+Math.max(0,Number(color?.[i]??1))*energy*daylightFactor);
+      map.set(key,existing);
+    };
+    for(const source of state?.presentation?.environment?.lightSources||[]){
+      if(source.visible===false)continue;
+      const color=Array.isArray(source.color)?source.color:[1,.46,.14];
+      const intensity=Math.max(0,Math.min(3,Number(source.intensity??1)));
+      if(source.footprint==="FIRE_3X3"||source.source==="BURNING"||source.source==="FIRE_TORNADO"){
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)
+          stamp(source.x+dx,source.y+dy,color,intensity*(dx===0&&dy===0?.55:.39));
+      }else if(Array.isArray(source.cells)&&source.cells.length){
+        const power=source.source==="UNIT_TILE_LIGHT"?.63:.34;
+        for(const cell of source.cells)stamp(cell.x,cell.y,color,intensity*power);
+      }else{
+        const r=Math.max(0,Math.floor(Number(source.radius||0)));
+        for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+          const d=Math.hypot(dx,dy);if(d>r)continue;
+          stamp(source.x+dx,source.y+dy,color,intensity*.28*(1-d/Math.max(1,r+1)));
+        }
+      }
+    }
+    return map;
+  }
+
+  syncLightField(state){
+    const terrain=this.scene.getMeshByName("terrain-surface"),cells=this.litCellColors(state);
+    const stamp=[...cells].sort((a,b)=>a[0].localeCompare(b[0]))
+      .map(([key,values])=>`${key}:${values.map(n=>n.toFixed(3)).join(",")}`).join("|");
+    if(terrain===this.lightFieldTerrain&&stamp===this.lightFieldSignature)return;
+    this.lightFieldSignature=stamp;this.lightFieldTerrain=terrain;
+    this.lightFieldMesh?.dispose();this.lightFieldMesh=null;this.lightFieldCells=cells.size;
+    if(!terrain||!cells.size)return;
+    const sourceVertices=terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
+    const sourceIndices=terrain.getIndices()||[];
+    const positions=[],colors=[],indices=[];
+    for(let i=0;i+2<sourceIndices.length;i+=3){
+      const offsets=[sourceIndices[i]*3,sourceIndices[i+1]*3,sourceIndices[i+2]*3];
+      const cx=(sourceVertices[offsets[0]]+sourceVertices[offsets[1]]+sourceVertices[offsets[2]])/3;
+      const cz=(sourceVertices[offsets[0]+2]+sourceVertices[offsets[1]+2]+sourceVertices[offsets[2]+2])/3;
+      const lit=cells.get(`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`);
+      if(!lit)continue;
+      // One broad material alpha with RGB vertex values produces a colour
+      // reflection on exactly the surface triangles belonging to each cell.
+      const base=positions.length/3;
+      for(const offset of offsets){
+        positions.push(sourceVertices[offset],sourceVertices[offset+1]+.014,sourceVertices[offset+2]);
+        colors.push(Math.min(1,lit[0]),Math.min(1,lit[1]),Math.min(1,lit[2]),Math.min(.88,Math.max(...lit)*.65));
+      }
+      indices.push(base,base+1,base+2);
+    }
+    if(!indices.length)return;
+    const mesh=new BABYLON.Mesh("environment-cell-light-field",this.scene);
+    const data=new BABYLON.VertexData();data.positions=positions;data.colors=colors;data.indices=indices;
+    data.applyToMesh(mesh,false);
+    mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+    mesh.material=this.lightFieldMaterial;
+    mesh.isPickable=false;mesh.receiveShadows=false;
+    mesh.metadata={kind:"environment-light-field",castShadow:false,mergedMesh:true,litCells:cells.size,
+      boundedFireFootprint:"3x3",structureFootprint:"DEPLOYMENT_AREA",unitFootprint:"OWN_TILE"};
+    this.lightFieldMesh=mesh;
   }
 
   makeFireGlowMaterial(){
@@ -1124,6 +1227,7 @@ export class EnvironmentRenderer{
     this.syncFireFields(state);
     this.syncFriendlyVisibility(state);
     this.syncFireLights(state);
+    this.syncLightField(state);
     this.syncFireGlows(state);
     const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
     const friendlyUnits=(state?.units||[]).filter(unit=>unit?.friendlyToViewer),friendlyDistance=(tile)=>friendlyUnits.reduce((best,unit)=>Math.min(best,Math.abs(Number(unit.x)-Number(tile.x))+Math.abs(Number(unit.y)-Number(tile.y))),Infinity);
@@ -1178,7 +1282,8 @@ export class EnvironmentRenderer{
       lightningBursts:this.lightningBursts.length,
       meteorBursts:this.meteorBursts.length,
       fireGlows:this.fireGlows.size,
-      fireLights:{active:this.fireLights.filter(light=>light.isEnabled()).length,maximum:4},
+      fireLights:{physicalLights:this.fireLights.filter(light=>light.isEnabled()).length,
+        cellField:{active:!!this.lightFieldMesh,cells:this.lightFieldCells},globalLightLimit:null,fireClusters:true},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
     };
