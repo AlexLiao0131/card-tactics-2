@@ -611,7 +611,8 @@ export const HydrologyEngine=(()=>{
         const candidateNext=tile.hydrologyDrain===true?null:
           by.get(key(tile.x+currentDirX,tile.y+currentDirY));
         const canTransport=tile.hydrologyDrain===true ||
-          (candidateNext?.river===true&&riverRouteHasHead(tile,candidateNext));
+          (candidateNext?.river===true&&
+           (map?.hydrology?.generatedRiverProfile===true||riverRouteHasHead(tile,candidateNext)));
         const outflowRate=canTransport?clean(Math.min(inflowRate,capacity)):0;
         const overflowRate=clean(Math.max(0,inflowRate-outflowRate));
 
@@ -767,17 +768,10 @@ export const HydrologyEngine=(()=>{
   function riverRouteHasHead(from,to){
     if(!from||!to)return false;
     if(from.hydrologyTransportInitialized!==true)return true;
-    // An established downhill channel conveys its real source-supported Q
-    // across flooded backwater reaches; local D equalization is independent
-    // and must not cancel the catchment's ongoing source mass flux. Its grade
-    // is authored once by MapGenerator and verified to reach an actual outlet.
-    // A *carved storage pool* is different: it must reach its genuine outlet
-    // sill before it can emit Q. Stored flood recession still checks real head.
-    if(from.river===true&&to.river===true){
-      if(from.hydrologyNaturalChannelPool===true&&
-         elevation(from)+waterDepth(from)+riverKineticHead(from)+EPSILON<elevation(to))return false;
-      if(elevation(from)+EPSILON>=elevation(to))return true;
-    }
+    // The authored river direction is routing topology, never evidence that
+    // water can travel uphill. Base elevation and stored D together establish
+    // the free surface; only a bounded kinetic head can sustain through-flow
+    // against a small transient backwater difference.
     return elevation(from)+waterDepth(from)+riverKineticHead(from)+EPSILON
       >=elevation(to)+waterDepth(to);
   }
@@ -1104,7 +1098,10 @@ export const HydrologyEngine=(()=>{
         const dx=Math.sign(Number(tile.flowX||0)),dy=Math.sign(Number(tile.flowY||0));
         if(Math.abs(dx)+Math.abs(dy)!==1)continue;
         const next=by.get(key(tile.x+dx,tile.y+dy));
-        if(next?.river!==true||!riverRouteHasHead(tile,next))continue;
+        if(next?.river!==true)continue;
+        // This Q was measured from D during the just-finished step, when
+        // its hydraulic-head condition was evaluated. Do not cancel a real
+        // transfer because its destination stage changed afterwards.
         const record=writePersistentEdge(tile,next,rate,{source,routeKind:"RIVER",volumeScale});
         if(record)routes.push({fromX:tile.x,fromY:tile.y,...record});
       }
@@ -1632,6 +1629,30 @@ export const HydrologyEngine=(()=>{
       }else{
         from.hydrologyMeasuredOutflowRate=clean(Number(from.hydrologyMeasuredOutflowRate||0)+amount/Math.max(EPSILON,stepVolume));
       }
+    }
+    // Conservative, synchronous hydraulic correction of the proposed river
+    // transport. Every reach can carry real throughput, but its outward flux
+    // must not push the *final* head below the receiving reach's head. Solve
+    // pressure against the complete network's inflows, outflows and lake mouths
+    // rather than capping each edge in isolation (which dries through-flow).
+    for(let iteration=0;iteration<Math.min(rivers.length,32);iteration++){
+      let adjusted=false;
+      for(const transfer of transfers){
+        if(transfer.kind!=="RIVER"||transfer.volume<=EPSILON)continue;
+        const {from,to}=transfer,fk=key(from.x,from.y),tk=key(to.x,to.y);
+        const fromStage=elevation(from)+Number(snap.get(fk)||0)+Number(delta.get(fk)||0);
+        const toStage=elevation(to)+Number(snap.get(tk)||0)+Number(delta.get(tk)||0);
+        const excess=toStage-fromStage-riverKineticHead(from);
+        if(excess<=FLOW_EPSILON)continue;
+        const reduced=clean(Math.min(transfer.volume,excess*.5));
+        if(reduced<=EPSILON)continue;
+        transfer.volume=clean(transfer.volume-reduced);
+        delta.set(fk,Number(delta.get(fk)||0)+reduced);
+        delta.set(tk,Number(delta.get(tk)||0)-reduced);
+        from.hydrologyMeasuredOutflowRate=clean(Math.max(0,Number(from.hydrologyMeasuredOutflowRate||0)-reduced/Math.max(EPSILON,stepVolume)));
+        moved-=reduced;adjusted=true;
+      }
+      if(!adjusted)break;
     }
     for(const [k,change] of delta){
       const tile=by.get(k);

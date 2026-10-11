@@ -466,57 +466,45 @@ export const MapGenerator=(()=>{
       if(chosen.length>=limit)break;
       if(centers.some(c=>Math.abs(c.x-candidate.tile.x)+Math.abs(c.y-candidate.tile.y)<5))continue;
       const {tile,downstream,naturalRelief,chance}=candidate;
-      // A basin must have a real rim in EVERY accessible direction, not just
-      // along the river. Otherwise water escapes sideways through a lower bank
-      // and the supposed "deep pool" can never hold more than a few centimetres.
-      const prior=Number(tile.elevation||0);
-      const adjacent=directions.map(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy))).filter(Boolean);
+      // A natural pool is a SIDE BASIN, not a hole cut into the directed
+      // riverbed. A hole below its downstream reach creates an artificial
+      // uphill dam after the downstream profile has already been graded.
+      // Keep the authored river bed untouched and use its real lateral opening
+      // to feed an excavated off-channel basin via the existing lake inlet solver.
+      const banks=directions.map(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy)))
+        .filter(n=>n&&!n.river);
+      const bankCandidates=banks.filter(bank=>
+        bank.terrain!=="WATER"&&bank.terrain!=="WALL"&&
+        bank.waterDepth<=0&&!bank.core&&!bank.ford&&!bank.routeId&&!bank.captureZone&&
+        !bank.hydrologySource&&!bank.hydrologyDrain);
+      bankCandidates.sort((a,b)=>Number(a.elevation||0)-Number(b.elevation||0)||
+        Math.abs(a.x-tile.x)-Math.abs(b.x-tile.x)||a.y-b.y||a.x-b.x);
+      const bank=bankCandidates[0];
+      if(!bank)continue;
+      const before=Number(bank.elevation||0),riverbed=Number(tile.elevation||0);
+      const naturalDepth=clamp(.45+naturalRelief*.20+chance*.22,.50,.80);
+      // The pool bottom is below the riverbed and can receive *real* D once
+      // river water crosses its shared sill. Limit excavation rather than
+      // creating enormous artificial rock shafts beside a shallow creek.
+      const bed=Number((riverbed-naturalDepth).toFixed(4));
+      const excavation=Number((before-bed).toFixed(4));
+      if(excavation<.50||excavation>3.10)continue;
+      bank.elevation=bed;
+      bank.waterDepth=0;bank.waterSurfaceZ=null;
+      bank.hydrologyNaturalChannelPool=true;
+      bank.hydrologyNaturalChannelPoolDepth=excavation;
+      centers.push(bank);
+      const adjacent=directions.map(([dx,dy])=>by.get(key(bank.x+dx,bank.y+dy))).filter(Boolean);
       const lowestRim=Math.min(...adjacent.map(n=>Number(n.elevation||0)));
-      // Actual valley relief controls depth: low-relief creeks develop shallow
-      // pools, pronounced rock-cut valleys can contain a rare swimmable hole.
-      // The rim is the LOWEST existing escape, not only the routed downstream.
-      const intendedStorage=.40+Math.min(1.25,naturalRelief*.48)+chance*.55;
-      const naturalExcavation=.45+naturalRelief*.30+chance*.35;
-      const requiredExcavation=prior-lowestRim+intendedStorage;
-      if(requiredExcavation>3.10)continue; // prevent arbitrary vertical shafts
-      // A carved storage pool may be deep below an existing cliff, but its
-      // former sloped land contacts must REMAIN sloped for shoreline clipping.
-      const desiredDepth=clamp(Math.max(naturalExcavation,requiredExcavation),.50,3.10);
-      const depth=Number(Math.min(desiredDepth,.80).toFixed(4));
-      if(depth<.50)continue;
-      tile.elevation=Number((prior-depth).toFixed(4));
-      // Do not prefill the depression; D must come from a real water source.
-      tile.waterDepth=0;tile.waterSurfaceZ=null;
-      tile.hydrologyNaturalChannelPool=true;
-      tile.hydrologyNaturalChannelPoolDepth=depth;
-      centers.push(tile);
-      // On a tributary, widen a pool ALONG the existing channel. Adjacent
-      // tributary cells remain part of the same hydrology network, not an
-      // independent pond or a visual square pasted onto the terrain.
       const shoulders=[];
-      if(tile.hydrologyTributary===true){
-        const upstream=rivers.filter(other=>other.hydrologyTributary===true&&
-          downstreamByKey.get(key(other.x,other.y))===tile&&!other.hydrologySource&&!other.ford);
-        for(const other of upstream.slice(0,1)){
-          const cut=Number(Math.min(.38,depth*.30).toFixed(4));
-          other.elevation=Number((Number(other.elevation||0)-cut).toFixed(4));
-          other.hydrologyNaturalChannelPool=true;
-          other.hydrologyNaturalChannelPoolDepth=cut;
-          shoulders.push({x:other.x,y:other.y,depth:cut});
-        }
-      }
-      chosen.push({x:tile.x,y:tile.y,bed:tile.elevation,originalBed:prior,
-        depth,downstreamX:downstream.x,downstreamY:downstream.y,
-        outletBed:Number(downstream.elevation||0),lowestRim,
-        tributary:tile.hydrologyTributary===true,shoulders,
+      chosen.push({x:bank.x,y:bank.y,bed:bank.elevation,originalBed:before,
+        depth:excavation,downstreamX:tile.x,downstreamY:tile.y,
+        outletBed:riverbed,lowestRim,
+        tributary:tile.hydrologyTributary===true,sideBasin:true,shoulders,
         naturalBankRelief:Number(naturalRelief.toFixed(4))});
     }
-    // Preserve the same published terrain-slope contract after pool excavation.
-    if(chosen.length){
-      const old=new Map(rivers.map(t=>[key(t.x,t.y),
-        t.hydrologyNaturalChannelPool===true?Number(t.elevation||0)+Number(t.hydrologyNaturalChannelPoolDepth||0):Number(t.elevation||0)]));
-      softenCarvedBanks(map,rivers,old);
-    }
+    // River slopes remain the original generated erosion profile. The side
+    // basin is part of terrain, not an additional water store or renderer.
     return chosen;
   }
 
