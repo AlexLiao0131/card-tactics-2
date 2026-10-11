@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Card Tactics 2｜TEST Log 長局壓測</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071018;color:#e6eff9}
+#lab{position:fixed;inset:0;width:100%;height:100%;border:0;background:#071018}
+#switch{position:fixed;z-index:50;left:max(8px,env(safe-area-inset-left));top:max(8px,env(safe-area-inset-top));min-height:42px;min-width:84px;padding:9px 13px;border:1px solid #dabd74;border-radius:11px;background:#12263cf2;color:#fff4cb;font-weight:800;box-shadow:0 4px 22px #0009;cursor:pointer}
+#panel{position:fixed;z-index:49;top:calc(max(8px,env(safe-area-inset-top)) + 48px);left:max(8px,env(safe-area-inset-left));width:min(390px,calc(100vw - 16px));max-height:calc(100dvh - 75px - env(safe-area-inset-bottom));overflow:auto;padding:11px;border:1px solid #758da5;border-radius:12px;background:#091623f8;box-shadow:0 12px 35px #000a}
+#panel[hidden]{display:none}
+section{border:1px solid #344a60;border-radius:8px;padding:9px;margin:9px 0}
+h2{margin:0;font-size:14px;color:#ffeba7}h3{margin:0 0 8px;font-size:12px;color:#cfdef0}
+p,.sub{font-size:11px;line-height:1.55;color:#c4d5e4;margin:6px 0}
+.controls{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:6px 0}
+button,select{border:1px solid #8ca8bb;background:#172c40;color:white;border-radius:8px;padding:8px 9px;min-height:38px;font-size:12px;font-weight:700}
+button{cursor:pointer}button:disabled{opacity:.5}
+button.primary{border-color:#d1ac55;color:#fff0ae}
+button.danger{border-color:#f08d81;color:#ffbcb3}
+select{flex:1;min-width:90px}
+label{font-size:12px}
+#status{padding:8px;border:1px solid #425c70;border-radius:8px;background:#05101b;font:11px/1.5 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+#log{min-height:90px;max-height:28vh;overflow:auto;background:#030a10;border:1px solid #283d4e;border-radius:7px;padding:8px;color:#b9dfc7;font:10px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}
+#status[data-state="error"]{border-color:#bd615a;color:#ffc8c0}
+#status[data-state="running"]{border-color:#a7914c;color:#f4e2ae}
+#tiny[hidden]{display:none}
+#tiny{position:fixed;z-index:48;left:104px;top:max(15px,env(safe-area-inset-top));color:#caf2d4;font:10px/1.5 ui-monospace,monospace;max-width:calc(100vw - 115px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 7px;background:#091623c9;border-radius:5px;pointer-events:none}
+@media(max-width:480px){#panel{max-height:calc(100dvh - 70px - env(safe-area-inset-bottom))}#switch{min-height:38px}button,select{font-size:11px}}
+</style>
+</head>
+<body>
+<iframe id="lab" src="./testindex.html" title="Card Tactics 原版 Test Lab"></iframe>
+<button type="button" id="switch" aria-expanded="false" aria-controls="panel">🧪 TEST</button>
+<div id="tiny" hidden>正在連接既有 Test Lab…</div>
+<aside id="panel" hidden>
+ <h2>長局穩定性｜TEST Log</h2>
+ <p>沿用 testindex 正式 Runtime、環境回合與水文系統。此頁不建立第二個遊戲 Runtime 或 Renderer。</p>
+ <section>
+  <h3>晝夜控制</h3>
+  <div class="controls"><select id="dayNight" aria-label="晝夜"><option value="DAY">☀️ 白天</option><option value="NIGHT">🌙 夜晚</option></select><button id="applyDayNight">套用晝夜</button></div>
+ </section>
+ <section>
+  <h3>一鍵環境長局壓測</h3>
+  <div class="controls"><label for="count">環境回合</label><select id="count"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></div>
+  <div class="controls"><button class="primary" id="start">▶ 開始壓測</button><button class="danger" id="stop" disabled>■ 停止</button></div>
+  <p>每回合呼叫現有 <code>debug.advanceEnvironmentTurns(1)</code>；每一步保留一份資源快照，不執行 AI／完整卡牌回合。</p>
+ </section>
+ <section>
+  <h3>Log 與原版 TEST 功能</h3>
+  <div class="controls"><button id="oldUi">顯示原版 TEST 工具</button><button id="copy">複製 Log</button><button id="download">儲存 JSON</button><button id="clear">清除紀錄</button></div>
+  <p>壓測紀錄定期儲存在本機；發生網頁重新載入後，回到此頁可查看已成功寫入的紀錄。iPhone 不一定提供 Heap 數值。</p>
+ </section>
+ <div id="status" role="status" data-state="idle">等待原版 Test Lab 啟動…</div>
+ <pre id="log"></pre>
+</aside>
+<script type="module">
+const $=id=>document.getElementById(id);
+const iframe=$('lab'),toggle=$('switch'),panel=$('panel'),logArea=$('log'),status=$('status'),tiny=$('tiny');
+const STORE='ct:testindex:stress-log:v1',MAX_RECORDS=180;
+let records=[],active=false,stopRequested=false,showOld=false,game=null,gameDoc=null,watchedWindow=null,runId=0;
+const clock=()=>new Date().toISOString();
+function loadSaved(){try{const data=JSON.parse(localStorage.getItem(STORE)||'{}');records=Array.isArray(data.records)?data.records.slice(-MAX_RECORDS):[];}catch(_){records=[]}}
+function save(){try{localStorage.setItem(STORE,JSON.stringify({version:1,savedAt:clock(),records:records.slice(-MAX_RECORDS)}))}catch(error){console.warn('TEST Log 本機寫入失敗',error)}}
+function add(kind,details={}){const item={at:clock(),kind,...details};records.push(item);if(records.length>MAX_RECORDS)records.splice(0,records.length-MAX_RECORDS);save();renderLog();return item;}
+function renderLog(){logArea.textContent=records.slice(-15).map(r=>`${r.at.slice(11,19)} ${r.kind} ${r.step??''}/${r.total??''} ${r.round!=null?'R'+r.round:''} ${r.fps!=null?'FPS '+r.fps:''} ${r.meshes!=null?'Mesh '+r.meshes:''} ${r.lights!=null?'Light '+r.lights:''} ${r.durationMs!=null?r.durationMs+'ms':''} ${r.message||''}`).join('\n')||'尚無紀錄';logArea.scrollTop=logArea.scrollHeight;}
+function stateLabel(value,mode='idle'){status.textContent=value;status.dataset.state=mode;tiny.textContent=value.replace(/\n/g,'｜').slice(0,160);tiny.hidden=!(active&&panel.hidden);}
+function runtimeReady(){try{const testWin=iframe.contentWindow;const host=testWin?.document?.getElementById('game');const win=host?.contentWindow;if(!win?.CardTacticsRuntime?.debug?.advanceEnvironmentTurns||!win?.CardTacticsRenderer?.scene)return null;return{win,doc:host.contentDocument,testWin};}catch(_){return null}}
+function setOriginalUi(show){showOld=show;try{const t=runtimeReady();if(!t?.doc)return;const doc=t.doc;let css=doc.getElementById('ct-stress-original-toolbar');if(!css){css=doc.createElement('style');css.id='ct-stress-original-toolbar';css.textContent='body.ct-stress-hide-toolbar #testLabToolbar,body.ct-stress-hide-toolbar #testLabWeatherPanel,body.ct-stress-hide-toolbar #waterInspectPanel,body.ct-stress-hide-toolbar #hydrologyTestMarkers{display:none!important}';doc.head.appendChild(css);}doc.body.classList.toggle('ct-stress-hide-toolbar',!show);$('oldUi').textContent=show?'隱藏原版 TEST 工具':'顯示原版 TEST 工具';}catch(_){}}
+function attachErrors(win){if(watchedWindow===win)return;watchedWindow=win;win.addEventListener('error',ev=>add('ERROR',{message:String(ev.message||'error').slice(0,500),file:ev.filename,line:ev.lineno}));win.addEventListener('unhandledrejection',ev=>add('REJECTION',{message:String(ev.reason?.message||ev.reason||'unknown').slice(0,500)}));}
+function sample(win){const renderer=win.CardTacticsRenderer,scene=renderer?.scene,engine=renderer?.engine,debug=win.CardTacticsRuntime?.debug?.state?.()||{};const hyd=win.CardTacticsRuntime?.getBattleMap?.();const perf=win.performance?.memory;const systemTail=win.CardTacticsRuntime?.getBattleLog?.('SYSTEM')?.entries?.slice(-2).map(e=>String(e.text||''))||[];return{systemTail,seed:gameDoc?.getElementById('testLabSeed')?.value??null,round:debug.round??null,environmentSteps:debug.environmentSteps??null,timeOfDay:debug.timeOfDay??null,weather:debug.weather??null,tiles:hyd?.tiles?.length??null,waterVolume:(hyd?.tiles||[]).reduce((s,t)=>s+Math.max(0,Number(t.waterDepth||0)),0),fps:Number.isFinite(engine?.getFps?.())?Math.round(engine.getFps()):null,meshes:scene?.meshes?.length??null,lights:scene?.lights?.length??null,materials:scene?.materials?.length??null,textures:scene?.textures?.length??null,geometries:scene?.geometries?.length??null,activeMeshes:scene?.getActiveMeshes?.()?.length??null,waterMeshes:renderer?.water?.surfaceMeshes?.size??null,cascades:renderer?.water?.cascades?.size??null,runoffs:renderer?.water?.runoffs?.size??null,physicalLights:renderer?.environment?.physicalLightsById?.size??null,rendererErrors:renderer?.subsystemErrors?.size??null,heapMB:Number.isFinite(perf?.usedJSHeapSize)?Math.round(perf.usedJSHeapSize/1048576):null};}
+function waitFrames(win){return new Promise(resolve=>{const raf=win.requestAnimationFrame?.bind(win)||requestAnimationFrame;raf(()=>raf(resolve));})}
+function connect(){const t=runtimeReady();if(!t)return false;game=t.win;gameDoc=t.doc;attachErrors(game);setOriginalUi(showOld);const mode=game.CardTacticsRuntime.debug.state?.()?.timeOfDay;if(mode)$('dayNight').value=mode;stateLabel(`已連接｜${sample(game).tiles??'?'} 格｜${sample(game).timeOfDay||'?'}｜既有 TEST Log 可用`);return true;}
+const poll=setInterval(()=>{const next=runtimeReady();if(next?.win&&(next.win!==game||next.doc!==gameDoc))connect()},900);
+iframe.addEventListener('load',()=>{game=null;gameDoc=null;if(active)stopRequested=true;setOriginalUi(false);add('TEST_IFRAME_LOAD');connect();});
+window.addEventListener('pagehide',()=>save());
+window.addEventListener('error',ev=>add('PARENT_ERROR',{message:String(ev.message||'error').slice(0,500)}));
+window.addEventListener('unhandledrejection',ev=>add('PARENT_REJECTION',{message:String(ev.reason?.message||ev.reason||'unknown').slice(0,500)}));
+toggle.onclick=()=>{panel.hidden=!panel.hidden;toggle.setAttribute('aria-expanded',String(!panel.hidden));toggle.textContent=panel.hidden?'🧪 TEST':'✕ 收起';tiny.hidden=!(active&&panel.hidden);};
+$('applyDayNight').onclick=async()=>{const t=runtimeReady();if(!t)return stateLabel('正式 Runtime 尚未載入','error');const prev=t.win.CardTacticsRuntime.debug.state?.()?.timeOfDay;const next=$('dayNight').value;try{if(!t.win.CardTacticsRuntime.debug.setTimeOfDay?.(next))throw Error('正式 Runtime 拒絕晝夜切換');await waitFrames(t.win);add('DAY_NIGHT',{from:prev,to:next,...sample(t.win)});stateLabel(`晝夜已切換 ${prev||'?'} → ${next}`);}catch(error){add('DAY_NIGHT_ERROR',{message:error.message});stateLabel(error.message,'error')}};
+$('oldUi').onclick=()=>setOriginalUi(!showOld);
+$('start').onclick=async()=>{if(active)return;const t=runtimeReady();if(!t)return stateLabel('正式 Test Lab 尚未完成啟動','error');const win=t.win,count=Math.max(1,Math.min(200,Number($('count').value)||50)),token=++runId;active=true;stopRequested=false;$('start').disabled=true;$('stop').disabled=false;$('count').disabled=true;$('applyDayNight').disabled=true;setOriginalUi(false);let last=null;try{add('START',{total:count,...sample(win)});for(let i=1;i<=count;i++){if(stopRequested||token!==runId)break;const begin=performance.now();if(!win.CardTacticsRuntime.debug.advanceEnvironmentTurns(1))throw Error('正式環境回合接口執行失敗');await waitFrames(win);const elapsed=Math.round(performance.now()-begin),snap=sample(win);last=add('STEP',{step:i,total:count,durationMs:elapsed,...snap});stateLabel(`壓測 ${i}/${count}｜環境 ${snap.environmentSteps??'?'}｜FPS ${snap.fps??'?'}｜Mesh ${snap.meshes??'?'}｜Light ${snap.lights??'?'}\n材質 ${snap.materials??'?'}｜貼圖 ${snap.textures??'?'}｜幾何 ${snap.geometries??'?'}｜單步 ${elapsed}ms`,'running');await new Promise(resolve=>setTimeout(resolve,120));}
+add(stopRequested?'STOP':'DONE',{total:count,step:last?.step??0,...sample(win)});stateLabel(stopRequested?'壓測已停止；記錄已保留':'壓測完成；可複製或儲存 JSON');}
+catch(error){add('STRESS_ERROR',{message:String(error.message||error).slice(0,500),lastStep:last?.step??0});stateLabel(`壓測失敗：${error.message||error}`,'error');}
+finally{active=false;stopRequested=false;$('start').disabled=false;$('stop').disabled=true;$('count').disabled=false;$('applyDayNight').disabled=false;tiny.hidden=true;}};
+$('stop').onclick=()=>{stopRequested=true;stateLabel('已要求停止；本步完成後中止','running')};
+function report(){const win=runtimeReady()?.win;return JSON.stringify({label:'Card Tactics 2 - TEST LAB Long Session Diagnostics',exportedAt:clock(),source:'testindex.html formal runtime',scope:'Environment turns and renderer only, not AI combat',notes:'iOS heapMB may be null; Safari may terminate without JavaScript errors',latestRuntime:win?sample(win):null,latestOfficialLog:win?{system:win.CardTacticsRuntime.getBattleLog?.('SYSTEM')?.entries?.slice(-25)||[],detail:win.CardTacticsRuntime.getBattleLog?.('DETAIL')?.entries?.slice(-25)||[]}:null,records},null,2)}
+$('copy').onclick=async()=>{const str=report();try{await navigator.clipboard.writeText(str);stateLabel('TEST Log 已複製')}catch(_){const area=document.createElement('textarea');area.value=str;document.body.appendChild(area);area.select();const ok=document.execCommand('copy');area.remove();stateLabel(ok?'TEST Log 已複製':'請使用「儲存 JSON」匯出',ok?'idle':'error')}};
+$('download').onclick=()=>{const blob=new Blob([report()],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`Card_Tactics_TEST_Log_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);stateLabel('TEST Log 已準備儲存')};
+$('clear').onclick=()=>{if(active)return;records=[];save();renderLog();stateLabel('舊壓測紀錄已清除')};
+loadSaved();renderLog();if(records.length)stateLabel(`找到上次保留的 ${records.length} 筆 TEST Log，按「🧪 TEST」查看`);
+</script>
+</body>
+</html>
