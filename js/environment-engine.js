@@ -216,14 +216,17 @@ export const EnvironmentEngine=(()=>{
     else if(resolved===WEATHER.BLIZZARD){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d});ensureWindStrength(state,2.1);touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
     syncLegacyWeather(state);return touched;
   }
-  function create({timeOfDay="DAY",weather="CLEAR",weatherTurns=null,climate=null,wind=null,windX=null,windY=null,windStrength=null,temperature=null}={}){
+  const MOONLIGHT=Object.freeze({FULL:"FULL",PARTIAL:"PARTIAL",NONE:"NONE"});
+  function normalizeMoonlight(value){const key=String(value||"PARTIAL").toUpperCase();return MOONLIGHT[key]||MOONLIGHT.PARTIAL;}
+  function create({timeOfDay="DAY",moonlight="PARTIAL",weather="CLEAR",weatherTurns=null,climate=null,wind=null,windX=null,windY=null,windStrength=null,temperature=null}={}){
     const legacy=climateFromWeather(weather,weatherTurns),baseClimate=climate&&typeof climate==="object"?JSON.parse(JSON.stringify(climate)):legacy;
     const resolvedWind=normalizeWind(wind||baseClimate.wind||{x:windX,y:windY,strength:windStrength});
-    const state={timeOfDay,weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind},naturalWeather:WEATHER.CLEAR,cardClimateOverride:null};
+    const state={timeOfDay,moonlight:normalizeMoonlight(moonlight),weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind},naturalWeather:WEATHER.CLEAR,cardClimateOverride:null};
     if(temperature!=null&&Number.isFinite(Number(temperature)))state.climate.temperature=Number(temperature);
     ensureClimate(state);state.naturalWeather=legacyWeatherRaw(state);return state;
   }
   function setTimeOfDay(state,timeOfDay){state.timeOfDay=timeOfDay==="NIGHT"?"NIGHT":"DAY";}
+  function setMoonlight(state,moonlight){if(!state)return false;state.moonlight=normalizeMoonlight(moonlight);return true;}
   function advanceNaturalCycles(map,state,turn,events){
     if(turn>0&&turn%DAY_NIGHT_INTERVAL===0){
       setTimeOfDay(state,state.timeOfDay==="DAY"?"NIGHT":"DAY");
@@ -700,8 +703,18 @@ export const EnvironmentEngine=(()=>{
   }
   function isLit(state,x,y){if(state.timeOfDay!=="NIGHT")return true;return lightSources(state).some(light=>Math.abs(light.x-x)+Math.abs(light.y-y)<=light.radius);}
   function visionModifier(state,x,y){const effects=effectAt(state,x,y);if(effects.some(e=>e.type===EFFECT.STEAM))return{blocked:true,reason:"STEAM"};const smoke=effects.find(e=>e.type===EFFECT.SMOKE);if(smoke){const intensity=Math.max(0,Number(smoke.intensity||0));if(intensity>=.45)return{blocked:true,dark:true,reason:"SMOKE",intensity};return{blocked:false,dark:true,reason:"SMOKE",intensity};}if(isBlizzard(state))return{blocked:false,dark:true,reason:"BLIZZARD"};if(isFog(state))return{blocked:false,dark:true,reason:"FOG",intensity:Number(fogAt(state).intensity||1)};if(state.timeOfDay==="NIGHT"&&!isLit(state,x,y))return{blocked:false,dark:true,reason:"NIGHT"};return{blocked:false,dark:false,reason:null};}
-  function visionRange(state){let range=Infinity;if(isBlizzard(state))range=Math.min(range,3);if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);if(state?.timeOfDay==="NIGHT")range=Math.min(range,4);return range;}
+  function visionRange(state,{nightVisionRange=null}={}){
+    let range=Infinity;
+    if(isBlizzard(state))range=Math.min(range,3);
+    if(isFog(state))range=Math.min(range,Number(fogAt(state).intensity||1)>=1.5?3:4);
+    if(state?.timeOfDay==="NIGHT"){
+      const ambient=normalizeMoonlight(state.moonlight)==="FULL"?5:normalizeMoonlight(state.moonlight)==="NONE"?3:4;
+      const nightLimit=Number(nightVisionRange);
+      range=Math.min(range,Number.isFinite(nightLimit)&&nightLimit>0?Math.max(ambient,nightLimit):ambient);
+    }
+    return range;
+  }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

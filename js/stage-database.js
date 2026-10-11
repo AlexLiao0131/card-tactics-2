@@ -14,7 +14,7 @@ export const STAGES={
   },
 
   versus_core_battle:{
-    id:"versus_core_battle",name:"Core Conquest",mode:"VERSUS",ruleset:"CORE_CAPTURE",intelMode:"DYNAMIC_INTEL",intelRules:{coreVisionRange:5,captureVisionRange:3},
+    id:"versus_core_battle",name:"Core Conquest",mode:"VERSUS",ruleset:"CORE_CAPTURE",intelMode:"FULL_VISIBILITY",spellRules:{maxCastDistance:6},intelRules:{coreVisionRange:5,captureVisionRange:3},
     battlefield:{type:"PROCEDURAL",generator:"VERSUS_CORE",defaultSize:"MEDIUM"},
     environment:{
       timeOfDay:"DAY",

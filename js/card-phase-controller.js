@@ -22,10 +22,11 @@ function create(ctx){
     if(CardDatabase.isCharacter(card))return hasDeploymentTile(s);
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER")return true;
-    // Targeted magic requires an actual friendly observer. No observer means
-    // a player cannot fire a tornado at the enemy core from the opening hand.
+    // An owned living Core or held point can anchor defensive magic even before
+    // any unit is deployed. Target legality is rechecked at resolveAt().
     return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0&&
-      (s.units||[]).some(unit=>unit?.alive&&unit.team===TEAM.PLAYER);
+      ((s.units||[]).some(unit=>unit?.alive&&unit.team===TEAM.PLAYER)||
+       TacticalEngine.teamVisionSources(s,TEAM.PLAYER).length>0);
   }
   function hasPlayableCard(){
     const s=state();
@@ -108,10 +109,10 @@ function create(ctx){
 
   function resolveAt(card,center){
     const s=state();if(resolvingPresentation||!card||s.phase!==PHASE.CARD||ctx.getPendingCard()!==card)return false;const effect=card.effect||{},centerTile=TacticalEngine.tile(s.map,center.x,center.y);
-    // Authority belongs at the commit boundary, NOT to the client highlight.
-    // All area spells (including tornado/meteor/flood) need current team LOS.
-    if(!centerTile||!TacticalEngine.teamCanSee(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState,s)){
-      ctx.pushLog(`${card.name} 無法施放：該位置不在己方目前視野內。`,"SYSTEM");return false;
+    // Authority belongs at commit, never the highlight or terrain intel mode.
+    // Resolve positional cards from a real allied source with LOS + cast distance.
+    if(!centerTile||!TacticalEngine.teamCanCastSpell(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState,s,card)){
+      ctx.pushLog(`${card.name} 無法施放：需要己方據點／角色的有效視線，且不得超出施法距離。`,"SYSTEM");return false;
     }
     if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
     const presentation=effect.presentation||null;

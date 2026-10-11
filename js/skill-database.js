@@ -121,6 +121,8 @@ export const PASSIVES={
   CAPTAIN_HIGHEST_AUTHORITY:{id:"CAPTAIN_HIGHEST_AUTHORITY",name:"最高艦長權限",category:"PASSIVE",turnEndEffect:{type:"DRAW",count:1}},
   DEEP_SEA_PHYSIQUE:{id:"DEEP_SEA_PHYSIQUE",name:"深海體魄",category:"PASSIVE",description:"能承受深海水壓的異常強韌體魄。受到近戰傷害降低 30%。",damageTakenRules:[{attackClass:"MELEE",multiplier:.70}]},
   SEA_SOVEREIGN:{id:"SEA_SOVEREIGN",name:"王者",category:"PASSIVE",description:"海世界女王的支配權。可直接控制深潭巨章，並在不擊敗牠的情況下取得其洪水卡牌。",encounterDominion:{monsterIds:["water_lurker"],fromTeams:["N"],grantEncounterRewards:true}},
+  FELINE_NIGHT_VISION:{id:"FELINE_NIGHT_VISION",name:"貓眼夜視",category:"PASSIVE",description:"黑暗中能辨認更遠的輪廓；不穿透牆壁、濃煙與環境迷霧。",nightVision:{rangeBonus:2,maxRange:7}},
+  ABYSSAL_NIGHT_VISION:{id:"ABYSSAL_NIGHT_VISION",name:"深海夜視",category:"PASSIVE",description:"深海生物的低光視覺；黑暗中的觀測距離高於一般人，但無法穿透物理遮蔽。",nightVision:{rangeBonus:3,maxRange:8}},
   FELINE_BODY:{id:"FELINE_BODY",name:"貓族體態",category:"PASSIVE",description:"靈活的貓族身體能直接攀上兩層高差，並大幅減輕墜落傷害。",movementRules:{maxClimb:2},fallRules:{safeDrop:2,damageMultiplier:.5}},
   CAT_OPENING_STEALTH:{id:"CAT_OPENING_STEALTH",name:"夜行潛伏",category:"PASSIVE",description:"戰鬥開始時進入潛行。潛行無法阻止範圍攻擊，主動出手或被近距離發現時解除。",openingEffects:[{id:"STEALTH",type:"STEALTH",classification:"POSITIVE",detectionRange:1}]},
 

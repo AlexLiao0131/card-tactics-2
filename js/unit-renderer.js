@@ -1517,6 +1517,23 @@ export class UnitRenderer{
     }
   }
 
+  // Rim/reflective readability only: no individual PointLight, so unit count
+  // cannot grow the mobile lighting cost. Invisible enemies are not rendered.
+  syncNightReadability(state){
+    const env=state?.presentation?.environment||{};
+    const night=env.timeOfDay==="NIGHT",moon=String(env.moonlight||"PARTIAL").toUpperCase();
+    const reflection=night?(moon==="FULL"?.13:moon==="NONE"?.23:.18):.02;
+    for(const material of this.figureMaterials.values()){
+      // Existing genuinely luminous magic stays authoritative.
+      if(String(material.name).includes("figure-holy-"))continue;
+      material.emissiveColor.copyFrom(material.diffuseColor.scale(reflection));
+    }
+    for(const material of [this.materials.PLAYER,this.materials.ENEMY,this.materials.NEUTRAL])
+      material.emissiveColor.copyFrom(material.diffuseColor.scale(reflection));
+    for(const entry of this.entries.values())if(entry.kind==="BILLBOARD"&&entry.plane?.material)
+      {const amount=night?(moon==="NONE"?.20:.14):.08;entry.plane.material.emissiveColor.set(amount,amount,amount);}
+  }
+
   sync(state,events=[]){
     this.enqueueEvents(events);
     const visible=new Set();
@@ -1553,6 +1570,7 @@ export class UnitRenderer{
       if(visible.has(String(id))||this.hasDeathPending(id))continue;
       this.disposeEntry(id);
     }
+    this.syncNightReadability(state);
     this.updateFrame();
   }
 

@@ -211,21 +211,24 @@ export class BabylonRenderer{
     const blend=Math.max(0,Math.min(1,Number(this.visualDayNightBlend||0)));
     const day=SKY_PROFILES.DAY[weather]||SKY_PROFILES.DAY.CLEAR;
     const night=SKY_PROFILES.NIGHT[weather]||SKY_PROFILES.NIGHT.CLEAR;
+    const moonlight=String(environment.moonlight||"PARTIAL").toUpperCase();
+    const skyStrength=moonlight==="FULL"?1.18:moonlight==="NONE"?.58:1;
+    const nightSky={...night,zenith:night.zenith.map(v=>Math.min(1,v*skyStrength)),upper:night.upper.map(v=>Math.min(1,v*skyStrength)),horizon:night.horizon.map(v=>Math.min(1,v*skyStrength))};
     const profile={
-      zenith:mixSkyColor(day.zenith,night.zenith,blend),
-      upper:mixSkyColor(day.upper,night.upper,blend),
-      horizon:mixSkyColor(day.horizon,night.horizon,blend),
+      zenith:mixSkyColor(day.zenith,nightSky.zenith,blend),
+      upper:mixSkyColor(day.upper,nightSky.upper,blend),
+      horizon:mixSkyColor(day.horizon,nightSky.horizon,blend),
       cloud:mixSkyNumber(day.cloud,night.cloud,blend),
       cloudColor:mixSkyColor(day.cloudColor||day.upper,night.cloudColor||night.upper,blend),
       stars:mixSkyNumber(day.stars||0,night.stars||0,blend)
     };
     const targetTimeOfDay=this.visualDayNightTarget>=.5?"NIGHT":"DAY";
-    return{weather,targetTimeOfDay,blend,profile};
+    return{weather,moonlight,targetTimeOfDay,blend,profile};
   }
 
   syncSky(state,force=false){
     if(!this.skyTexture)return;
-    const {weather,targetTimeOfDay,blend,profile}=this.skyProfile(state),signature=`${weather}:${blend.toFixed(3)}`;
+    const {weather,moonlight,targetTimeOfDay,blend,profile}=this.skyProfile(state),signature=`${weather}:${moonlight}:${blend.toFixed(3)}`;
     if(!force&&signature===this.skySignature)return;
     this.skySignature=signature;
 
@@ -285,18 +288,26 @@ export class BabylonRenderer{
     }
 
     this.skyTexture.update(true);
-    this.skyState={weather,timeOfDay:targetTimeOfDay,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true,textureYCorrected:true};
+    this.skyState={weather,moonlight,timeOfDay:targetTimeOfDay,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,cloudCoverage:cloud,stars,horizonStop:.58,cloudsAboveHorizonOnly:true,lowerAtmosphere:true,textureYCorrected:true};
   }
 
-  lightingProfile(weather,blend){
+  lightingProfile(weather,blend,moonlight="PARTIAL"){
     const day=LIGHTING_PROFILES.DAY[weather]||LIGHTING_PROFILES.DAY.CLEAR;
     const night=LIGHTING_PROFILES.NIGHT[weather]||LIGHTING_PROFILES.NIGHT.CLEAR;
+    const phase=String(moonlight||"PARTIAL").toUpperCase();
+    const factor=phase==="FULL"?1.55:phase==="NONE"?.30:1;
+    const diffuseFactor=phase==="FULL"?1.40:phase==="NONE"?.49:1;
+    const nightLit={...night,
+      sunIntensity:night.sunIntensity*factor,
+      hemiIntensity:night.hemiIntensity*diffuseFactor,
+      fillIntensity:night.fillIntensity*diffuseFactor,
+      ambientScale:night.ambientScale*(phase==="NONE"?.62:phase==="FULL"?1.18:1)};
     const mixArray=(a,b)=>mixSkyColor(a,b,blend);
     return{
-      label:blend<=.001?day.label:blend>=.999?night.label:`${day.label}_TO_${night.label}`,
+      label:blend<=.001?day.label:blend>=.999?`${night.label}_${phase}`:`${day.label}_TO_${night.label}_${phase}`,
       balance:blend<=.001?day.balance:blend>=.999?night.balance:"DAY_NIGHT_TRANSITION",
       sun:mixArray(day.sun,night.sun),hemi:mixArray(day.hemi,night.hemi),ground:mixArray(day.ground,night.ground),fill:mixArray(day.fill,night.fill),ambient:mixArray(day.ambient,night.ambient),
-      sunIntensity:mixSkyNumber(day.sunIntensity,night.sunIntensity,blend),hemiIntensity:mixSkyNumber(day.hemiIntensity,night.hemiIntensity,blend),fillIntensity:mixSkyNumber(day.fillIntensity,night.fillIntensity,blend),ambientScale:mixSkyNumber(day.ambientScale,night.ambientScale,blend),shadowDarkness:mixSkyNumber(day.shadowDarkness,night.shadowDarkness,blend)
+      sunIntensity:mixSkyNumber(day.sunIntensity,nightLit.sunIntensity,blend),hemiIntensity:mixSkyNumber(day.hemiIntensity,nightLit.hemiIntensity,blend),fillIntensity:mixSkyNumber(day.fillIntensity,nightLit.fillIntensity,blend),ambientScale:mixSkyNumber(day.ambientScale,nightLit.ambientScale,blend),shadowDarkness:mixSkyNumber(day.shadowDarkness,night.shadowDarkness,blend)
     };
   }
 
@@ -308,7 +319,8 @@ export class BabylonRenderer{
 
     // Stage 13E leaves EnvironmentEngine as the sole time-rule owner. Only the
     // presentation interpolates between the already-defined DAY/NIGHT profiles.
-    const profile=this.lightingProfile(weather,blend);
+    const moonlight=String(environment.moonlight||"PARTIAL").toUpperCase();
+    const profile=this.lightingProfile(weather,blend,moonlight);
     const color=value=>new BABYLON.Color3(...value);
 
     this.scene.ambientColor=color(profile.ambient).scale(profile.ambientScale);
@@ -323,7 +335,7 @@ export class BabylonRenderer{
     const diffuseLight=this.hemi.intensity+this.fill.intensity;
     const directDiffuseRatio=this.sun.intensity/Math.max(.001,diffuseLight);
     this.lightingState={
-      timeOfDay:targetTimeOfDay,weather,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,
+      timeOfDay:targetTimeOfDay,weather,moonlight,visualDayNightBlend:blend,transitioning:Math.abs(blend-this.visualDayNightTarget)>.001,
       colorTemperatureProfile:profile.label,lightBalanceProfile:profile.balance,
       ambient:[this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b],
       hemiColor:[this.hemi.diffuse.r,this.hemi.diffuse.g,this.hemi.diffuse.b],sunColor:[this.sun.diffuse.r,this.sun.diffuse.g,this.sun.diffuse.b],fillColor:[this.fill.diffuse.r,this.fill.diffuse.g,this.fill.diffuse.b],

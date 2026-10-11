@@ -500,7 +500,10 @@ export class EnvironmentRenderer{
     const selected=[];
     const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
     const distance=source=>Math.hypot(source.x*TILE_SIZE-focus.x,source.y*TILE_SIZE-focus.z);
-    for(const source of [...sources].sort((a,b)=>distance(a)-distance(b)||b.radius-a.radius||a.y-b.y||a.x-b.x)){
+    // Give a nearby Core / capture site its actual deployment-area illumination
+    // before dense decorative fire sources consume the four-light mobile pool.
+    const inSite=source=>source.steady&&distance(source)<=Math.max(1,Number(source.radius||1))*TILE_SIZE*1.28;
+    for(const source of [...sources].sort((a,b)=>Number(!!inSite(b))-Number(!!inSite(a))||distance(a)-distance(b)||b.radius-a.radius||a.y-b.y||a.x-b.x)){
       if(selected.some(other=>Math.hypot(other.x-source.x,other.y-source.y)<2))continue;
       selected.push(source);if(selected.length===4)break;
     }
