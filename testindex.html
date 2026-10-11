@@ -174,7 +174,7 @@
       let panel=doc.getElementById("waterInspectPanel");
       if(!panel){
         panel=doc.createElement("section");panel.id="waterInspectPanel";panel.className="water-inspect-panel";
-        panel.innerHTML=`<header><strong>水文點選 LOG</strong><button id="testLabCopyLog" type="button">複製 LOG</button><button id="testLabCloseLog" type="button">關閉</button></header><pre id="testLabLogText">點水膜或瀑布，查看水文與幾何資訊。</pre>`;
+        panel.innerHTML=`<header><strong>水文／據點點選 LOG</strong><button id="testLabCopyLog" type="button">複製 LOG</button><button id="testLabCloseLog" type="button">關閉</button></header><pre id="testLabLogText">點地面、據點或水面，查看水文、地形及據點 Mesh 資訊。</pre>`;
         battle.appendChild(panel);
       }
       return{
@@ -451,6 +451,9 @@
       // Inspect the actual terrain beneath the tap, even when a translucent
       // water triangle was hit nearer to the camera or lies behind terrain.
       const pos=pick?.pickedPoint;
+      // Objective inventory is readable even when no yellow mesh can be picked.
+      // The test mode uses the existing ObjectiveRenderer's read-only state.
+      const objectiveDiagnostics=renderer.objectives?.diagnostics?.(pos||null)??null;
       const map=runtime.getBattleMap?.(),tiles=map?.tiles||[];
       const lookup=new Map(tiles.map(t=>[`${t.x},${t.y}`,t]));
       const worldTile=pos?lookup.get(`${Math.round(pos.x/TILE_SIZE)},${Math.round(pos.z/TILE_SIZE)}`):null;
@@ -627,11 +630,12 @@
         localSurfaceSample:sampleSheet()
       }:null;
       const report={
-        label:"Card Tactics 2 - Hydrology Click Diagnostics",
+        label:"Card Tactics 2 - Hydrology and Objective Click Diagnostics",
         seed:currentSeed,springMode:doc.getElementById("testLabSpring")?.value,
         meshName:mesh?.name||null,meshKind:metadata.kind||null,
         pickedTerrainMeshName:terrainHit?.hit?terrainHit.pickedMesh?.name:null,
         renderOwnership,
+        objectiveDiagnostics,
         sheetFlow:sheetFlowDiagnosis,
         waterfallEdgeInventory,
         naturalRiverPoolAtTile:worldTile?.hydrologyNaturalChannelPool===true
