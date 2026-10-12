@@ -3,6 +3,7 @@
 
   function create(ctx){
     let pendingMove=null,pendingTransport=null;
+    const MAP_TRANSIT_ACTIONS=new Set(["TELEPORT_TO_TILE","WORMHOLE_TRANSIT"]);
 
     function state(){return ctx.actionState();}
 
@@ -188,10 +189,10 @@
     function mapTargetTiles(attacker,skill){
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
-      const known=tile=>skill?.ignoreFogOfWar===true||
+      const known=tile=>skill?.ignoreFogOfWar===true||skill?.requiresVision===false||
         TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState);
       if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>known(tile)&&!!transportReleasePlan(attacker,tile));
-      if(skill?.utilityAction?.type==="TELEPORT_TO_TILE")return map.tiles.filter(tile=>{
+      if(MAP_TRANSIT_ACTIONS.has(skill?.utilityAction?.type))return map.tiles.filter(tile=>{
         if(!known(tile))return false;
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);if(d<range.min||d>range.max)return false;
         if(ctx.unitAt(tile.x,tile.y))return false;
@@ -243,10 +244,11 @@
       }
       if(action.type==="SCHEDULE_TURN_SIMULATION"){
         if(!target?.character||target.team===attacker.team)return false;
-        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
-        const effective=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+        const effective=ctx.effectiveSkill(attacker,skill);
         const scheduled=ctx.scheduleTurnSimulation?.({source:attacker,targetTeam:target.team,skill:effective,action});
-        if(!scheduled){ctx.pushLog(`${skill.name} 無法建立認知污染。`,"SYSTEM");ctx.render();return false;}
+        if(!scheduled){ctx.pushLog(`${skill.name} 無法建立回合模擬。`,"SYSTEM");ctx.render();return false;}
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+        ctx.consumeSkill(attacker,skill);
         ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
@@ -273,7 +275,7 @@
     function executeMapUtility(attacker,center,skill){
       const action=skill?.utilityAction,{map}=state();if(!action)return skillFailure(attacker,skill,"NO_MAP_UTILITY",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
-      if(action.type==="TELEPORT_TO_TILE"){
+      if(MAP_TRANSIT_ACTIONS.has(action.type)){
         const destination=TacticalEngine.tile(map,center.x,center.y);
         if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(attacker,destination)||TacticalEngine.isBlockedByObject(map,center.x,center.y,attacker)){ctx.pushLog(`${skill.name}：終點不是合法站立位置。`,"SYSTEM");ctx.render();return false;}
         globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);

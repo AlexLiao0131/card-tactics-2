@@ -21,9 +21,28 @@
   const pendingHallucinations=new Map();
   let hallucinationSerial=0;
 
-  function cloneRuntime(value){
-    if(typeof structuredClone==="function")return structuredClone(value);
-    return JSON.parse(JSON.stringify(value));
+  // Game-state snapshots contain data, Maps and Sets, never renderer or callback authority.
+  // Keep this serialization independent of browser structuredClone support and
+  // exclude callable presentation/cache fields from the temporary perception snapshot.
+  function cloneRuntime(value,seen=new WeakMap()){
+    if(typeof value==="function"||typeof value==="symbol")return undefined;
+    if(value===null||typeof value!=="object")return value;
+    if(seen.has(value))return seen.get(value);
+    const tag=Object.prototype.toString.call(value);
+    if(tag==="[object Date]")return new Date(value.getTime());
+    if(tag==="[object ArrayBuffer]")return value.slice(0);
+    if(tag==="[object DataView]")return new DataView(cloneRuntime(value.buffer,seen),value.byteOffset,value.byteLength);
+    if(ArrayBuffer.isView(value))return new value.constructor(value);
+    const result=tag==="[object Map]"?new Map():tag==="[object Set]"?new Set():Array.isArray(value)?[]:{};
+    seen.set(value,result);
+    if(tag==="[object Map]"){
+      for(const [key,item]of value)result.set(cloneRuntime(key,seen),cloneRuntime(item,seen));
+    }else if(tag==="[object Set]"){
+      for(const item of value)result.add(cloneRuntime(item,seen));
+    }else for(const [key,item]of Object.entries(value)){
+      if(typeof item!=="function"&&typeof item!=="symbol")result[key]=cloneRuntime(item,seen);
+    }
+    return result;
   }
   function currentWorld(){return{map,units,stage,stageState,environmentState,cores};}
   function realWorld(){return hallucinationSession?.real||currentWorld();}
@@ -111,7 +130,8 @@
     const record={targetTeam,sourceUnitId:source.id,sourceSkillId:skill?.id||null,turnsRemaining:Math.max(turns,Number(existing?.turnsRemaining||0)),illusionCount:Math.max(illusionCount,Number(existing?.illusionCount||0)),observedSourceIds:[...new Set([...(existing?.observedSourceIds||[]),...observed])]};
     pendingHallucinations.set(targetTeam,record);return record;
   }
-  function injectHallucinations(record){
+  function injectHallucinations(record,world){
+    const {map,units,cores,environmentState}=world;
     const observers=units.filter(unit=>unit?.alive&&unit.team===record.targetTeam&&!unit.hallucination),occupied=new Set(units.filter(unit=>unit?.alive).map(unit=>`${unit.x},${unit.y}`)),coreCells=new Set((cores||[]).map(core=>`${core.x},${core.y}`));
     const candidates=map.tiles.filter(tile=>!occupied.has(`${tile.x},${tile.y}`)&&!coreCells.has(`${tile.x},${tile.y}`)&&observers.some(observer=>TacticalEngine.canSee(map,observer,tile,environmentState||null)));
     const sources=(record.observedSourceIds||[]).map(id=>units.find(unit=>unit.id===id&&unit.alive&&!unit.hallucination&&unit.team!==record.targetTeam)).filter(Boolean);
@@ -131,11 +151,15 @@
     const record=pendingHallucinations.get(team);if(!record||Number(record.turnsRemaining||0)<=0)return false;
     const real=currentWorld(),groundSnapshot=globalThis.ItemInventoryEngine?.battleGroundItems?.()||[];
     const mirror={map:cloneRuntime(real.map),stage:cloneRuntime(real.stage),stageState:cloneRuntime(real.stageState),environmentState:cloneRuntime(real.environmentState),cores:cloneRuntime(real.cores),units:real.units.map(unit=>cloneRuntime({...unit,_runtimeMap:null}))};
-    map=mirror.map;stage=mirror.stage;stageState=mirror.stageState;environmentState=mirror.environmentState;cores=mirror.cores;units=mirror.units;
-    for(const unit of units){unit._runtimeMap=map;unit.mirrorOfUnitId=unit.id;}
-    hallucinationSession={active:true,team,real,groundSnapshot,record,deferredDefeats:new Map(),sharedStates:new Map(real.units.map(unit=>[unit.id,sharedUnitState(unit)]))};
+    for(const unit of mirror.units){unit._runtimeMap=mirror.map;unit.mirrorOfUnitId=unit.id;}
+    const sharedStates=new Map(real.units.map(unit=>[unit.id,sharedUnitState(unit)]));
+    // Prepare the complete perception projection before switching the battle's
+    // world references. An unfinished simulation must never become the active world.
+    injectHallucinations(record,mirror);
+    ({map,units,stage,stageState,environmentState,cores}=mirror);
+    hallucinationSession={active:true,team,real,groundSnapshot,record,deferredDefeats:new Map(),sharedStates};
     record.turnsRemaining=Math.max(0,Number(record.turnsRemaining||1)-1);if(record.turnsRemaining<=0)pendingHallucinations.delete(team);else pendingHallucinations.set(team,record);
-    injectHallucinations(record);UnitRuntimeEngine.syncLiveRoster(units);clearSelection();clearEnemyReaction();return true;
+    UnitRuntimeEngine.syncLiveRoster(units);clearSelection();clearEnemyReaction();return true;
   }
   function reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds){
     for(const key of ["inventory","cargo"]){
