@@ -20,6 +20,37 @@
     const frame=document.getElementById("game"),boot=document.getElementById("boot");
     let markerRaf=0,refreshing=false,advancing=false,currentSeed=null,latestHydrologyLog=null;
     let environmentHistory=[],lastInspectedTileKey=null;
+    // Test Lab telemetry reads the existing Runtime and Renderer. It never owns game state.
+    const STRESS_STORE="ct:testindex:integrated-stress:v1",MAX_STRESS_RECORDS=180;
+    let stressRecords=[],stressRunning=false,stressStopRequested=false,stressSession=null;
+    let controlsCollapsed=true,stressCurrentStep=0,stressTotalSteps=0;
+    function readStressHistory(){
+      try{
+        const stored=JSON.parse(localStorage.getItem(STRESS_STORE)||"null");
+        if(!stored||!Array.isArray(stored.records))return;
+        stressRecords=stored.records.slice(-MAX_STRESS_RECORDS);
+        if(stored.running){
+          stressRecords.push({at:new Date().toISOString(),type:"INTERRUPTED",reason:"PREVIOUS_RUN_NO_COMPLETION_MARKER",lastStep:stored.step??null});
+          stressRecords=stressRecords.slice(-MAX_STRESS_RECORDS);
+          persistStress(); // The interrupted run must not be reported twice on reload.
+        }
+      }catch(error){console.warn("TEST LAB retained report unreadable",error);}
+    }
+    function persistStress(){
+      try{localStorage.setItem(STRESS_STORE,JSON.stringify({version:1,at:new Date().toISOString(),running:stressRunning,step:stressCurrentStep,seed:currentSeed,records:stressRecords.slice(-MAX_STRESS_RECORDS)}));}
+      catch(error){console.warn("TEST LAB log persistence failed",error);}
+    }
+    function stressLog(type,detail={}){
+      const entry={at:new Date().toISOString(),type,...detail};
+      stressRecords.push(entry);
+      if(stressRecords.length>MAX_STRESS_RECORDS)stressRecords.shift();
+      persistStress();
+      return entry;
+    }
+    readStressHistory();
+    window.addEventListener("pagehide",persistStress);
+    window.addEventListener("error",event=>stressLog("WINDOW_ERROR",{message:String(event.message||"error").slice(0,400)}));
+    window.addEventListener("unhandledrejection",event=>stressLog("REJECTION",{message:String(event.reason?.message||event.reason||"unknown").slice(0,400)}));
 
     const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     const waitFor=async test=>{
@@ -47,7 +78,14 @@
         body.card-tactics-test-mode .battle-right-rail{display:none!important}
         body.card-tactics-test-mode #battleBack{display:none!important}
         body.card-tactics-test-mode .battle-view-controls{top:10px!important;right:8px!important}
-        .test-lab-toolbar{position:absolute;z-index:180;left:8px;top:8px;display:flex;align-items:flex-start;gap:7px;max-width:calc(100vw - 230px);padding:7px 8px;border:1px solid #73859a;border-radius:10px;background:#07111be8;box-shadow:0 8px 28px #0009;pointer-events:auto}
+        .test-lab-floating-toggle{position:absolute;z-index:210;top:max(7px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));min-width:86px;min-height:37px;padding:7px 11px;border:1px solid #d4b66a;border-radius:9px;background:#13263eea;color:#fff0bc;font-weight:900;pointer-events:auto}
+        body.test-lab-controls-collapsed #testLabToolbar,
+        body.test-lab-controls-collapsed #testLabWeatherPanel,
+        body.test-lab-controls-collapsed #waterInspectPanel,
+        body.test-lab-controls-collapsed #hydrologyTestMarkers{display:none!important}
+        .test-lab-stress-preview{margin:0;max-height:20vh;overflow:auto;padding:7px;background:#020b13;border:1px solid #344d64;border-radius:6px;color:#bcdfcc;font:10px/1.45 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+        .test-lab-stress-warning{color:#ffbb9c;font-weight:700;font-size:11px}
+        .test-lab-toolbar{position:absolute;z-index:180;left:8px;top:max(50px,calc(env(safe-area-inset-top) + 45px));max-height:calc(100dvh - 65px);overflow:auto;display:flex;align-items:flex-start;gap:7px;max-width:calc(100vw - 230px);padding:7px 8px;border:1px solid #73859a;border-radius:10px;background:#07111be8;box-shadow:0 8px 28px #0009;pointer-events:auto}
         .test-lab-toolbar button,.test-lab-toolbar input,.test-lab-toolbar select{min-height:36px;padding:6px 9px;border:1px solid #73859a;border-radius:8px;background:#182332;color:#fff;font-weight:800}
         .test-lab-toolbar button{border-color:#d2b96f;white-space:nowrap}
         .test-lab-toolbar select{font-size:11px;min-height:36px;padding:6px;background:#182332;color:#fff;border:1px solid #73859a;border-radius:8px}
@@ -64,7 +102,7 @@
         .water-inspect-panel button{padding:5px 8px;min-height:30px;border:1px solid #8ca1bb;border-radius:6px;background:#182332;color:#fff}
         .water-inspect-panel pre{margin:0;padding:9px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.5 ui-monospace,monospace;user-select:text;-webkit-user-select:text}
         .test-lab-toolbar button.inspection-on{background:#175a57;border-color:#61e7d1}
-        .test-lab-weather-panel{position:absolute;top:76px;left:8px;z-index:185;width:min(410px,calc(100vw - 16px));max-height:62vh;overflow:auto;display:none;padding:10px;gap:8px;flex-direction:column;border:1px solid #8babbc;border-radius:10px;background:#07111bf5;box-shadow:0 8px 30px #000b;pointer-events:auto}
+        .test-lab-weather-panel{position:absolute;top:125px;left:8px;z-index:185;width:min(410px,calc(100vw - 16px));max-height:62vh;overflow:auto;display:none;padding:10px;gap:8px;flex-direction:column;border:1px solid #8babbc;border-radius:10px;background:#07111bf5;box-shadow:0 8px 30px #000b;pointer-events:auto}
         .test-lab-weather-panel.open{display:flex}
         .test-lab-weather-panel .weather-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
         .test-lab-weather-panel label{font-size:11px;color:#d8e5ed;display:flex;align-items:center;gap:5px}
@@ -120,6 +158,16 @@
 
     function ensureOverlay(doc){
       const battle=doc.getElementById("battleScreen");
+      let toggle=doc.getElementById("testLabFloatingToggle");
+      if(!toggle){toggle=doc.createElement("button");toggle.id="testLabFloatingToggle";toggle.className="test-lab-floating-toggle";toggle.type="button";battle.appendChild(toggle);}
+      // The collapse state only hides controls. Automatic diagnostics continue running.
+      const applyCollapse=()=>{
+        doc.body.classList.toggle("test-lab-controls-collapsed",controlsCollapsed);
+        toggle.textContent=controlsCollapsed?"🧪 TEST":"✕ 收起";
+        toggle.setAttribute("aria-expanded",String(!controlsCollapsed));
+      };
+      toggle.onclick=()=>{controlsCollapsed=!controlsCollapsed;applyCollapse();};
+      applyCollapse();
       let toolbar=doc.getElementById("testLabToolbar");
       if(!toolbar){
         toolbar=doc.createElement("div");toolbar.id="testLabToolbar";toolbar.className="test-lab-toolbar";
@@ -130,6 +178,7 @@
           <label style="font-size:10px;color:#e2eef9">泉眼 <select id="testLabSpring" aria-label="泉眼生成模式"><option value="ALWAYS" selected>強制產生</option><option value="RANDOM">自然機率</option><option value="NEVER">不產生</option></select></label>
           <button id="testLabInspect" type="button" class="inspection-on" aria-pressed="true">點選診斷：開</button>
           <button id="testLabWeatherToggle" type="button" aria-expanded="false">🌧 氣候／回合</button>
+          <button id="testLabStressQuick" type="button">▶ 自動壓測</button>
           <div>
             <div class="test-lab-title">TEST LAB｜水文</div>
             <div id="testLabInfo" class="test-lab-info">XLARGE 32×22｜等待生成</div>
@@ -165,6 +214,29 @@
             <button id="testLabAdvanceFive" type="button">環境回合 +5</button>
             <button id="testLabCopyTimeline" type="button">複製水文變化 LOG</button>
           </div>
+          <div class="weather-row">
+            <label>晝夜 <select id="testLabDayNight"><option value="DAY">☀ 白天</option><option value="NIGHT">🌙 夜晚</option></select></label>
+            <button id="testLabApplyDayNight" type="button">切換晝夜</button>
+          </div>
+          <hr style="border:0;border-top:1px solid #425c70;width:100%">
+          <strong style="font-size:12px;color:#fff0c5">一鍵長局壓測（正式氣候／水文／光照）</strong>
+          <div class="weather-row">
+            <label>測試 <select id="testLabStressScenario">
+              <option value="ALL">全部：豪雨淹水／退水／積雪融雪／日夜光照</option>
+              <option value="FLOOD">豪雨／颱風／退水</option>
+              <option value="SNOW">降雪／暴風雪／融雪</option>
+              <option value="LIGHT">晝夜／Core 與據點光照</option>
+            </select></label>
+          </div>
+          <div class="weather-row">
+            <button id="testLabStressRun" type="button">▶ 開始</button>
+            <button id="testLabStressStop" type="button" disabled>■ 停止</button>
+            <button id="testLabStressCopy" type="button">複製完整 Log</button>
+            <button id="testLabStressSave" type="button">儲存 JSON</button>
+            <button id="testLabStressClear" type="button">清空舊 Log</button>
+          </div>
+          <span class="test-lab-stress-warning">環境＋視覺壓測，非完整 AI 戰鬥；iOS 不一定能取得 Heap。真正畫面亮度仍需實機目視驗收。</span>
+          <pre id="testLabStressPreview" class="test-lab-stress-preview">尚未執行壓測。</pre>
           <div id="testLabWeatherStatus" role="status">只推進環境時間，不跑敵方 AI／戰棋回合。</div>
           <pre id="testLabTimelineText">尚未推進環境回合。</pre>`;
         battle.appendChild(weatherPanel);
@@ -178,7 +250,12 @@
         battle.appendChild(panel);
       }
       return{
-        toolbar,layer,panel,weatherPanel,weatherToggle:doc.getElementById("testLabWeatherToggle"),
+        toolbar,toggle,layer,panel,weatherPanel,weatherToggle:doc.getElementById("testLabWeatherToggle"),
+        stressQuick:doc.getElementById("testLabStressQuick"),stressRun:doc.getElementById("testLabStressRun"),
+        stressStop:doc.getElementById("testLabStressStop"),stressScenario:doc.getElementById("testLabStressScenario"),
+        stressCopy:doc.getElementById("testLabStressCopy"),stressSave:doc.getElementById("testLabStressSave"),
+        stressClear:doc.getElementById("testLabStressClear"),dayNight:doc.getElementById("testLabDayNight"),
+        applyDayNight:doc.getElementById("testLabApplyDayNight"),
         weather:doc.getElementById("testLabWeather"),weatherTurns:doc.getElementById("testLabWeatherTurns"),
         weatherMode:doc.getElementById("testLabWeatherMode"),
         windDirection:doc.getElementById("testLabWindDirection"),windStrength:doc.getElementById("testLabWindStrength"),applyWind:doc.getElementById("testLabApplyWind"),
@@ -232,7 +309,7 @@
 
     function startMarkerLoop(win,doc,runtime){
       cancelAnimationFrame(markerRaf);
-      const tick=()=>{updateMarkerFrame(win,doc,runtime);markerRaf=requestAnimationFrame(tick);};tick();
+      const tick=()=>{if(!controlsCollapsed&&!stressRunning)updateMarkerFrame(win,doc,runtime);markerRaf=requestAnimationFrame(tick);};tick();
     }
 
     function normalizeSeed(value){
@@ -241,7 +318,7 @@
     }
 
     async function generateTestMap(win,doc,{reuseSeed=false}={}){
-      if(refreshing||advancing)return;refreshing=true;
+      if(refreshing||advancing||stressRunning)return;refreshing=true;
       environmentHistory=[];lastInspectedTileKey=null;latestHydrologyLog=null;
       const runtime=win.CardTacticsRuntime,{refresh,rebuild,seed:seedInput,info,spring}=ensureOverlay(doc);
       refresh.disabled=true;rebuild.disabled=true;
@@ -339,6 +416,7 @@
       const status=doc.getElementById("testLabWeatherStatus"),out=doc.getElementById("testLabTimelineText");
       if(!status||!out)return;
       const last=environmentHistory.at(-1),debug=runtime.debug?.state?.()||{};
+      const dn=doc.getElementById("testLabDayNight");if(dn&&["DAY","NIGHT"].includes(debug.timeOfDay))dn.value=debug.timeOfDay;
       const fmt=v=>Number(v||0).toFixed(3);
       status.textContent=`天氣 ${debug.weather||"?"}｜剩餘 ${debug.weatherTurnsRemaining??"—"}T｜環境推進 ${debug.environmentSteps||0} 回｜D ${fmt(last?.gameplayWaterVolume)}｜Soil ${fmt(last?.soilWaterVolume)}｜Q ${fmt(last?.persistentQTotalRate)}｜薄流 ${last?.sheetFlowMeshes??"—"}｜瀑布 ${last?.waterfallMeshes??"—"}`;
       out.textContent=environmentHistory.slice(-10).map(item=>
@@ -347,7 +425,7 @@
     }
 
     function setWeatherLabBusy(overlay,busy){
-      for(const control of [overlay.applyWeather,overlay.applyWind,overlay.advanceOne,overlay.advanceFive,overlay.refresh,overlay.rebuild,overlay.spring])if(control)control.disabled=busy;
+      for(const control of [overlay.applyWeather,overlay.applyWind,overlay.advanceOne,overlay.advanceFive,overlay.refresh,overlay.rebuild,overlay.spring,overlay.applyDayNight,overlay.stressQuick])if(control)control.disabled=busy;
     }
 
     async function applyWeatherInLab(win,doc,runtime){
@@ -394,6 +472,252 @@
         }
       }catch(error){doc.getElementById("testLabWeatherStatus").textContent=`推進失敗：${error?.message||error}`;console.error(error);}
       finally{advancing=false;setWeatherLabBusy(overlay,false);}
+    }
+
+    // One automatic driver over the existing TEST LAB's real weather/round hooks.
+    // No independent hydrology, climate, light authority or Renderer is created.
+    const STRESS_SCENARIOS=Object.freeze({
+      ALL:[
+        {label:"初始晝間照明",weather:"CLEAR",time:"DAY",turns:2},
+        {label:"豪雨進水",weather:"HEAVY_RAIN",time:"NIGHT",turns:20},
+        {label:"颱風持續淹水",weather:"TYPHOON",time:"NIGHT",turns:12},
+        {label:"放晴退水",weather:"CLEAR",time:"DAY",turns:20},
+        {label:"降雪蓄雪",weather:"SNOW",time:"NIGHT",turns:14},
+        {label:"暴風雪積雪",weather:"BLIZZARD",time:"NIGHT",turns:8},
+        {label:"放晴融雪退水",weather:"CLEAR",time:"DAY",turns:24},
+        {label:"夜間光源收尾",weather:"CLEAR",time:"NIGHT",turns:3},
+        {label:"迷霧火光",weather:"FOG",time:"NIGHT",turns:4,ignite:true}
+      ],
+      FLOOD:[
+        {label:"豪雨進水",weather:"HEAVY_RAIN",time:"NIGHT",turns:20},
+        {label:"颱風持續淹水",weather:"TYPHOON",time:"NIGHT",turns:12},
+        {label:"放晴退水",weather:"CLEAR",time:"DAY",turns:24}
+      ],
+      SNOW:[
+        {label:"降雪蓄雪",weather:"SNOW",time:"NIGHT",turns:14},
+        {label:"暴風雪積雪",weather:"BLIZZARD",time:"NIGHT",turns:10},
+        {label:"放晴融雪",weather:"CLEAR",time:"DAY",turns:24}
+      ],
+      LIGHT:[
+        {label:"白天 Core／據點照明",weather:"CLEAR",time:"DAY",turns:3},
+        {label:"夜間 Core／據點照明",weather:"CLEAR",time:"NIGHT",turns:3},
+        {label:"迷霧／火光照明",weather:"FOG",time:"NIGHT",turns:4,ignite:true},
+        {label:"再切白天照明",weather:"CLEAR",time:"DAY",turns:3}
+      ]
+    });
+
+    const stressFrame=win=>new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
+    function stressSample(win,runtime,phase,stepMs=null){
+      const scene=win.CardTacticsRenderer?.scene,renderer=win.CardTacticsRenderer||{};
+      const map=runtime.getBattleMap?.(),tiles=map?.tiles||[];
+      const snapshot=runtime.getBattleSnapshot?.()||{},debug=runtime.debug?.state?.()||{};
+      let D=0,soil=0,snow=0,ice=0,wet=0,deep=0,snowTiles=0,iceTiles=0,maxDepth=0,qEdges=0,solverEdges=0;
+      for(const tile of tiles){
+        const depth=Math.max(0,Number(tile.waterDepth||0)),s=Math.max(0,Number(tile.snowDepth||0)),i=Math.max(0,Number(tile.iceThickness||0));
+        D+=depth;soil+=Math.max(0,Number(tile.soilMoisture||0));snow+=s;ice+=i;
+        if(depth>.0001)wet++;if(depth>.25)deep++;if(s>.0001)snowTiles++;if(i>.0001)iceTiles++;
+        maxDepth=Math.max(depth,maxDepth);
+        qEdges+=Object.keys(tile.hydrologyEdgeDischarge||{}).length;
+        solverEdges+=Object.keys(tile.hydrologyEdgeOutflows||{}).length;
+      }
+      // The same source IDs used by EnvironmentRenderer.physicalLightsById.
+      const allLightSources=snapshot.presentation?.environment?.lightSources||[];
+      const sources=allLightSources.filter(s=>s.source==="CORE_LIGHT"||s.source==="CAPTURE_LIGHT");
+      const expected=[...(snapshot.cores||[]).filter(c=>Number(c.hp||0)>0).map(c=>({type:"CORE_LIGHT",id:c.id,x:c.x,y:c.y})),
+        ...(snapshot.presentation?.deploymentPoints||[]).filter(p=>(p.owner==="PLAYER"||p.owner==="ENEMY")&&p.capturable!==false&&p.captureTiles?.[0])
+          .map(p=>({type:"CAPTURE_LIGHT",id:p.id,x:p.captureTiles[0].x,y:p.captureTiles[0].y}))];
+      const physical=renderer.environment?.physicalLightsById||new Map();
+      const cellLight=renderer.environment?.litCellColors?.(snapshot)||new Map();
+      const lightSites=[],lightIssues=[];
+      for(const site of expected){
+        const authored=sources.find(s=>s.source===site.type&&String(s.sourceId)===String(site.id));
+        const key=`${site.type}:${site.id}`,lamp=physical.get(key);
+        const mesh=site.type==="CORE_LIGHT"?renderer.objectives?.cores?.get(site.id):renderer.objectives?.points?.get(site.id);
+        const receivers=lamp?.includedOnlyMeshes||[];
+        const material=mesh?.material;
+        const hasLightField=(cellLight.get(`${site.x},${site.y}`)||[]).some(v=>Number(v)>0);
+        const present=!!lamp&&!lamp.isDisposed?.(),meshExists=!!mesh&&!mesh.isDisposed?.();
+        const enabled=present&&lamp.isEnabled?.()===true;
+        const assigned=meshExists&&present&&receivers.includes(mesh);
+        const emission=material?.emissiveColor;
+        const ownEmission=emission?Number(emission.r||0)+Number(emission.g||0)+Number(emission.b||0):null;
+        const issues=[];
+        if(!authored)issues.push("NO_PRESENTATION_SOURCE");
+        if(!meshExists)issues.push("NO_OBJECTIVE_MESH");
+        if(!present)issues.push("NO_PHYSICAL_LIGHT");
+        if(!hasLightField)issues.push("NO_TERRAIN_LIGHT_FIELD");
+        if(meshExists&&present&&!assigned)issues.push("OBJECTIVE_NOT_IN_LIGHT_RECEIVERS");
+        if(meshExists&&present&&!enabled)issues.push("OBJECTIVE_LIGHT_DISABLED");
+        const detail={type:site.type,id:site.id,x:site.x,y:site.y,sourcePresent:!!authored,
+          fieldLit:hasLightField,physicalPresent:present,physicalEnabled:enabled,receiverAssigned:assigned,
+          receiverCount:receivers.length,meshPresent:meshExists,emissiveTotal:ownEmission,issues};
+        lightSites.push(detail);
+        for(const issue of issues)lightIssues.push(`${key}:${issue}`);
+      }
+      const lightSourceIds=[...new Set(sources.map(s=>`${s.source}:${s.sourceId}`))];
+      // Do not claim capture 2 was tested unless at least two actual held sites exist.
+      const heldCaptureSites=expected.filter(p=>p.type==="CAPTURE_LIGHT").length;
+      const lightSourceTypes={};for(const source of allLightSources)lightSourceTypes[source.source]=(lightSourceTypes[source.source]||0)+1;
+      const fireSources=allLightSources.filter(s=>s.source==="BURNING"||s.source==="FIRE_TORNADO");
+      // Fire should light its authored 3x3 field, including under natural fog.
+      const validCoords=new Set(tiles.map(t=>`${t.x},${t.y}`));
+      for(const source of fireSources)for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        const key=`${Number(source.x)+dx},${Number(source.y)+dy}`;
+        if(validCoords.has(key)&&!(cellLight.get(key)||[]).some(v=>Number(v)>0))
+          lightIssues.push(`${source.source}:${source.x},${source.y}:FIRE_3X3_UNLIT:${key}`);
+      }
+      return{
+        phase,stepMs,seed:currentSeed,environmentSteps:debug.environmentSteps??null,
+        timeOfDay:debug.timeOfDay,weather:debug.weather,round:debug.round,
+        tileCount:tiles.length,D:+D.toFixed(4),soil:+soil.toFixed(4),wetTiles:wet,
+        deepTiles:deep,maxDepth:+maxDepth.toFixed(4),snow:+snow.toFixed(4),ice:+ice.toFixed(4),snowTiles,iceTiles,
+        persistentQEdges:qEdges,solverQEdges:solverEdges,
+        meshes:scene?.meshes?.length??null,geometries:scene?.geometries?.length??null,
+        textures:scene?.textures?.length??null,materials:scene?.materials?.length??null,
+        sceneLights:scene?.lights?.length??null,activeMeshes:scene?.getActiveMeshes?.()?.length??null,
+        physicalLights:physical.size,lightFieldCells:renderer.environment?.lightFieldCells??null,
+        waterMeshes:renderer.water?.surfaceMeshes?.size??null,
+        cascadeMeshes:renderer.water?.cascades?.size??null,runoffMeshes:renderer.water?.runoffs?.size??null,
+        fps:Number.isFinite(renderer.engine?.getFps?.())?Math.round(renderer.engine.getFps()):null,
+        lightSourceTypes,fireSources:fireSources.length,enabledPhysicalLights:[...physical.values()].filter(light=>light?.isEnabled?.()).length,
+        rendererErrors:[...renderer.subsystemErrors||[]].map(([key,error])=>[key,String(error?.message||error).slice(0,160)]),
+        heapMB:Number.isFinite(win.performance?.memory?.usedJSHeapSize)?Math.round(win.performance.memory.usedJSHeapSize/1048576):null,
+        expectedLightSites:expected.length,heldCaptureSites,lightSourceIds,lightSites,lightIssues
+      };
+    }
+
+    function stressReport(runtime){
+      return JSON.stringify({label:"Card Tactics 2 — original testindex integrated climate/hydrology/lighting stress",
+        at:new Date().toISOString(),scope:"Real weather, hydrology, environment and Babylon presentation; no enemy tactical AI",
+        baselineMain:"f32e6246e8b2e0a65b236ee8d84ec6810a1a36ee",
+        seed:currentSeed,session:stressSession,active:stressRunning,latestRuntime:runtime?.debug?.state?.()||null,
+        records:stressRecords,officialSystemLog:runtime?.getBattleLog?.("SYSTEM")?.entries||[],
+        officialDetailLog:runtime?.getBattleLog?.("DETAIL")?.entries||[],
+        hydrologyHistory:environmentHistory.slice(-30)},null,2);
+    }
+    function refreshStressPreview(doc,message=""){
+      const pre=doc.getElementById("testLabStressPreview");if(!pre)return;
+      const rows=stressRecords.slice(-9).map(r=>r.type==="STEP"
+        ?`#${r.step}/${r.total} ${r.phase}｜${r.D} D｜濕 ${r.wetTiles}｜深水 ${r.deepTiles}｜雪 ${r.snow}｜Mesh ${r.meshes}｜Light ${r.physicalLights}｜FPS ${r.fps}｜${r.stepMs}ms${r.lightIssues?.length?`｜⚠ ${r.lightIssues.join(",")}`:""}`
+        :`${r.type}｜${r.phase||r.message||r.reason||""}`);
+      pre.textContent=[message,stressRunning?`執行中：${stressCurrentStep}/${stressTotalSteps}｜Seed ${currentSeed}`:"",...rows].filter(Boolean).join("\n")||"尚未執行壓測";
+      pre.scrollTop=pre.scrollHeight;
+    }
+    async function copyStressLab(doc,runtime){
+      const report=stressReport(runtime);
+      try{await navigator.clipboard.writeText(report);}catch(_){
+        const el=doc.createElement("textarea");el.value=report;el.style.position="fixed";el.style.left="-9999px";doc.body.appendChild(el);
+        el.select();doc.execCommand("copy");el.remove();
+      }
+      refreshStressPreview(doc,"完整測試 Log 已複製");
+    }
+    function saveStressLab(runtime){
+      const blob=new Blob([stressReport(runtime)],{type:"application/json;charset=utf-8"});
+      const url=URL.createObjectURL(blob),a=document.createElement("a");
+      a.download=`Card_Tactics_Test_Integrated_${new Date().toISOString().replace(/[:.]/g,"-")}.json`;
+      a.href=url;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+    }
+    async function applyDayNightInLab(win,doc,runtime){
+      if(refreshing||advancing||stressRunning)return;
+      const overlay=ensureOverlay(doc),target=overlay.dayNight.value;
+      advancing=true;setWeatherLabBusy(overlay,true);
+      try{
+        if(!runtime.debug?.setTimeOfDay?.(target))throw new Error("正式 Runtime 無法設定晝夜");
+        await stressFrame(win);
+        const snap=stressSample(win,runtime,`MANUAL_${target}`);
+        stressLog("DAY_NIGHT",{...snap});recordHydrologyFrame(win,runtime,`切換晝夜→${target}`);
+        refreshStressPreview(doc,`已切至 ${target}｜光源異常 ${snap.lightIssues.length}`);
+        refreshWeatherPanel(win,doc,runtime);
+      }catch(error){stressLog("DAY_NIGHT_ERROR",{message:String(error.message||error)});refreshStressPreview(doc,`切換失敗：${error.message||error}`);}
+      finally{advancing=false;setWeatherLabBusy(overlay,false);}
+    }
+
+    async function runStressLab(win,doc,runtime){
+      if(refreshing||advancing||stressRunning)return;
+      const overlay=ensureOverlay(doc),scenario=overlay.stressScenario.value;
+      const stages=STRESS_SCENARIOS[scenario];if(!stages)return;
+      // Disable only the existing test controls that would mutate the map.
+      stressRunning=true;stressStopRequested=false;stressCurrentStep=0;
+      stressTotalSteps=stages.reduce((sum,stage)=>sum+stage.turns,0);
+      stressSession={scenario,seed:currentSeed,startedAt:new Date().toISOString(),totalSteps:stressTotalSteps};
+      overlay.stressRun.disabled=true;overlay.stressStop.disabled=false;overlay.stressScenario.disabled=true;
+      setWeatherLabBusy(overlay,true);
+      const initial=stressSample(win,runtime,"BASELINE"),summary={maxD:initial.D,maxWetTiles:initial.wetTiles,maxDeepTiles:initial.deepTiles,
+        maxSnow:initial.snow,minD:initial.D,minSnow:initial.snow,errors:new Set(),lightIssueCounts:{}};
+      stressLog("START",{scenario,seed:currentSeed,total:stressTotalSteps,...initial});
+      const reportStep=(snap)=>{
+        summary.maxD=Math.max(summary.maxD,snap.D);summary.minD=Math.min(summary.minD,snap.D);
+        summary.maxWetTiles=Math.max(summary.maxWetTiles,snap.wetTiles);
+        summary.maxDeepTiles=Math.max(summary.maxDeepTiles,snap.deepTiles);
+        summary.maxSnow=Math.max(summary.maxSnow,snap.snow);
+        summary.minSnow=Math.min(summary.minSnow,snap.snow);
+        for(const err of snap.lightIssues)summary.lightIssueCounts[err]=(summary.lightIssueCounts[err]||0)+1;
+        if(snap.rendererErrors.length)summary.errors.add("RENDERER_ERROR");
+      };
+      try{
+        for(const stage of stages){
+          if(stressStopRequested)break;
+          if(!runtime.debug?.setTimeOfDay?.(stage.time))throw new Error("正式 Runtime 日夜切換失敗");
+          if(!runtime.debug?.setWeather?.(stage.weather,stage.turns,{applyPulse:false}))throw new Error(`正式 Runtime 氣候 ${stage.weather} 切換失敗`);
+          if(stage.ignite){
+            // Official EnvironmentEngine FIRE force, on existing dry vegetation.
+            // Never create a visual-only flame or write engine state directly.
+            const tiles=runtime.getBattleMap?.()?.tiles||[],midX=Math.max(0,...tiles.map(t=>t.x))/2,midY=Math.max(0,...tiles.map(t=>t.y))/2;
+            const candidate=tiles.filter(t=>(t.terrain==="FOREST"||t.terrain==="PLAIN")&&Number(t.waterDepth||0)<.05)
+              .sort((a,b)=>Math.hypot(a.x-midX,a.y-midY)-Math.hypot(b.x-midX,b.y-midY))[0];
+            const applied=!!candidate&&runtime.debug?.applyEnvironmentForce?.(candidate.x,candidate.y,"FIRE")===true;
+            stressLog("FIRE_TEST",{phase:stage.label,applied,position:candidate?{x:candidate.x,y:candidate.y}:null});
+          }
+          await stressFrame(win);
+          const atStart=stressSample(win,runtime,stage.label);
+          stressLog("STAGE_START",{label:stage.label,weather:stage.weather,time:stage.time,turns:stage.turns,...atStart});
+          for(let i=0;i<stage.turns;i++){
+            if(stressStopRequested)break;
+            const before=performance.now();
+            if(!runtime.debug?.advanceEnvironmentTurns?.(1))throw new Error("正式 Runtime 環境推進失敗");
+            // The game's existing state event schedules Babylon sync into RAF.
+            // Give that same renderer two frames to finish before sampling.
+            await stressFrame(win);
+            stressCurrentStep++;
+            const snap=stressSample(win,runtime,stage.label,Math.round(performance.now()-before));
+            reportStep(snap);
+            stressLog("STEP",{step:stressCurrentStep,total:stressTotalSteps,...snap});
+            recordHydrologyFrame(win,runtime,`壓測 ${stage.label} ${i+1}/${stage.turns}`);
+            refreshStressPreview(doc);
+            if((i+1)%5===0||i+1===stage.turns){rebuildMarkers(doc,runtime);refreshWeatherPanel(win,doc,runtime);}
+            // Yield between heavy environment passes so mobile can paint input.
+            await sleep(100);
+          }
+          stressLog("STAGE_END",{label:stage.label,step:stressCurrentStep,...stressSample(win,runtime,stage.label)});
+        }
+        const final=stressSample(win,runtime,"FINAL");
+        const warnings=[];
+        if(scenario==="ALL"||scenario==="FLOOD"){
+          // More standing-water volume or deeper wet cells is evidence that
+          // flooding was actually exercised, not just a weather label change.
+          if(summary.maxD<=initial.D+Math.max(.5,initial.D*.015)&&summary.maxWetTiles<=initial.wetTiles)
+            warnings.push("淹水水量未明顯增加：本 Seed 無法宣稱已覆蓋大淹水");
+        }
+        if((scenario==="ALL"||scenario==="SNOW")&&summary.maxSnow<=initial.snow+.2)
+          warnings.push("積雪量未明顯增加：本 Seed 無法宣稱已覆蓋積雪融雪");
+        if(final.heldCaptureSites<2)warnings.push("目前沒有兩個已佔領據點：不能宣稱已驗證連佔兩點");
+        if((scenario==="ALL"||scenario==="LIGHT")&&!stressRecords.slice(-stressTotalSteps-35).some(r=>r.type==="STEP"&&r.fireSources>0))
+          warnings.push("測試期間未觀測到真實野火光源：無法驗收火光散射");
+        if(Object.keys(summary.lightIssueCounts).length)warnings.push("發現光源資料／實體光源／模型受光對帳不一致");
+        if(summary.errors.size)warnings.push("Renderer 回報錯誤");
+        const kind=stressStopRequested?"STOP":"DONE";
+        stressRunning=false;
+        stressLog(kind,{step:stressCurrentStep,total:stressTotalSteps,summary:{...summary,errors:[...summary.errors]},warnings,...final});
+        refreshStressPreview(doc,`${kind} ${stressCurrentStep}/${stressTotalSteps}｜${warnings.length?warnings.join("；"):"未發現上述可觀測異常；仍需實機確認畫面"}`);
+      }catch(error){
+        stressRunning=false;
+        stressLog("STRESS_ERROR",{step:stressCurrentStep,message:String(error?.stack||error).slice(0,800)});
+        refreshStressPreview(doc,`壓測中斷：${error?.message||error}`);
+      }finally{
+        stressRunning=false;stressStopRequested=false;
+        overlay.stressRun.disabled=false;overlay.stressStop.disabled=true;overlay.stressScenario.disabled=false;
+        setWeatherLabBusy(overlay,false);persistStress();
+      }
     }
 
     function tileSnapshot(tile,hydrology){
@@ -718,6 +1042,17 @@
         await waitFor(()=>win.CardTacticsRuntime&&win.CardTacticsRenderer&&win.MapGenerator&&win.BABYLON);
         injectTestStyle(doc);const overlay=ensureOverlay(doc);
         overlay.refresh.onclick=()=>generateTestMap(win,doc,{reuseSeed:false});
+        overlay.stressQuick.onclick=()=>{controlsCollapsed=false;ensureOverlay(doc);if(!overlay.weatherPanel.classList.contains("open"))overlay.weatherToggle.click();runStressLab(win,doc,win.CardTacticsRuntime);};
+        overlay.stressRun.onclick=()=>runStressLab(win,doc,win.CardTacticsRuntime);
+        overlay.stressStop.onclick=()=>{stressStopRequested=true;refreshStressPreview(doc,"正在停止，會完成當前環境步驟");};
+        overlay.stressCopy.onclick=()=>copyStressLab(doc,win.CardTacticsRuntime);
+        overlay.stressSave.onclick=()=>saveStressLab(win.CardTacticsRuntime);
+        overlay.stressClear.onclick=()=>{if(stressRunning)return;stressRecords=[];stressCurrentStep=0;persistStress();refreshStressPreview(doc,"已清除");};
+        overlay.applyDayNight.onclick=()=>applyDayNightInLab(win,doc,win.CardTacticsRuntime);
+        win.addEventListener("error",event=>stressLog("GAME_ERROR",{message:String(event.message||"error").slice(0,400)}));
+        win.addEventListener("unhandledrejection",event=>stressLog("GAME_REJECTION",{message:String(event.reason?.message||event.reason||"unknown").slice(0,400)}));
+        win.CardTacticsRenderer?.canvas?.addEventListener("webglcontextlost",event=>stressLog("WEBGL_CONTEXT_LOST",{message:"WebGL context lost",step:stressCurrentStep}));
+        refreshStressPreview(doc);
         overlay.rebuild.onclick=()=>generateTestMap(win,doc,{reuseSeed:true});
         overlay.seed.onkeydown=event=>{if(event.key==="Enter")generateTestMap(win,doc,{reuseSeed:true});};
         overlay.spring.onchange=()=>generateTestMap(win,doc,{reuseSeed:true});
