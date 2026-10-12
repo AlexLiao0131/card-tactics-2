@@ -10,6 +10,7 @@ export const MapGenerator=(()=>{
 
   const DIRS=[[1,0],[-1,0],[0,1],[0,-1]],key=(x,y)=>`${x},${y}`;
   const RIVER_GENTLE_STEP=.008;
+  const LAND_DRAINAGE_GRADE=.015;
   const RIVER_CASCADE_BED_DROP=1.0001;
   const HIGH_SPRING_SOURCE_CHANCE=.40;
   const HIGH_SPRING_MIN_ELEVATION=1;
@@ -108,7 +109,12 @@ export const MapGenerator=(()=>{
   function applyTerrain(map,field){
     for(const tile of map.tiles){
       const e=field[tile.y][tile.x];
-      if(e<0)setWater(tile,{bed:e,depth:Math.abs(e)});else setDry(tile,e,e>=2?"HIGH_GROUND":"PLAIN");
+      // Random negative noise is not a lake: the old code pre-filled every
+      // below-zero pocket with D, even if no watershed/outlet reached it.
+      // Genuine deep water is excavated ONLY beside a source-to-outlet river
+      // below, then filled by the canonical HydrologyEngine.
+      const land=Math.max(0,e);
+      setDry(tile,land,land>=2?"HIGH_GROUND":"PLAIN");
     }
   }
 
@@ -208,6 +214,33 @@ export const MapGenerator=(()=>{
       if(downstream)downstreamByKey.set(key(tile.x,tile.y),downstream);
     }
 
+    // A cascade raises EVERY upstream reach. It is valid only where all of
+    // those reaches have geological banks at the proposed high elevation;
+    // otherwise the correct geomorphology is an eroded river CUT, not a
+    // suspended channel with lowland spilling out of its sides.
+    const upstreamByKey=new Map();
+    for(const [upstreamKey,downstream] of downstreamByKey){
+      const downKey=key(downstream.x,downstream.y);
+      if(!upstreamByKey.has(downKey))upstreamByKey.set(downKey,[]);
+      upstreamByKey.get(downKey).push(by.get(upstreamKey));
+    }
+    const supportsCascadePlateau=(tile,upstreamBed)=>{
+      const stack=[tile],seen=new Set();
+      while(stack.length){
+        const current=stack.pop(),ck=key(current.x,current.y);
+        if(seen.has(ck))continue;
+        seen.add(ck);
+        for(const [dx,dy] of DIRS){
+          const nk=key(current.x+dx,current.y+dy);
+          if(by.has(nk))continue;
+          const bank=tileAt(map,current.x+dx,current.y+dy);
+          if(bank&&Number(bank.elevation||0)<upstreamBed-.19)return false;
+        }
+        stack.push(...(upstreamByKey.get(ck)||[]));
+      }
+      return true;
+    };
+
     // A permanent stream's channel capacity must be sized for the catchment
     // which formed it. Historically only the entry carried its seeded yield;
     // every reach downstream still had baseDischarge=1 (.8 at a ford), choking
@@ -280,7 +313,15 @@ export const MapGenerator=(()=>{
         Number(distance.get(key(n.x,n.y)))>Number(distance.get(k)));
       const upstreamGeologySupportsLip=upperNeighbors.some(n=>
         Number(n.hydrologyChannelBaseElevation??n.elevation??0)>=upstreamBase-.75);
-      const cascadeDrop=!gentleTrunkEdges.has(edgeId)&&bedDrop>RIVER_CASCADE_BED_DROP&&upstreamGeologySupportsLip?bedDrop:0;
+      // Border entry channels have no upstream cliff face on the battlefield:
+      // a waterfall along the map edge would leave a suspended high river
+      // above the surrounding land instead of an eroded creek bed.
+      const interiorLip=tile.x>0&&tile.y>0&&tile.x<map.width-1&&tile.y<map.height-1&&
+        downstream.x>0&&downstream.y>0&&downstream.x<map.width-1&&downstream.y<map.height-1;
+      const proposedCascadeBed=downstreamSurface+RIVER_GENTLE_STEP+bedDrop;
+      const cascadeDrop=interiorLip&&!gentleTrunkEdges.has(edgeId)&&
+        bedDrop>RIVER_CASCADE_BED_DROP&&upstreamGeologySupportsLip&&
+        supportsCascadePlateau(tile,proposedCascadeBed)?bedDrop:0;
       const surface=downstreamSurface+RIVER_GENTLE_STEP+cascadeDrop;
       surfaceByKey.set(k,surface);
 
@@ -420,14 +461,9 @@ export const MapGenerator=(()=>{
       if(!tile||!tile.river||tile.ford||tile.hydrologySource||tile.hydrologyDrain||tile.routeId||tile.captureZone)return false;
       if(tile.x<=0||tile.y<=0||tile.x>=map.width-1||tile.y>=map.height-1)return false;
       if(Number(tile.hydrologyCascadeDrop||0)>0)return false;
-      // Keep both strategic crossings and their immediate banks undisturbed.
-      return directions.every(([dx,dy])=>{
-        const n=by.get(key(tile.x+dx,tile.y+dy));
-        // Terrain slope interpolation and routes remain protected elsewhere;
-        // tributaries may lie beside a road without excavating the road tile.
-        return tile.hydrologyTributary===true?!n?.captureZone:
-          !n?.ford&&!n?.routeId&&!n?.captureZone;
-      });
+      // Protect the ford/road/point themselves. A neighbouring river reach is
+      // still a valid lake mouth if the actual off-channel bank is unprotected.
+      return true;
     };
     // A pool must lie on a source-fed branch, not an incidental road connector.
     // Follow the SAME authored downstream graph used for Q distribution.
@@ -439,24 +475,22 @@ export const MapGenerator=(()=>{
         current=downstreamByKey.get(key(current.x,current.y));
       }
     }
-    const springTributary=rivers.some(tile=>tile.hydrologyTributary===true&&!tile.hydrologySource);
     const candidates=[];
     for(const tile of rivers){
-      // Place storage ponds on the designed tributary, not across the only
-      // perennial trunk where they would interrupt source-to-outlet conveyance.
-      if(tile.hydrologyTributary!==true)continue;
+      // A deep pool is a side basin, NOT an excavation of the main Q channel.
+      // Prefer spring tributaries but allow the perennial trunk, so maps without
+      // a generated spring still have real, connected deep pools.
       if(!sourceReach.has(key(tile.x,tile.y))||!accessible(tile))continue;
       const downstream=downstreamByKey.get(key(tile.x,tile.y));
-      if(!downstream||downstream.ford||downstream.routeId||downstream.hydrologyDrain)continue;
+      if(!downstream)continue;
       const banks=directions.map(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy)))
         .filter(n=>n&&!n.river);
       if(!banks.length)continue;
       const floor=naturalHeight(tile);
       const bankHeight=banks.reduce((sum,n)=>sum+naturalHeight(n),0)/banks.length;
       const naturalRelief=bankHeight-floor;
-      if(naturalRelief<.15&&tile.hydrologyTributary!==true)continue; // springs may have a naturally shallow tributary basin
       const chance=createRandom(`${map.seed}:CHANNEL_POOL:${tile.x},${tile.y}`)();
-      const score=naturalRelief*.6+chance*.75+(tile.hydrologyTributary===true?1.75:0);
+      const score=clamp(naturalRelief,-2,4)*.3+chance*.75+(tile.hydrologyTributary===true?1.75:0);
       candidates.push({tile,downstream,naturalRelief,score,chance});
     }
     candidates.sort((a,b)=>b.score-a.score||Number(distance.get(key(b.tile.x,b.tile.y))||0)-Number(distance.get(key(a.tile.x,a.tile.y))||0));
@@ -476,13 +510,17 @@ export const MapGenerator=(()=>{
       const bankCandidates=banks.filter(bank=>
         bank.terrain!=="WATER"&&bank.terrain!=="WALL"&&
         bank.waterDepth<=0&&!bank.core&&!bank.ford&&!bank.routeId&&!bank.captureZone&&
-        !bank.hydrologySource&&!bank.hydrologyDrain);
+        !bank.hydrologySource&&!bank.hydrologyDrain&&
+        bank.x>0&&bank.y>0&&bank.x<map.width-1&&bank.y<map.height-1);
       bankCandidates.sort((a,b)=>Number(a.elevation||0)-Number(b.elevation||0)||
         Math.abs(a.x-tile.x)-Math.abs(b.x-tile.x)||a.y-b.y||a.x-b.x);
       const bank=bankCandidates[0];
       if(!bank)continue;
       const before=Number(bank.elevation||0),riverbed=Number(tile.elevation||0);
-      const naturalDepth=clamp(.45+naturalRelief*.20+chance*.22,.50,.80);
+      // The pool floor sits over one gameplay elevation below the channel
+      // sill. Only the amount above that sill can drain back to the river;
+      // permanent pool water is physical D supplied by that same river.
+      const naturalDepth=clamp(1.15+naturalRelief*.08+chance*.28,1.05,1.65);
       // The pool bottom is below the riverbed and can receive *real* D once
       // river water crosses its shared sill. Limit excavation rather than
       // creating enormous artificial rock shafts beside a shallow creek.
@@ -506,6 +544,56 @@ export const MapGenerator=(()=>{
     // River slopes remain the original generated erosion profile. The side
     // basin is part of terrain, not an additional water store or renderer.
     return chosen;
+  }
+
+  // Author a real drainage outlet for every ordinary land tile. A priority
+  // flood rooted in the existing river and open map edge fills only enclosed
+  // terrain sills; a tiny grade across flats lets D flow toward the river.
+  // River D/Q and lake D are NOT touched. Connected side-pool floors stay
+  // below their river opening, so they can be naturally deep/perennial.
+  function conditionGeneratedDrainage(map){
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const settled=new Set(),best=new Map(),frontier=[];
+    const grade=LAND_DRAINAGE_GRADE;
+    let raised=0;
+    const offer=(tile,height)=>{
+      const k=key(tile.x,tile.y),prior=best.get(k);
+      if(prior!=null&&prior<=height+1e-8)return;
+      best.set(k,height);
+      frontier.push({tile,height});
+    };
+    for(const tile of map.tiles){
+      if(tile.river===true||tile.x===0||tile.y===0||
+         tile.x===map.width-1||tile.y===map.height-1){
+        offer(tile,Number(tile.elevation||0));
+      }
+    }
+    while(frontier.length){
+      frontier.sort((a,b)=>a.height-b.height||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+      const {tile,height}=frontier.shift(),k=key(tile.x,tile.y);
+      if(settled.has(k)||height>Number(best.get(k))+1e-8)continue;
+      settled.add(k);
+      for(const [dx,dy] of DIRS){
+        const next=by.get(key(tile.x+dx,tile.y+dy));
+        if(!next||settled.has(key(next.x,next.y))||next.river===true)continue;
+        const floor=Number(next.elevation||0);
+        // A side-pool's spill elevation is the connected river bank, not
+        // its submerged bed. Do not fill the designed natural deep pocket.
+        const step=next.hydrologyNaturalChannelPool===true?0:grade;
+        offer(next,Math.max(floor,height+step));
+      }
+    }
+    for(const tile of map.tiles){
+      if(tile.river===true||tile.hydrologyNaturalChannelPool===true)continue;
+      const target=best.get(key(tile.x,tile.y));
+      if(target!=null&&target>Number(tile.elevation||0)+1e-8){
+        tile.elevation=Number(target.toFixed(4));
+        raised++;
+      }
+    }
+    map.generatedDrainage={reachedTiles:settled.size,conditionedTiles:raised,
+      connectedDeepPools:map.tiles.filter(t=>t.hydrologyNaturalChannelPool===true).length};
+    return map.generatedDrainage;
   }
 
   function createRiver(map,routes,protectedKeys,rand,{springMode="RANDOM"}={}){
@@ -981,7 +1069,8 @@ export const MapGenerator=(()=>{
         const k=key(n.x,n.y);if(seen.has(k))continue;
         const path=[...cur.path,n];
         if(reachable.has(k)&&path.length-1>=Math.max(1,Math.ceil(startHeight-movementHeight(n))))return path;
-        if(n.river||n.captureZone||protectedKeys.has(k))continue;
+        // Natural connected deep pools cannot be rewritten as mountain ramps.
+        if(n.river||n.hydrologyNaturalChannelPool===true||n.captureZone||protectedKeys.has(k))continue;
         seen.add(k);
         if(path.length<=need+Math.max(5,Math.ceil(Math.sqrt(map.tiles.length)/2)))q.push({x:n.x,y:n.y,path});
       }
@@ -1082,6 +1171,16 @@ export const MapGenerator=(()=>{
   function validateBattlefield(map,objects,cores,points,routes,river){
     const p=cores.find(c=>c.owner==="PLAYER"),e=cores.find(c=>c.owner==="ENEMY"),errors=[];
     const riverComponents=riverComponentCount(map);if(riverComponents!==1)errors.push(`RIVER_DISCONNECTED_${riverComponents}`);
+    const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    for(const tile of map.tiles){
+      if(tile.hydrologyNaturalChannelPool===true){
+        if(!DIRS.some(([dx,dy])=>by.get(key(tile.x+dx,tile.y+dy))?.river===true))
+          errors.push(`POOL_UNCONNECTED_${tile.x}_${tile.y}`);
+      }else if(tile.river!==true&&tile.x>0&&tile.y>0&&tile.x<map.width-1&&tile.y<map.height-1){
+        if(!DIRS.some(([dx,dy])=>Number(by.get(key(tile.x+dx,tile.y+dy))?.elevation??Infinity)<Number(tile.elevation)-.0001))
+          errors.push(`LAND_SINK_${tile.x}_${tile.y}`);
+      }
+    }
     if(!hasPath(map,objects,p,e))errors.push("CORE_TO_CORE");
     for(const point of points){const goal=point.captureTiles?.[0];if(goal&&!hasPath(map,objects,p,goal))errors.push(`PLAYER_TO_${point.id}`);if(goal&&!hasPath(map,objects,e,goal))errors.push(`ENEMY_TO_${point.id}`);}
     routes.forEach((route,i)=>{
@@ -1103,6 +1202,7 @@ export const MapGenerator=(()=>{
     const capturePoints=createCapturePoints(map,routes,protectedKeys),river=createRiver(map,routes,protectedKeys,rand,{springMode});
     addForests(map,cfg,rand,protectedKeys);
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
+    const drainage=conditionGeneratedDrainage(map);
     const rocks=addRocks(map,cfg,rand,protectedKeys);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
@@ -1116,7 +1216,7 @@ export const MapGenerator=(()=>{
     const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river);
     if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
     const summary=stats(map);
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,validation:"PASS",...summary}};
+    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,conditionedDrainageTiles:drainage.conditionedTiles,connectedDeepPools:drainage.connectedDeepPools,validation:"PASS",...summary}};
   }
 
   return Object.freeze({SIZE_PRESETS,preset,randomSeed,generateVersus,validateBattlefield});
