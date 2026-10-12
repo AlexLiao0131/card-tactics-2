@@ -6,6 +6,40 @@
 
     function state(){return ctx.actionState();}
 
+    // Report only real execution rejections (never range previews / target lists).
+    // UnitRuntimeEngine remains the sole resource/turn-rule authority.
+    function skillFailure(unit,skill,reason,target=null){
+      let detail=reason;
+      if(reason==="RESOURCE_OR_REQUIREMENT"){
+        const req=skill?.requirements||{};
+        if((skill?.approach||req.notMoved)&&unit?.moved)detail="ALREADY_MOVED";
+        else if(req.carrying&&!unit?.carryingUnitId)detail="NOT_CARRYING";
+        else if(req.notCarrying&&unit?.carryingUnitId)detail="ALREADY_CARRYING";
+        else if(req.water){
+          const tile=TacticalEngine.tile(state().map,unit?.x,unit?.y);
+          if(!(Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)>0))detail="REQUIRES_WATER";
+        }
+        if(detail===reason){
+          const r=ctx.resourceFor?.(unit,skill);
+          if(r&&Number(r.remaining)<Number(r.cost))detail=`MANA_SHORTAGE_${r.remaining}_OF_${r.cost}`;
+          else if(r){
+            const rules=globalThis.UnitRuntimeEngine?.extraResourceRules?.(unit)||{};
+            for(const [key,x] of Object.entries(r.resources||{})){
+              if(!rules[key]){detail=`RESOURCE_RULE_MISSING_${key}`;break;}
+              if(rules[key].allowOverdraft!==true&&x.remaining<x.cost){detail=`RESOURCE_SHORTAGE_${key}_${x.remaining}_OF_${x.cost}`;break;}
+            }
+          }
+        }
+      }
+      window.CardTacticsDiagnostics?.gameAction?.("SKILL_FAILURE",{
+        unitId:unit?.id,unit:unit?.character?.name,team:unit?.team,
+        skillId:skill?.id,skill:skill?.name,
+        targetId:target?.id||null,target:target?.character?.name||target?.name||null,
+        x:target?.x,y:target?.y,reason:detail
+      });
+      return false;
+    }
+
     function weightRank(value){
       const key=String(value||"LIGHT").toUpperCase();
       return Number(globalThis.DisplacementEngine?.WEIGHT?.[key]??0);
@@ -126,7 +160,7 @@
 
     function approachTargetForAttack(unit,target,skill){
       const plan=attackPlanForTarget(unit,target,skill);
-      if(!plan)return false;
+      if(!plan)return skillFailure(unit,skill,"NO_ATTACK_PATH",target);
       if(!plan.path.length)return true;
       if(!pendingMove||pendingMove.unitId!==unit.id)beginPendingMove(unit);
       const result=ctx.traverseUnitPath(unit,plan.path,{kind:"UNIT"});
@@ -138,8 +172,8 @@
 
     function resolveDirectTargetAttack(unit,target,skill){
       const {map,environmentState}=state();
-      if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return false;
-      if(target.kind!=="CORE")return false;
+      if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return skillFailure(unit,skill,"TARGET_OR_TURN_INVALID",target);
+      if(target.kind!=="CORE")return skillFailure(unit,skill,"TARGET_NOT_CORE",target);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
       skill=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
@@ -184,7 +218,8 @@
     }
 
     function executeUtilitySkill(attacker,target,skill){
-      const {map,units}=state(),action=skill?.utilityAction;if(!action||!ctx.canUseSkill(attacker,skill))return false;
+      const {map,units}=state(),action=skill?.utilityAction;if(!action)return skillFailure(attacker,skill,"NO_UTILITY_ACTION",target);
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       if(action.type==="SET_VERTICAL_MODE"){
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
@@ -236,7 +271,8 @@
     }
 
     function executeMapUtility(attacker,center,skill){
-      const action=skill?.utilityAction,{map}=state();if(!action||!ctx.canUseSkill(attacker,skill))return false;
+      const action=skill?.utilityAction,{map}=state();if(!action)return skillFailure(attacker,skill,"NO_MAP_UTILITY",center);
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       if(action.type==="TELEPORT_TO_TILE"){
         const destination=TacticalEngine.tile(map,center.x,center.y);
         if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(attacker,destination)||TacticalEngine.isBlockedByObject(map,center.x,center.y,attacker)){ctx.pushLog(`${skill.name}：終點不是合法站立位置。`,"SYSTEM");ctx.render();return false;}
@@ -304,7 +340,7 @@
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
-      if(!ctx.canUseSkill(attacker,skill))return false;
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
@@ -423,7 +459,8 @@
     }
 
     function executeEffectSkill(attacker,target,skill){
-      if(!window.EffectEngine||!ctx.canUseSkill(attacker,skill))return false;
+      if(!window.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
@@ -483,9 +520,9 @@
 
     function prepareAttack(attacker,defender,skill){
       const {map,units}=state();
-      if(!ctx.canUseSkill(attacker,skill))return;
+      if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
       if(skill.approach&&!approachForSkill(attacker,defender,skill)){
-        ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
+        skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
       if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
       if(skill.effects||skill.relationEffects||skill.bloodAction){executeEffectSkill(attacker,defender,skill);return;}
@@ -526,7 +563,7 @@
         {map,units,initiator:attacker,target:defender,skill,actions},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
-      if(!engagement.results.length){ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
+      if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
       commitPendingMove(attacker);
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.clearEngagement();ctx.setMode("inspect");

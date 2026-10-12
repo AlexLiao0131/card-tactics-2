@@ -152,7 +152,7 @@
   }
   function hallucinationActiveFor(team){return !!hallucinationSession?.active&&hallucinationSession.team===team;}
 
-  function pushLog(text,type="SYSTEM"){logs.push(String(text));if(logs.length>240)logs.splice(0,logs.length-240);BattleLog.add(logState,type,String(text));window.dispatchEvent(new CustomEvent("cardtactics:log"));}
+  function pushLog(text,type="SYSTEM"){logs.push(String(text));if(logs.length>240)logs.splice(0,logs.length-240);BattleLog.add(logState,type,String(text));window.dispatchEvent(new CustomEvent("cardtactics:log",{detail:{type,text:String(text)}}));}
   function logPostEffect(entry){const {source,target,effect,result}=entry;if(!result)return;if(!result.applied){pushLog(`${target.character.name}｜${effect.type} 未生效${result.reason?`（${result.reason}）`:""}。`,"DETAIL");return;}const moved=result.steps?.length||0,visitCollisions=(r,mover=target)=>{for(const collision of r?.collisions||[]){environmentController.resolveCollisionRuntime(collision,{mover,source});if(collision.chain&&collision.surface?.unit)visitCollisions(collision.chain,collision.surface.unit);}};visitCollisions(result);pushLog(`${source.character.name} → ${target.character.name}：${effect.type==="PULL"?"拉近":"擊退"} ${moved} 格。`,"BATTLE");if(result.falls?.length){const drops=result.falls.map(f=>`Z${f.from}→H${f.to}`).join("、");pushLog(`${target.character.name} 墜落 ${drops}｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}。`,"BATTLE");}else pushLog(`${target.character.name} 強制位移完成｜無墜落傷害。`,"DETAIL");if(result.applied&&target.alive)enterTile(target);}
   function handleDefeated(unit,source,skillOrEffect){
     if(unit?.hallucination){unit.hp=0;unit.alive=false;return{hallucination:true};}
@@ -183,7 +183,14 @@
   function stageEvent(event){if(!stageState)return;StageEngine.run(stageState,event,{units,log:text=>pushLog(text),spawn:spawnFromScript,onObjectiveChanged:(active,action)=>{const target=String(action.target||"").toUpperCase();const label=action.objectives?"勝敗條件":target==="VICTORY"?"勝利條件":target==="DEFEAT"?"失敗條件":"勝敗條件";pushLog(`${label}已更新。`,"SYSTEM");}});}
   function shortName(name){return name.replace(/（.*?）/g,"").slice(0,4);}
   function onUnitCreated(unit){if(unit)EffectEngine.syncConditionalPassives([unit],environmentState);return unit;}
-  function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){return UnitRuntimeEngine.consumeSkill(unit,skill);}function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
+  function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
+    const result=UnitRuntimeEngine.consumeSkill(unit,skill);
+    if(result)window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
+      unitId:unit?.id,unit:unit?.character?.name,team:unit?.team,skillId:skill?.id,skill:skill?.name,
+      reason:`MP ${result.cost||0}; remaining ${result.remaining??"?"}; extra ${Object.keys(result.resources||{}).join(",")||"none"}`
+    });
+    return result;
+  }function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
   function clearSelection(){commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;clearEngagement();mode="idle";}

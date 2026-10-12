@@ -25,6 +25,10 @@ const CORE_LOAD_ORDER=[
 
 let loadingStep="啟動器";
 try{
+  // Start the existing diagnostics recorder before battle initialization so
+  // boot failures and the first card/environment events are not lost.
+  loadingStep="diagnostics.js";
+  await load("./diagnostics.js");
   loadingStep="畫面模組";
   const [{BabylonRenderer},{BattleUI},{CardHandUI},{ShellUI},{UnitControlUI}]=await Promise.all([
     load("./babylon-renderer.js"),
@@ -62,8 +66,6 @@ try{
   const shell=new ShellUI(runtime,renderer);shell.bind();
   const unitControlUI=new UnitControlUI();unitControlUI.bind(runtime);
 
-  loadingStep="diagnostics.js";
-  await load("./diagnostics.js");
   loadingStep="battle-test-console.js";
   await load("./battle-test-console.js");
 
@@ -113,6 +115,7 @@ try{
     bootStatus.style.whiteSpace="normal";
     bootStatus.style.overflowWrap="anywhere";
   }
+  globalThis.CardTacticsDiagnostics?.push?.("BOOT_FAILURE",{step:loadingStep,name,message});
   console.error("Card Tactics boot failed",{step:loadingStep,error});
   throw error;
 }

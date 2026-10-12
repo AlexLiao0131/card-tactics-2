@@ -1,6 +1,12 @@
 (()=>{
 "use strict";
 function create(ctx){
+  function cardFailure(card,reason,position=null){
+    window.CardTacticsDiagnostics?.gameAction?.("CARD_FAILURE",{
+      cardId:card?.id,card:card?.name,reason,x:position?.x,y:position?.y
+    });
+    return false;
+  }
   const {TEAM,PHASE}=ctx;const state=()=>ctx.state();
   let resolvingPresentation=false,presentationGeneration=0;
   function waterRecheckUnits(units,reason){(units||[]).filter(unit=>unit?.alive).forEach(unit=>ctx.applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false}));}
@@ -50,7 +56,7 @@ function create(ctx){
   }
   function end({automatic=false}={}){const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM");if(ctx.maybeAutoEndPlayerTurn?.())return true;ctx.render();ctx.emitState();return true;}
   function select(cardId){
-    const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return false;const card=CardDatabase.get(cardId);if(!canResolve(card))return false;
+    const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return cardFailure(CardDatabase.get(cardId),"NOT_CARD_PHASE");const card=CardDatabase.get(cardId);if(!canResolve(card))return cardFailure(card,"CARD_NOT_PLAYABLE_RESOURCE_OR_TARGET");
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER"){
@@ -112,9 +118,10 @@ function create(ctx){
     // Authority belongs at commit, never the highlight or terrain intel mode.
     // Resolve positional cards from a real allied source with LOS + cast distance.
     if(!centerTile||!TacticalEngine.teamCanCastSpell(s.map,s.units,TEAM.PLAYER,centerTile,s.environmentState,s,card)){
+      cardFailure(card,"OUT_OF_RANGE_OR_VISION",center);
       ctx.pushLog(`${card.name} 無法施放：需要己方據點／角色的有效視線，且不得超出施法距離。`,"SYSTEM");return false;
     }
-    if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
+    if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){cardFailure(card,"REQUIRES_WATER_TILE",center);ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
     const presentation=effect.presentation||null;
     if(effect.type==="AREA_DAMAGE"){
       const generation=++presentationGeneration;
@@ -162,7 +169,7 @@ function create(ctx){
   }
   function deployAt(tile){
     const s=state(),card=ctx.getPendingCard();if(resolvingPresentation||!card||s.phase!==PHASE.CARD)return false;
-    if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return false;
+    if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return cardFailure(card,"DEPLOY_TILE_INVALID",tile);
     const unit=UnitRuntimeEngine.createFromCard({id:ctx.nextUnitId(),team:TEAM.PLAYER,card,x:tile.x,y:tile.y,map:s.map});if(!unit)return false;
     unit.cardId=card.id;unit.deployedRound=s.round;unit.moved=true;unit.acted=true;unit.waited=true;
     if(!CardPhaseEngine.commit(s.cardState,card))return false;
