@@ -3,7 +3,18 @@ export const TacticalEngine=(()=>{
   const MAX_NORMAL_CLIMB=1,MAX_NORMAL_DROP=1;
   const BASE_VISION_RANGE=6,LOCAL_AWARENESS_RANGE=1;
   const FACINGS=["N","E","S","W"];
-  function tile(m,x,y){return m.tiles.find(t=>t.x===x&&t.y===y)}
+  // Read-only spatial index: references authoritative Grid tiles, never copies tile state.
+  // Grid tiles keep their x/y coordinates; climate, height and water mutate on the same objects.
+  const tileIndices=new WeakMap();
+  function tile(m,x,y){
+    if(!m?.tiles)return null;
+    let index=tileIndices.get(m);
+    if(!index||index.tiles!==m.tiles||index.length!==m.tiles.length){
+      index={tiles:m.tiles,length:m.tiles.length,byKey:new Map(m.tiles.map(t=>[K(t.x,t.y),t]))};
+      tileIndices.set(m,index);
+    }
+    return index.byKey.get(K(x,y))||null;
+  }
   function objectAt(m,x,y){return (m?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null}
   function occupied(us,x,y,id){return us.some(u=>u.alive&&u.id!==id&&u.occupiesTile!==false&&u.x===x&&u.y===y)}
   function elevation(t){return Number(t?.elevation||0)}

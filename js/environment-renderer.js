@@ -116,6 +116,7 @@ export class EnvironmentRenderer{
     this.animated=new Map();
     this.surfaceMeshes=new Map();
     this.surfaceSignature="";
+    this.surfaceLayerMetrics={rebuilds:0,vertexUpdates:0};
     this.visibilityHazeMesh=null;
     this.visibilityHazeSignature="";
     this.visibilityHazeSightSignature="";
@@ -1134,10 +1135,12 @@ export class EnvironmentRenderer{
   buildSurfaceLayer(type,tiles,byKey){
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
+    const layerKeys=[];
 
     for(const tile of tiles){
       const localAmount=this.surfaceLayerAmount(type,tile);
       if(localAmount<=SURFACE_EPSILON)continue;
+      layerKeys.push(this.surfaceResolver.keyOf(tile.x,tile.y));
       activeTiles++;
       const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
       const baseIndex=positions.length/3;
@@ -1156,7 +1159,7 @@ export class EnvironmentRenderer{
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
         const nw=baseIndex+row*4+col,ne=nw+1,sw=baseIndex+(row+1)*4+col,se=sw+1;
         const local=[row*4+col,row*4+col+1,(row+1)*4+col,(row+1)*4+col+1];
-        if(Math.max(...local.map(i=>alpha[i]))<=SURFACE_EPSILON)continue;
+        // Keep triangle topology fixed while alpha varies; fully clear patches remain invisible.
         const alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
         if(alternate===0)indices.push(nw,ne,se,nw,se,sw);
         else indices.push(nw,ne,sw,ne,se,sw);
@@ -1168,7 +1171,7 @@ export class EnvironmentRenderer{
     const mesh=new BABYLON.Mesh(`environment-surface-${type.toLowerCase()}`,this.scene);
     const data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.colors=colors;data.uvs=uvs;
-    data.applyToMesh(mesh,false);
+    data.applyToMesh(mesh,true);
     mesh.material=this.materials[type.toLowerCase()];
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
@@ -1177,7 +1180,7 @@ export class EnvironmentRenderer{
     mesh.metadata={
       kind:"environment-surface-layer",
       effectType:type,
-      activeTiles,
+      activeTiles,layerKeys,
       visualSurfaceResolver:true,
       microRegionsPerTile:9,
       mergedMesh:true,
@@ -1185,6 +1188,27 @@ export class EnvironmentRenderer{
       meshRebuildPerFrame:false
     };
     return mesh;
+  }
+
+  updateSurfaceLayer(type,tiles,byKey,mesh){
+    const positions=[],colors=[];
+    for(const tile of tiles){
+      if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
+      const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+      for(let row=0;row<4;row++)for(let col=0;col<4;col++){
+        const sample=patch[row][col],amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
+        positions.push(sample.x,this.layerVertexY(type,tile,sample,amount),sample.z);
+        colors.push(1,1,1,this.vertexLayerAlpha(type,tile,sample,amount));
+      }
+    }
+    if(positions.length!==mesh.getTotalVertices()*3)return false;
+    const normals=[];BABYLON.VertexData.ComputeNormals(positions,mesh.getIndices(),normals);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals);
+    mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
+    mesh.refreshBoundingInfo();
+    this.surfaceLayerMetrics.vertexUpdates++;
+    return true;
   }
 
   surfaceLayerSignature(tiles){
@@ -1208,12 +1232,16 @@ export class EnvironmentRenderer{
     const tiles=state?.map?.tiles||[];
     const signature=this.surfaceLayerSignature(tiles);
     if(signature===this.surfaceSignature)return;
-    this.disposeSurfaceLayers();
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
-
     for(const type of ["SNOW","ICE"]){
+      const layerTiles=tiles.filter(tile=>this.surfaceLayerAmount(type,tile)>SURFACE_EPSILON);
+      const layerKeys=layerTiles.map(tile=>this.surfaceResolver.keyOf(tile.x,tile.y));
+      const prior=this.surfaceMeshes.get(type);
+      const stable=prior&&prior.metadata?.layerKeys?.length===layerKeys.length&&layerKeys.every((key,i)=>key===prior.metadata.layerKeys[i]);
+      if(stable&&this.updateSurfaceLayer(type,tiles,byKey,prior))continue;
+      if(prior){prior.dispose();this.surfaceMeshes.delete(type);}
       const mesh=this.buildSurfaceLayer(type,tiles,byKey);
-      if(mesh)this.surfaceMeshes.set(type,mesh);
+      if(mesh){this.surfaceMeshes.set(type,mesh);this.surfaceLayerMetrics.rebuilds++;}
     }
     this.surfaceSignature=signature;
   }
@@ -1410,7 +1438,7 @@ export class EnvironmentRenderer{
       currentOverlay:false,
       currentVisualOwner:"WaterRenderer",
       waterFlowPresentation:"animated-water-surface",
-      surfaceLayers,
+      surfaceLayers,surfaceLayerMetrics:{...this.surfaceLayerMetrics},
       visualSurfaceResolver:true,
       microRegionSurfaceLayers:true,
       perTileSnowBoxes:false,

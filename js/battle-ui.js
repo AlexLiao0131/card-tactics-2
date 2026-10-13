@@ -18,6 +18,7 @@ export class BattleUI{
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
     this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
+     this.logRenderQueued=false;this.logRenderedTail=null;this.logRenderedLength=-1;this.logRenderedTab=null;
   }
 
   bind(runtime,renderer){
@@ -68,7 +69,7 @@ export class BattleUI{
     window.addEventListener("cardtactics:view-change",()=>this.renderView());
     window.addEventListener("cardtactics:battle-render",()=>this.render());
     window.addEventListener("cardtactics:state",()=>this.render());
-    window.addEventListener("cardtactics:log",()=>this.renderLog());
+    window.addEventListener("cardtactics:log",()=>this.queueLogRender());
     window.addEventListener("cardtactics:inspection",()=>this.renderContext());
 
     this.render();
@@ -214,14 +215,22 @@ export class BattleUI{
     }
   }
 
+  queueLogRender(){
+    if(!this.logShell?.classList.contains("active")||this.logRenderQueued)return;
+    this.logRenderQueued=true;
+    requestAnimationFrame(()=>{this.logRenderQueued=false;this.renderLog();});
+  }
   renderLog(){
+    if(!this.logShell?.classList.contains("active"))return;
     const model=this.runtime?.getBattleLog?.();if(!model)return;
+    const entries=model.entries||[],tail=entries[entries.length-1]||null;
+    if(this.logRenderedTail===tail&&this.logRenderedLength===entries.length&&this.logRenderedTab===model.active)return;
+    this.logRenderedTail=tail;this.logRenderedLength=entries.length;this.logRenderedTab=model.active;
     this.logTabs?.querySelectorAll("[data-log-type]").forEach(button=>{
       const active=button.dataset.logType===model.active;
       button.classList.toggle("active",active);
       button.setAttribute("aria-selected",String(active));
     });
-    const entries=model.entries||[];
     this.logPanel.innerHTML=entries.length
       ?entries.map(entry=>`<div class="log-row ${esc(entry.type)}">${esc(entry.text)}</div>`).join("")
       :`<div class="log-empty">（目前沒有${model.active==="BATTLE"?"戰鬥":model.active==="SYSTEM"?"系統":"詳細"}紀錄）</div>`;

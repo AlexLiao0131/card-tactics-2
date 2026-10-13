@@ -5,6 +5,7 @@
 // recovery record. This is observational only: it never mutates Battle/Grid State.
 const MAX=320,SAVED_MAX=200,STORE_KEY="ct:diagnostics:session:v1",INCIDENT_KEY="ct:diagnostics:incident:v1",PREF_KEY="ct:diagnostics";
 const events=[];
+const perfCounters=Object.create(null);
 const now=()=>new Date().toISOString();
 const started=performance.now();
 const sessionId=`${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -51,6 +52,15 @@ function store(force=false){
     updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX)};
   writeStorage(STORE_KEY,JSON.stringify(record));
 }
+function recordPerf(name,elapsed){
+  if(!enabled)return;
+  const ms=Number(elapsed);if(!Number.isFinite(ms)||ms<0)return;
+  const stat=perfCounters[name]||(perfCounters[name]={samples:0,lastMs:0,maxMs:0,totalMs:0});
+  stat.samples++;stat.lastMs=Math.round(ms*100)/100;stat.maxMs=Math.max(stat.maxMs,stat.lastMs);stat.totalMs+=ms;
+  // Last 120 samples: bounded aggregation, not a second diagnostics event stream.
+  if(stat.samples>120){stat.samples=1;stat.totalMs=ms;stat.maxMs=stat.lastMs;}
+}
+function perfSnapshot(){return Object.fromEntries(Object.entries(perfCounters).map(([name,x])=>[name,{lastMs:x.lastMs,maxMs:x.maxMs,meanMs:Math.round(x.totalMs/Math.max(1,x.samples)*100)/100,samples:x.samples}]));}
 function push(type,data={}){
   if(!enabled&&type!=="ERROR"&&type!=="REJECTION")return;
   // Every entry stays compact so keeping the prior session is safe on iPhone.
@@ -153,6 +163,7 @@ function checkpoint(){
     hydrology:{storedD:numeric(storedD),soil:numeric(soil),wetTiles:wet,deepTiles:deep,maxDepth:numeric(maxDepth),snow:numeric(snow),ice:numeric(ice),flowingTiles:flowing},
     lighting:{sourceTypes:lightTypes,physicalLights:visual?.environment?.physicalLightsById?.size??null,sourceIds:lightSources.filter(source=>source?.source==="CORE_LIGHT"||source?.source==="CAPTURE_LIGHT").slice(0,12).map(source=>`${source.source}:${source.sourceId??"unknown"}`)},
     scene:scene?{meshes:scene.meshes?.length??null,materials:scene.materials?.length??null,textures:scene.textures?.length??null,lights:scene.lights?.length??null,activeMeshes:scene.getActiveMeshes?.()?.length??null}:null,
+     performance:perfSnapshot(),
     heap:memory()};
 }
 function sample(){
@@ -170,7 +181,7 @@ function sample(){
       }
     }
     lastWater=water;lastCheckpoint=sample;
-    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,lighting:sample.lighting,scene:sample.scene,heap:sample.heap});}
+    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,lighting:sample.lighting,scene:sample.scene,performance:sample.performance,heap:sample.heap});}
     store();
   }catch(err){push("DIAGNOSTICS_SAMPLE_FAILED",errorData(err));}
 }
@@ -191,7 +202,7 @@ setInterval(()=>{sample();store();},5000);
 function report(){
   const data={generatedAt:now(),userAgent:navigator.userAgent,enabled,sessionId,
     uptimeSeconds:Math.round((performance.now()-started)/1000),fps,
-    runtime:runtime(),renderer:renderer(),memory:memory(),checkpoint:lastCheckpoint,
+    runtime:runtime(),renderer:renderer(),memory:memory(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
     battleLog:{count:window.CardTacticsRuntime?.getBattleLog?.()?.entries?.length??null,max:window.BattleLog?.MAX_ENTRIES??null},
     presentation:audit(),storageWarning:storageWarning||null,
     previousSession:previousSession?{status:previousStatus,...previousSession}:null,
@@ -246,6 +257,6 @@ function mount(){
   refresh();
 }
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",mount);else mount();
-window.CardTacticsDiagnostics={push,gameAction,report,copy,clear,isEnabled:()=>enabled};
+window.CardTacticsDiagnostics={push,gameAction,recordPerf,report,copy,clear,isEnabled:()=>enabled};
 if(enabled){push("SESSION_START",{previousStatus:previousStatus||null});sample();store(true);}
 })();

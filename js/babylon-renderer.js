@@ -142,12 +142,17 @@ export class BabylonRenderer{
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
 
+    this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
     this.engine.runRenderLoop(()=>{
+      const frameStart=performance.now();
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
+      const renderStart=performance.now();
       this.scene.render();
+      this.performanceStats.renderMs=Math.round((performance.now()-renderStart)*100)/100;
       this.unitHud.updateFrame();
+      this.performanceStats.frameMs=Math.round((performance.now()-frameStart)*100)/100;
     });
 
     window.addEventListener("resize",()=>this.resize());
@@ -405,6 +410,7 @@ export class BabylonRenderer{
   }
 
   syncSubsystem(name,fn){
+    const started=performance.now();
     try{
       fn();
       this.subsystemErrors.delete(name);
@@ -416,6 +422,11 @@ export class BabylonRenderer{
         console.error(`[BabylonRenderer:${name}]`,error);
       }
       return false;
+    }finally{
+      const ms=Math.round((performance.now()-started)*100)/100;
+      this.performanceStats??={frameMs:0,renderMs:0,syncSubsystemMs:{}};
+      this.performanceStats.syncSubsystemMs[name]=ms;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.(`renderSync.${name}`,ms);
     }
   }
 
@@ -489,6 +500,7 @@ export class BabylonRenderer{
 
   diagnostics(){
     return{
+      performance:{...this.performanceStats,syncSubsystemMs:{...this.performanceStats?.syncSubsystemMs}},
       projection:this.camera.getViewState().projection,
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,

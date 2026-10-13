@@ -28,7 +28,8 @@ const CFG=Object.freeze({
 const key=(x,y)=>`${x},${y}`;
 const clean=n=>Math.max(0,Math.round(Number(n||0)*1000)/1000);
 const clamp=(v,min,max)=>Math.max(min,Math.min(max,Number(v||0)));
-const tileAt=(map,x,y)=>map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
+// Consume the same authoritative tile lookup used by tactical movement and vision.
+const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngine.tile(map,x,y):map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
 const neighbors=(map,tile)=>DIRS.map(([dx,dy])=>tileAt(map,tile.x+dx,tile.y+dy)).filter(Boolean);
 const elevation=t=>Number(t?.elevation||0);
 const water=t=>Math.max(0,Number(t?.waterDepth||0));
@@ -50,8 +51,8 @@ function groundCoverStability(tile){
   const terrain=String(tile?.terrain||tile?.dryTerrain||""),explicit=Math.max(0,Number(tile?.vegetation||0))*.08;
   return Math.max(explicit,terrain==="FOREST"?CFG.FOREST_GROUND_COVER_STABILITY:0);
 }
-function vegetationStability(map,tile){
-  const roots=Math.max(0,Number(globalThis.EnvironmentObjectEngine?.rootStrengthAt?.(map,tile)||0));
+function vegetationStability(map,tile,knownRoots=null){
+  const roots=knownRoots==null?Math.max(0,Number(globalThis.EnvironmentObjectEngine?.rootStrengthAt?.(map,tile)||0)):Math.max(0,Number(knownRoots||0));
   return clamp(groundCoverStability(tile)+roots,0,.34);
 }
 function surfaceFriction(state,tile){
@@ -63,8 +64,8 @@ function surfaceFriction(state,tile){
   if(water(tile)>0)return .65;
   return 1;
 }
-function stability(state,tile,map=null){
-  const wet=moistureRatio(tile),veg=vegetationStability(map,tile),frozen=frozenSoil(state,tile)?CFG.FROZEN_STABILITY:0,sand=material(tile)==="SAND"?CFG.SAND_STABILITY_PENALTY:0;
+function stability(state,tile,map=null,knownRoots=null){
+  const wet=moistureRatio(tile),veg=vegetationStability(map,tile,knownRoots),frozen=frozenSoil(state,tile)?CFG.FROZEN_STABILITY:0,sand=material(tile)==="SAND"?CFG.SAND_STABILITY_PENALTY:0;
   return Math.max(0,Math.min(1,1-wet*.72+veg+frozen-sand));
 }
 function riskBucket(tile,kind){tile.massFlowRisk??={};tile.massFlowRisk[kind]??={warningTurn:null,cooldownUntil:0};return tile.massFlowRisk[kind];}
@@ -78,8 +79,8 @@ function ensureTileState(map,state){
     tile.surfaceFriction=surfaceFriction(state,tile);
     tile.frozenSoil=frozenSoil(state,tile);
     tile.rootStrength=clean(Number(globalThis.EnvironmentObjectEngine?.rootStrengthAt?.(map,tile)||0));
-    tile.vegetationStability=clean(vegetationStability(map,tile));
-    tile.slopeStability=stability(state,tile,map);
+    tile.vegetationStability=clean(vegetationStability(map,tile,tile.rootStrength));
+    tile.slopeStability=stability(state,tile,map,tile.rootStrength);
     tile.rockCohesion=rockMaterial(tile)?Math.max(0,Math.min(1,Number(tile.rockCohesion??CFG.ROCK_BASE_COHESION))):0;
     if(firstThisTurn){
       tile.rockFracture=rockMaterial(tile)?clean(Number(tile.rockFracture||0)*CFG.ROCK_FRACTURE_DECAY):0;
@@ -118,7 +119,7 @@ function warningGate(tile,kind,state,events,{unstable=false,source="ENVIRONMENT_
 }
 function snowCandidate(map,state,tile,events,source){
   const next=downhill(map,tile);if(!next||next.drop<CFG.SNOW_FAILURE_MIN_DROP){resetRisk(tile,"SNOW");return null;}
-  const depth=snow(tile),disturbance=Number(tile.disturbance||0),veg=vegetationStability(map,tile);
+  const depth=snow(tile),disturbance=Number(tile.disturbance||0),veg=Number(tile.vegetationStability??vegetationStability(map,tile));
   const snowStability=Math.max(0,Math.min(1,CFG.SNOW_FAILURE_BASE_STABILITY+veg*.65-Math.max(0,depth-CFG.SNOW_FAILURE_DEPTH)*.18-disturbance*.3));tile.snowStability=snowStability;
   const unstable=depth>=CFG.SNOW_FAILURE_DEPTH&&snowStability<=.45;if(!unstable){resetRisk(tile,"SNOW");return null;}
   const released=Math.min(depth,Math.max(.55,depth*(.5+disturbance*.15))),flow=createFlow(map,tile,"SNOW",released);if(!flow||flow.path.length<2)return null;
@@ -128,7 +129,7 @@ function snowCandidate(map,state,tile,events,source){
 function soilCandidate(map,state,tile,events,source){
   if(water(tile)>.001||tile?.terrain==="WATER"){resetRisk(tile,"SOIL");return null;}
   const next=downhill(map,tile);if(!next||next.drop<CFG.SLOPE_FAILURE_MIN_DROP){resetRisk(tile,"SOIL");return null;}
-  const ratio=moistureRatio(tile),stab=stability(state,tile,map),disturbance=Number(tile.disturbance||0),unstable=ratio>=CFG.SLOPE_FAILURE_MOISTURE_RATIO&&!frozenSoil(state,tile)&&stab-disturbance*.2<=.36;
+  const ratio=moistureRatio(tile),stab=Number(tile.slopeStability??stability(state,tile,map)),disturbance=Number(tile.disturbance||0),unstable=ratio>=CFG.SLOPE_FAILURE_MOISTURE_RATIO&&!frozenSoil(state,tile)&&stab-disturbance*.2<=.36;
   if(!unstable){resetRisk(tile,"SOIL");return null;}
   const mass=Math.max(CFG.SLOPE_FAILURE_MIN_MASS,ratio*(1-stab)+disturbance*.15),flow=createFlow(map,tile,"SOIL",mass);if(!flow||flow.path.length<2)return null;
   if(!warningGate(tile,"SOIL",state,events,{unstable,source,material:"SOIL",path:flow.path,immediate:source!=="ENVIRONMENT_TICK"&&disturbance>=.75}))return null;
@@ -165,6 +166,7 @@ function applyCandidate(map,state,candidate,events){
   else events.push(MassFlowEngine.event(flow,{source,damage:20+flow.mass*24,forceDistance:Math.max(1,Math.min(4,Math.ceil(flow.mass/1.1))),extra:{terrainEvolution:terrain}}));
 }
 function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
+  const started=globalThis.performance?.now?.()??0;
   const events=[];if(!map||!state)return events;ensureTileState(map,state);
   for(const tile of map.tiles||[]){
     if(tile.frozenSoil&&!tile._frozenSoil)events.push({type:"SOIL_FROZEN",x:tile.x,y:tile.y,temperature:tile.temperature,soilMoisture:moisture(tile)});
@@ -188,6 +190,7 @@ function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
   if(events.some(e=>e.type==="ELEVATION_CHANGED"&&e.source&&String(e.source).includes("FAILURE")))globalThis.HydrologyEngine?.redistribute?.(map,{source:"MASS_FLOW",events});
   ensureTileState(map,state);
   events.push({type:"ENVIRONMENT_RESOLVED",source,tiles:map.tiles?.length||0,massFlows:events.filter(e=>e.type==="MASS_FLOW").length,warnings:events.filter(e=>e.type==="MASS_FLOW_WARNING").length});
+  if(started)globalThis.CardTacticsDiagnostics?.recordPerf?.('environmentResolveMs',(globalThis.performance?.now?.()??started)-started);
   return events;
 }
 function disturb(map,x,y,amount=1,{source="DISTURBANCE"}={}){

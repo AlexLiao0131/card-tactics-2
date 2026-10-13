@@ -16,7 +16,8 @@ export const MassFlowEngine=(()=>{
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
   const round=value=>Math.round(Number(value||0)*1000)/1000;
   const clean=value=>Math.max(0,round(value));
-  const tileAt=(map,x,y)=>map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
+  // Shared canonical Grid tile index; no second hydrology state or coordinate cache.
+const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngine.tile(map,x,y):map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
   const elevation=tile=>Number(tile?.elevation||0);
   const snow=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const moisture=tile=>Math.max(0,Number(globalThis.HydrologyEngine?.soilMoisture?.(tile)||0));
