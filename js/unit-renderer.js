@@ -242,6 +242,21 @@ export class UnitRenderer{
     makePart("leftWeapon",[-.30,.80,.05]);
     makePart("rightWeapon",[.30,.80,.05]);
     makePart("tail",[0,.88,-.17]);
+    // Reusable angelic silhouette roots. Each wing hinges at the shoulder so
+    // flight, aiming, and landing can articulate without moving the torso.
+    makePart("leftWing",[-.24,1.36,-.22]);
+    makePart("rightWing",[.24,1.36,-.22]);
+    makePart("halo",[0,1.82,-.08]);
+    if(figure.holyBow){
+      // Hand attachment: the bow pivot belongs to the LEFT arm, not the scene.
+      // Keep its stored base transform consistent with resetPose().
+      const hand=[-.305,.70,.09],shoulder=figureParts.leftArm.metadata.figurePivot;
+      const bowRoot=figureParts.bow;
+      bowRoot.parent=figureParts.leftArm;
+      bowRoot.position.set((hand[0]-shoulder[0])*scale,(hand[1]-shoulder[1])*scale,(hand[2]-shoulder[2])*scale);
+      bowRoot.metadata.figurePivot=[...hand];
+      bowRoot.metadata.figureBase.position.copyFrom(bowRoot.position);
+    }
 
     const localPoint=(partName,point)=>{
       const pivot=figureParts[partName]?.metadata?.figurePivot||[0,0,0];
@@ -292,6 +307,7 @@ export class UnitRenderer{
     material.innerEar.backFaceCulling=false;
     material.scaleLight.backFaceCulling=false;
     material.tabard.backFaceCulling=false;
+    material.pearl.backFaceCulling=false;
     material.gold.backFaceCulling=false;
     material.arcane.backFaceCulling=false;
     material.arcane.emissiveColor=this.figureColor(colors.arcaneEmissive||colors.arcane||colors.gem||"#9a64d8").scale(.72);
@@ -561,6 +577,22 @@ export class UnitRenderer{
       sphere("figure-scale-chest-gem",.075,material.gem,[0,1.34,.215],[.72,1,.40],7,"body");
     }
 
+    if(figure.celestialAttire){
+      // Bodice and independent layered cloth. No generic heavy-armour shell.
+      cylinder("figure-celestial-bodice",.43,.39,.30,material.tabard,[0,1.18,.02],null,10,"body");
+      cylinder("figure-celestial-waist",.23,.29,.29,material.tabard,[0,.97,.02],null,9,"body");
+      for(const side of [-1,1]){
+        const label=side<0?"l":"r";
+        box(`figure-celestial-corset-line-${label}`,[.026,.37,.025],material.gold,[side*.12,1.16,.177],[0,0,side*.20],"body");
+        sphere(`figure-celestial-shoulder-gem-${label}`,.065,material.gem,[side*.22,1.39,.135],[.70,.80,.43],6,"body");
+        box(`figure-celestial-harness-${label}`,[.026,.41,.024],material.gold,[side*.165,1.17,.177],[0,0,-side*.26],"body");
+        box(`figure-celestial-sleeve-band-${label}`,[.14,.035,.12],material.gold,[side*.28,1.16,.075],null,side<0?"leftArm":"rightArm");
+      }
+      sphere("figure-celestial-bodice-crystal",.085,material.gem,[0,1.31,.205],[.74,1,.40],7,"body");
+      box("figure-celestial-center-ornament",[.027,.27,.025],material.gold,[0,1.12,.206],null,"body");
+      sphere("figure-celestial-belt-gem",.066,material.gem,[0,.965,.184],[.75,.75,.45],7,"body");
+    }
+
     if(figure.mediumPlate){
       sphere("figure-medium-pauldron-l",.24,material.armor,[-.29,1.31,-.004],[1.15,.48,.95],6,"leftArm");
       sphere("figure-medium-pauldron-r",.22,material.armor,[.29,1.31,-.004],[1.08,.44,.92],6,"rightArm");
@@ -785,6 +817,70 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.angelWings){
+      // Three light mesh layers per side, not a separate mesh for every feather.
+      // x/y live in figure coordinates and are converted by the common custom()
+      // builder. Geometry is behind the body so it keeps the face/bow readable.
+      const featherLayer=(tag,side,part,rows,mat)=>{
+        const vertices=[],indices=[];
+        for(const [a,b,c] of rows){
+          const start=vertices.length;
+          vertices.push([side*a[0],a[1],a[2]],[side*b[0],b[1],b[2]],[side*c[0],c[1],c[2]]);
+          indices.push(start,start+1,start+2);
+        }
+        custom(`figure-wing-${tag}`,vertices,indices,mat,part);
+      };
+      for(const side of [-1,1]){
+        const part=side<0?"leftWing":"rightWing",tag=side<0?"l":"r";
+        const mantle=[
+          [[.22,1.37,-.235],[.44,1.85,-.28],[.76,1.65,-.31]],
+          [[.44,1.85,-.28],[1.12,1.97,-.34],[.76,1.65,-.31]],
+          [[1.12,1.97,-.34],[1.47,1.54,-.39],[.76,1.65,-.31]],
+          [[1.47,1.54,-.39],[1.42,.75,-.42],[.76,1.65,-.31]]
+        ];
+        featherLayer(`${tag}-mantle`,side,part,mantle,material.pearl);
+        const primaries=[],secondaries=[];
+        for(let i=0;i<10;i++){
+          const t=i/9;
+          const baseX=.42+t*.91,baseY=1.80-t*.47;
+          primaries.push([
+            [baseX,baseY,-.33],[baseX+.20,baseY-.16,-.37],
+            [.77+t*.65,1.34-t*.73-(i%2)*.045,-.41]
+          ]);
+        }
+        for(let i=0;i<7;i++){
+          const t=i/6;
+          secondaries.push([
+            [.33+t*.77,1.58-t*.27,-.30],
+            [.45+t*.85,1.48-t*.30,-.34],
+            [.69+t*.67,1.23-t*.44,-.36]
+          ]);
+        }
+        featherLayer(`${tag}-primaries`,side,part,primaries,material.tabard);
+        featherLayer(`${tag}-secondaries`,side,part,secondaries,material.pearl);
+        const path=[[side*.23,1.37,-.226],[side*.43,1.80,-.28],[side*.83,1.85,-.32],[side*1.30,1.46,-.39]].map(p=>localPoint(part,p));
+        const goldRib=BABYLON.MeshBuilder.CreateTube(`figure-wing-gold-rib-${tag}-${unit.id}`,{
+          path,radius:.012*scale,tessellation:5
+        },this.scene);
+        finish(goldRib,material.gold,null,null,null,{part,castShadow:false});
+        for(const [i,x,y] of [[0,.56,1.72],[1,1.17,1.49]]){
+          sphere(`figure-wing-sapphire-${tag}-${i}`,.065,material.gem,[side*x,y,-.274],[.72,1,.45],6,part);
+          box(`figure-wing-gold-tassel-${tag}-${i}`,[.017,.15,.016],material.gold,[side*x,y-.13,-.267],[0,0,side*.15],part);
+        }
+      }
+    }
+    if(figure.angelHalo){
+      const halo=BABYLON.MeshBuilder.CreateTorus(`figure-angel-halo-${unit.id}`,{
+        diameter:.44*scale,thickness:.022*scale,tessellation:22
+      },this.scene);
+      finish(halo,material.gold,[0,1.82,-.083],[Math.PI/2,0,0],null,{part:"halo",castShadow:false});
+      for(let i=0;i<8;i++){
+        const a=i*Math.PI/4,x=Math.cos(a)*.25,y=1.82+Math.sin(a)*.25;
+        sphere(`figure-angel-halo-point-${i}`,.075,material.gold,[x,y,-.081],[.65,.85,.52],5,"halo");
+      }
+      sphere("figure-angel-halo-top-gem",.060,material.gem,[0,2.10,-.075],[.8,1,.48],6,"halo");
+    }
+
     // Quiver and visible arrow tips/fletching.
     if(figure.quiver!==false){
       cylinder("figure-quiver",.56,.14,.18,material.leather,[.275,1.18,-.225],[0,0,-.20],6,"quiver");
@@ -820,6 +916,42 @@ export class UnitRenderer{
       },this.scene);
       string.parent=figureParts.bow;string.color=this.figureColor(colors.bowString||"#d9c6a7");string.isPickable=false;
       string.metadata={kind:"unit-part",unitId:unit.id,figurePart:"bow",castShadow:false,lineOnly:true};meshes.push(string);
+    }
+
+    if(figure.holyBow){
+      // One white-and-gold bow, gripped at x=-.305 y=.70. Because the bow's
+      // pivot is a child of leftArm, raising that arm carries the entire bow.
+      const part="bow",path=[];
+      for(let i=0;i<=16;i++){
+        const t=i/16,y=.18+t*1.34;
+        const outside=Math.sin(t*Math.PI);
+        const x=-.45+.15*Math.pow(outside,2)+.06*Math.sin(t*Math.PI*2);
+        path.push(localPoint(part,[x,y,.105]));
+      }
+      const arc=BABYLON.MeshBuilder.CreateTube(`figure-holy-bow-white-${unit.id}`,{
+        path,radius:.032*scale,tessellation:7
+      },this.scene);
+      finish(arc,material.pearl,null,null,null,{part});
+      const goldLine=path.map(p=>new BABYLON.Vector3(p.x,p.y,p.z+.023*scale));
+      const rim=BABYLON.MeshBuilder.CreateTube(`figure-holy-bow-gold-${unit.id}`,{
+        path:goldLine,radius:.009*scale,tessellation:5
+      },this.scene);
+      finish(rim,material.gold,null,null,null,{part});
+      cylinder("figure-holy-bow-hand-grip",.17,.06,.055,material.gold,[-.305,.70,.105],null,8,part);
+      sphere("figure-holy-bow-sapphire",.087,material.gem,[-.30,.70,.155],[.72,.88,.48],7,part);
+      for(const [name,y,x] of [["upper",1.38,-.42],["lower",.30,-.42]]){
+        custom(`figure-holy-bow-feather-${name}`,[[x-.12,y+.15,.13],[x+.055,y+.12,.12],[x+.055,y-.13,.13]],
+          [0,1,2],material.pearl,part);
+        sphere(`figure-holy-bow-gem-${name}`,.065,material.gem,[x,y,.145],[.70,.90,.40],6,part);
+      }
+      const string=BABYLON.MeshBuilder.CreateLines(`figure-holy-bow-string-${unit.id}`,{
+        points:[path[0],path[path.length-1]]
+      },this.scene);
+      string.parent=figureParts.bow;
+      string.isPickable=false;
+      string.color=this.figureColor(colors.bowString||"#f7f5ee");
+      string.metadata={kind:"unit-part",unitId:unit.id,figurePart:"bow",castShadow:false,lineOnly:true};
+      meshes.push(string);
     }
 
     // Side sword and pommel, kept simple because it is secondary equipment.
@@ -896,6 +1028,22 @@ export class UnitRenderer{
         box("figure-tabard-top-trim",[.30,.040,.028],material.gold,[0,.94,.18],null,"skirt");
         sphere("figure-tabard-emblem",.080,material.holy,[0,.78,.19],[.90,.90,.35],7,"skirt");
         box("figure-tabard-bottom-trim",[.31,.035,.026],material.gold,[0,.31,.16],null,"skirt");
+      }
+    }
+
+    if(figure.celestialDrapes){
+      // Light outer silk with blue reverse layers. Movement uses the shared
+      // skirt pivot; the legs remain real and visible beneath the front split.
+      const capelet=(name,points,mat)=>custom(name,points,[0,2,1,0,3,2],mat,"skirt");
+      capelet("figure-celestial-front-l",[[-.28,.94,.16],[-.02,.94,.20],[-.13,.22,.27],[-.48,.12,.15]],material.tabard);
+      capelet("figure-celestial-front-r",[[.02,.94,.20],[.28,.94,.16],[.48,.12,.15],[.13,.22,.27]],material.tabard);
+      capelet("figure-celestial-inner-l",[[-.35,.95,.01],[-.19,.95,.09],[-.57,.08,.10],[-.70,.18,-.03]],material.cape);
+      capelet("figure-celestial-inner-r",[[.19,.95,.09],[.35,.95,.01],[.70,.18,-.03],[.57,.08,.10]],material.cape);
+      capelet("figure-celestial-back",[[-.28,.92,-.15],[.28,.92,-.15],[.64,.05,-.28],[-.64,.05,-.28]],material.tabard);
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r";
+        box(`figure-celestial-hem-gold-${tag}`,[.023,.47,.023],material.gold,[side*.29,.48,.188],[0,0,side*.10],"skirt");
+        sphere(`figure-celestial-hem-gem-${tag}`,.060,material.gem,[side*.34,.26,.190],[.70,1,.45],6,"skirt");
       }
     }
 
@@ -1380,6 +1528,26 @@ export class UnitRenderer{
     }
   }
 
+  applyFigureWingPose(entry,unit,phase,{moving=false,now=performance.now(),attack=false}={}){
+    const parts=entry.figureParts,wingMotion=entry.definition?.figure?.wingMotion;
+    if(entry.kind!=="FIGURE"||!parts?.leftWing||!parts?.rightWing||!wingMotion)return false;
+    const air=String(unit?.verticalMode||unit?.character?.verticalMobility?.defaultMode||"").toUpperCase()==="FLYING";
+    const cycle=(moving?phase*3.3:now/1100)*Math.PI*2;
+    const flap=Math.sin(cycle)*(air?Number(wingMotion.flightFlap??.25):Number(wingMotion.groundFlap??.04));
+    const open=air?Number(wingMotion.flightSpread??.24):Number(wingMotion.groundFold??.38);
+    parts.leftWing.rotation.z-=open+flap;
+    parts.rightWing.rotation.z+=open+flap;
+    parts.leftWing.rotation.y+=air?-.07:.45;
+    parts.rightWing.rotation.y+=air?.07:-.45;
+    if(parts.halo)parts.halo.rotation.z+=Math.sin(cycle*.42)*.025;
+    if(air){
+      entry.root.position.y+=Math.sin(cycle*.5)*Number(wingMotion.hoverBob??.045);
+      if(parts.hairBack)parts.hairBack.rotation.x+=.12+flap*.15;
+      if(parts.skirt)parts.skirt.rotation.x+=.08+flap*.10;
+    }
+    return true;
+  }
+
   applyFigureAquaticPose(entry,unit,phase,{moving=false,now=performance.now()}={}){
     const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
     const mode=String(unit?.verticalMode||"").toUpperCase();
@@ -1434,6 +1602,14 @@ export class UnitRenderer{
       if(parts.leftArm){parts.leftArm.rotation.x-=raise*1.15;parts.leftArm.rotation.z-=raise*.34;}
       if(parts.rightArm){parts.rightArm.rotation.x-=raise*.84;parts.rightArm.rotation.z+=draw*.92-recover*.16;}
       parts.bow.rotation.x-=raise*.88;parts.bow.rotation.z+=raise*.16;
+      if(entry.definition?.figure?.holyBow){
+        // Wider wing stance at full draw; release returns to the flight/idle pose.
+        if(parts.leftWing)parts.leftWing.rotation.z-=draw*.28;
+        if(parts.rightWing)parts.rightWing.rotation.z+=draw*.28;
+        // Pull the free hand toward the bowstring, then snap it back at release.
+        if(parts.rightArm){parts.rightArm.position.x-=draw*.28;parts.rightArm.position.z+=draw*.10;}
+        if(parts.bow)parts.bow.rotation.y+=raise*.10;
+      }
       if(parts.body){parts.body.rotation.y-=draw*.20;parts.body.rotation.z-=draw*.06;}
       if(parts.cape)parts.cape.rotation.x+=draw*.12-recover*.07;
       if(parts.hairBack)parts.hairBack.rotation.x+=draw*.08;
@@ -1561,6 +1737,18 @@ export class UnitRenderer{
     }
     if(entry.kind==="FIGURE"){
       if(this.applyFigureAquaticPose(entry,unit,local,{moving:true,now:performance.now()}))return;
+      const flying=String(unit?.verticalMode||unit?.character?.verticalMobility?.defaultMode||"").toUpperCase()==="FLYING";
+      if(flying&&entry.definition?.figure?.wingMotion){
+        this.applyFigureWingPose(entry,unit,local,{moving:true});
+        const parts=entry.figureParts||{},sway=Math.sin(local*Math.PI*2);
+        if(parts.leftLeg)parts.leftLeg.rotation.x+=.12+sway*.10;
+        if(parts.rightLeg)parts.rightLeg.rotation.x+=.05-sway*.10;
+        if(parts.leftArm)parts.leftArm.rotation.x-=sway*.11;
+        if(parts.rightArm)parts.rightArm.rotation.x+=sway*.12;
+        if(parts.bow)parts.bow.rotation.z+=sway*.04;
+        if(parts.cape)parts.cape.rotation.x+=.16;
+        return;
+      }
       const motion=definition?.figureMotion||{};
       entry.root.position.y+=Math.abs(step)*Number(motion.bodyBob??.065);
       entry.root.rotation.z=step*Number(motion.rootSway??.035);
@@ -1577,6 +1765,7 @@ export class UnitRenderer{
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
+    if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
     const weaponAction=this.attackTypeFor(event);
     if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
@@ -1618,6 +1807,18 @@ export class UnitRenderer{
 
     if(procedural==="CAST"||state==="CAST"){
       const pulse=Math.sin(Math.PI*progress);
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.holyBow){
+        const parts=entry.figureParts||{},ready=Math.sin(Math.PI*progress);
+        if(parts.leftArm){parts.leftArm.rotation.x-=ready*.85;parts.leftArm.rotation.z-=ready*.16;}
+        if(parts.rightArm){parts.rightArm.rotation.x-=ready*.62;parts.rightArm.rotation.z+=ready*.48;}
+        if(parts.bow){parts.bow.rotation.x-=ready*.60;parts.bow.rotation.z+=ready*.12;}
+        if(parts.leftWing)parts.leftWing.rotation.z-=ready*.25;
+        if(parts.rightWing)parts.rightWing.rotation.z+=ready*.25;
+        if(parts.hairBack)parts.hairBack.rotation.x+=ready*.14;
+        if(parts.skirt)parts.skirt.rotation.x+=ready*.12;
+        entry.root.position.y+=ready*.075;
+        return;
+      }
       if(entry.kind==="FIGURE"&&entry.definition?.figure?.arcaneStaff){
         const parts=entry.figureParts||{},skillId=String(event?.skillId||"");
         const intense=skillId.includes("dimension_collapse")||skillId.includes("existence_breakdown")?1.18:1;

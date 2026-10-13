@@ -503,6 +503,35 @@ export const VISUALS={
         }
       }
     },
+    angel_archer_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.73,
+        figure:{
+          style:"CELESTIAL_ARCHER",braid:false,longHair:true,pointedEars:true,
+          angelHalo:true,angelWings:true,wingMotion:{flightFlap:.24,groundFlap:.035,flightSpread:.23,groundFold:.34,hoverBob:.045},
+          celestialAttire:true,celestialDrapes:true,replaceBaseTorso:true,bareArms:true,
+          cape:false,bow:false,holyBow:true,quiver:false,sideSword:false,skirtPanels:false,
+          bracerDetail:true,bootDetail:false,seaSandals:true,
+          colors:{
+            skin:"#f3d1bf",hair:"#e9e0ce",hairDark:"#c6bca9",eyes:"#81b2df",
+            cape:"#a7c4e3",capeDark:"#7d9ebe",shirt:"#f8f5ef",tabard:"#faf8f2",
+            pants:"#e9d8c5",boots:"#eee8d9",leather:"#d6c19c",leatherDark:"#b89b75",
+            gold:"#c9ac72",metal:"#d9c49e",armor:"#f3ede2",weapon:"#faf8f2",
+            bow:"#f6f2e9",bowString:"#f9f6e9",pearl:"#fff9f0",gem:"#80abd7",
+            accent:"#9cbadc",holy:"#fff4c9",holyEmissive:"#f9e2ad"
+          }
+        },
+        animations:{
+          IDLE:{duration:1220,loop:true,procedural:"BREATHE"},
+          WALK:{duration:190,loop:true,procedural:"STEP",figureMotion:{bodyBob:.025,rootSway:.013,bodySway:.011,torsoBob:.009,legSwing:.32,armSwing:.22,bowSwing:.16,capeSwing:.22,capeTwist:.065,braidSwing:.21,braidTwist:.065,followLag:.74}},
+          ATTACK:{duration:410,loop:false,procedural:"LUNGE"},
+          CAST:{duration:540,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:790,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     ophi_eagle:{
       battle:{
         kind:"BIRD",
