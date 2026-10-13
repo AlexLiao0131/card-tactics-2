@@ -118,6 +118,8 @@ export class EnvironmentRenderer{
     this.surfaceSignature="";
     this.visibilityHazeMesh=null;
     this.visibilityHazeSignature="";
+    this.visibilityHazeSightSignature="";
+    this.visibilityHazeSamples=[];
     this.lastState=null;
     this.weatherTime=0;
     this.impactAccumulator=0;
@@ -220,7 +222,11 @@ export class EnvironmentRenderer{
             haze.position.y=Number(meta.baseY||1)+wave*.06;
             haze.scaling.x=Number(meta.baseScaleX||1)*(1+wave*.045);
             haze.scaling.y=Number(meta.baseScaleY||1)*(1-wave*.025);
-            const age=Math.max(0,this.weatherTime-Number(entry.startedAt||0)),gather=.32+.68*clamp((age-.18)/1.35,0,1);haze.visibility=clamp(Number(meta.baseVisibility||.35)*gather*(1+wave*.08),0,.78);
+            const age=Math.max(0,this.weatherTime-Number(entry.startedAt||0)),gather=.32+.68*clamp((age-.18)/1.35,0,1);
+            // Physical smoke stays present: LOS can make a nearby pocket legible,
+            // but cannot erase a dense, vision-blocking plume.
+            const clarity=clamp(Number(entry.opticalClarity||0),0,1);
+            haze.visibility=clamp(Number(meta.baseVisibility||.35)*gather*(1+wave*.08)*(1-clarity*.50),0,.78);
           }
         }else if(entry.fireField){
           const pulse=.93+Math.sin(this.weatherTime*Number(entry.speed||3.6)+Number(entry.phase||0))*.07;
@@ -912,10 +918,16 @@ export class EnvironmentRenderer{
       return false;
     };
     for(const entry of this.smokeClusters.values()){
+      // The smoke cluster is one physical plume. Use the same published LOS as
+      // weather haze, weighted by its real occupied tiles; never reveal an
+      // unseen enemy or cut an entire multi-tile plume around one observer.
+      const cells=entry.tiles||[];
+      const visibleCells=cells.filter(point=>byKey.get(`${point.x},${point.y}`)?.atmosphericVisible===true).length;
+      entry.animated.opticalClarity=visibleCells/Math.max(1,cells.length);
       // Local SMOKE is the occluder itself: it must remain visible even though it
       // blocks LOS. Only a true global FOV mask may hide smoke that is completely
       // buried inside unexplored/fogged territory; boundary smoke stays visible.
-      const visible=!globalMaskActive||(entry.tiles||[]).some(touchesVisibleBoundary);
+      const visible=!globalMaskActive||cells.some(touchesVisibleBoundary);
       entry.root?.setEnabled?.(visible);
       if(entry.system)entry.system.emitRate=visible?Number(entry.baseEmitRate||0):0;
     }
@@ -1230,19 +1242,31 @@ export class EnvironmentRenderer{
   disposeVisibilityHaze(){
     this.visibilityHazeMesh?.dispose();
     this.visibilityHazeMesh=null;
+    this.visibilityHazeSamples=[];
   }
 
   visibilityHazeAlpha(tile,byKey,ox,oz,profile){
-    // Natural fog blankets the terrain continuously; FOV is a separate intel
-    // rule. Never fade at every grid seam just because tile.fogged is false.
-    return tile?clamp(Number(profile.alpha||0),0,1):0;
+    if(!tile)return 0;
+    // The published LOS is read-only tactical data. This is optical clarity,
+    // not a second enemy-discovery rule, and fog never disappears completely.
+    // Blend neighbouring cells at shared vertices so moving a unit does not
+    // produce rectangular clear patches or cracks along terrain seams.
+    const visible=sample=>sample?.atmosphericVisible===true?1:0;
+    const wx=clamp(Math.abs(ox),0,.5),wy=clamp(Math.abs(oz),0,.5);
+    const x=tile.x+(ox<0?-1:1),y=tile.y+(oz<0?-1:1);
+    const at=(xx,yy)=>byKey.get(this.surfaceResolver.keyOf(xx,yy));
+    const sight=(1-wx)*(1-wy)*visible(tile)+
+      wx*(1-wy)*visible(at(x,tile.y))+
+      (1-wx)*wy*visible(at(tile.x,y))+
+      wx*wy*visible(at(x,y));
+    return clamp(Number(profile.alpha||0)*(1-sight*.85),0,1);
   }
 
   buildVisibilityHaze(state,profile){
     const tiles=state?.map?.tiles||[];
     if(!tiles.length)return null;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
-    const positions=[],indices=[],colors=[];
+    const positions=[],indices=[],colors=[],samples=[];
     let activeTiles=0;
 
     for(const tile of tiles){
@@ -1256,6 +1280,7 @@ export class EnvironmentRenderer{
         const alpha=this.visibilityHazeAlpha(tile,byKey,sample.ox,sample.oz,profile);
         positions.push(sample.x,visualHeight*ELEVATION_HEIGHT+Number(profile.height||.4),sample.z);
         colors.push(profile.color[0],profile.color[1],profile.color[2],alpha);
+        samples.push({x:tile.x,y:tile.y,ox:sample.ox,oz:sample.oz});
       }
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
         const nw=baseIndex+row*4+col,ne=nw+1,sw=baseIndex+(row+1)*4+col,se=sw+1;
@@ -1267,7 +1292,10 @@ export class EnvironmentRenderer{
 
     if(!indices.length)return null;
     const mesh=new BABYLON.Mesh("weather-visibility-haze",this.scene),data=new BABYLON.VertexData();
-    data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,false);
+    // Colour alpha is updatable; unit movement never rebuilds the terrain
+    // geometry, water surface or the mist mesh itself.
+    data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,true);
+    this.visibilityHazeSamples=samples;
     mesh.material=this.visibilityHazeMaterial;
     mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;
     mesh.metadata={
@@ -1282,12 +1310,25 @@ export class EnvironmentRenderer{
   }
 
   syncVisibilityHaze(state){
-    const signature=this.visibilityHazeStateSignature(state);
-    if(signature===this.visibilityHazeSignature)return;
-    this.disposeVisibilityHaze();
-    const profile=this.visibilityHazeProfile(state);
-    if(profile)this.visibilityHazeMesh=this.buildVisibilityHaze(state,profile);
-    this.visibilityHazeSignature=signature;
+    const signature=this.visibilityHazeStateSignature(state),profile=this.visibilityHazeProfile(state);
+    const sightSignature=(state?.map?.tiles||[]).map(tile=>tile.atmosphericVisible===true?"1":"0").join("");
+    if(signature!==this.visibilityHazeSignature){
+      this.disposeVisibilityHaze();
+      if(profile)this.visibilityHazeMesh=this.buildVisibilityHaze(state,profile);
+      this.visibilityHazeSignature=signature;
+      this.visibilityHazeSightSignature=sightSignature;
+      return;
+    }
+    if(!profile||!this.visibilityHazeMesh||sightSignature===this.visibilityHazeSightSignature)return;
+    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
+    const colors=this.visibilityHazeMesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
+    if(!colors)return;
+    for(let i=0;i<this.visibilityHazeSamples.length;i++){
+      const sample=this.visibilityHazeSamples[i],tile=byKey.get(this.surfaceResolver.keyOf(sample.x,sample.y));
+      colors[i*4+3]=this.visibilityHazeAlpha(tile,byKey,sample.ox,sample.oz,profile);
+    }
+    this.visibilityHazeMesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
+    this.visibilityHazeSightSignature=sightSignature;
   }
 
   syncAtmosphere(state){
@@ -1335,7 +1376,6 @@ export class EnvironmentRenderer{
     this.syncLightField(state);
     this.syncFireGlows(state);
     const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
-    const friendlyUnits=(state?.units||[]).filter(unit=>unit?.friendlyToViewer),friendlyDistance=(tile)=>friendlyUnits.reduce((best,unit)=>Math.min(best,Math.abs(Number(unit.x)-Number(tile.x))+Math.abs(Number(unit.y)-Number(tile.y))),Infinity);
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
       const surface=surfaceOf(tile)*ELEVATION_HEIGHT;
@@ -1344,8 +1384,9 @@ export class EnvironmentRenderer{
         if(!node){node=this.create(type,key,tile);if(!node)continue;this.nodes.set(key,node);}
         node.position.set(tile.x*TILE_SIZE,surface,tile.y*TILE_SIZE);
         let visible=tile.fogged?(visibleLights.has(key)?.70:0):1;
-        const friendlyRange=friendlyDistance(tile);
-        if(type==="STEAM"&&friendlyRange===0)visible=Math.min(visible,.38);
+        // Steam follows the same LOS-derived local clarity as mist and smoke;
+        // keep a substantial physical cloud because it still obstructs a ray.
+        if(type==="STEAM"&&tile.atmosphericVisible===true)visible*=.55;
         node.getChildMeshes().forEach(mesh=>mesh.visibility=visible);
       }
     }

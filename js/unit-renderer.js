@@ -281,6 +281,8 @@ export class UnitRenderer{
       scale:this.figureMaterial("scale",colors.scale||"#2f6581"),
       scaleLight:this.figureMaterial("scale-light",colors.scaleLight||"#91c7d3"),
       pearl:this.figureMaterial("pearl",colors.pearl||"#e8eef0"),
+      horn:this.figureMaterial("horn",colors.horn||colors.leatherDark||"#44353c"),
+      arcane:this.figureMaterial("arcane",colors.arcane||colors.gem||"#9a64d8"),
       dark:this.figureMaterial("dark","#1d1c20")
     };
     material.cape.backFaceCulling=false;
@@ -289,6 +291,9 @@ export class UnitRenderer{
     material.tail.backFaceCulling=false;
     material.innerEar.backFaceCulling=false;
     material.scaleLight.backFaceCulling=false;
+    material.arcane.backFaceCulling=false;
+    material.arcane.emissiveColor=this.figureColor(colors.arcaneEmissive||colors.arcane||colors.gem||"#9a64d8").scale(.72);
+    material.arcane.specularColor=this.figureColor(colors.arcane||colors.gem||"#9a64d8");
     material.holy.backFaceCulling=false;
     material.holy.alpha=.72;
     material.holy.emissiveColor=this.figureColor(colors.holyEmissive||colors.holy||"#ffd86a").scale(.92);
@@ -376,6 +381,19 @@ export class UnitRenderer{
       custom("figure-ear-r",[[.155,1.57,.02],[.33,1.60,.015],[.165,1.48,.025]],[0,2,1],material.skin,"head");
     }
 
+    if(figure.demonHorns){
+      const horn=(side)=>{
+        const points=[
+          [side*.105,1.69,-.055],[side*.155,1.77,-.070],[side*.235,1.79,-.050],
+          [side*.285,1.73,-.020],[side*.275,1.65,.015],[side*.215,1.61,.035]
+        ].map(point=>localPoint("head",point));
+        const mesh=BABYLON.MeshBuilder.CreateTube(`figure-demon-horn-${side<0?"l":"r"}-${unit.id}`,{path:points,radius:.032*scale,tessellation:7,cap:BABYLON.Mesh.CAP_ALL},this.scene);
+        finish(mesh,material.horn,null,null,null,{part:"head"});
+        cylinder(`figure-demon-horn-band-${side<0?"l":"r"}`,.040,.080,.080,material.metal,[side*.232,1.775,-.047],[Math.PI/2,0,0],8,"head");
+      };
+      horn(-1);horn(1);
+    }
+
     if(figure.seaFinEars){
       custom("figure-sea-fin-ear-l",[[-.155,1.57,.015],[-.30,1.68,-.005],[-.28,1.54,.015],[-.31,1.45,.005]],[0,1,2,0,2,3],material.scaleLight,"head");
       custom("figure-sea-fin-ear-r",[[.155,1.57,.015],[.30,1.68,-.005],[.28,1.54,.015],[.31,1.45,.005]],[0,2,1,0,3,2],material.scaleLight,"head");
@@ -458,6 +476,17 @@ export class UnitRenderer{
       box("figure-waist-pouch-r",[.13,.15,.080],material.leather,[.235,.85,.08],[0,-.08,.05],"body");
       box("figure-waist-pouch-flap-l",[.115,.045,.095],material.leatherDark,[-.235,.905,.09],[.10,0,0],"body");
       box("figure-waist-pouch-flap-r",[.115,.045,.090],material.leatherDark,[.235,.91,.085],[.10,0,0],"body");
+    }
+
+    if(figure.scholarGear){
+      // Grimoire + writing-case silhouette, kept as a reusable mage equipment set.
+      box("figure-scholar-book",[.17,.29,.075],material.dark,[.245,.79,.105],[0,-.08,.04],"body");
+      box("figure-scholar-book-band-a",[.18,.028,.082],material.gold,[.245,.88,.11],[0,-.08,.04],"body");
+      box("figure-scholar-book-band-b",[.18,.028,.082],material.gold,[.245,.70,.11],[0,-.08,.04],"body");
+      box("figure-scholar-book-spine",[.028,.26,.082],material.gold,[.18,.79,.11],[0,-.08,.04],"body");
+      sphere("figure-scholar-book-gem",.050,material.gem,[.255,.79,.155],[.72,1,.42],6,"body");
+      box("figure-scholar-pouch",[.13,.17,.085],material.leatherDark,[-.23,.82,.085],[0,.08,-.04],"body");
+      sphere("figure-scholar-charm",.042,material.arcane,[-.19,.70,.15],[.65,1,.40],6,"body");
     }
 
     if(figure.pendant){
@@ -548,9 +577,11 @@ export class UnitRenderer{
     // Sleeves taper into bracers; bare-arm outfits swap the shared sleeve material
     // for skin while keeping any jewellery / bracer overlays as separate parts.
     const bareArms=figure.bareArms===true;
+    const clothSleeves=figure.clothSleeves===true;
+    const bareHands=figure.bareHands===true;
     const upperArmMaterial=bareArms?material.skin:material.shirt;
-    const forearmMaterial=bareArms?material.skin:material.leather;
-    const handMaterial=bareArms?material.skin:material.dark;
+    const forearmMaterial=bareArms?material.skin:(clothSleeves?material.shirt:material.leather);
+    const handMaterial=(bareArms||bareHands)?material.skin:material.dark;
     cylinder("figure-upper-arm-l",.30,.14,.12,upperArmMaterial,[-.265,1.20,0],[0,0,-.13],6,"leftArm");
     cylinder("figure-upper-arm-r",.30,.14,.12,upperArmMaterial,[.265,1.20,0],[0,0,.13],6,"rightArm");
     if(figure.chainmail){
@@ -563,6 +594,13 @@ export class UnitRenderer{
     box("figure-glove-r",[.105,.12,.115],handMaterial,[.305,.755,.055],[0,0,.03],"rightArm");
     sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
     sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
+
+    if(figure.clothSleeves){
+      cylinder("figure-cloth-cuff-l",.085,.155,.145,material.shirt,[-.303,.805,.055],[0,0,-.03],9,"leftArm");
+      cylinder("figure-cloth-cuff-r",.085,.155,.145,material.shirt,[.303,.805,.055],[0,0,.03],9,"rightArm");
+      box("figure-cloth-cuff-trim-l",[.15,.025,.145],material.accent,[-.303,.82,.07],[0,0,-.03],"leftArm");
+      box("figure-cloth-cuff-trim-r",[.15,.025,.145],material.accent,[.303,.82,.07],[0,0,.03],"rightArm");
+    }
 
     if(figure.bracerDetail){
       box("figure-bracer-band-l",[.145,.055,.14],material.metal,[-.298,.99,.04],[0,0,-.05],"leftArm");
@@ -770,6 +808,16 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.scholarRobe){
+      custom("figure-scholar-inner-front",[[-.15,.96,.155],[.15,.96,.155],[.19,.24,.13],[-.19,.24,.13]],[0,2,1,0,3,2],material.shirt,"skirt");
+      custom("figure-scholar-robe-l",[[-.32,.94,.02],[-.08,.95,.03],[-.12,.10,-.02],[-.43,.22,-.04]],[0,2,1,0,3,2],material.cape,"skirt");
+      custom("figure-scholar-robe-r",[[.08,.95,.03],[.32,.94,.02],[.43,.22,-.04],[.12,.10,-.02]],[0,2,1,0,3,2],material.cape,"skirt");
+      custom("figure-scholar-robe-back",[[-.28,.94,-.14],[.28,.94,-.14],[.36,.12,-.22],[-.36,.12,-.22]],[0,1,2,0,2,3],material.capeDark,"skirt");
+      box("figure-scholar-front-trim",[.032,.62,.025],material.gold,[0,.58,.175],null,"skirt");
+      box("figure-scholar-left-trim",[.028,.68,.022],material.gold,[-.27,.55,.05],[0,0,-.06],"skirt");
+      box("figure-scholar-right-trim",[.028,.68,.022],material.gold,[.27,.55,.05],[0,0,.06],"skirt");
+    }
+
     if(figure.royalTabard){
       custom("figure-tabard-front",[[-.16,.98,.155],[.16,.98,.155],[.20,.28,.13],[-.20,.28,.13]],[0,2,1,0,3,2],material.tabard,"skirt");
       custom("figure-tabard-back",[[-.17,.96,-.17],[.17,.96,-.17],[.23,.22,-.16],[-.23,.22,-.16]],[0,1,2,0,2,3],material.cape,"skirt");
@@ -824,6 +872,26 @@ export class UnitRenderer{
         finish(knuckle,material.metal,[.335,.93,.075],[Math.PI/2,0,.25],null,{part:"weapon"});
         box("figure-rapier-fulleredge",[.018,.76,.012],material.accent,[.335,.48,.10],[0,0,-.05],"weapon");
       }
+    }
+
+    if(figure.arcaneStaff){
+      cylinder("figure-arcane-staff-shaft",1.18,.042,.048,material.leatherDark,[.31,.82,.075],[0,0,-.035],9,"weapon");
+      cylinder("figure-arcane-staff-grip",.24,.058,.058,material.leather,[.30,.88,.075],[0,0,-.035],8,"weapon");
+      const ringA=BABYLON.MeshBuilder.CreateTorus(`figure-arcane-staff-ring-a-${unit.id}`,{diameter:.34*scale,thickness:.018*scale,tessellation:18},this.scene);
+      finish(ringA,material.gold,[.31,1.39,.075],[Math.PI/2,0,.18],null,{part:"weapon"});
+      const ringB=BABYLON.MeshBuilder.CreateTorus(`figure-arcane-staff-ring-b-${unit.id}`,{diameter:.27*scale,thickness:.016*scale,tessellation:16},this.scene);
+      finish(ringB,material.metal,[.31,1.39,.075],[Math.PI/2,.18,-.22],null,{part:"weapon"});
+      sphere("figure-arcane-staff-orb",.20,material.arcane,[.31,1.39,.085],[1,1,1],10,"weapon");
+      for(let i=0;i<4;i++){
+        const a=i*Math.PI/2+.20,x=.31+Math.cos(a)*.19,z=.075+Math.sin(a)*.035;
+        box(`figure-arcane-staff-ray-${i}`,[.045,.19,.035],material.gold,[x,1.39+Math.sin(a)*.17,z],[0,0,-a],"weapon");
+      }
+      box("figure-arcane-staff-crown",[.095,.25,.065],material.arcane,[.31,1.66,.075],[0,0,.08],"weapon");
+      for(const [i,x] of [[0,.22],[1,.31],[2,.40]]){
+        box(`figure-arcane-staff-chain-${i}`,[.015,.20,.015],material.gold,[x,1.20,.075],[0,0,0],"weapon");
+        sphere(`figure-arcane-staff-drop-${i}`,.065,material.arcane,[x,1.08-(i===1?.06:0),.075],[.65,1.25,.42],6,"weapon");
+      }
+      sphere("figure-arcane-staff-pommel",.070,material.gold,[.27,.18,.075],[.82,.82,.82],6,"weapon");
     }
 
     if(figure.trident){
@@ -1456,6 +1524,20 @@ export class UnitRenderer{
 
     if(procedural==="CAST"||state==="CAST"){
       const pulse=Math.sin(Math.PI*progress);
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.arcaneStaff){
+        const parts=entry.figureParts||{},skillId=String(event?.skillId||"");
+        const intense=skillId.includes("dimension_collapse")||skillId.includes("existence_breakdown")?1.18:1;
+        if(parts.rightArm){parts.rightArm.rotation.x-=pulse*.72*intense;parts.rightArm.rotation.z-=pulse*.24;}
+        if(parts.leftArm){parts.leftArm.rotation.x-=pulse*.38;parts.leftArm.rotation.z+=pulse*.58;}
+        if(parts.weapon){parts.weapon.rotation.x-=pulse*.40*intense;parts.weapon.rotation.z-=pulse*.22;}
+        if(parts.body){parts.body.rotation.y-=pulse*.10;parts.body.rotation.z+=Math.sin(progress*Math.PI*2)*.025;}
+        if(parts.hairBack){parts.hairBack.rotation.x+=pulse*.20;parts.hairBack.rotation.z+=Math.sin(progress*Math.PI*2)*.08;}
+        if(parts.cape){parts.cape.rotation.x+=pulse*.18;parts.cape.rotation.z-=Math.sin(progress*Math.PI*2)*.07;}
+        if(parts.skirt){parts.skirt.rotation.x+=pulse*.15;parts.skirt.rotation.z+=Math.sin(progress*Math.PI*2)*.05;}
+        entry.root.position.y+=pulse*.10*intense;
+        entry.root.scaling.setAll(entry.baseScale*(1+pulse*.045*intense));
+        return;
+      }
       if(entry.kind==="FIGURE"&&entry.definition?.figure?.trident){
         const parts=entry.figureParts||{};
         if(parts.rightArm){parts.rightArm.rotation.x-=pulse*.82;parts.rightArm.rotation.z-=pulse*.18;}
@@ -1525,7 +1607,7 @@ export class UnitRenderer{
     const reflection=night?(moon==="FULL"?.13:moon==="NONE"?.23:.18):.02;
     for(const material of this.figureMaterials.values()){
       // Existing genuinely luminous magic stays authoritative.
-      if(String(material.name).includes("figure-holy-"))continue;
+      if(String(material.name).includes("figure-holy-")||String(material.name).includes("figure-arcane-"))continue;
       material.emissiveColor.copyFrom(material.diffuseColor.scale(reflection));
     }
     for(const material of [this.materials.PLAYER,this.materials.ENEMY,this.materials.NEUTRAL])

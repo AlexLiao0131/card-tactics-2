@@ -31,13 +31,25 @@ function create(ctx){
   function visibilityModel(){
     const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));
     const intelMode=s.stage?.intelMode||(s.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
-    // This mask only governs tactical knowledge. Terrain/weather never inherit it.
-    if(intelMode!=="DYNAMIC_INTEL")return{active:false,visible:allVisible,observerless:false};
+    // The tactical intel mask and the atmospheric sight field are different
+    // presentation needs, but BOTH come from TacticalEngine's authoritative LOS.
+    // A fully revealed campaign still has finite *physical* sight in fog/snow.
+    const intelActive=intelMode==="DYNAMIC_INTEL";
+    // Physical smoke and steam already belong to EnvironmentEngine.effects.
+    // Request LOS for visual clarity whenever one of these local occluders exists;
+    // do not mistake this field for tactical FoW or add a separate sight engine.
+    const opticalEffects=s.environmentState?.effects;
+    const localSightLimited=!!opticalEffects?.values&&[...opticalEffects.values()].some(list=>
+      (list||[]).some(effect=>effect?.type==="SMOKE"||effect?.type==="STEAM"));
+    const weatherSightLimited=!!s.environmentState&&
+      (EnvironmentEngine.isFog(s.environmentState)||EnvironmentEngine.isBlizzard(s.environmentState));
+    if(!intelActive&&!weatherSightLimited&&!localSightLimited)
+      return{active:false,visible:allVisible,weatherSight:allVisible,observerless:false};
     const observers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
-    const visible=new Set();
+    const weatherSight=new Set();
     for(const tile of s.map?.tiles||[])
-      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s))visible.add(`${tile.x},${tile.y}`);
-    return{active:true,visible,observerless:!observers.length};
+      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s))weatherSight.add(`${tile.x},${tile.y}`);
+    return{active:intelActive,visible:intelActive?weatherSight:allVisible,weatherSight,observerless:!observers.length};
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
   function unitVisibleToPlayer(unit){
@@ -154,7 +166,7 @@ function create(ctx){
       strength:effect?.strength==null?null:Number(effect.strength),
       pullDistance:effect?.pullDistance==null?null:Number(effect.pullDistance),
       submergeTurns:effect?.submergeTurns==null?null:Number(effect.submergeTurns)
-    })),fogged:false,visionBlocked:!!s.environmentState&&!!EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked,deploymentAreaOwner:points.find(point=>(point.area||[]).some(t=>t.x===tile.x&&t.y===tile.y))?.owner||null,capturePoint:capturePoint?{id:capturePoint.id,name:capturePoint.name,owner:capturePoint.owner}:null,core:core?{id:core.id,owner:core.owner,name:core.name,hp:core.hp,maxHp:core.maxHp}:null};});
+    })),fogged:false,atmosphericVisible:visibility.weatherSight.has(`${tile.x},${tile.y}`),visionBlocked:!!s.environmentState&&!!EnvironmentEngine.visionModifier(s.environmentState,tile.x,tile.y)?.blocked,deploymentAreaOwner:points.find(point=>(point.area||[]).some(t=>t.x===tile.x&&t.y===tile.y))?.owner||null,capturePoint:capturePoint?{id:capturePoint.id,name:capturePoint.name,owner:capturePoint.owner}:null,core:core?{id:core.id,owner:core.owner,name:core.name,hp:core.hp,maxHp:core.maxHp}:null};});
     return{revision:s.renderRevision,phase:s.phase,round:s.round,mode:s.mode,map:{id:s.map.id,width:s.map.width,height:s.map.height,tiles,objects:(s.map.objects||[]).map(o=>({...o}))},cores:s.cores.map(core=>({...core})),presentation:{deploymentPoints:points.map(point=>({id:point.id,name:point.name,owner:point.owner,capturable:point.capturable!==false,area:(point.area||[]).map(t=>({...t})),captureTiles:(point.captureTiles||[]).map(t=>({...t}))})),environment:{lightSources:presentationLightSources(s,visibility),weather:s.environmentState?.weather||"CLEAR",fogIntensity:Number(globalThis.EnvironmentEngine?.fogAt?.(s.environmentState)?.intensity||0),weatherTurnsRemaining:s.environmentState?.weatherTurnsRemaining??null,timeOfDay:s.environmentState?.timeOfDay||"DAY",moonlight:s.environmentState?.moonlight||"PARTIAL",wind:globalThis.EnvironmentEngine?.climateSnapshot?.(s.environmentState)?.wind||null},enemyHandCount:s.enemyCardState?.zones?.hand?.length||0,enemyDeckCount:s.enemyCardState?.zones?.deck?.length||0},units:s.units.filter(u=>u.alive&&unitVisibleToPlayer(u,visibility)).map(u=>{
       const tile=TacticalEngine.tile(s.map,u.x,u.y),vertical=globalThis.VerticalMobilityEngine?.describe?.(u,tile)||null;
       const normalMaxHp=Number(u.character.combat.hp||u.hp||1),shownHp=u.hallucination?Math.max(1,Number(u.perceivedHp||normalMaxHp)):u.hp,shownMaxHp=u.hallucination?Math.max(1,Number(u.perceivedMaxHp||normalMaxHp)):normalMaxHp;

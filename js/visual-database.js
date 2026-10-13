@@ -411,6 +411,66 @@ export const VISUALS={
         }
       }
     },
+    velsa_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.67,
+        figure:{
+          style:"DIMENSION_SCHOLAR",
+          braid:false,
+          longHair:true,
+          pointedEars:true,
+          demonHorns:true,
+          cape:true,
+          capeLayers:true,
+          bow:false,
+          quiver:false,
+          sideSword:false,
+          skirtPanels:true,
+          skirtTrim:true,
+          scholarRobe:true,
+          scholarGear:true,
+          corsetDetail:true,
+          beltDetail:true,
+          neckAccessory:true,
+          clothSleeves:true,
+          bareHands:true,
+          bootDetail:true,
+          arcaneStaff:true,
+          colors:{
+            skin:"#efd0c2",
+            hair:"#a98cc0",
+            hairDark:"#745b8a",
+            cape:"#30283a",
+            capeDark:"#18151f",
+            leather:"#3a2d31",
+            leatherDark:"#21191e",
+            shirt:"#eee6df",
+            pants:"#3a3238",
+            boots:"#2b2428",
+            metal:"#9f805a",
+            gold:"#ad8a58",
+            weapon:"#4d414b",
+            eyes:"#9a78c0",
+            accent:"#6d4d92",
+            gem:"#8652c7",
+            horn:"#45353f",
+            arcane:"#9d64e2",
+            arcaneEmissive:"#8b42dd"
+          }
+        },
+        animations:{
+          IDLE:{duration:1280,loop:true,procedural:"BREATHE"},
+          WALK:{duration:185,loop:true,procedural:"STEP",figureMotion:{bodyBob:.043,rootSway:.020,bodySway:.018,torsoBob:.012,legSwing:.46,armSwing:.28,bowSwing:0,capeSwing:.18,capeTwist:.075,braidSwing:.21,braidTwist:.085,followLag:.78}},
+          ATTACK:{duration:360,loop:false,procedural:"LUNGE"},
+          CAST:{duration:560,loop:false,procedural:"CAST"},
+          HURT:{duration:245,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:760,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     ophi_eagle:{
       battle:{
         kind:"BIRD",
