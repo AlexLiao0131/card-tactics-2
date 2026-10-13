@@ -19,7 +19,13 @@ function create(ctx){
       ...(tile?.dryTerrain?{dryTerrain:tile.dryTerrain}:{})
     };
   }
-  function unitRenderZ(unit,tile){const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile);return Number(vertical?.renderZ??unit?.z??TacticalEngine.elevation(tile)??0);}
+  function unitRenderZ(unit,tile){
+    // BurialEngine owns the buried figure pose; otherwise VerticalMobilityEngine
+    // owns swim/flight/dive poses. Never paint a buried unit above the deposit.
+    if(globalThis.BurialEngine?.state?.(unit)&&Number.isFinite(Number(unit?.renderZ)))return Number(unit.renderZ);
+    const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile);
+    return Number(vertical?.renderZ??unit?.z??TacticalEngine.elevation(tile)??0);
+  }
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function visibilityModel(){
@@ -152,7 +158,7 @@ function create(ctx){
     return{revision:s.renderRevision,phase:s.phase,round:s.round,mode:s.mode,map:{id:s.map.id,width:s.map.width,height:s.map.height,tiles,objects:(s.map.objects||[]).map(o=>({...o}))},cores:s.cores.map(core=>({...core})),presentation:{deploymentPoints:points.map(point=>({id:point.id,name:point.name,owner:point.owner,capturable:point.capturable!==false,area:(point.area||[]).map(t=>({...t})),captureTiles:(point.captureTiles||[]).map(t=>({...t}))})),environment:{lightSources:presentationLightSources(s,visibility),weather:s.environmentState?.weather||"CLEAR",fogIntensity:Number(globalThis.EnvironmentEngine?.fogAt?.(s.environmentState)?.intensity||0),weatherTurnsRemaining:s.environmentState?.weatherTurnsRemaining??null,timeOfDay:s.environmentState?.timeOfDay||"DAY",moonlight:s.environmentState?.moonlight||"PARTIAL",wind:globalThis.EnvironmentEngine?.climateSnapshot?.(s.environmentState)?.wind||null},enemyHandCount:s.enemyCardState?.zones?.hand?.length||0,enemyDeckCount:s.enemyCardState?.zones?.deck?.length||0},units:s.units.filter(u=>u.alive&&unitVisibleToPlayer(u,visibility)).map(u=>{
       const tile=TacticalEngine.tile(s.map,u.x,u.y),vertical=globalThis.VerticalMobilityEngine?.describe?.(u,tile)||null;
       const normalMaxHp=Number(u.character.combat.hp||u.hp||1),shownHp=u.hallucination?Math.max(1,Number(u.perceivedHp||normalMaxHp)):u.hp,shownMaxHp=u.hallucination?Math.max(1,Number(u.perceivedMaxHp||normalMaxHp)):normalMaxHp;
-      return{id:u.id,x:u.x,y:u.y,z:Number(u.z??(TacticalEngine.elevation(tile)||0)),renderZ:Number(vertical?.renderZ??unitRenderZ(u,tile)),verticalMode:vertical?.mode||null,verticalLayer:vertical?.layer||null,immersionDepth:Number(vertical?.immersionDepth||0),verticalSurfaceZ:Number(vertical?.surfaceZ??tile?.elevation??0),collisionHeight:Number(u.character?.collision?.height||0),facing:TacticalEngine.ensureFacing(u),team:teamPresentation(u.team),faction:u.faction||null,monsterId:u.monsterId||null,name:u.character.name,visualId:u.character.visualId||null,hp:shownHp,maxHp:shownMaxHp,mana:(UnitRuntimeEngine.syncMana(u),u.mana),maxMana:u.maxMana,resources:UnitRuntimeEngine.resourceSnapshot(u),selected:!u.hallucination&&u===s.selected,finished:!!u.acted,moved:!!u.moved,acted:!!u.acted,stealthed:!!globalThis.EffectEngine?.isStealthed?.(u),friendlyToViewer:u.team===viewerTeam};
+      return{id:u.id,x:u.x,y:u.y,z:Number(u.z??(TacticalEngine.elevation(tile)||0)),renderZ:unitRenderZ(u,tile),verticalMode:vertical?.mode||null,verticalLayer:vertical?.layer||null,immersionDepth:Number(vertical?.immersionDepth||0),verticalSurfaceZ:Number(vertical?.surfaceZ??tile?.elevation??0),collisionHeight:Number(u.character?.collision?.height||0),facing:TacticalEngine.ensureFacing(u),team:teamPresentation(u.team),faction:u.faction||null,monsterId:u.monsterId||null,name:u.character.name,visualId:u.character.visualId||null,hp:shownHp,maxHp:shownMaxHp,mana:(UnitRuntimeEngine.syncMana(u),u.mana),maxMana:u.maxMana,resources:UnitRuntimeEngine.resourceSnapshot(u),selected:!u.hallucination&&u===s.selected,finished:!!u.acted,moved:!!u.moved,acted:!!u.acted,stealthed:!!globalThis.EffectEngine?.isStealthed?.(u),friendlyToViewer:u.team===viewerTeam};
     })};
   }
   return Object.freeze({battleSnapshot,unitPresentation,combatPreview,tileAnnotation});

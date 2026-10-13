@@ -289,7 +289,12 @@ export const VerticalMobilityEngine=(()=>{
     return true;
   }
 
-  function traversalZ(unit,tile){return describe(unit,tile).physicalZ;}
+  function traversalZ(unit,tile){
+    const state=describe(unit,tile);
+    // Moving between land and water compares the supporting surface, not
+    // the rendering pose of an immersed body below the waterline.
+    return state.layer===LAYER.WATER_SURFACE?state.surfaceZ:state.physicalZ;
+  }
   function eyeZ(unit,tile){
     const state=describe(unit,tile),height=Math.max(.5,Number(unit?.character?.collision?.height??2));
     return state.physicalZ+height*.5;

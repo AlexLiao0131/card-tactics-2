@@ -23,8 +23,11 @@ export const BurialEngine=(()=>{
     if(!unit?.alive||!unit?.burial)return;
     const tile=map?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y);
     if(!tile)return;
-    const solid=Math.max(0,Number(unit.burial.solidDepth||0));
-    if(solid>0)unit.renderZ=Number(tile.elevation||unit.z||0)-solid;
+    // The same burial depth that blocks movement also governs the published
+    // figure pose. Snow/soil material may rise above the original ground; the
+    // body disappears into the deposited mass instead of remaining on top.
+    const depth=totalDepth(unit);
+    if(depth>0)unit.renderZ=Number(tile.elevation??unit.z??0)-depth;
     else delete unit.renderZ;
   }
 
@@ -39,27 +42,34 @@ export const BurialEngine=(()=>{
     };
   }
 
-  function positiveSnowDeposits(events){
-    const out=new Map();
+  // MassFlowEngine is the only authority for solid and avalanche deposition.
+  // Trace typed flow records, never infer physics from arbitrary source labels.
+  function flowDepositCells(events,type){
+    const cells=new Set();
+    const flowType=type==="SNOW"?"MASS_FLOW_SNOW_REDISTRIBUTED":"MASS_FLOW_TERRAIN_CHANGED";
     for(const event of events||[]){
-      if(event?.type!=="SNOW_DEPTH_CHANGED")continue;
+      if(event?.type!==flowType)continue;
+      for(const point of event.path||[])cells.add(key(point.x,point.y));
+    }
+    return cells;
+  }
+  function positiveSnowDeposits(events){
+    const cells=flowDepositCells(events,"SNOW"),out=new Map();
+    for(const event of events||[]){
+      if(event?.type!=="SNOW_DEPTH_CHANGED"||event.material!=="SNOW"||!cells.has(key(event.x,event.y)))continue;
       const delta=Math.max(0,Number(event.to||0)-Number(event.from||0));if(delta<=.0005)continue;
-      const source=String(event.source||"").toUpperCase();
-      if(!source.includes("FAILURE")&&!source.includes("AVALANCHE"))continue;
       const k=key(event.x,event.y);out.set(k,clean(Number(out.get(k)||0)+delta));
     }
     return out;
   }
-
   function positiveSolidDeposits(events){
-    const out=new Map();
+    const cells=flowDepositCells(events,"SOLID"),out=new Map();
     for(const event of events||[]){
-      if(event?.type!=="ELEVATION_CHANGED")continue;
-      const source=String(event.source||"").toUpperCase();
-      if(!source.includes("FAILURE")&&!source.includes("MASS_FLOW"))continue;
+      if(event?.type!=="ELEVATION_CHANGED"||!cells.has(key(event.x,event.y)))continue;
+      const material=String(event.material||"").toUpperCase();if(!["SOIL","ROCK","DEBRIS"].includes(material))continue;
       const deposit=Math.max(0,Number(event.deposit||0)-Number(event.erosion||0),Number(event.deltaElevation||0));
       if(deposit<=.0005)continue;
-      const material=String(event.material||"SOIL").toUpperCase(),k=key(event.x,event.y),prev=out.get(k)||{depth:0,material};
+      const k=key(event.x,event.y),prev=out.get(k)||{depth:0,material};
       prev.depth=clean(prev.depth+deposit);prev.material=material;out.set(k,prev);
     }
     return out;

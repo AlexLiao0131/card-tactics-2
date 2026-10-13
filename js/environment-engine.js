@@ -74,10 +74,10 @@ export const EnvironmentEngine=(()=>{
     if(w===WEATHER.FOG)climate.fog={intensity:1,turnsRemaining:d};
     else if(w===WEATHER.RAIN)climate.precipitation={type:PRECIPITATION.RAIN,intensity:1,turnsRemaining:d};
     else if(w===WEATHER.HEAVY_RAIN)climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d};
-    else if(w===WEATHER.THUNDERSTORM){climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d};climate.thunder={intensity:1,turnsRemaining:d};climate.wind={x:1,y:0,strength:1.85};}
-    else if(w===WEATHER.TYPHOON){climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.8,turnsRemaining:d};climate.thunder={intensity:1.25,turnsRemaining:d};climate.wind={x:1,y:0,strength:5.8};}
+    else if(w===WEATHER.THUNDERSTORM){climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d};climate.thunder={intensity:1,turnsRemaining:d};}
+    else if(w===WEATHER.TYPHOON){climate.precipitation={type:PRECIPITATION.HEAVY_RAIN,intensity:1.8,turnsRemaining:d};climate.thunder={intensity:1.25,turnsRemaining:d};}
     else if(w===WEATHER.SNOW)climate.precipitation={type:PRECIPITATION.SNOW,intensity:1,turnsRemaining:d};
-    else if(w===WEATHER.BLIZZARD){climate.precipitation={type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d};climate.wind={x:1,y:0,strength:2.1};}
+    else if(w===WEATHER.BLIZZARD){climate.precipitation={type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d};}
     if(w===WEATHER.SCORCHING_SUN)climate.heat={intensity:1,turnsRemaining:d};
     return climate;
   }
@@ -103,13 +103,25 @@ export const EnvironmentEngine=(()=>{
     state.climate=source;
     const sourceWind=source.wind||state.wind||legacy.wind||{};
     source.wind=normalizeWind(sourceWind);
-    state.wind={...source.wind};
+    // The sky channels supply transient wind forcing without mutating the prevailing wind.
+    state.wind=effectiveWind(source);
     syncLegacyWeather(state);
     return source;
   }
-  function windAt(state){const climate=ensureClimate(state);climate.wind=normalizeWind(climate?.wind||state?.wind||{});state.wind={...climate.wind};return state.wind;}
-  function setWind(state,value){if(!state)return null;const climate=ensureClimate(state);climate.wind=normalizeWind(value);state.wind={...climate.wind};syncLegacyWeather(state);return state.wind;}
-  function ensureWindStrength(state,strength){const current=windAt(state),minimum=Math.max(WIND_SCALE.MIN,Math.min(WIND_SCALE.MAX,Number(strength||0)));if(Number(current.strength||0)>=minimum)return current;return setWind(state,{x:Number(current.x||0)||1,y:Number(current.y||0),strength:minimum});}
+  // Prevailing wind has one owner: climate.wind. A weather channel may require
+  // stronger wind while active, but never overwrites that ground-truth vector.
+  // Once precipitation/thunder expires, its force disappears automatically.
+  function effectiveWind(climate){
+    const baseline=normalizeWind(climate?.wind||{}),precipitation=climate?.precipitation||{},thunder=Number(climate?.thunder?.intensity||0);
+    let floor=0;
+    if(precipitation.type===PRECIPITATION.HEAVY_RAIN&&thunder>=1.2)floor=5.8;
+    else if(thunder>0)floor=1.85;
+    else if(precipitation.type===PRECIPITATION.SNOW&&Number(precipitation.intensity||0)>=1.5)floor=2.1;
+    if(baseline.strength>=floor)return baseline;
+    return normalizeWind({x:baseline.x||1,y:baseline.y||0,strength:floor});
+  }
+  function windAt(state){const climate=ensureClimate(state);state.wind=effectiveWind(climate);return state.wind;}
+  function setWind(state,value){if(!state)return null;const climate=ensureClimate(state);climate.wind=normalizeWind(value);state.wind=effectiveWind(climate);syncLegacyWeather(state);return state.wind;}
   function localWindAt(state,x,y){const ambient=windAt(state),tornado=effectAt(state,x,y).find(effect=>effect.type===EFFECT.FIRE_TORNADO||effect.type===EFFECT.TORNADO);if(!tornado)return{...ambient,source:"AMBIENT",rotating:false,tier:windTier(ambient)};const strength=Math.max(Number(ambient.strength||0),Number(tornado.windStrength||tornado.baseWindStrength||WIND_SCALE.TORNADO));return{...ambient,strength:Math.min(WIND_SCALE.MAX,strength),source:"TORNADO",rotating:true,tier:windTier(strength)};}
   function precipitationAt(state){return ensureClimate(state)?.precipitation||{type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};}
   function fogAt(state){return ensureClimate(state)?.fog||{intensity:0,turnsRemaining:null};}
@@ -142,7 +154,7 @@ export const EnvironmentEngine=(()=>{
     const w=legacyWeatherRaw(state);state.weather=w;state.weatherTurnsRemaining=compatibilityRemaining(state);
   }
   function legacyWeatherRaw(state){
-    const climate=state?.climate||{},precipitation=climate.precipitation||{},wind=climate.wind||state?.wind||{};
+    const climate=state?.climate||{},precipitation=climate.precipitation||{},wind=effectiveWind(climate);
     if(precipitation.type===PRECIPITATION.SNOW&&Number(wind.strength||0)>=1.75)return WEATHER.BLIZZARD;
     if(precipitation.type===PRECIPITATION.HEAVY_RAIN&&Number(climate.thunder?.intensity||0)>0&&Number(wind.strength||0)>=WIND_SCALE.TYPHOON)return WEATHER.TYPHOON;
     if(Number(climate.thunder?.intensity||0)>0)return WEATHER.THUNDERSTORM;
@@ -183,7 +195,7 @@ export const EnvironmentEngine=(()=>{
     }else if(name===CLIMATE_CHANNEL.TEMPERATURE){
       climate.temperature=value==null||!Number.isFinite(Number(value))?null:Number(value);
     }else if(name===CLIMATE_CHANNEL.WIND){
-      climate.wind=normalizeWind(value||{});state.wind={...climate.wind};
+      setWind(state,value||{});
     }
     // Wet/obscured skies and heat are mutually exclusive; wind remains independent.
     if((name===CLIMATE_CHANNEL.PRECIPITATION&&climate.precipitation.type!==PRECIPITATION.NONE)||
@@ -198,6 +210,7 @@ export const EnvironmentEngine=(()=>{
   }
   function applyClimatePreset(state,weather,{duration=null}={}){
     if(!state)return[];const climate=ensureClimate(state),resolved=WEATHER[weather]?weather:WEATHER.CLEAR,d=duration==null?WEATHER_TURNS[resolved]??null:Math.max(0,Number(duration||0)),touched=[];
+    delete climate.waveFronts;
     // Changing a weather preset replaces the previous sky, rather than leaving
     // an expired rain/fog/thunder channel running behind the new preset.
     climate.precipitation={type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};
@@ -210,10 +223,10 @@ export const EnvironmentEngine=(()=>{
     }else if(resolved===WEATHER.FOG){setClimateChannel(state,CLIMATE_CHANNEL.FOG,{intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.FOG);}
     else if(resolved===WEATHER.RAIN){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.RAIN,intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
     else if(resolved===WEATHER.HEAVY_RAIN){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
-    else if(resolved===WEATHER.THUNDERSTORM){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d});setClimateChannel(state,CLIMATE_CHANNEL.THUNDER,{intensity:1,turnsRemaining:d});ensureWindStrength(state,1.85);touched.push(CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.THUNDER);}
-    else if(resolved===WEATHER.TYPHOON){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.HEAVY_RAIN,intensity:1.8,turnsRemaining:d});setClimateChannel(state,CLIMATE_CHANNEL.THUNDER,{intensity:1.25,turnsRemaining:d});ensureWindStrength(state,5.8);touched.push(CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.THUNDER);}
+    else if(resolved===WEATHER.THUNDERSTORM){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.HEAVY_RAIN,intensity:1.5,turnsRemaining:d});setClimateChannel(state,CLIMATE_CHANNEL.THUNDER,{intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.THUNDER);}
+    else if(resolved===WEATHER.TYPHOON){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.HEAVY_RAIN,intensity:1.8,turnsRemaining:d});setClimateChannel(state,CLIMATE_CHANNEL.THUNDER,{intensity:1.25,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.THUNDER);}
     else if(resolved===WEATHER.SNOW){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.SNOW,intensity:1,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
-    else if(resolved===WEATHER.BLIZZARD){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d});ensureWindStrength(state,2.1);touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
+    else if(resolved===WEATHER.BLIZZARD){setClimateChannel(state,CLIMATE_CHANNEL.PRECIPITATION,{type:PRECIPITATION.SNOW,intensity:1.6,turnsRemaining:d});touched.push(CLIMATE_CHANNEL.PRECIPITATION);}
     syncLegacyWeather(state);return touched;
   }
   const MOONLIGHT=Object.freeze({FULL:"FULL",PARTIAL:"PARTIAL",NONE:"NONE"});
@@ -563,13 +576,44 @@ export const EnvironmentEngine=(()=>{
     return{qualified,wind:{...wind},ux,uy,fetch,crossSpan,avgDepth,avgFlow,windForce};
   }
   function windDrivenWaterEvents(map,state,events=[]){
-    if(!map||!state||legacyWeatherRaw(state)!==WEATHER.TYPHOON)return events;
-    const candidates=waterComponents(map).map(group=>({group,profile:waterWindProfile(map,state,group)})).filter(entry=>entry.profile?.qualified).sort((a,b)=>b.profile.windForce-a.profile.windForce).slice(0,2);
+    if(!map||!state)return events;
+    const climate=ensureClimate(state);
+    if(legacyWeatherRaw(state)!==WEATHER.TYPHOON){delete climate.waveFronts;return events;}
+    const candidates=waterComponents(map).map(group=>({group,profile:waterWindProfile(map,state,group)}))
+      .filter(entry=>entry.profile?.qualified).sort((a,b)=>b.profile.windForce-a.profile.windForce).slice(0,2);
+    const active={};
+    const prior=climate.waveFronts||{};
     for(const {group,profile} of candidates){
-      const force=profile.windForce,submergeTurns=force>=11?2:1,damage=Math.round(10+force*2),waveHeight=Math.max(.38,Math.min(.82,.38+(force-8.3)*.09)),durationMs=Math.round(Math.max(1200,Math.min(2600,900+profile.fetch*140)));
-      const cells=group.map(tile=>({x:Number(tile.x),y:Number(tile.y)})).sort((a,b)=>(a.x*profile.ux+a.y*profile.uy)-(b.x*profile.ux+b.y*profile.uy));
-      events.push({type:"ROGUE_WAVE",weather:WEATHER.TYPHOON,cells,dx:Math.sign(profile.ux),dy:Math.sign(profile.uy),windForce:Number(force.toFixed(2)),windStrength:Number(profile.wind.strength||0),fetch:Number(profile.fetch.toFixed(2)),crossSpan:Number(profile.crossSpan.toFixed(2)),averageDepth:Number(profile.avgDepth.toFixed(2)),averageFlow:Number(profile.avgFlow.toFixed(2)),submergeForce:Number(force.toFixed(2)),submergeTurns,damage,waveHeight:Number(waveHeight.toFixed(3)),durationMs,derivedFromWind:true,contactProfile:"WAVE_VOLUME"});
+      const along=tile=>tile.x*profile.ux+tile.y*profile.uy;
+      const across=tile=>-tile.x*profile.uy+tile.y*profile.ux;
+      const min=Math.min(...group.map(along)),max=Math.max(...group.map(along));
+      const crossMid=group.reduce((sum,tile)=>sum+across(tile)*Math.max(.15,waterDepth(tile)),0)/
+        group.reduce((sum,tile)=>sum+Math.max(.15,waterDepth(tile)),0);
+      // The upwind-most connected water tile anchors an actual basin, not a random roll.
+      const anchor=group.slice().sort((a,b)=>along(a)-along(b)||a.y-b.y||a.x-b.x)[0];
+      const id=`${anchor.x},${anchor.y}|${Math.sign(profile.ux)},${Math.sign(profile.uy)}`;
+      const front=prior[id]?.front??min-.5;
+      // Travel distance depends on the wind force and the measured open-water fetch.
+      const speed=Math.max(.8,Math.min(2.2,profile.windForce*.13));
+      const nextFront=front+speed;
+      active[id]={front:nextFront>max+.8?min-.5:nextFront};
+      if(nextFront>max+.8)continue;
+      const breadth=Math.max(1,Math.min(2.5,profile.crossSpan*.28));
+      const cells=group.filter(tile=>Math.abs(along(tile)-nextFront)<=.85&&Math.abs(across(tile)-crossMid)<=breadth)
+        .map(tile=>({x:Number(tile.x),y:Number(tile.y)}));
+      if(!cells.length||cells.length>=group.length)continue;
+      const force=profile.windForce,submergeTurns=force>=11?2:1,damage=Math.round(10+force*2);
+      const waveHeight=Math.max(.38,Math.min(.82,.38+(force-8.3)*.09));
+      const durationMs=Math.round(Math.max(1200,Math.min(2600,900+profile.fetch*140)));
+      events.push({type:"ROGUE_WAVE",weather:WEATHER.TYPHOON,cells,dx:Math.sign(profile.ux),dy:Math.sign(profile.uy),
+        pushDistance:Math.max(1,Math.min(3,Math.round(force/5))),
+        windForce:Number(force.toFixed(2)),windStrength:Number(profile.wind.strength||0),fetch:Number(profile.fetch.toFixed(2)),crossSpan:Number(profile.crossSpan.toFixed(2)),
+        averageDepth:Number(profile.avgDepth.toFixed(2)),averageFlow:Number(profile.avgFlow.toFixed(2)),submergeForce:Number(force.toFixed(2)),submergeTurns,damage,
+        waveHeight:Number(waveHeight.toFixed(3)),durationMs,derivedFromWind:true,contactProfile:"WAVE_VOLUME"});
     }
+    // This is physical wavefront progress belonging to the same climate state,
+    // not an independent renderer, water store, or parallel weather runtime.
+    climate.waveFronts=active;
     return events;
   }
   function nextWhirlpoolId(state){state.whirlpoolSerial=Math.max(0,Number(state.whirlpoolSerial||0))+1;return`whirlpool-${state.whirlpoolSerial}`;}

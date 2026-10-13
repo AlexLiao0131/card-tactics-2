@@ -146,7 +146,24 @@ function create(ctx){
  function resolveMassFlow(event){
   const s=state(),path=event.path||[],initial=(s.units||[]).filter(u=>u?.alive&&path.some(p=>p.x===u.x&&p.y===u.y));let count=0;
   const material=event.material||"SNOW",name=material==="SOIL"?"土石流":(material==="ROCK"||material==="DEBRIS")?"山崩／落石":"雪崩";
-  for(const unit of initial){if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!eventContacts(unit,tile,event))continue;const index=Math.max(0,path.findIndex(p=>p.x===unit.x&&p.y===unit.y)),here=path[index],next=path[Math.min(path.length-1,index+1)],dx=Math.sign((next?.x??here.x)-here.x),dy=Math.sign((next?.y??here.y)-here.y),source={x:unit.x-dx,y:unit.y-dy};applyForcedMovement(source,unit,Number(event.forceDistance||1),{name,damage:Number(event.damage||0),damageType:"PHYSICAL"});count++;}
+  for(const unit of initial){
+    if(!unit.alive)continue;
+    const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!eventContacts(unit,tile,event))continue;
+    const index=path.findIndex(p=>p.x===unit.x&&p.y===unit.y),distance=Math.min(Math.max(0,Math.round(Number(event.forceDistance||1))),path.length-index-1);
+    let struck=false;
+    for(let step=0;step<distance&&unit.alive;step++){
+      const from=path[index+step],to=path[index+step+1];
+      if(unit.x!==from.x||unit.y!==from.y)break;
+      const dx=Math.sign(to.x-from.x),dy=Math.sign(to.y-from.y);
+      if(!dx&&!dy)break;
+      const result=applyForcedMovement({x:unit.x-dx,y:unit.y-dy},unit,1,
+        {name,damage:struck?0:Number(event.damage||0),damageType:"PHYSICAL",resistAxes:{horizontal:false,vertical:true}});
+      struck=true;
+      if(!result?.steps?.length||unit.x!==to.x||unit.y!==to.y)break;
+    }
+    if(!struck)ctx.damageUnitFlat(unit,Math.max(0,Number(event.damage||0)),name);
+    count++;
+  }
   return count;
  }
  function resolveTornadoAdvance(event){
@@ -167,15 +184,21 @@ function create(ctx){
     if(!unit.alive||window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
     const tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=window.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";
     if(!profileContacts(unit,tile,profile,event))continue;
-    const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:Math.max(0,Number(event.damage||0))});
-    if(result?.damage>0&&unit.alive)ctx.damageUnitFlat(unit,result.damage,"瘋狗浪");
+    const dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0));
+    if(!dx&&!dy)continue;
+    const before={x:unit.x,y:unit.y};
+    // The authoritative collision/weight/forced-move pipeline performs motion.
+    applyForcedMovement({x:unit.x-dx,y:unit.y-dy},unit,Math.max(1,Number(event.pushDistance||1)),
+      {name:"瘋狗浪",damage:Number(event.damage||0),damageType:"WATER",resistAxes:{horizontal:false,vertical:true}});
     if(!unit.alive){count++;continue;}
-    if(!result?.applied){
-      if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被瘋狗浪吞沒，但水生體質能在浪下保持穩定。`,"DETAIL");
-      else if(result?.reason==="PREVENT_SINKING")ctx.pushLog(`${unit.character.name} 遭瘋狗浪覆蓋，但防沉沒效果使其沒有被捲入水下。`,"DETAIL");
-      continue;
-    }
-    ctx.pushLog(`${unit.character.name} 被瘋狗浪捲入水下｜進入沉沒狀態｜浪高 ${Number(event.waveHeight||0).toFixed(2)}。`,"BATTLE");
+    const destination=TacticalEngine.tile(s.map,unit.x,unit.y),depth=Number(HydrologyEngine.waterDepth(destination)||0);
+    // Only a genuinely different, submerged landing location can drown; contact
+    // and impact damage never imply that a unit was pulled underwater.
+    if((unit.x!==before.x||unit.y!==before.y)&&depth>=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(unit)||2)){
+      const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,destination,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
+      if(result?.damage>0&&unit.alive)ctx.damageUnitFlat(unit,result.damage,"瘋狗浪捲入深水");
+      if(result?.applied)ctx.pushLog(`${unit.character.name} 被瘋狗浪推入深水｜水深 ${depth.toFixed(2)}｜進入沉沒狀態。`,"BATTLE");
+    }else ctx.pushLog(`${unit.character.name} 被瘋狗浪沖刷，但未被捲入深水。`,"DETAIL");
     count++;
   }
   return count;

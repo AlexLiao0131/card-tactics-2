@@ -45,7 +45,12 @@ export const ClimateEngine=(()=>{
     if(state?.weather==="RAIN")return"RAIN";
     return"NONE";
   }
-  function windStrength(state){return Math.max(0,Number(state?.climate?.wind?.strength??state?.wind?.strength??0));}
+  function windStrength(state){
+    // Read the same meteorological wind as all water, weather and scene clients.
+    // Climate.wind remains the prevailing wind; temporary storm pressure is
+    // derived by EnvironmentEngine from the active atmospheric channels.
+    return Math.max(0,Number(globalThis.EnvironmentEngine?.windAt?.(state)?.strength??state?.climate?.wind?.strength??state?.wind?.strength??0));
+  }
   function thunderIntensity(state){return Math.max(0,Number(state?.climate?.thunder?.intensity??((state?.weather==="THUNDERSTORM"||state?.weather==="TYPHOON")?1:0)));}
   function fogIntensity(state){return Math.max(0,Number(state?.climate?.fog?.intensity??(state?.weather==="FOG"?1:0)));}
   const isSnowWeather=state=>precipitationType(state)==="SNOW";
