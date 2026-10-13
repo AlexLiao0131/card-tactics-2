@@ -338,16 +338,26 @@ export const EnvironmentEngine=(()=>{
   }
   function advanceFireDryness(map,state,events=[]){
     const raining=isRain(state),snowing=isSnow(state),wind=windAt(state);
+    // All spontaneous ignition and drying use ClimateEngine's shared solar
+    // exposure. Fire spread from existing flames remains independent of sun.
+    const sunlight=window.ClimateEngine?.solarExposure?.(state)??0;
     for(const tile of map?.tiles||[]){
       const before=Math.max(0,Math.min(1,Number(tile.fireDryness||0)));
       const wet=waterDepth(tile)>0||Number(tile.snowDepth||0)>0||Number(tile.iceThickness||0)>0;
       const moisture=HydrologyEngine.soilMoisture(tile)/Math.max(.01,HydrologyEngine.soilCapacity(tile));
       const temperature=window.ClimateEngine?.temperatureAt?.(state,tile)??7;
-      const drying=.06+Math.max(0,temperature-10)*.014;
+      // Ambient warmth continues drying exposed fuel after sunset, but the
+      // extra radiant component vanishes with the sun. Existing dry fuel is
+      // preserved; nightfall neither re-wets it nor extinguishes fire.
+      const excessHeat=Math.max(0,temperature-10);
+      const drying=.03+excessHeat*.006+sunlight*(.03+excessHeat*.008);
       tile.fireDryness=wet?0:raining||snowing?Math.max(0,before-.65):
         Math.max(0,Math.min(1,before+(moisture>.25?-.15*moisture:drying*(1-moisture))));
       if(wet||raining||snowing||moisture>.15||temperature<24||tile.fireDryness<.75||isBurning(state,tile.x,tile.y)||!flammableAt(map,tile.x,tile.y))continue;
-      const chance=Math.min(.12,(.025+(tile.fireDryness-.75)*.22)*(1+wind.strength*.12));
+      // Natural ignition needs solar energy as well as dry fuel. This is not a
+      // blanket night-time fire ban: existing, magical and spreading flames
+      // retain their own independent ignition mechanisms.
+      const chance=Math.min(.12,(.025+(tile.fireDryness-.75)*.22)*(1+wind.strength*.12))*sunlight;
       if(fireRoll(map,state,tile)>=chance)continue;
       addEffect(state,tile.x,tile.y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});
       addSmoke(state,tile.x,tile.y,{intensity:.9,duration:3,source:"NATURAL_FIRE"});

@@ -23,11 +23,31 @@ export const ClimateEngine=(()=>{
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
   const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
-  // Daylight affects solar evaporation without creating another water store.
-  // Even the strongest sun card has less evaporation at night than in daylight.
+  // The climate's HEAT channel describes a sustained hot-weather condition,
+  // not a lamp that remains above the battlefield after sunset. Radiation is
+  // derived from the ONE existing day/night clock; it owns no separate timer.
+  // Clouds and atmospheric mist attenuate incoming sunlight for every caller.
+  function solarExposure(state){
+    if(state?.timeOfDay==="NIGHT")return 0;
+    if(precipitationType(state)!=="NONE")return .25;
+    if(fogIntensity(state)>0)return .55;
+    return 1;
+  }
+  function solarHeat(state){return Math.max(0,Number(state?.climate?.heat?.intensity||0))*solarExposure(state);}
+  // Air and stored ground heat can remain after sunset. Unlike solar radiation,
+  // this is a temperature calculation and can still drive slow evaporation or
+  // melting at night. Clouds limit overnight cooling.
+  function diurnalCooling(state){
+    if(state?.timeOfDay!=="NIGHT")return 0;
+    if(precipitationType(state)!=="NONE")return 2;
+    if(fogIntensity(state)>0)return 3;
+    return 6;
+  }
   function evaporationExposure(state,map=null){
     const daylight=state?.timeOfDay==="NIGHT"?.38:1.20;
-    const heat=Math.max(0,Number(state?.climate?.heat?.intensity||0));
+    const heat=solarHeat(state);
+    const airTemperature=temperatureAt(state,{elevation:0});
+    const residualWarmth=Math.max(0,airTemperature-10)*.008;
     const cloud=precipitationType(state)!=="NONE"?.45:fogIntensity(state)>0?.60:1;
     const wind=Math.min(1.25,1+windStrength(state)*.025);
     const turn=Math.max(0,Number(state?.climate?.turn||0));
@@ -35,7 +55,7 @@ export const ClimateEngine=(()=>{
     // each tile or make evaporation change wildly between adjacent turns.
     const phase=(Number(map?.seed||0)>>>0)*.00000013;
     const variation=.95+.05*Math.sin(turn*.65+phase);
-    return Math.max(.04,daylight*(1+heat*1.75)*cloud*wind*variation);
+    return Math.max(.04,daylight*(1+heat*1.75+residualWarmth)*cloud*wind*variation);
   }
   function precipitationType(state){
     const type=state?.climate?.precipitation?.type;
@@ -61,13 +81,20 @@ export const ClimateEngine=(()=>{
     if(precipitation==="HEAVY_RAIN"){if(thunderIntensity(state)>0&&windStrength(state)>=5.5)return CFG.TYPHOON;return thunderIntensity(state)>0?CFG.THUNDERSTORM:CFG.HEAVY_RAIN;}
     if(precipitation==="RAIN")return CFG.RAIN;
     if(fogIntensity(state)>0)return CFG.FOG;
-    if(Number(state?.climate?.heat?.intensity||0)>0)return CFG.SCORCHING_SUN;
+    if(Number(state?.climate?.heat?.intensity||0)>0){
+      // Only the solar share of hot weather amplifies snowmelt and bare-soil
+      // drying. Ambient warmth remains in temperatureAt after sunset.
+      const irradiance=solarHeat(state);
+      return{...CFG.SCORCHING_SUN,
+        melt:CFG.CLEAR.melt+(CFG.SCORCHING_SUN.melt-CFG.CLEAR.melt)*irradiance,
+        extraDrying:1+(CFG.SCORCHING_SUN.extraDrying-1)*irradiance};
+    }
     return CFG.CLEAR;
   }
   function temperatureAt(state,tile){
     const explicit=state?.climate?.temperature??state?.temperature;
     const base=explicit!=null&&Number.isFinite(Number(explicit))?Number(explicit):config(state).temperature;
-    return base-Math.max(0,Number(tile?.elevation||0))*.9;
+    return base-diurnalCooling(state)-Math.max(0,Number(tile?.elevation||0))*.9;
   }
   function ensureState(state){if(!state)return;state.climate??={turn:0};state.climate.turn=Math.max(0,Number(state.climate.turn||0));state.effects??=new Map();}
   function visualEffect(state,tile,type,present,extra={}){
@@ -180,6 +207,6 @@ export const ClimateEngine=(()=>{
     return events;
   }
 
-  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,evaporationExposure,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
+  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,solarExposure,solarHeat,evaporationExposure,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
 })();
 globalThis.ClimateEngine=ClimateEngine;
