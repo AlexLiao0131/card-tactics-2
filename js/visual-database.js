@@ -33,6 +33,39 @@ export const VISUALS={
         }
       }
     },
+    imperial_spearman_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.74,
+        figure:{
+          style:"IMPERIAL_FOOT_SPEARMAN",
+          braid:false,soldierHelm:true,darkGloves:true,messyHair:false,
+          replaceBaseTorso:true,chainmail:true,mediumPlate:true,
+          militaryTabard:true,cape:true,tatteredCape:true,
+          bow:false,quiver:false,sideSword:false,fieldSpear:true,
+          beltDetail:true,waistPouches:true,bootDetail:true,
+          colors:{
+            skin:"#d7b2a0",hair:"#665b53",hairDark:"#453b39",
+            cape:"#713535",capeDark:"#472827",accent:"#933c43",
+            tabard:"#dad4c8",shirt:"#d4caba",pants:"#393735",
+            leather:"#60483a",leatherDark:"#352a25",boots:"#48382e",
+            metal:"#777577",armor:"#94989a",chainmail:"#606569",
+            steelDark:"#55585d",weapon:"#c6c8c7",gold:"#8a7760"
+          }
+        },
+        animations:{
+          IDLE:{duration:1260,loop:true,procedural:"BREATHE"},
+          WALK:{duration:225,loop:true,procedural:"STEP",figureMotion:{
+            legSwing:.35,armSwing:.12,leftWeaponSwing:.025,bodySway:.012,
+            torsoBob:.008,capeSwing:.11,capeTwist:.030,followLag:.65
+          }},
+          ATTACK:{duration:425,loop:false,procedural:"LUNGE"},
+          CAST:{duration:460,loop:false,procedural:"CAST"},
+          HURT:{duration:250,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:700,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     livia_default:{
       portrait:"assets/images/characters/livia/portrait.png",
       card:"assets/images/characters/livia/full.png",

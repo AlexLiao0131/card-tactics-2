@@ -4,7 +4,7 @@ leon:{id:"leon",name:"第一劍士・雷昂",visualId:"leon_default",archetype:"
 kahn:{id:"kahn",name:"卡恩",archetype:"RANGED",attributes:{str:17,agi:20,int:10,wil:17,vit:15,luk:18},combat:{hp:225,atk:96,matk:42,def:58,mdef:65,move:5},passives:["HUNTER_OF_THE_EDGE"]},
 cassandra:{id:"cassandra",name:"卡珊多拉",archetype:"MAGE",attributes:{str:6,agi:11,int:20,wil:19,vit:10,luk:13},combat:{hp:195,atk:38,matk:105,def:40,mdef:95,move:4},passives:["HERETIC"]},
 imperial_swordsman:{id:"imperial_swordsman",name:"帝國劍兵",visualId:"imperial_swordsman_default",archetype:"MELEE",attributes:{str:12,agi:10,int:6,wil:9,vit:12,luk:8},combat:{hp:240,atk:78,matk:28,def:68,mdef:44,move:4},passives:["SWORDSMAN"]},
-imperial_spearman:{id:"imperial_spearman",name:"帝國槍兵",archetype:"MELEE",attributes:{str:12,agi:10,int:5,wil:9,vit:12,luk:7},combat:{hp:235,atk:76,matk:24,def:62,mdef:42,move:4},passives:["POLEARM"]},
+imperial_spearman:{id:"imperial_spearman",visualId:"imperial_spearman_default",name:"帝國槍兵",archetype:"MELEE",attributes:{str:12,agi:10,int:5,wil:9,vit:12,luk:7},combat:{hp:235,atk:76,matk:24,def:62,mdef:42,move:4},passives:["POLEARM"]},
 imperial_archer:{id:"imperial_archer",name:"帝國弓手",archetype:"RANGED",attributes:{str:10,agi:12,int:6,wil:9,vit:9,luk:9},combat:{hp:205,atk:72,matk:28,def:48,mdef:45,move:4},passives:["ARCHERY"]},
 imperial_heavy_guard:{id:"imperial_heavy_guard",name:"帝國重甲兵",archetype:"DEFENDER",attributes:{str:13,agi:7,int:5,wil:10,vit:15,luk:7},combat:{hp:300,atk:80,matk:24,def:95,mdef:52,move:3},passives:["GUARD_ALLY"]},
 imperial_hammer:{id:"imperial_hammer",name:"帝國錘兵",archetype:"MELEE",attributes:{str:14,agi:7,int:5,wil:9,vit:14,luk:6},combat:{hp:260,atk:84,matk:24,def:70,mdef:44,move:3},passives:["HEAVY_STRIKE"]},

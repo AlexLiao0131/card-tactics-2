@@ -258,6 +258,18 @@ export class UnitRenderer{
       swordRoot.metadata.figureBase.position.copyFrom(swordRoot.position);
     }
 
+    if(figure.fieldSpear){
+      // Every issued polearm follows the LEFT grip, including walk and thrust.
+      // The independent hand pivot lets the spear tip pitch forward without
+      // dislocating the glove or introducing a second weapon renderer.
+      const grip=[-.307,.755,.086],shoulder=figureParts.leftArm.metadata.figurePivot;
+      const spearRoot=figureParts.leftWeapon;
+      spearRoot.parent=figureParts.leftArm;
+      spearRoot.position.set((grip[0]-shoulder[0])*scale,(grip[1]-shoulder[1])*scale,(grip[2]-shoulder[2])*scale);
+      spearRoot.metadata.figurePivot=[...grip];
+      spearRoot.metadata.figureBase.position.copyFrom(spearRoot.position);
+    }
+
     if(figure.holyBow){
       // Hand attachment: the bow pivot belongs to the LEFT arm, not the scene.
       // Keep its stored base transform consistent with resetPose().
@@ -1200,6 +1212,29 @@ export class UnitRenderer{
       sphere("figure-trident-pommel",.075,material.gold,[.265,1.31,.075],[.82,.82,.82],6,"weapon");
     }
 
+    if(figure.fieldSpear){
+      // Standard infantry spear: single issued leaf-point, iron socket and
+      // leather-wrapped wooden shaft. The whole weapon is under LEFT glove.
+      const x=-.307,z=.086;
+      cylinder("figure-field-spear-shaft",1.88,.050,.054,material.leatherDark,[x,1.095,z],null,7,"leftWeapon");
+      cylinder("figure-field-spear-grip",.32,.062,.060,material.leather,[x,.755,z],null,7,"leftWeapon");
+      cylinder("figure-field-spear-iron-socket",.185,.083,.066,material.steelDark,[x,2.057,z],null,7,"leftWeapon");
+      // Diamond-shaped double-sided tapered point (width .23, length .42).
+      custom("figure-field-spear-steel-point",[
+        [x,2.40,z], [x-.105,2.045,z], [x,1.982,z], [x+.105,2.045,z],
+        [x,2.106,z+.035], [x,2.106,z-.035]
+      ],[
+        0,1,4, 1,2,4, 2,3,4, 3,0,4,
+        1,0,5, 2,1,5, 3,2,5, 0,3,5
+      ],material.weapon,"leftWeapon");
+      cylinder("figure-field-spear-shaft-cap",.085,.078,.078,material.steelDark,[x,.190,z],null,7,"leftWeapon");
+      // Positive grip in front of the wrapped haft, the forearm owns it.
+      for(let finger=0;finger<3;finger++){
+        box(`figure-field-spear-knuckle-${finger}`,[.028,.047,.028],material.leatherDark,
+          [x-.036+finger*.034,.738+finger*.004,z+.059],[0,0,-.09],"leftArm");
+      }
+    }
+
     if(figure.armingSword){
       // Standard arming sword: cheap and visibly held, not a detached hip prop.
       // Blade begins just below the fist and angles clear of the soldier's leg.
@@ -1590,7 +1625,7 @@ export class UnitRenderer{
     }
     if(parts.skirt)parts.skirt.rotation.x+=capeFollow*(capeSwing*.38);
     if(parts.weapon)parts.weapon.rotation.x+=stride*.055;
-    if(parts.leftWeapon)parts.leftWeapon.rotation.x-=stride*armSwing*.92;
+    if(parts.leftWeapon)parts.leftWeapon.rotation.x-=stride*Number(motion.leftWeaponSwing??armSwing*.92);
     if(parts.rightWeapon)parts.rightWeapon.rotation.x+=stride*armSwing*.92;
     if(parts.tail){
       parts.tail.rotation.y+=Math.sin(cycle*.72-followLag)*.16;
@@ -1664,9 +1699,13 @@ export class UnitRenderer{
 
   figureAttackType(entry,event){
     const type=this.attackTypeFor(event);
-    // Combat resolves INHERIT from equipment. The renderer only needs to know
-    // how a visible standard sword swings; no skill or character ID branches.
-    return type==="INHERIT"&&entry?.definition?.figure?.armingSword?"SLASH":type;
+    // Combat resolves INHERIT from equipment. Reuse the visible weapon's
+    // generic FIGURE capability rather than branching on unit/skill IDs.
+    if(type!=="INHERIT")return type;
+    const figure=entry?.definition?.figure||{};
+    if(figure.fieldSpear)return"PIERCE";
+    if(figure.armingSword)return"SLASH";
+    return type;
   }
 
   applyFigureAttack(entry,unit,event,progress){
@@ -1696,6 +1735,27 @@ export class UnitRenderer{
     }
 
     const dualDaggers=entry.definition?.figure?.dualDaggers===true;
+    if(type==="PIERCE"&&entry.definition?.figure?.fieldSpear&&parts.leftWeapon){
+      // Start upright, level the spear at the wrist, then project the point
+      // forward. LEFT glove, shaft and tip remain on one inherited transform.
+      const wind=ease(progress/.27);
+      const drive=Math.sin(Math.PI*clamp01((progress-.24)/.57));
+      const recover=ease((progress-.80)/.20);
+      const aim=Math.max(0,wind-recover);
+      if(parts.leftArm){
+        parts.leftArm.rotation.x-=aim*.48+drive*.24;
+        parts.leftArm.rotation.z+=aim*.12;
+      }
+      parts.leftWeapon.rotation.x+=aim*1.62+drive*.39;
+      parts.leftWeapon.rotation.y+=aim*.04;
+      if(parts.rightArm){parts.rightArm.rotation.x-=aim*.28;parts.rightArm.rotation.z-=aim*.16;}
+      if(parts.body){parts.body.rotation.y+=drive*.12;parts.body.rotation.x+=drive*.07;}
+      if(parts.cape){parts.cape.rotation.x+=drive*.16;parts.cape.rotation.z+=drive*.05;}
+      entry.root.position.x+=vector.x*drive*.44;
+      entry.root.position.z+=vector.z*drive*.44;
+      return true;
+    }
+
     if(type==="PIERCE"&&dualDaggers&&parts.rightWeapon){
       const ranged=this.attackClassFor(event)==="RANGED";
       if(ranged){
