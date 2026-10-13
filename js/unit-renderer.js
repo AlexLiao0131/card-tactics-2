@@ -291,6 +291,8 @@ export class UnitRenderer{
     material.tail.backFaceCulling=false;
     material.innerEar.backFaceCulling=false;
     material.scaleLight.backFaceCulling=false;
+    material.tabard.backFaceCulling=false;
+    material.gold.backFaceCulling=false;
     material.arcane.backFaceCulling=false;
     material.arcane.emissiveColor=this.figureColor(colors.arcaneEmissive||colors.arcane||colors.gem||"#9a64d8").scale(.72);
     material.arcane.specularColor=this.figureColor(colors.arcane||colors.gem||"#9a64d8");
@@ -430,6 +432,13 @@ export class UnitRenderer{
       box("figure-hair-ribbon-knot",[.15,.10,.08],material.accent,[-.19,1.54,-.10],[0,.18,.12],"hairBack");
       box("figure-hair-ribbon-tail-a",[.065,.40,.035],material.accent,[-.23,1.32,-.12],[.18,0,.15],"hairBack");
       box("figure-hair-ribbon-tail-b",[.065,.36,.035],material.accent,[-.13,1.34,-.13],[-.12,0,-.10],"hairBack");
+    }
+
+    if(figure.ceremonialHairRibbon){
+      box("figure-ceremonial-hair-bow",[.18,.10,.055],material.accent,[-.22,1.62,-.10],[0,.18,-.28],"head");
+      box("figure-ceremonial-hair-streamer-l",[.062,.36,.030],material.accent,[-.25,1.37,-.13],[.14,0,-.12],"hairBack");
+      box("figure-ceremonial-hair-streamer-r",[.056,.31,.029],material.accent,[-.16,1.40,-.13],[-.10,0,.09],"hairBack");
+      sphere("figure-ceremonial-hair-clasp",.053,material.gold,[-.20,1.65,-.08],[.7,.7,.55],6,"head");
     }
 
     if(figure.hood){
@@ -644,6 +653,38 @@ export class UnitRenderer{
       box("figure-sea-chain-r",[.020,.30,.018],material.gold,[.18,.78,.13],[0,0,.20],"body");
     }
 
+    if(figure.ceremonialMantle){
+      // Shoulder capelet, leather corset, book and red ribbons are reusable
+      // components rather than an ID-specific sacred character mesh.
+      custom("figure-mantle-shoulder-l",[[-.41,1.41,.03],[-.12,1.45,.13],[-.09,1.14,.16],[-.48,1.19,.06]],
+        [0,2,1,0,3,2],material.tabard,"cape");
+      custom("figure-mantle-shoulder-r",[[.12,1.45,.13],[.41,1.41,.03],[.48,1.19,.06],[.09,1.14,.16]],
+        [0,2,1,0,3,2],material.tabard,"cape");
+      for(const side of [-1,1]){
+        const t=side<0?"l":"r";
+        box(`figure-mantle-cross-v-${t}`,[.027,.16,.030],material.gold,[side*.28,1.325,.115],null,"cape");
+        box(`figure-mantle-cross-h-${t}`,[.11,.027,.030],material.gold,[side*.28,1.34,.115],null,"cape");
+        box(`figure-mantle-ribbon-${t}`,[.065,.36,.022],material.accent,[side*.23,1.17,.14],[0,0,side*.34],"cape");
+      }
+      for(const side of [-1,1]){
+        const t=side<0?"l":"r",arm=t==="l"?"leftArm":"rightArm",x=side*.285;
+        cylinder(`figure-ceremonial-sleeve-${t}`,.36,.255,.345,material.tabard,[x,1.05,.02],[0,0,side*.08],10,arm);
+        cylinder(`figure-ceremonial-cuff-${t}`,.05,.36,.36,material.gold,[x+side*.009,.87,.035],[0,0,side*.08],10,arm);
+        cylinder(`figure-ceremonial-cuff-edge-${t}`,.055,.325,.325,material.accent,[x+side*.009,.88,.034],[0,0,side*.08],10,arm);
+      }
+      box("figure-ceremonial-corset",[.35,.30,.315],material.leatherDark,[0,1.15,.034],null,"body");
+      for(const y of [1.29,1.17,1.06]){
+        box(`figure-ceremonial-belt-${y}`,[.46,.035,.345],material.leather,[0,y,.03],null,"body");
+        box(`figure-ceremonial-buckle-${y}`,[.065,.055,.026],material.gold,[0,y,.211],null,"body");
+      }
+      box("figure-scripture-book-cover",[.21,.31,.10],material.leatherDark,[-.32,.78,.10],[0,0,-.15],"body");
+      box("figure-scripture-book-pages",[.17,.26,.012],material.tabard,[-.33,.78,.166],[0,0,-.15],"body");
+      box("figure-scripture-book-cross-v",[.024,.16,.020],material.gold,[-.33,.79,.182],null,"body");
+      box("figure-scripture-book-cross-h",[.13,.027,.020],material.gold,[-.33,.81,.182],null,"body");
+      sphere("figure-scripture-bell",.085,material.gold,[.15,.84,.13],[.78,.9,.78],7,"body");
+      sphere("figure-holy-collar-brooch",.078,material.gold,[0,1.40,.17],[.92,.92,.42],7,"body");
+    }
+
     // Hips, thighs, knees and lower legs are separate to make the stance human-shaped.
     const asymmetric=figure.asymmetricLegwear===true;
     const leftThighMaterial=asymmetric?material.skin:material.pants;
@@ -818,6 +859,35 @@ export class UnitRenderer{
       box("figure-scholar-right-trim",[.028,.68,.022],material.gold,[.27,.55,.05],[0,0,.06],"skirt");
     }
 
+    if(figure.ceremonialRobe){
+      // Long opaque skirt replaces the short panel silhouette. All layers are
+      // parented to the same skirt pivot, so walking and spell poses agree.
+      const lining=cylinder("figure-ceremonial-lining",.97,.42,1.20,material.accent,[0,.48,-.008],null,14,"skirt");
+      lining.scaling.z=.76;
+      const gown=cylinder("figure-ceremonial-gown",.92,.415,1.09,material.tabard,[0,.505,.025],null,14,"skirt");
+      gown.scaling.z=.78;
+      const panel=(name,pts,mat)=>custom(name,pts,[0,2,1,0,3,2],mat,"skirt");
+      // Contrasting inner folds and raised over-panels: no exposed thigh.
+      panel("figure-ceremonial-front-left",[[-.29,.94,.20],[-.025,.94,.21],[.035,.09,.425],[-.48,.08,.39]],material.tabard);
+      panel("figure-ceremonial-front-right",[[.025,.94,.21],[.29,.94,.20],[.48,.10,.39],[-.035,.09,.425]],material.tabard);
+      panel("figure-ceremonial-red-left",[[-.34,.91,.08],[-.24,.92,.18],[-.56,.055,.28],[-.70,.12,.13]],material.accent);
+      panel("figure-ceremonial-red-right",[[.24,.92,.18],[.34,.91,.08],[.70,.12,.13],[.56,.055,.28]],material.accent);
+      panel("figure-ceremonial-back-left",[[-.30,.96,-.12],[0,.95,-.18],[0,.06,-.48],[-.66,.08,-.35]],material.tabard);
+      panel("figure-ceremonial-back-right",[[0,.95,-.18],[.30,.96,-.12],[.66,.08,-.35],[0,.06,-.48]],material.tabard);
+      // Emblems stay on the moving robe, not on the leg joints.
+      if(figure.robeEmbroidery){
+        for(const [i,y,z] of [[0,.78,.265],[1,.56,.333],[2,.34,.397]]){
+          box(`figure-robe-cross-v-${i}`,[.022,.090,.018],material.gold,[0,y,z],null,"skirt");
+          box(`figure-robe-cross-h-${i}`,[.074,.018,.019],material.gold,[0,y+.012,z+.002],null,"skirt");
+        }
+        for(const side of [-1,1]){
+          const tag=side<0?"l":"r";
+          box(`figure-robe-hem-gold-${tag}`,[.21,.020,.022],material.gold,[side*.30,.165,.405],null,"skirt");
+          sphere(`figure-robe-hem-gem-${tag}`,.040,material.gold,[side*.32,.23,.415],[.60,.95,.35],5,"skirt");
+        }
+      }
+    }
+
     if(figure.royalTabard){
       custom("figure-tabard-front",[[-.16,.98,.155],[.16,.98,.155],[.20,.28,.13],[-.20,.28,.13]],[0,2,1,0,3,2],material.tabard,"skirt");
       custom("figure-tabard-back",[[-.17,.96,-.17],[.17,.96,-.17],[.23,.22,-.16],[-.23,.22,-.16]],[0,1,2,0,2,3],material.cape,"skirt");
@@ -892,6 +962,30 @@ export class UnitRenderer{
         sphere(`figure-arcane-staff-drop-${i}`,.065,material.arcane,[x,1.08-(i===1?.06:0),.075],[.65,1.25,.42],6,"weapon");
       }
       sphere("figure-arcane-staff-pommel",.070,material.gold,[.27,.18,.075],[.82,.82,.82],6,"weapon");
+    }
+
+    if(figure.holyScepter){
+      // The center shaft passes through the right-hand grip at x=.30 y=.76.
+      cylinder("figure-holy-scepter-shaft",1.60,.052,.060,material.leatherDark,[.305,1.00,.075],null,9,"weapon");
+      for(const y of [.39,.79,1.30,1.57]){
+        cylinder(`figure-holy-scepter-ferrule-${y}`,.084,.092,.092,material.gold,[.305,y,.075],null,9,"weapon");
+        sphere(`figure-holy-scepter-garnet-${y}`,.053,material.gem,[.305,y,.13],[.75,.80,.38],6,"weapon");
+      }
+      const head=BABYLON.MeshBuilder.CreateTorus(`figure-holy-scepter-halo-${unit.id}`,{
+        diameter:.34*scale,thickness:.034*scale,tessellation:16
+      },this.scene);
+      finish(head,material.gold,[.305,1.80,.075],[Math.PI/2,0,0],null,{part:"weapon"});
+      box("figure-holy-scepter-cross-v",[.050,.40,.037],material.gold,[.305,1.80,.083],null,"weapon");
+      box("figure-holy-scepter-cross-h",[.40,.052,.037],material.gold,[.305,1.80,.083],null,"weapon");
+      sphere("figure-holy-scepter-crystal",.125,material.holy,[.305,1.80,.120],[1.0,1.0,.48],8,"weapon");
+      for(const [tag,dx,dy] of [["t",0,.23],["b",0,-.23],["l",-.23,0],["r",.23,0]]){
+        sphere(`figure-holy-scepter-point-${tag}`,.080,material.gold,[.305+dx,1.80+dy,.086],[.60,1.1,.55],5,"weapon");
+      }
+      for(const [tag,dx] of [["l",-.14],["r",.14]]){
+        box(`figure-holy-scepter-ribbon-${tag}`,[.045,.38,.014],material.accent,[.305+dx,1.44,.072],[0,0,dx*.50],"weapon");
+        sphere(`figure-holy-scepter-charm-${tag}`,.040,material.gold,[.305+dx*1.35,1.22,.073],[.55,1.1,.45],5,"weapon");
+      }
+      sphere("figure-holy-scepter-finial",.085,material.gold,[.305,.17,.077],[.68,1.25,.68],7,"weapon");
     }
 
     if(figure.trident){
@@ -1536,6 +1630,19 @@ export class UnitRenderer{
         if(parts.skirt){parts.skirt.rotation.x+=pulse*.15;parts.skirt.rotation.z+=Math.sin(progress*Math.PI*2)*.05;}
         entry.root.position.y+=pulse*.10*intense;
         entry.root.scaling.setAll(entry.baseScale*(1+pulse*.045*intense));
+        return;
+      }
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.holyScepter){
+        const parts=entry.figureParts||{};
+        const ready=clamp01(progress/.30),release=Math.sin(Math.PI*progress);
+        if(parts.rightArm){parts.rightArm.rotation.x-=ready*.33+release*.20;parts.rightArm.rotation.z-=ready*.10;}
+        if(parts.weapon){parts.weapon.rotation.x-=ready*.25+release*.18;parts.weapon.rotation.z-=ready*.12;}
+        if(parts.leftArm){parts.leftArm.rotation.x-=ready*.88;parts.leftArm.rotation.z+=ready*.38;}
+        if(parts.body)parts.body.rotation.y+=release*.06;
+        if(parts.hairBack)parts.hairBack.rotation.x+=release*.13;
+        if(parts.cape)parts.cape.rotation.x+=release*.16;
+        if(parts.skirt)parts.skirt.rotation.x+=release*.035;
+        entry.root.position.y+=release*.065;
         return;
       }
       if(entry.kind==="FIGURE"&&entry.definition?.figure?.trident){

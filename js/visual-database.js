@@ -237,6 +237,38 @@ export const VISUALS={
         }
       }
     },
+    church_saint_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.68,
+        figure:{
+          style:"CEREMONIAL_SAINT",braid:false,longHair:true,ceremonialHairRibbon:true,
+          pointedEars:false,catEars:false,seaFinEars:false,
+          cape:true,capeLayers:true,ceremonialMantle:true,ceremonialRobe:true,
+          robeEmbroidery:true,holyScepter:true,
+          quiver:false,bow:false,sideSword:false,greatsword:false,
+          rapier:false,dualDaggers:false,trident:false,skirtPanels:false,
+          beltDetail:false,waistPouches:false,bracerDetail:false,
+          gloveDetail:true,bootDetail:true,
+          colors:{
+            skin:"#efd0b9",hair:"#d3bdac",hairDark:"#b69c90",eyes:"#98634e",
+            cape:"#f4eee5",capeDark:"#7a2632",accent:"#8d2838",
+            shirt:"#f3eee8",tabard:"#faf5ee",pants:"#35292d",boots:"#433029",
+            leather:"#4d352a",leatherDark:"#241c1d",metal:"#c79d59",
+            gold:"#d6b268",weapon:"#d8c8a6",gem:"#a92e34",
+            holy:"#fff0bd",holyEmissive:"#ffe4a1"
+          }
+        },
+        animations:{
+          IDLE:{duration:1240,loop:true,procedural:"BREATHE"},
+          WALK:{duration:220,loop:true,procedural:"STEP",figureMotion:{bodyBob:.028,rootSway:.016,bodySway:.014,torsoBob:.006,legSwing:.38,armSwing:.17,bowSwing:0,capeSwing:.14,capeTwist:.045,braidSwing:.15,braidTwist:.035,followLag:.75}},
+          ATTACK:{duration:420,loop:false,procedural:"LUNGE"},
+          CAST:{duration:680,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:760,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     church_templar_hero_default:{
       expressions:{},
       battle:{
