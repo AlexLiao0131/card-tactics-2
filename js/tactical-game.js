@@ -236,7 +236,18 @@
   function executeSelfUtilityVariant(unit,parent,variant){const skill=resolvedSkill(parent,variant);if(skill.target!=="SELF"||!skill.utilityAction)return false;selectedSkillVariant=variant;selectedSkill=skill;commitPendingMove(unit);prepareAttack(unit,unit,skill);return true;}
   function effectiveSkill(attacker,skill){let out=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(attacker,skill)||skill;const passives=SkillDatabase.passiveList(attacker?.character?.passives);const tile=TacticalEngine.tile(map,attacker.x,attacker.y);const weapon=attacker?.character?.weapons?.[skill?.weapon];const ambush=passives.find(p=>p.id==="AMBUSH");if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){out={...out,power:Number(out.power||0)*Number(ambush.powerMultiplier||1),speed:Number(out.speed||0)+Number(ambush.speedBonus||0),modifiers:{...(out.modifiers||{})}};out.ambushActive=true;}return out;}
   function lineTiles(attacker,end){const dx=Math.sign(end.x-attacker.x),dy=Math.sign(end.y-attacker.y);if(dx&&dy)return[];const out=[];let x=attacker.x+dx,y=attacker.y+dy;while(x!==end.x||y!==end.y){out.push(map.tiles.find(t=>t.x===x&&t.y===y));x+=dx;y+=dy;}out.push(map.tiles.find(t=>t.x===end.x&&t.y===end.y));return out.filter(Boolean);}
-  function canTraverseMoveLine(attacker,end){const path=lineTiles(attacker,end);if(!path.length)return false;let previous=TacticalEngine.tile(map,attacker.x,attacker.y);for(const tile of path){if(!tile||TERRAINS[tile.terrain]?.passable===false)return false;if(typeof TacticalEngine.canTraverseElevation==="function"&&!TacticalEngine.canTraverseElevation(previous,tile))return false;previous=tile;}return true;}
+  function canTraverseMoveLine(attacker,end){
+    const path=lineTiles(attacker,end);
+    if(!path.length)return false;
+    let previous=TacticalEngine.tile(map,attacker.x,attacker.y);
+    for(const tile of path){
+      if(!tile||!TacticalEngine.canOccupyTerrain(attacker,tile)||TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker))return false;
+      if(!TacticalEngine.canTraverseElevation(previous,tile,attacker))return false;
+      previous=tile;
+    }
+    // Units along the route are targets, not movement/landing positions.
+    return true;
+  }
   function aoeTiles(center,radius){const r=Number(radius||0);return map.tiles.filter(tile=>Math.abs(tile.x-center.x)+Math.abs(tile.y-center.y)<=r);}
   function logEnvironmentEvent(...args){return environmentController.logEnvironmentEvent(...args);}
   function selectNextAvailableUnit(){
@@ -302,7 +313,10 @@
     if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=resolvedSkill(parent,variant);mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();});});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){addCommandPanelClose();pendingCopySkill.options.forEach(skill=>addActionButton(skill.name,()=>{EffectEngine.grantSkill(pendingCopySkill.attacker,skill.id,{source:pendingCopySkill.target,duration:pendingCopySkill.duration,replaceGroup:"BLOOD_COPY"});pushLog(`${pendingCopySkill.attacker.character.name} 從血液中複製了「${skill.name}」。`,"BATTLE");const actor=pendingCopySkill.attacker;pendingCopySkill=null;finishActiveSkill(actor);}));return;}
     if(mode==="attack-menu"||mode==="special-menu"){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();shownSkills.forEach(skill=>{const button=document.createElement("button"),range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);button.textContent=`${skill.name}｜射程 ${range.min}-${range.max}｜${resourceLabel(selected,skill)}`;button.disabled=!usable;button.onclick=()=>{if(!usable)return;selectedSkill=skill;selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();};skillBar.appendChild(button);});addActionButton("返回",()=>{selectedSkill=null;mode="command";render();});return;}
-    if(mode==="map-target"&&selectedSkill)return;if(mode==="attack"&&selectedSkill)return;
+    if((mode==="map-target"||mode==="attack")&&selectedSkill){
+      addActionButton("取消施放",backFromTargeting);
+      return;
+    }
   }
 
   resetMap.onclick=resetBattle;

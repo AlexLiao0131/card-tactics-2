@@ -186,6 +186,26 @@
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
     }
 
+    // LINE + moveToTarget is an instantaneous pass-through strike, not a
+    // step-by-step move. Target selection and execution share one landing plan.
+    // The strike remains inside its attack range; at most one additional cell
+    // behind the last struck occupant may be used as the unoccupied landing.
+    function lineTransitPlan(attacker,aim,skill){
+      const {map}=state(),range=TacticalEngine.range(skill);
+      const dx=Math.sign(aim.x-attacker.x),dy=Math.sign(aim.y-attacker.y);
+      if((dx!==0&&dy!==0)||(!dx&&!dy))return null;
+      const distance=Math.abs(aim.x-attacker.x)+Math.abs(aim.y-attacker.y);
+      if(distance<range.min||distance>range.max)return null;
+      const lastStep=ctx.unitAt(aim.x,aim.y)?range.max+1:distance;
+      for(let step=distance;step<=lastStep;step++){
+        const landing=TacticalEngine.tile(map,attacker.x+dx*step,attacker.y+dy*step);
+        if(!landing||!ctx.canTraverseMoveLine(attacker,landing))return null;
+        if(ctx.unitAt(landing.x,landing.y))continue;
+        return{landing,affected:ctx.lineTiles(attacker,landing).slice(0,range.max)};
+      }
+      return null;
+    }
+
     function mapTargetTiles(attacker,skill){
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
@@ -206,7 +226,7 @@
         if(d<range.min||d>range.max)return false;
         if(skill.shape==="LINE"){
           if(attacker.x!==tile.x&&attacker.y!==tile.y)return false;
-          if(skill.moveToTarget&&(ctx.unitAt(tile.x,tile.y)||!ctx.canTraverseMoveLine(attacker,tile)))return false;
+          if(skill.moveToTarget&&!lineTransitPlan(attacker,tile,skill))return false;
         }
         if(skill.shape==="W_STEP"){
           if(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false)return false;
@@ -342,6 +362,8 @@
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
+      const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
+      if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
@@ -352,7 +374,7 @@
         return finishActiveSkill(attacker);
       }
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
-      const affected=skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
+      const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);
@@ -403,7 +425,19 @@
         if(occupant)ctx.applyEnvironmentHazardToUnit(occupant,{reason:"遭燃燒地形波及"});
       });
       ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜中心 (${center.x},${center.y})。`,"BATTLE");
-      if(skill.moveToTarget&&!ctx.unitAt(center.x,center.y)){
+      if(transit){
+        // Flash across struck units without occupying their tiles even briefly.
+        // Only the destination triggers an ENTER_TILE interaction.
+        const landing=transit.landing;
+        if(!ctx.unitAt(landing.x,landing.y)){
+          TacticalEngine.faceToward(attacker,landing);
+          attacker.x=landing.x;attacker.y=landing.y;
+          if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
+          else attacker.z=Number(TacticalEngine.elevation(landing)||0);
+          ctx.enterTile(attacker);
+          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 穿越敵陣，瞬閃至 (${attacker.x},${attacker.y})。`,"BATTLE");
+        }
+      }else if(skill.moveToTarget&&!ctx.unitAt(center.x,center.y)){
         if(skill.shape==="W_STEP"){
           attacker.x=center.x;attacker.y=center.y;attacker.z=Number(TacticalEngine.elevation(TacticalEngine.tile(map,center.x,center.y))||0);ctx.enterTile(attacker);
           ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 進行空間移動至 (${center.x},${center.y})。`,"BATTLE");
