@@ -247,6 +247,17 @@ export class UnitRenderer{
     makePart("leftWing",[-.24,1.36,-.22]);
     makePart("rightWing",[.24,1.36,-.22]);
     makePart("halo",[0,1.82,-.08]);
+    if(figure.armingSword){
+      // The hilt is centered inside the RIGHT glove. Rotating that arm carries
+      // the entire arming sword; it cannot drift when walking or slashing.
+      const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
+      const swordRoot=figureParts.weapon;
+      swordRoot.parent=figureParts.rightArm;
+      swordRoot.position.set((hand[0]-shoulder[0])*scale,(hand[1]-shoulder[1])*scale,(hand[2]-shoulder[2])*scale);
+      swordRoot.metadata.figurePivot=[...hand];
+      swordRoot.metadata.figureBase.position.copyFrom(swordRoot.position);
+    }
+
     if(figure.holyBow){
       // Hand attachment: the bow pivot belongs to the LEFT arm, not the scene.
       // Keep its stored base transform consistent with resetPose().
@@ -369,9 +380,9 @@ export class UnitRenderer{
     sphere("figure-hair-back",.30,material.hairDark,[0,1.46,-.12],[1.08,1.65,.76],5,"head");
 
     // Angular fringe and side locks make the head read as hair rather than a helmet.
-    box("figure-bang-l",[.07,.24,.055],material.hair,[-.085,1.57,.145],[.18,0,-.28],"head");
-    box("figure-bang-c",[.06,.22,.05],material.hair,[0,1.575,.155],[.12,0,.06],"head");
-    box("figure-bang-r",[.065,.23,.052],material.hair,[.075,1.565,.145],[.18,0,.26],"head");
+    if(!figure.soldierHelm)box("figure-bang-l",[.07,.24,.055],material.hair,[-.085,1.57,.145],[.18,0,-.28],"head");
+    if(!figure.soldierHelm)box("figure-bang-c",[.06,.22,.05],material.hair,[0,1.575,.155],[.12,0,.06],"head");
+    if(!figure.soldierHelm)box("figure-bang-r",[.065,.23,.052],material.hair,[.075,1.565,.145],[.18,0,.26],"head");
     box("figure-side-lock-l",[.055,.36,.06],material.hair,[-.165,1.43,.035],[0,0,-.10],"head");
     box("figure-side-lock-r",[.055,.31,.06],material.hair,[.165,1.45,.035],[0,0,.13],"head");
 
@@ -390,9 +401,28 @@ export class UnitRenderer{
       cylinder("figure-braid-tie",.055,.075,.075,material.leather,[.17,.71,.11],[0,0,-.18],6,"braid");
     }
 
-    // Minimal anime face cue: two blue eye dots only.
-    sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4,"head");
-    sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4,"head");
+    // Helmets obscure the eyes, not the entire face. Keep the lower face intact.
+    if(!figure.soldierHelm){
+      sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4,"head");
+      sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4,"head");
+    }
+    if(figure.soldierHelm){
+      // Plain issued sallet, projecting visor and rear/side neck plates.
+      sphere("figure-infantry-helm-dome",.42,material.armor,[0,1.685,-.015],[1.08,.72,1.00],9,"head");
+      cylinder("figure-infantry-helm-crown",.12,.36,.38,material.armor,[0,1.66,-.020],null,10,"head");
+      custom("figure-infantry-helm-visor",[
+        [-.215,1.585,.11],[.215,1.585,.11],[.18,1.515,.245],[-.18,1.515,.245]
+      ],[0,2,1,0,3,2,1,2,0,2,3,0],material.armor,"head");
+      box("figure-infantry-helm-visor-dark",[.28,.035,.020],material.steelDark,[0,1.520,.195],[.28,0,0],"head");
+      for(const side of [-1,1]){
+        const t=side<0?"l":"r";
+        box(`figure-infantry-helm-neck-${t}`,[.070,.16,.20],material.armor,[side*.181,1.457,-.082],[0,side*.11,side*.09],"head");
+        sphere(`figure-infantry-helm-rivet-${t}`,.030,material.metal,[side*.185,1.59,.130],[.70,.70,.46],5,"head");
+      }
+      // The visible nose and mouth are simple geometry; no glowing or painted eyes.
+      sphere("figure-infantry-nose",.038,material.skin,[0,1.466,.180],[.62,.75,1.0],6,"head");
+      box("figure-infantry-mouth",[.057,.012,.010],material.hairDark,[0,1.426,.172],null,"head");
+    }
 
     if(figure.pointedEars){
       custom("figure-ear-l",[[-.155,1.57,.02],[-.33,1.60,.015],[-.165,1.48,.025]],[0,1,2],material.skin,"head");
@@ -577,6 +607,15 @@ export class UnitRenderer{
       sphere("figure-scale-chest-gem",.075,material.gem,[0,1.34,.215],[.72,1,.40],7,"body");
     }
 
+    if(figure.militaryTabard){
+      // Field uniform: small plain ivory tunic over chainmail, red central stripe.
+      // Low segment count keeps mass infantry cheap in tactical view.
+      cylinder("figure-infantry-surcoat",.37,.415,.305,material.tabard,[0,1.18,.025],null,8,"body");
+      box("figure-infantry-front-stripe",[.075,.37,.027],material.accent,[0,1.18,.193],null,"body");
+      box("figure-infantry-shoulder-seam-l",[.075,.14,.040],material.tabard,[-.213,1.34,.045],[0,0,-.18],"body");
+      box("figure-infantry-shoulder-seam-r",[.075,.14,.040],material.tabard,[.213,1.34,.045],[0,0,.18],"body");
+    }
+
     if(figure.celestialAttire){
       // Bodice and independent layered cloth. No generic heavy-armour shell.
       cylinder("figure-celestial-bodice",.43,.39,.30,material.tabard,[0,1.18,.02],null,10,"body");
@@ -633,8 +672,8 @@ export class UnitRenderer{
     cylinder("figure-forearm-r",.27,.115,.095,forearmMaterial,[.295,.94,.035],[0,0,.05],6,"rightArm");
     box("figure-glove-l",[.105,.12,.115],handMaterial,[-.305,.755,.055],[0,0,-.03],"leftArm");
     box("figure-glove-r",[.105,.12,.115],handMaterial,[.305,.755,.055],[0,0,.03],"rightArm");
-    sphere("figure-fingers-l",.075,material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
-    sphere("figure-fingers-r",.075,material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
+    sphere("figure-fingers-l",.075,figure.darkGloves?handMaterial:material.skin,[-.307,.70,.070],[.72,.65,.72],4,"leftArm");
+    sphere("figure-fingers-r",.075,figure.darkGloves?handMaterial:material.skin,[.307,.70,.070],[.72,.65,.72],4,"rightArm");
 
     if(figure.clothSleeves){
       cylinder("figure-cloth-cuff-l",.085,.155,.145,material.shirt,[-.303,.805,.055],[0,0,-.03],9,"leftArm");
@@ -1031,6 +1070,20 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.militaryTabard){
+      // Cloth hangs from the shared skirt pivot, not from each leg; boots and
+      // knee guards remain visible and can animate independently.
+      custom("figure-infantry-tabard-front",[
+        [-.23,.96,.175],[.23,.96,.175],[.25,.47,.195],[-.25,.47,.195]
+      ],[0,2,1,0,3,2],material.tabard,"skirt");
+      custom("figure-infantry-tabard-stripe",[
+        [-.045,.955,.185],[.045,.955,.185],[.048,.47,.203],[-.048,.47,.203]
+      ],[0,2,1,0,3,2],material.accent,"skirt");
+      custom("figure-infantry-tabard-back",[
+        [-.20,.95,-.185],[.20,.95,-.185],[.235,.47,-.17],[-.235,.47,-.17]
+      ],[0,1,2,0,2,3],material.tabard,"skirt");
+    }
+
     if(figure.celestialDrapes){
       // Light outer silk with blue reverse layers. Movement uses the shared
       // skirt pivot; the legs remain real and visible beneath the front split.
@@ -1145,6 +1198,23 @@ export class UnitRenderer{
       sphere("figure-trident-gem",.095,material.gem,[.31,.27,.105],[.72,1,.42],7,"weapon");
       box("figure-trident-gold-spine",[.025,.30,.052],material.gold,[.31,.12,.105],[0,0,-.04],"weapon");
       sphere("figure-trident-pommel",.075,material.gold,[.265,1.31,.075],[.82,.82,.82],6,"weapon");
+    }
+
+    if(figure.armingSword){
+      // Standard arming sword: cheap and visibly held, not a detached hip prop.
+      // Blade begins just below the fist and angles clear of the soldier's leg.
+      custom("figure-arming-sword-steel",[
+        [.295,.592,.065],[.360,.592,.065],[.585,.102,.065],[.545,.035,.065]
+      ],[0,2,1,0,3,2,1,2,0,2,3,0],material.weapon,"weapon");
+      box("figure-arming-sword-fuller",[.017,.44,.016],material.steelDark,[.422,.335,.076],[0,0,.36],"weapon");
+      box("figure-arming-sword-guard",[.250,.047,.082],material.steelDark,[.325,.615,.070],[0,0,.03],"weapon");
+      cylinder("figure-arming-sword-grip",.195,.048,.048,material.leatherDark,[.307,.705,.070],[0,0,0],7,"weapon");
+      sphere("figure-arming-sword-pommel",.068,material.metal,[.307,.823,.070],[.88,.80,.88],6,"weapon");
+      // Three overlapping knuckle shapes show a positive grip over the sword.
+      for(let finger=0;finger<3;finger++){
+        box(`figure-arming-sword-knuckle-${finger}`,[.031,.042,.023],material.dark,
+          [.288+finger*.019,.685+finger*.010,.120],[0,0,-.23],"rightArm");
+      }
     }
 
     if(figure.fieldGreatsword){
@@ -1592,9 +1662,16 @@ export class UnitRenderer{
     catch(_error){return"";}
   }
 
+  figureAttackType(entry,event){
+    const type=this.attackTypeFor(event);
+    // Combat resolves INHERIT from equipment. The renderer only needs to know
+    // how a visible standard sword swings; no skill or character ID branches.
+    return type==="INHERIT"&&entry?.definition?.figure?.armingSword?"SLASH":type;
+  }
+
   applyFigureAttack(entry,unit,event,progress){
     const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
-    const type=this.attackTypeFor(event),facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
+    const type=this.figureAttackType(entry,event),facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     const ease=value=>{const t=clamp01(value);return t*t*(3-2*t);};
 
     if(type==="SHOT"&&parts.bow){
@@ -1685,7 +1762,7 @@ export class UnitRenderer{
     }
 
     if(type==="SLASH"&&(parts.sword||parts.weapon)){
-      const weapon=parts.sword||parts.weapon,wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
+      const weapon=entry.definition?.figure?.armingSword?parts.weapon:(parts.sword||parts.weapon),wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
       const twoHanded=entry.definition?.figure?.twoHanded===true;
       if(parts.rightArm){parts.rightArm.rotation.x-=wind*(twoHanded?.70:.48);parts.rightArm.rotation.z-=wind*(twoHanded?.78:.64)-swing*(twoHanded?1.42:1.28);}
       if(twoHanded&&parts.leftArm){parts.leftArm.rotation.x-=wind*.60+swing*.18;parts.leftArm.rotation.z+=wind*.55-swing*.96;}
@@ -1766,7 +1843,7 @@ export class UnitRenderer{
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
-    const weaponAction=this.attackTypeFor(event);
+    const weaponAction=this.figureAttackType(entry,event);
     if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
     if(entry.kind==="BIRD"&&(state==="IDLE"||procedural==="FLAP")){
