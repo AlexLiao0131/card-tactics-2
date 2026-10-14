@@ -66,6 +66,40 @@ export const VISUALS={
         }
       }
     },
+    imperial_archer_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.72,
+        figure:{
+          style:"IMPERIAL_FOOT_ARCHER",
+          braid:false,soldierHelm:true,darkGloves:true,messyHair:false,
+          replaceBaseTorso:true,chainmail:true,mediumPlate:true,
+          militaryTabard:true,cape:true,tatteredCape:true,
+          bow:false,fieldBow:true,quiver:true,quiverDetail:false,
+          sideSword:false,beltDetail:true,waistPouches:true,bootDetail:true,
+          colors:{
+            skin:"#d7b2a0",hair:"#665b53",hairDark:"#453b39",
+            cape:"#713535",capeDark:"#472827",accent:"#933c43",
+            tabard:"#dad4c8",shirt:"#d4caba",pants:"#393735",
+            leather:"#60483a",leatherDark:"#352a25",boots:"#48382e",
+            metal:"#777577",armor:"#94989a",chainmail:"#606569",
+            steelDark:"#55585d",weapon:"#c6c8c7",gold:"#8a7760",
+            bow:"#614735",bowString:"#c7b9a1"
+          }
+        },
+        animations:{
+          IDLE:{duration:1220,loop:true,procedural:"BREATHE"},
+          WALK:{duration:205,loop:true,procedural:"STEP",figureMotion:{
+            legSwing:.42,armSwing:.20,bowSwing:.055,bodySway:.015,
+            torsoBob:.010,capeSwing:.12,capeTwist:.035,followLag:.65
+          }},
+          ATTACK:{duration:420,loop:false,procedural:"LUNGE"},
+          CAST:{duration:460,loop:false,procedural:"CAST"},
+          HURT:{duration:250,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:700,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     livia_default:{
       portrait:"assets/images/characters/livia/portrait.png",
       card:"assets/images/characters/livia/full.png",

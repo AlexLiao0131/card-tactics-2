@@ -270,7 +270,7 @@ export class UnitRenderer{
       spearRoot.metadata.figureBase.position.copyFrom(spearRoot.position);
     }
 
-    if(figure.holyBow){
+    if(figure.holyBow||figure.fieldBow){
       // Hand attachment: the bow pivot belongs to the LEFT arm, not the scene.
       // Keep its stored base transform consistent with resetPose().
       const hand=[-.305,.70,.09],shoulder=figureParts.leftArm.metadata.figurePivot;
@@ -940,14 +940,46 @@ export class UnitRenderer{
         box("figure-quiver-strap",[.055,.62,.032],material.leatherDark,[.13,1.18,-.205],[0,0,-.42],"quiver");
         sphere("figure-quiver-charm",.050,material.accent,[.36,1.05,-.16],[.70,1.0,.42],5,"quiver");
       }
-      for(let i=0;i<3;i++){
+      for(let i=0;i<(figure.fieldBow?5:3);i++){
         cylinder(`figure-arrow-${i}`,.53,.017,.017,material.bow,[.22+i*.045,1.43,-.225],[0,0,-.20],5,"quiver");
-        box(`figure-fletching-${i}`,[.045,.065,.018],material.cape,[.17+i*.045,1.65,-.225],[0,0,-.20],"quiver");
+        box(`figure-fletching-${i}`,[.045,.065,.018],figure.fieldBow&&i%2?material.tabard:material.cape,[.17+i*.045,1.65,-.225],[0,0,-.20],"quiver");
       }
     }
 
+    // Issued infantry bow: two low-poly recurve limbs and a hand-wrapped grip.
+    // Shares the existing bow part/left-arm attachment with the ceremonial bow.
+    // No independent weapon runtime, and the string rotates with the bow.
+    if(figure.fieldBow){
+      const bowPath=[];
+      for(let i=0;i<=12;i++){
+        const t=i/12;
+        const y=.11+t*1.18;
+        const x=-.305+.180*Math.cos(Math.PI*t)**2;
+        bowPath.push(localPoint("bow",[x,y,.105]));
+      }
+      const limb=BABYLON.MeshBuilder.CreateTube(`figure-field-bow-${unit.id}`,{
+        path:bowPath,radius:.022*scale,tessellation:6,cap:BABYLON.Mesh.CAP_ALL
+      },this.scene);
+      finish(limb,material.bow,null,null,null,{part:"bow"});
+      cylinder("figure-field-bow-grip",.205,.065,.063,material.leatherDark,[-.305,.70,.105],null,7,"bow");
+      for(const y of [.28,1.12]){
+        cylinder(`figure-field-bow-tip-band-${y}`,.045,.055,.055,material.steelDark,[-.305+.180*Math.cos(Math.PI*((y-.11)/1.18))**2,y,.105],null,6,"bow");
+      }
+      const bowstring=BABYLON.MeshBuilder.CreateLines(`figure-field-bow-string-${unit.id}`,{
+        points:[bowPath[0],localPoint("bow",[-.103,.70,.105]),bowPath[bowPath.length-1]]
+      },this.scene);
+      bowstring.parent=figureParts.bow;
+      bowstring.color=this.figureColor(colors.bowString||"#c7b9a1");
+      bowstring.isPickable=false;
+      bowstring.metadata={kind:"unit-part",unitId:unit.id,figurePart:"bow",castShadow:false,lineOnly:true};
+      meshes.push(bowstring);
+      // Visible grip over the wood, rather than a bow floating beside the glove.
+      for(let n=0;n<3;n++)box(`figure-field-bow-knuckle-${n}`,[.038,.044,.024],material.dark,
+        [-.307,.745-n*.040,.147],null,"bow");
+    }
+
     // Recurve bow silhouette with a grip and taut string.
-    if(figure.bow!==false){
+    if(figure.bow!==false&&!figure.fieldBow){
       const path=[];
       for(let i=0;i<=12;i++){
         const t=i/12,y=.39+t*1.14;
@@ -1704,6 +1736,7 @@ export class UnitRenderer{
     if(type!=="INHERIT")return type;
     const figure=entry?.definition?.figure||{};
     if(figure.fieldSpear)return"PIERCE";
+    if(figure.fieldBow||figure.holyBow||figure.bow===true)return"SHOT";
     if(figure.armingSword)return"SLASH";
     return type;
   }
@@ -1718,13 +1751,18 @@ export class UnitRenderer{
       if(parts.leftArm){parts.leftArm.rotation.x-=raise*1.15;parts.leftArm.rotation.z-=raise*.34;}
       if(parts.rightArm){parts.rightArm.rotation.x-=raise*.84;parts.rightArm.rotation.z+=draw*.92-recover*.16;}
       parts.bow.rotation.x-=raise*.88;parts.bow.rotation.z+=raise*.16;
-      if(entry.definition?.figure?.holyBow){
-        // Wider wing stance at full draw; release returns to the flight/idle pose.
-        if(parts.leftWing)parts.leftWing.rotation.z-=draw*.28;
-        if(parts.rightWing)parts.rightWing.rotation.z+=draw*.28;
-        // Pull the free hand toward the bowstring, then snap it back at release.
-        if(parts.rightArm){parts.rightArm.position.x-=draw*.28;parts.rightArm.position.z+=draw*.10;}
-        if(parts.bow)parts.bow.rotation.y+=raise*.10;
+      if(entry.definition?.figure?.holyBow||entry.definition?.figure?.fieldBow){
+        // Pull the free hand toward the nocked string, then release. The held
+        // bow remains a child of the left wrist throughout the animation.
+        if(parts.rightArm){
+          parts.rightArm.position.x-=draw*(entry.definition.figure.fieldBow?.40:.28);
+          parts.rightArm.position.z+=draw*.10;
+        }
+        if(entry.definition.figure.holyBow){
+          if(parts.leftWing)parts.leftWing.rotation.z-=draw*.28;
+          if(parts.rightWing)parts.rightWing.rotation.z+=draw*.28;
+          if(parts.bow)parts.bow.rotation.y+=raise*.10;
+        }
       }
       if(parts.body){parts.body.rotation.y-=draw*.20;parts.body.rotation.z-=draw*.06;}
       if(parts.cape)parts.cape.rotation.x+=draw*.12-recover*.07;
