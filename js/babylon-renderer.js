@@ -143,6 +143,7 @@ export class BabylonRenderer{
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
+    this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,renderTotal:0,renderPeak:0};
     this.engine.runRenderLoop(()=>{
       const frameStart=performance.now();
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
@@ -150,9 +151,26 @@ export class BabylonRenderer{
       this.units.updateFrame();
       const renderStart=performance.now();
       this.scene.render();
-      this.performanceStats.renderMs=Math.round((performance.now()-renderStart)*100)/100;
+      const renderMs=performance.now()-renderStart;
+      this.performanceStats.renderMs=Math.round(renderMs*100)/100;
       this.unitHud.updateFrame();
-      this.performanceStats.frameMs=Math.round((performance.now()-frameStart)*100)/100;
+      const frameMs=performance.now()-frameStart;
+      this.performanceStats.frameMs=Math.round(frameMs*100)/100;
+      const sample=this.frameSample;
+      sample.count++;sample.frameTotal+=frameMs;sample.renderTotal+=renderMs;
+      sample.framePeak=Math.max(sample.framePeak,frameMs);
+      sample.renderPeak=Math.max(sample.renderPeak,renderMs);
+      if(performance.now()-sample.start>=5000){
+        const rounded=v=>Math.round(v*100)/100;
+        this.performanceStats.frameMeanMs=rounded(sample.frameTotal/sample.count);
+        this.performanceStats.framePeakMs=rounded(sample.framePeak);
+        this.performanceStats.renderMeanMs=rounded(sample.renderTotal/sample.count);
+        this.performanceStats.renderPeakMs=rounded(sample.renderPeak);
+        globalThis.CardTacticsDiagnostics?.recordPerf?.("frame.cpuElapsed",this.performanceStats.framePeakMs);
+        globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.renderElapsed",this.performanceStats.renderPeakMs);
+        sample.start=performance.now();sample.count=0;
+        sample.frameTotal=0;sample.framePeak=0;sample.renderTotal=0;sample.renderPeak=0;
+      }
     });
 
     window.addEventListener("resize",()=>this.resize());

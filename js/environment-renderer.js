@@ -182,11 +182,13 @@ export class EnvironmentRenderer{
     this.snowSystem=this.makeSnowSystem();
     this.mistSystem=this.makeMistSystem();
     this.rainImpacts=this.makeRainImpactPool();
+    this.rainImpactTiles=[];
     this.lightningFlash=new BABYLON.HemisphericLight("weather-lightning-flash",new BABYLON.Vector3(0,1,0),this.scene);
     this.lightningFlash.diffuse=new BABYLON.Color3(.72,.88,1);
     this.lightningFlash.groundColor=new BABYLON.Color3(.30,.38,.52);
+    // Keep the lightning light registered in Babylon; a zero intensity is
+    // visually identical to off, without changing shader light defines.
     this.lightningFlash.intensity=0;
-    this.lightningFlash.setEnabled(false);
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
@@ -340,7 +342,15 @@ export class EnvironmentRenderer{
 
   syncWeatherParticles(state){
     const settings=this.weatherSettings(state),tiles=state?.map?.tiles||[],width=Math.max(1,Number(state?.map?.width||1)),height=Math.max(1,Number(state?.map?.height||1));
-    const centerX=(width-1)*TILE_SIZE*.5,centerZ=(height-1)*TILE_SIZE*.5,maxSurface=tiles.length?Math.max(...tiles.map(tile=>surfaceOf(tile)*ELEVATION_HEIGHT)):0;
+    const centerX=(width-1)*TILE_SIZE*.5,centerZ=(height-1)*TILE_SIZE*.5;
+    // Read-only presentation cache: the original tiles stay the only source of
+    // terrain, fog and hydrology. Recompute when a new snapshot is published.
+    this.rainImpactTiles=[];
+    let maxSurface=tiles.length?-Infinity:0;
+    for(const tile of tiles){
+      if(!tile.fogged)this.rainImpactTiles.push(tile);
+      maxSurface=Math.max(maxSurface,surfaceOf(tile)*ELEVATION_HEIGHT);
+    }
     const windX=Number(settings.wind?.x||0),windZ=Number(settings.wind?.y||0),rawStrength=Math.max(0,Number(settings.wind?.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength),mist=settings.mist||NO_MIST;
     this.rainSystem.emitter.set(centerX,maxSurface+7.2,centerZ);this.rainSystem.minEmitBox.set(-width*TILE_SIZE*.56,0,-height*TILE_SIZE*.56);this.rainSystem.maxEmitBox.set(width*TILE_SIZE*.56,.5,height*TILE_SIZE*.56);
     const horizontal=.11+strength*.13;this.rainSystem.direction1.set(windX*horizontal,-1,windZ*horizontal);this.rainSystem.direction2.set(windX*horizontal*.82,-1,windZ*horizontal*.82);this.rainSystem.minEmitPower=10+strength*1.4;this.rainSystem.maxEmitPower=13+strength*1.8;
@@ -400,7 +410,7 @@ export class EnvironmentRenderer{
 
   spawnRainImpact(){
     const state=this.lastState,settings=this.weatherSettings(state);if(!settings.raining)return;
-    const tiles=(state?.map?.tiles||[]).filter(tile=>!tile.fogged);if(!tiles.length)return;
+    const tiles=this.rainImpactTiles;if(!tiles?.length)return;
     const slot=this.rainImpacts.find(item=>!item.active)||this.rainImpacts.reduce((oldest,item)=>item.age>oldest.age?item:oldest,this.rainImpacts[0]);if(!slot)return;
     const tile=tiles[Math.floor(Math.random()*tiles.length)],water=waterDepth(tile)>.025&&!isSolidIce(tile),surface=surfaceOf(tile)*ELEVATION_HEIGHT;
     slot.active=true;slot.age=0;slot.duration=water?.48:.24;slot.water=water;slot.ring.visibility=water?1:0;slot.splash.visibility=water?0:1;
@@ -429,7 +439,7 @@ export class EnvironmentRenderer{
       {start:0,end:.055,power:2.75,alpha:1},
       {start:.095,end:.145,power:1.55,alpha:.72},
       {start:.195,end:.285,power:2.35,alpha:.94}
-    ]});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.75);this.lightningFlash.setEnabled(true);
+    ]});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.75);
   }
 
   meteorTargetY(state,x,y){
@@ -522,7 +532,6 @@ export class EnvironmentRenderer{
     }
     this.lightningBursts=keep;
     this.lightningFlash.intensity=screenFlash;
-    this.lightningFlash.setEnabled(screenFlash>0);
   }
 
   updateWeatherFrame(dt){
@@ -608,7 +617,7 @@ export class EnvironmentRenderer{
       // Bounds are cached in WORLD space. Update them before assigning lights:
       // a capture marker or newly deployed FIGURE may have changed position
       // since Babylon's previous render frame.
-      mesh.computeWorldMatrix?.(true);
+      mesh.computeWorldMatrix?.(false);
       const bounds=mesh.getBoundingInfo?.()?.boundingSphere;
       const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
       if(!center)continue;
@@ -628,7 +637,7 @@ export class EnvironmentRenderer{
         // in Babylon. A source with no local 3D receiver has its OWN terrain
         // illumination in the shared cell-light field, so it needs no GPU
         // point-light slot until a receiver actually enters its range.
-        light.setEnabled(false);
+        if(light.isEnabled())light.setEnabled(false);
         continue;
       }
       // Only rebind an inclusion array when actual receivers have changed;
@@ -636,14 +645,14 @@ export class EnvironmentRenderer{
       const previous=light.includedOnlyMeshes||[];
       if(previous.length!==receivers.length||previous.some((mesh,i)=>mesh!==receivers[i]))
         light.includedOnlyMeshes=receivers;
-      light.setEnabled(true);
+      if(!light.isEnabled())light.setEnabled(true);
     }
     // There are three global scene lights (sun, hemi, fill). The default
     // StandardMaterial cap is per mesh, not per scene. Expand only if an
     // actual mesh has more overlapping local lights; most keep the mobile 8.
     for(const [material,count] of activePerMaterial){
       if(!Number.isFinite(material.maxSimultaneousLights))continue;
-      const required=count+3+(this.lightningFlash?.isEnabled?.()?1:0);
+      const required=count+4; // sun + hemi + fill + permanent zero-or-lit lightning
       if(material.maxSimultaneousLights<required)material.maxSimultaneousLights=required;
     }
   }
@@ -1368,14 +1377,11 @@ export class EnvironmentRenderer{
     // background. TacticalEngine/FOV remains the sole gameplay visibility owner.
     const climateFog=Number(environment.fogIntensity||0)>0;
     const profile=SCENE_FOG_PROFILE[timeOfDay]?.[climateFog?"FOG":weather]||null;
-    if(profile){
-      this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
-      this.scene.fogDensity=Number(profile.density||0);
-      this.scene.fogColor=new BABYLON.Color3(...profile.color);
-    }else{
-      this.scene.fogMode=BABYLON.Scene.FOGMODE_NONE;
-      this.scene.fogDensity=0;
-    }
+    // The fog shader variant is stable for every weather state. Zero density
+    // is mathematically clear air; only the parameters change, not the program.
+    if(this.scene.fogMode!==BABYLON.Scene.FOGMODE_EXP2)this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
+    this.scene.fogDensity=profile?Number(profile.density||0):0;
+    if(profile)this.scene.fogColor=new BABYLON.Color3(...profile.color);
     this.atmosphereState={
       weather,
       timeOfDay,
