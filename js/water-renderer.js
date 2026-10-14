@@ -75,6 +75,9 @@ export class WaterRenderer{
     this.sheetFlowSurfaces=new Map();
     this.sheetFlowMeshes=new Map();
     this.surfaceSignature="";
+    this.surfaceMeshSignatures=new Map();
+    this.levelSamples=null;
+    this.surfaceMeshUpdate={reused:0,built:0};
     this.cascadeSignature="";
     this.runoffSignature="";
     this.sourceSignature="";
@@ -392,6 +395,7 @@ export class WaterRenderer{
   disposeSurfaceMeshes(){
     this.disposeMap(this.surfaceMeshes);
     this.surfaceAnimations.clear();
+    this.surfaceMeshSignatures.clear();
   }
 
   setWind(value){
@@ -734,6 +738,12 @@ export class WaterRenderer{
 
   waterLevelAtWorld(tile,x,z,allMap){
     if(!tile)return 0;
+    // Within one immutable presentation sync, the shared terrain vertices and
+    // shoreline searches repeatedly ask for identical tile/world samples.
+    // Cache exact coordinates, never rounded coordinates or a second D value.
+    const samples=this.levelSamples;
+    const sampleKey=samples?`${tile.x},${tile.y}:${x}:${z}`:null;
+    if(samples?.has(sampleKey))return samples.get(sampleKey);
     const gx=Number(x)/TILE_SIZE,gz=Number(z)/TILE_SIZE;
     const xs=[Math.floor(gx),Math.ceil(gx)],zs=[Math.floor(gz),Math.ceil(gz)];
     const local=new Map();
@@ -762,7 +772,9 @@ export class WaterRenderer{
       const w=wx*wz;if(w<=EPSILON)continue;
       weighted+=visualSurface(current)*w;total+=w;
     }
-    return total>EPSILON?weighted/total:visualSurface(tile);
+    const level=total>EPSILON?weighted/total:visualSurface(tile);
+    if(samples)samples.set(sampleKey,level);
+    return level;
   }
 
   clipTerrainTriangleAtWaterline(tile,triangle,allMap,wet=true){
@@ -1769,26 +1781,53 @@ export class WaterRenderer{
     return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${groups}#${terrain}#Q:${qEdges}`;
   }
 
+  surfaceMeshSignatureFor(component,presentation,sources){
+    // The resolved polygons are the visual source of truth. Exact (unrounded)
+    // comparisons retain both the old shoreline and its seam triangulation.
+    // Flow and sources are included because these affect vertex-wave attributes
+    // even when a water surface happens to keep the same wet footprint.
+    const tiles=component.tiles.map(tile=>{
+      const key=keyOf(tile.x,tile.y),entry=presentation.get(key);
+      const motion=this.tileMotion(tile);
+      return[key,hasAnyWater(tile),this.turbidity(tile),motion.x,motion.z,motion.speed,
+        entry?.polygons||[]];
+    });
+    return JSON.stringify([
+      Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0),
+      Number(this.surfaceResolver.renderedCliffGeometryRevision||0),
+      component.id,component.group,tiles,
+      sources.map(source=>[source.x,source.z,source.rate])
+    ]);
+  }
+
   cascadeSignatureFor(edges){
     return`${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}#${this.surfaceSignature}#`+edges.map(e=>`${e.id}:${e.top.toFixed(4)}:${e.bottom.toFixed(4)}:${e.speed.toFixed(2)}:${Number(e.hydraulicPower||0).toFixed(3)}:${Number(e.transportVolume||0).toFixed(4)}:${Number(e.edgeDischarge||0).toFixed(4)}`).sort().join("|");
   }
 
 
   sync(state,presentationEvents=[]){
+    // A sync consumes one BattlePresentation snapshot. Never carry cached water
+    // heights into the next snapshot, even if a tile retains the same ID.
+    this.levelSamples=new Map();
+    const flowStart=performance.now();
     this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
     const oldNetwork=this.sheetFlowNetwork;
     const runoffs=this.runoffEdges(state);
     const cascades=this.cascadeEdges(state,waterTiles);
     const sources=this.activeHydrologySources(state);
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.flowInventory",performance.now()-flowStart);
     // This signature uses the true D/Q inputs, not the generated polygons.
     // Terrain and Q change on turns, not on every animation frame.
     const surfaceSignature=this.surfaceSignatureFor([],state);
     if(surfaceSignature!==this.surfaceSignature){
       const tiles=tilesOf(state),allMap=this.allByKey(state);
+      const solveStart=performance.now();
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
         (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap));
       this.surfacePresentation=presentation;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceSolve",performance.now()-solveStart);
+      const buildStart=performance.now();
       const components=this.presentationComponents(presentation);
       // Keep TEST's read-only per-tile diagnostic shape; these are NOT second
       // geometry solvers or Mesh owners. The water polygons below are still
@@ -1801,19 +1840,54 @@ export class WaterRenderer{
             points:points.map(point=>({...point,depth:point.depth*ELEVATION_HEIGHT}))
           }))
         }]));
-      this.disposeSurfaceMeshes();
+      const previousMeshes=this.surfaceMeshes;
+      const previousAnimations=this.surfaceAnimations;
+      const previousSignatures=this.surfaceMeshSignatures;
+      // Compare the resolved, exact D/Q polygons before touching any GPU mesh.
+      // Free all obsolete buffers before allocating replacements, so heavy
+      // floods do not temporarily double WebGL memory during an update.
+      const planned=components.map(component=>{
+        const signature=this.surfaceMeshSignatureFor(component,presentation,sources);
+        const mesh=previousMeshes.get(component.id);
+        const reuse=!!mesh&&!mesh.isDisposed?.()&&previousSignatures.get(component.id)===signature;
+        return{component,signature,mesh:reuse?mesh:null};
+      });
+      const retained=new Set(planned.filter(item=>item.mesh).map(item=>item.component.id));
+      this.surfaceMeshUpdate={reused:retained.size,built:0};
+      for(const [id,mesh] of previousMeshes)if(!retained.has(id))mesh.dispose();
+      this.surfaceMeshes=new Map();
+      this.surfaceAnimations=new Map();
+      this.surfaceMeshSignatures=new Map();
       this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
-      for(const component of components){
-        const mesh=this.buildSurface(component,state,presentation);
+      // Shared D/Q seams must also recognize retained meshes. Register their
+      // original resting vertices before new components are built; otherwise a
+      // neighbouring replacement might miss the exact seam of a reused mesh.
+      for(const {component,mesh} of planned){
         if(!mesh)continue;
+        const positions=previousAnimations.get(component.id)?.basePositions;
+        if(!positions)continue;
+        for(let i=0;i<positions.length;i+=3){
+          this.canonicalWaterPoint({x:positions[i],y:positions[i+1],z:positions[i+2]});
+        }
+      }
+      for(const {component,signature,mesh:retainedMesh} of planned){
+        const mesh=retainedMesh||this.buildSurface(component,state,presentation);
+        if(!mesh)continue;
+        if(!retainedMesh)this.surfaceMeshUpdate.built++;
         this.surfaceMeshes.set(component.id,mesh);
+        this.surfaceMeshSignatures.set(component.id,signature);
+        if(retainedMesh){
+          const animation=previousAnimations.get(component.id);
+          if(animation)this.surfaceAnimations.set(component.id,animation);
+        }
         for(const tile of component.tiles){
           const key=keyOf(tile.x,tile.y);
           if(this.sheetFlowSurfaces.has(key))this.sheetFlowMeshes.set(key,mesh);
         }
       }
       this.surfaceSignature=surfaceSignature;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceMeshes",performance.now()-buildStart);
     }else this.sheetFlowNetwork=oldNetwork;
     this.syncRogueWaveEvents(presentationEvents,state);
     this.syncWhirlpools(state);
@@ -1823,18 +1897,22 @@ export class WaterRenderer{
       entry.mesh.metadata.windWaveDirection=this.wind.strength>EPSILON?{x:this.wind.x,z:this.wind.z}:null;
     }
 
+    const cascadeStart=performance.now();
     const cascadeSignature=this.cascadeSignatureFor(cascades);
     if(cascadeSignature!==this.cascadeSignature){
       this.disposeMap(this.cascades);
       for(const edge of cascades){const built=this.buildCascade(edge,state);if(built)this.cascades.set(edge.id,built);}
       this.cascadeSignature=cascadeSignature;
     }
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascades",performance.now()-cascadeStart);
+    const runoffStart=performance.now();
     const runoffSignature=this.runoffSignatureFor(runoffs);
     if(runoffSignature!==this.runoffSignature){
       this.disposeMap(this.runoffs);
       for(const edge of runoffs){const built=this.buildRunoff(edge,state);if(built)this.runoffs.set(edge.id,built);}
       this.runoffSignature=runoffSignature;
     }
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.runoffs",performance.now()-runoffStart);
     if(this.sourceFootprints.size)this.disposeMap(this.sourceFootprints);
     this.sourceSignature=this.sourceFootprintSignatureFor(sources,runoffs);
 
@@ -1844,12 +1922,17 @@ export class WaterRenderer{
       this.surfacePresentation.clear();
       this.resetWaterSeamRegistry();
       this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
+      this.surfaceMeshSignatures.clear();
+      this.surfaceMeshUpdate={reused:0,built:0};
     }
+    this.levelSamples=null;
   }
 
   diagnostics(){
     return{
       surfaceMeshes:this.surfaceMeshes.size,
+      surfaceMeshUpdate:this.surfaceMeshUpdate,
+      waterLevelMemoizedPerSync:true,
       sideMeshes:0,
       cascades:this.cascades.size,
       surfaceRunoffs:this.runoffs.size,
