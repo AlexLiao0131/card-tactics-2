@@ -78,7 +78,8 @@ export class WaterRenderer{
     this.surfaceMeshSignatures=new Map();
     this.levelSamples=null;
     this.surfaceMeshUpdate={reused:0,built:0};
-    this.cascadeSignature="";
+    this.cascadeMeshSignatures=new Map();
+    this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
     this.runoffSignature="";
     this.sourceSignature="";
     this.waveTime=0;
@@ -1800,8 +1801,25 @@ export class WaterRenderer{
     ]);
   }
 
-  cascadeSignatureFor(edges){
-    return`${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}#${this.surfaceSignature}#`+edges.map(e=>`${e.id}:${e.top.toFixed(4)}:${e.bottom.toFixed(4)}:${e.speed.toFixed(2)}:${Number(e.hydraulicPower||0).toFixed(3)}:${Number(e.transportVolume||0).toFixed(4)}:${Number(e.edgeDischarge||0).toFixed(4)}`).sort().join("|");
+  cascadeSignatureFor(edge){
+    // A cascade is owned by its actual cliff and its two D/Q shorelines, not
+    // every water tile on the map. Compare the exact inputs buildCascade uses;
+    // changing an unrelated lake must not destroy this cliff's foam and mesh.
+    const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,this.cascadeDirection(edge));
+    const upstream=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y));
+    const downstream=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y));
+    return JSON.stringify([
+      edge.top,edge.bottom,edge.drop,edge.speed,edge.flowVolume,
+      edge.transportVolume,edge.edgeDischarge,edge.hydraulicPower,
+      edge.hydrologyEdgeReason,edge.storedWaterOvertopping,edge.receiverWet,
+      edge.tile.fogged?1:0,
+      hasAnyWater(edge.receiver)?visualSurface(edge.receiver):null,
+      // The original buildCascade also handles dry Q-only approaches, which
+      // legitimately have no resolved horizontal water polygons.
+      upstream?.polygons??null,upstream?.cascadeLipSpans?.[edge.id]??null,
+      downstream?.polygons??null,
+      wall?.lip??null,wall?.foot??null,wall?.segments??null,wall?.outward??null
+    ]);
   }
 
 
@@ -1820,7 +1838,8 @@ export class WaterRenderer{
     // This signature uses the true D/Q inputs, not the generated polygons.
     // Terrain and Q change on turns, not on every animation frame.
     const surfaceSignature=this.surfaceSignatureFor([],state);
-    if(surfaceSignature!==this.surfaceSignature){
+    const surfaceChanged=surfaceSignature!==this.surfaceSignature;
+    if(surfaceChanged){
       const tiles=tilesOf(state),allMap=this.allByKey(state);
       const solveStart=performance.now();
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
@@ -1898,11 +1917,41 @@ export class WaterRenderer{
     }
 
     const cascadeStart=performance.now();
-    const cascadeSignature=this.cascadeSignatureFor(cascades);
-    if(cascadeSignature!==this.cascadeSignature){
-      this.disposeMap(this.cascades);
-      for(const edge of cascades){const built=this.buildCascade(edge,state);if(built)this.cascades.set(edge.id,built);}
-      this.cascadeSignature=cascadeSignature;
+    const previousCascades=this.cascades,previousCascadeSignatures=this.cascadeMeshSignatures;
+    const cascadePlans=cascades.map(edge=>({edge,signature:this.cascadeSignatureFor(edge)}));
+    const unchangedCascades=new Set(cascadePlans
+      .filter(({edge,signature})=>previousCascadeSignatures.get(edge.id)===signature)
+      .map(({edge})=>edge.id));
+    const retainedCascades=new Set([...unchangedCascades]
+      .filter(id=>previousCascades.has(id)));
+    this.cascadeMeshUpdate={reused:retainedCascades.size,built:0,disposed:0};
+    for(const [id,entry] of previousCascades){
+      if(retainedCascades.has(id))continue;
+      entry.root.dispose();
+      this.cascadeMeshUpdate.disposed++;
+    }
+    // Keep the original Babylon mesh/foam animation for unaffected cliff
+    // edges. Register their precise water vertices before newly built edges
+    // consume the shared seam registry.
+    this.cascades=new Map();
+    this.cascadeMeshSignatures=new Map();
+    for(const {edge,signature} of cascadePlans){
+      this.cascadeMeshSignatures.set(edge.id,signature);
+      const retained=retainedCascades.has(edge.id)?previousCascades.get(edge.id):null;
+      if(!retained)continue;
+      this.cascades.set(edge.id,retained);
+      if(surfaceChanged){
+        const positions=retained.mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
+        for(let i=0;i<positions.length;i+=3)
+          this.canonicalWaterPoint({x:positions[i],y:positions[i+1],z:positions[i+2]});
+      }
+    }
+    for(const {edge} of cascadePlans){
+      // Unchanged edges without a mesh were already determined to have no
+      // exposed wet rock face. Retry them when their local geometry changes.
+      if(unchangedCascades.has(edge.id))continue;
+      const built=this.buildCascade(edge,state);
+      if(built){this.cascades.set(edge.id,built);this.cascadeMeshUpdate.built++;}
     }
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascades",performance.now()-cascadeStart);
     const runoffStart=performance.now();
@@ -1921,7 +1970,9 @@ export class WaterRenderer{
       this.sheetFlowSurfaces.clear();this.sheetFlowMeshes.clear();
       this.surfacePresentation.clear();
       this.resetWaterSeamRegistry();
-      this.surfaceSignature=this.cascadeSignature=this.runoffSignature=this.sourceSignature="";
+      this.surfaceSignature=this.runoffSignature=this.sourceSignature="";
+      this.cascadeMeshSignatures.clear();
+      this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
       this.surfaceMeshSignatures.clear();
       this.surfaceMeshUpdate={reused:0,built:0};
     }
@@ -1935,6 +1986,7 @@ export class WaterRenderer{
       waterLevelMemoizedPerSync:true,
       sideMeshes:0,
       cascades:this.cascades.size,
+      cascadeMeshUpdate:this.cascadeMeshUpdate,
       surfaceRunoffs:this.runoffs.size,
       activeSourceFootprints:this.sourceFootprints.size,
       separatedWaterLevels:false,

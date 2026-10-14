@@ -255,7 +255,8 @@ export class MapObjectRenderer{
       mesh.material=this.surfaceMaterial;mesh.useVertexColors=true;mesh.receiveShadows=true;
       if(mesh.metadata?.leafSway){swayMeshes.push(mesh);this.vegetationSways.add(mesh);}
     }
-    return{node,model,signature:this.signature(object),detail:null,swayMeshes};
+    return{node,model,signature:this.signature(object),detail:null,swayMeshes,
+      placementSignature:null,tintSignature:null,detailSignature:null,visibility:null,groundGeometry:null};
   }
 
   disposeEntry(entry){
@@ -263,7 +264,7 @@ export class MapObjectRenderer{
     entry?.node?.dispose();
   }
 
-  groundProfile(object,tile,byKey){
+  groundProfile(object,tile,byKey,groundGeometry=null){
     // The actual Babylon terrain triangles are the height authority. Their
     // barycentric Y avoids a second approximated slope under rocks and trees.
     // The previous sampler remains a fallback for standalone/offscreen previews.
@@ -273,10 +274,12 @@ export class MapObjectRenderer{
       const published=this.surfaceResolver.publishedSurfacePoint(tile,worldX,worldZ);
       return published?.y??this.surfaceResolver.sampleRenderedHeight(tile,byKey,x/TILE_SIZE,z/TILE_SIZE)*ELEVATION_HEIGHT;
     };
-    const h=sample(0,0),dx=(sample(.25,0)-sample(-.25,0))/.5,dz=(sample(0,.25)-sample(0,-.25))/.5;
+    const h=groundGeometry?.height??sample(0,0);
+    const dx=groundGeometry?.dx??(sample(.25,0)-sample(-.25,0))/.5;
+    const dz=groundGeometry?.dz??(sample(0,.25)-sample(0,-.25))/.5;
     const neighbors=[[0,0],[1,0],[-1,0],[0,1],[0,-1]].map(([x,y])=>byKey.get(tileKey(object.x+x,object.y+y))).filter(Boolean);
     const adjacentWater=neighbors.some(t=>Number(t.waterDepth||0)>0&&Math.abs(Number(t.elevation||0)-Number(tile?.elevation||0))<=1);
-    return{height:h,tiltX:clamp(Math.atan(dz)*.45,-.12,.12),tiltZ:clamp(-Math.atan(dx)*.45,-.12,.12),
+    return{height:h,dx,dz,tiltX:clamp(Math.atan(dz)*.45,-.12,.12),tiltZ:clamp(-Math.atan(dx)*.45,-.12,.12),
       wet:clamp(Math.max(Number(tile?.soilMoisture||0)/.45,Number(tile?.waterDepth||0)*2,adjacentWater?.55:0),0,1),
       forest:neighbors.some(t=>(t.dryTerrain||t.terrain)==="FOREST"),mud:tile?.terrain==="MUD",
       snow:clamp(Number(tile?.snowDepth||0)/.75,0,1),sample};
@@ -362,8 +365,9 @@ export class MapObjectRenderer{
   }
 
   updateGroundDetail(entry,object,tile,byKey,profile,floating){
-    entry.detail?.dispose();entry.detail=null;
-    if(floating||!tile||canonicalType(object)==="RUBBLE")return;
+    if(floating||!tile||canonicalType(object)==="RUBBLE"){
+      entry.detail?.dispose();entry.detail=null;return;
+    }
     // One low-poly, opaque mesh per prop: soft-coloured irregular contact region
     // and embedded chips/roots. It follows terrain, never changes gameplay tiles.
     const positions=[],indices=[],colors=[],normals=[],segments=12;
@@ -385,13 +389,23 @@ export class MapObjectRenderer{
       for(let j=0;j<4;j++)indices.push(v[j],v[(j+1)%4],v[4]);
     }
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+    // Ground contact keeps the same vertex/index topology while its terrain
+    // colour and height vary. Update existing Babylon buffers rather than
+    // creating and disposing one mesh for every rain/soil change.
+    if(entry.detail&&!entry.detail.isDisposed?.()&&entry.detail.getTotalVertices()===positions.length/3){
+      entry.detail.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,true,false);
+      entry.detail.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals,false,false);
+      entry.detail.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors,false,false);
+      return;
+    }
+    entry.detail?.dispose();
     const mesh=new BABYLON.Mesh(`ground-contact-${object.id}`,this.scene),data=new BABYLON.VertexData();
-    Object.assign(data,{positions,indices,colors,normals});data.applyToMesh(mesh);this.mesh(entry.node,mesh,this.surfaceMaterial);
+    Object.assign(data,{positions,indices,colors,normals});data.applyToMesh(mesh,true);this.mesh(entry.node,mesh,this.surfaceMaterial);
     mesh.useVertexColors=true;mesh.metadata={castShadow:false};entry.detail=mesh;
   }
 
-  place(entry,object,tile,byKey){
-    const profile=this.groundProfile(object,tile,byKey),type=canonicalType(object);
+  place(entry,object,tile,profile){
+    const type=canonicalType(object);
     const floating=type!=="SPRING"&&object.floatOnWater===true&&Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
     const model=entry.model,seed=hash01(`${object.id}:pose`);
     entry.node.position.set(Number(object.x||0)*TILE_SIZE,floating?objectY(tile,object):profile.height,Number(object.y||0)*TILE_SIZE);
@@ -401,43 +415,103 @@ export class MapObjectRenderer{
     const sink=type==="BOULDER"?.10+seed*.08:type==="RUBBLE"?.08:type==="BUSH"?.09:.025;
     model.position.y=entry.node.position.y-bounds.min.y-height*(floating?.32:sink+(profile.mud?.025:0));
     entry.node.metadata={...entry.node.metadata,sinkRatio:sink,floating,groundHeight:profile.height};
-    this.tintModel(entry,profile);this.updateGroundDetail(entry,object,tile,byKey,profile,floating);
     for(const mesh of entry.swayMeshes||[])this.cacheVegetationWindBasis(mesh);
-    this.setNodeVisibility(entry.node,tile?.fogged?.24:1);
   }
 
   // Geometry only: movement, weather and durability do not rebuild the body.
   signature(object){return canonicalType(object);}
-  visualSignature(object,byKey){
+
+  placementSignature(object,tile){
+    // World transform needs the actual published ground, a float-on-water
+    // height, or a change to the muddy sink. Neighbouring wetness/fog cannot
+    // alter an already placed tree's transform.
+    const floating=object.floatOnWater===true&&this.signature(object)!=="SPRING"&&
+      Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
+    return[
+      object.x,object.y,object.floatOnWater?1:0,floating?1:0,
+      floating?tile?.waterSurfaceZ:"-",tile?.terrain==="MUD"?1:0,
+      this.surfaceResolver.getRenderedSurfaceGeometry(tile)?.revision??null
+    ].join(":");
+  }
+
+  tintProfileSignature(object,tile,byKey){
+    const neighbors=[[0,0],[1,0],[-1,0],[0,1],[0,-1]]
+      .map(([dx,dy])=>byKey.get(tileKey(object.x+dx,object.y+dy))).filter(Boolean);
+    const adjacentWater=neighbors.some(t=>Number(t.waterDepth||0)>0&&
+      Math.abs(Number(t.elevation||0)-Number(tile?.elevation||0))<=1);
+    const wet=clamp(Math.max(Number(tile?.soilMoisture||0)/.45,
+      Number(tile?.waterDepth||0)*2,adjacentWater?.55:0),0,1);
+    return[wet,neighbors.some(t=>(t.dryTerrain||t.terrain)==="FOREST")?1:0,
+      tile?.terrain==="MUD"?1:0,clamp(Number(tile?.snowDepth||0)/.75,0,1)].join(":");
+  }
+
+  detailSurfaceSignature(object,byKey){
+    // Contact colours use the shared VisualSurfaceResolver, including the
+    // 3x3 shoreline/soil/biome influences. Fog is display visibility only.
     const neighborhood=[];
     for(let y=-1;y<=1;y++)for(let x=-1;x<=1;x++){
       const tile=byKey.get(tileKey(object.x+x,object.y+y));
-      neighborhood.push(tile?[tile.terrain,tile.dryTerrain,tile.material,tile.elevation,tile.waterSurfaceZ,tile.waterDepth,tile.soilMoisture,tile.snowDepth,tile.debrisMass,tile.fogged?1:0].join(":"):"-");
+      neighborhood.push(tile?[tile.terrain,tile.dryTerrain,tile.material,
+        tile.elevation,tile.waterSurfaceZ,tile.waterDepth,tile.soilMoisture,
+        tile.snowDepth,tile.debrisMass].join(":"):"-");
     }
-    return[object.id,this.signature(object),object.x,object.y,object.floatOnWater?1:0,...neighborhood].join("|");
+    return neighborhood.join("|");
   }
 
   sync(state){
     this.vegetationWind=state?.presentation?.environment?.wind||null;
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
     const objects=(state?.map?.objects||[]).filter(object=>!object.destroyed&&!object.carriedBy&&object.type!=="CORE");
-    // Existing debrisMass is the source of truth. These are presentation records,
-    // never inserted into map.objects, so debris cannot acquire collision rules.
-    for(const tile of tiles)if(Number(tile.debrisMass||0)>.02)objects.push({id:`visual-debris:${tile.x},${tile.y}`,type:"RUBBLE",x:tile.x,y:tile.y});
+    for(const tile of tiles)if(Number(tile.debrisMass||0)>.02)
+      objects.push({id:`visual-debris:${tile.x},${tile.y}`,type:"RUBBLE",x:tile.x,y:tile.y});
     const alive=new Set();
+    const updates={placed:0,tinted:0,contact:0,visibility:0};
     for(const object of objects){
       const key=`OBJECT:${object.id}`,signature=this.signature(object);alive.add(key);
       let entry=this.nodes.get(key);
-      if(!entry||entry.signature!==signature){this.disposeEntry(entry);entry=this.createEntry(object);this.nodes.set(key,entry);}
-      const visualSignature=this.visualSignature(object,byKey);
-      if(entry.visualSignature===visualSignature)continue;
-      this.place(entry,object,byKey.get(tileKey(object.x,object.y)),byKey);entry.visualSignature=visualSignature;
+      if(!entry||entry.signature!==signature){
+        this.disposeEntry(entry);entry=this.createEntry(object);this.nodes.set(key,entry);
+      }
+      const tile=byKey.get(tileKey(object.x,object.y));
+      const placement=this.placementSignature(object,tile);
+      const tint=this.tintProfileSignature(object,tile,byKey);
+      const detail=this.detailSurfaceSignature(object,byKey);
+      const positionChanged=entry.placementSignature!==placement;
+      const tintChanged=positionChanged||entry.tintSignature!==tint;
+      const detailChanged=positionChanged||entry.detailSignature!==detail;
+      if(positionChanged||tintChanged||detailChanged){
+        // Soil/shore colour changes do not change the published terrain
+        // triangle normals. Reuse the same geometric placement sample until
+        // that actual terrain or the object's own position changes.
+        const profile=this.groundProfile(object,tile,byKey,
+          positionChanged?null:entry.groundGeometry);
+        if(positionChanged){
+          this.place(entry,object,tile,profile);
+          entry.groundGeometry={height:profile.height,dx:profile.dx,dz:profile.dz};
+          updates.placed++;
+        }
+        if(tintChanged){this.tintModel(entry,profile);updates.tinted++;}
+        if(detailChanged){
+          const floating=signature!=="SPRING"&&object.floatOnWater===true&&
+            Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
+          this.updateGroundDetail(entry,object,tile,byKey,profile,floating);
+          updates.contact++;
+        }
+        entry.placementSignature=placement;
+        entry.tintSignature=tint;
+        entry.detailSignature=detail;
+      }
+      const visibility=tile?.fogged?.24:1;
+      if(entry.visibility!==visibility||detailChanged){
+        this.setNodeVisibility(entry.node,visibility);entry.visibility=visibility;updates.visibility++;
+      }
     }
     for(const[key,entry]of this.nodes){if(alive.has(key))continue;this.disposeEntry(entry);this.nodes.delete(key);}
+    this.lastSyncUpdates=updates;
   }
 
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
-    return{total:this.nodes.size,byType,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
+    return{total:this.nodes.size,byType,lastSyncUpdates:this.lastSyncUpdates,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
   }
 }
