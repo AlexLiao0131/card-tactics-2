@@ -200,7 +200,7 @@ export class BattleCamera{
       -this.panPixels.y*(worldH/cssH)
     );
 
-    this.scene.render();
+    // The existing BabylonRenderer render loop owns scene rendering.
   }
 
   rotate(delta=1){
