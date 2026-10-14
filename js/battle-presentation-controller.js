@@ -41,9 +41,11 @@ function create(ctx){
     const opticalEffects=s.environmentState?.effects;
     const localSightLimited=!!opticalEffects?.values&&[...opticalEffects.values()].some(list=>
       (list||[]).some(effect=>effect?.type==="SMOKE"||effect?.type==="STEAM"));
-    const weatherSightLimited=!!s.environmentState&&
-      (EnvironmentEngine.isFog(s.environmentState)||EnvironmentEngine.isBlizzard(s.environmentState));
-    if(!intelActive&&!weatherSightLimited&&!localSightLimited)
+    // The optical mask is a UNION of friendly LOS under the exact same
+    // EnvironmentEngine night/weather cap used for enemy identification.
+    // This does not create another sight state or change tactical intel.
+    const atmosphericSightLimited=TacticalEngine.environmentSightLimited(s.environmentState);
+    if(!intelActive&&!atmosphericSightLimited&&!localSightLimited)
       return{active:false,visible:allVisible,weatherSight:allVisible,observerless:false};
     const observers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
     const weatherSight=new Set();

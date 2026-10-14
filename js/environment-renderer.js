@@ -74,14 +74,19 @@ const SCENE_FOG_PROFILE=Object.freeze({
     TYPHOON:Object.freeze({density:.0062,color:Object.freeze([.020,.036,.046])})
   })
 });
+// Per-cell optical obscuration is composed from the existing tactical sight
+// field. All climate profiles share the same mesh, LOS mask and blend logic.
+// Outside the observers' sight the haze carries the strong weather veil;
+// inside sight it remains a thin atmospheric layer, not an opaque wall.
 const VISIBILITY_HAZE_PROFILE=Object.freeze({
   DAY:Object.freeze({
-    FOG:Object.freeze({color:Object.freeze([.53,.59,.62]),alpha:.40,edgeFactor:.24,height:.42}),
-    BLIZZARD:Object.freeze({color:Object.freeze([.58,.64,.69]),alpha:.34,edgeFactor:.28,height:.48})
+    FOG:Object.freeze({color:Object.freeze([.53,.59,.62]),alpha:.64,edgeFactor:.24,height:.42}),
+    BLIZZARD:Object.freeze({color:Object.freeze([.58,.64,.69]),alpha:.62,edgeFactor:.28,height:.48})
   }),
   NIGHT:Object.freeze({
-    FOG:Object.freeze({color:Object.freeze([.10,.13,.16]),alpha:.34,edgeFactor:.24,height:.42}),
-    BLIZZARD:Object.freeze({color:Object.freeze([.14,.17,.20]),alpha:.28,edgeFactor:.28,height:.48})
+    FOG:Object.freeze({color:Object.freeze([.10,.13,.16]),alpha:.65,edgeFactor:.24,height:.42}),
+    BLIZZARD:Object.freeze({color:Object.freeze([.14,.17,.20]),alpha:.63,edgeFactor:.28,height:.48}),
+    DARKNESS:Object.freeze({color:Object.freeze([.035,.045,.065]),alpha:.68,edgeFactor:.26,height:.44})
   })
 });
 
@@ -1261,15 +1266,18 @@ export class EnvironmentRenderer{
     // A fog climate channel may coexist with precipitation: it still deserves
     // its own ground-hugging mist without replacing rain or snow particles.
     const fogIntensity=Math.max(0,Number(environment.fogIntensity||0));
-    const profile=VISIBILITY_HAZE_PROFILE[timeOfDay]?.[fogIntensity>0?"FOG":weather]||null;
+    const moonless=timeOfDay==="NIGHT"&&String(environment.moonlight||"PARTIAL").toUpperCase()==="NONE";
+    const opticalProfile=fogIntensity>0?"FOG":VISIBILITY_HAZE_PROFILE[timeOfDay]?.[weather]
+      ?weather:moonless?"DARKNESS":null;
+    const profile=VISIBILITY_HAZE_PROFILE[timeOfDay]?.[opticalProfile]||null;
     if(!profile)return null;
     return {...profile,alpha:clamp(profile.alpha*(fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,.72)};
   }
 
   visibilityHazeStateSignature(state){
-    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY",profile=this.visibilityHazeProfile(state);
-    if(!profile)return`${timeOfDay}|${weather}|OFF`;
-    return`${timeOfDay}|${weather}|${Number(environment.fogIntensity||0).toFixed(3)}|`+(state?.map?.tiles||[]).map(tile=>[
+    const environment=state?.presentation?.environment||{},weather=String(environment.weather||"CLEAR").toUpperCase(),timeOfDay=environment.timeOfDay==="NIGHT"?"NIGHT":"DAY",moonlight=String(environment.moonlight||"PARTIAL").toUpperCase(),profile=this.visibilityHazeProfile(state);
+    if(!profile)return`${timeOfDay}|${weather}|${moonlight}|OFF`;
+    return`${timeOfDay}|${weather}|${moonlight}|${Number(environment.fogIntensity||0).toFixed(3)}|`+(state?.map?.tiles||[]).map(tile=>[
       tile.x,tile.y,
       Number(tile.elevation||0).toFixed(3),
       tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3)
@@ -1296,7 +1304,10 @@ export class EnvironmentRenderer{
       wx*(1-wy)*visible(at(x,tile.y))+
       (1-wx)*wy*visible(at(tile.x,y))+
       wx*wy*visible(at(x,y));
-    return clamp(Number(profile.alpha||0)*(1-sight*.85),0,1);
+    // A seen point is unobscured by the *field* mask; mist particles and real
+    // terrain blockers remain in their existing renderers. Interpolation keeps
+    // the boundary continuous without a rectangular clearing or separate FOV.
+    return clamp(Number(profile.alpha||0)*(1-sight),0,1);
   }
 
   buildVisibilityHaze(state,profile){
@@ -1380,13 +1391,22 @@ export class EnvironmentRenderer{
     // The fog shader variant is stable for every weather state. Zero density
     // is mathematically clear air; only the parameters change, not the program.
     if(this.scene.fogMode!==BABYLON.Scene.FOGMODE_EXP2)this.scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
-    this.scene.fogDensity=profile?Number(profile.density||0):0;
+    // Only one renderer may own physical visibility obscuration at a time.
+    // When the existing line-of-sight haze is active, it uses TacticalEngine's
+    // per-tile sight field; a camera-distance fog cannot share that ownership
+    // without washing out the unit's own visible ground. Keep the EXP2 shader
+    // variant stable, but disable distance fog while local haze owns the mask.
+    // Other weather profiles continue to use their original atmospheric fog.
+    const sightHaze=this.visibilityHazeProfile(state);
+    const sceneDensity=sightHaze?0:Number(profile?.density||0);
+    this.scene.fogDensity=sceneDensity;
     if(profile)this.scene.fogColor=new BABYLON.Color3(...profile.color);
     this.atmosphereState={
       weather,
       timeOfDay,
-      globalSceneFog:!!profile,
-      sceneFogDensity:profile?Number(profile.density||0):0,
+      globalSceneFog:!!sceneDensity,
+      opticalObscurationOwner:sightHaze?"LOS_HAZE":"SCENE_FOG",
+      sceneFogDensity:sceneDensity,
       sceneFogColor:profile?[...profile.color]:null,
       backdropOwner:"BabylonRenderer.syncSky",
       atmosphereWeatherLinked:true,
