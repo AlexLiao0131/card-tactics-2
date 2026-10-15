@@ -138,7 +138,7 @@ export class BabylonRenderer{
     this.mapObjects=new MapObjectRenderer(this.scene,this.terrain);
     this.environment=new EnvironmentRenderer(this.scene);
     this.objectives=new ObjectiveRenderer(this.scene);
-    this.highlights=new HighlightRenderer(this.scene);
+    this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
@@ -341,15 +341,15 @@ export class BabylonRenderer{
     const night=LIGHTING_PROFILES.NIGHT[weather]||LIGHTING_PROFILES.NIGHT.CLEAR;
     const phase=String(moonlight||"PARTIAL").toUpperCase();
     const factor=phase==="FULL"?1.55:phase==="NONE"?.30:1;
-    // Unlit terrain inside real night LOS must remain legible on mobile.
-    // Darkness OUTSIDE LOS is already rendered by EnvironmentRenderer's
-    // optical haze; moonless sight is not a second light or detection rule.
-    const diffuseFactor=phase==="FULL"?1.40:phase==="NONE"?.90:1;
+    // Night terrain receives ambient sky light from the existing global lights.
+    // TacticalEngine LOS limits *perception*, not physical light production;
+    // EnvironmentRenderer darkens only the unseen region of that same scene.
+    const diffuseFactor=phase==="FULL"?1.50:phase==="NONE"?1.24:1.38;
     const nightLit={...night,
       sunIntensity:night.sunIntensity*factor,
       hemiIntensity:night.hemiIntensity*diffuseFactor,
       fillIntensity:night.fillIntensity*diffuseFactor,
-      ambientScale:night.ambientScale*(phase==="NONE"?.90:phase==="FULL"?1.18:1)};
+      ambientScale:night.ambientScale*(phase==="NONE"?1.12:phase==="FULL"?1.28:1.20)};
     const mixArray=(a,b)=>mixSkyColor(a,b,blend);
     return{
       label:blend<=.001?day.label:blend>=.999?`${night.label}_${phase}`:`${day.label}_TO_${night.label}_${phase}`,
@@ -483,19 +483,21 @@ export class BabylonRenderer{
     this.syncSubsystem("sky",()=>this.syncSky(state));
     this.syncSubsystem("lighting",()=>this.syncLighting(state));
 
-    // Critical interaction/state surfaces go first. A visual subsystem failure must
-    // never make the battlefield impossible to click or hide objectives.
+    // Interaction picking is independent of the visual surface, so it remains
+    // available even if an optional material or effect fails to update.
     this.syncSubsystem("camera",()=>this.camera.sync(state));
     this.syncSubsystem("picker",()=>this.picker.sync(state));
-    this.syncSubsystem("objectives",()=>this.objectives.sync(state));
-    this.syncSubsystem("highlights",()=>this.highlights.sync(state));
 
-    // Visual subsystems are independent render clients of the same GridState.
+    // Publish visual geometry before consumers. The terrain triangles are the
+    // height authority for water, environment covers, objectives and tactical
+    // indicators; a before-render retry would duplicate an update path.
     this.syncSubsystem("terrain",()=>this.terrain.sync(state));
     this.syncSubsystem("water",()=>this.water.sync(state,presentationEvents));
     this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
     this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
     this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
+    this.syncSubsystem("objectives",()=>this.objectives.sync(state));
+    this.syncSubsystem("highlights",()=>this.highlights.sync(state));
     this.syncSubsystem("shadows",()=>this.syncShadows());
     this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
 

@@ -1,4 +1,4 @@
-import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
+import { TILE_SIZE,ELEVATION_HEIGHT,SURFACE_RENDER_ORDER } from "./coordinate-system.js";
 import { VisualSurfaceResolver } from "./visual-surface-resolver.js";
 
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
@@ -775,7 +775,7 @@ export class EnvironmentRenderer{
     // WaterRenderer publishes translucent water at alphaIndex 10–13. The
     // aggregated radiance must reach its exposed water/ice/snow surface AFTER
     // those layers, while the optical haze and tactical markers remain above.
-    mesh.alphaIndex=15;
+    mesh.alphaIndex=SURFACE_RENDER_ORDER.RADIANCE;
     mesh.material=this.lightFieldMaterial;
     mesh.isPickable=false;mesh.receiveShadows=false;
     mesh.metadata={kind:"environment-light-field",castShadow:false,mergedMesh:true,litCells:cells.size,
@@ -821,7 +821,7 @@ export class EnvironmentRenderer{
         mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;mesh.isPickable=false;
         // Permanent crystal glow is composed after weather haze; real smoke
         // still controls optical transmission before this material is drawn.
-        if(structure)mesh.alphaIndex=18;
+        if(structure)mesh.alphaIndex=SURFACE_RENDER_ORDER.SOURCE_GLOW;
         mesh.metadata={kind:"environment-source-glow",source:source.source,castShadow:false};
         this.fireGlows.set(key,mesh);
       }
@@ -1302,6 +1302,50 @@ export class EnvironmentRenderer{
       if(mesh){this.surfaceMeshes.set(type,mesh);this.surfaceLayerMetrics.rebuilds++;}
     }
     this.surfaceSignature=signature;
+    this.publishedCoverRevision=(this.publishedCoverRevision||0)+1;
+  }
+
+  // Read-only query against the already published snow / ice geometry.
+  // No inferred snow height, duplicate surface generator or tile rounding.
+  publishedCoverGeometry(){
+    const result=[];
+    for(const [type,mesh] of this.surfaceMeshes){
+      const keys=mesh.metadata?.layerKeys||[];
+      if(!keys.length)continue;
+      const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      const colors=mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
+      const indices=mesh.getIndices();
+      if(!positions||!colors||!indices)continue;
+      result.push({type,positions,colors,indices,
+        tileOffsets:new Map(keys.map((key,i)=>[key,i]))});
+    }
+    return result;
+  }
+
+  publishedCoverYAt(tile,x,z,layers){
+    const key=this.surfaceResolver.keyOf(tile.x,tile.y);
+    let highest=-Infinity;
+    for(const layer of layers||[]){
+      const index=layer.tileOffsets.get(key);
+      if(index===undefined)continue;
+      const {positions:p,colors:c,indices:ids}=layer;
+      // Each published layer tile has 18 triangles (54 indices), identical to
+      // buildSurfaceLayer(). Test the ACTUAL triangle coordinates and opacity.
+      for(let i=index*54;i<index*54+54;i+=3){
+        const ai=ids[i],bi=ids[i+1],ci=ids[i+2],a=ai*3,b=bi*3,d=ci*3;
+        const ax=p[b]-p[a],az=p[b+2]-p[a+2],bx=p[d]-p[a],bz=p[d+2]-p[a+2];
+        const det=ax*bz-az*bx;
+        if(Math.abs(det)<1e-9)continue;
+        const dx=x-p[a],dz=z-p[a+2];
+        const u=(dx*bz-dz*bx)/det,v=(ax*dz-az*dx)/det;
+        if(u<-1e-6||v<-1e-6||u+v>1+1e-6)continue;
+        const alpha=c[ai*4+3]*(1-u-v)+c[bi*4+3]*u+c[ci*4+3]*v;
+        if(alpha<=SURFACE_EPSILON)continue;
+        highest=Math.max(highest,p[a+1]+(p[b+1]-p[a+1])*u+(p[d+1]-p[a+1])*v);
+        break;
+      }
+    }
+    return highest;
   }
 
   visibilityHazeProfile(state){
@@ -1323,10 +1367,9 @@ export class EnvironmentRenderer{
       ?(moonlight==="FULL"?.50:moonlight==="NONE"?1:.75):1;
     const alpha=clamp(profile.alpha*moonOpacity*
       (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,opticalProfile==="DARKNESS"?.90:.72);
-    // Optical legibility is not physical illumination: a faint moon-coloured
-    // reflection is composed by the same LOS haze, never by new PointLights.
-    const clarity=timeOfDay==="NIGHT"?(moonlight==="NONE"?.24:moonlight==="FULL"?.10:.16):0;
-    return {...profile,alpha,sightAlpha:clarity,sightColor:[.30,.37,.46]};
+    // LOS haze only obscures unseen cells. Visible cells show the actual
+    // terrain lit by BabylonRenderer's existing scene lights, not tinted fog.
+    return {...profile,alpha};
   }
 
   visibilityHazeStateSignature(state){
@@ -1358,10 +1401,7 @@ export class EnvironmentRenderer{
       wx*(1-wy)*visible(at(x,tile.y))+
       (1-wx)*wy*visible(at(tile.x,y))+
       wx*wy*visible(at(x,y));
-    const base=profile.color,sightColor=profile.sightColor||base;
-    const color=base.map((value,i)=>value+(sightColor[i]-value)*sight);
-    const alpha=clamp(Number(profile.alpha||0)*(1-sight)+Number(profile.sightAlpha||0)*sight,0,1);
-    return[...color,alpha];
+    return[...profile.color,clamp(Number(profile.alpha||0)*(1-sight),0,1)];
   }
 
   visibilityHazeAlpha(tile,byKey,ox,oz,profile){
@@ -1410,7 +1450,7 @@ export class EnvironmentRenderer{
     mesh.material=this.visibilityHazeMaterial;
     // The LOS optical layer must obscure even transparent water and its foam,
     // otherwise flooded terrain glows through darkness outside real sight.
-    mesh.alphaIndex=17;
+    mesh.alphaIndex=SURFACE_RENDER_ORDER.OPTICAL_HAZE;
     mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;
     mesh.metadata={
       kind:"weather-visibility-haze",

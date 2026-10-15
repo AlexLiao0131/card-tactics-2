@@ -1,4 +1,4 @@
-import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
+import { TILE_SIZE,ELEVATION_HEIGHT,SURFACE_RENDER_ORDER } from "./coordinate-system.js";
 import { VisualSurfaceResolver, hasStoredWaterDepth, CONNECTED_STORED_WATER_MAX_DROP } from "./visual-surface-resolver.js";
 
 const tilesOf=state=>state?.map?.tiles||state?.grid?.tiles||[];
@@ -916,7 +916,7 @@ export class WaterRenderer{
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
     const mesh=new BABYLON.Mesh(`spring-outlet-${tile.x}-${tile.y}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
-    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=tile.fogged?.18:1;
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.RUNOFF;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=tile.fogged?.18:1;
     mesh.metadata={kind:"water-source-footprint",hydrologySource:true,sourceKind:tile.sourceKind||null,
       rate:source.rate,terrainConforming:true,gameplayDepth:false,connectedToRunoff:true,
       actualSourceFlowEdges:edges.map(edge=>edge.id),sharedTransportTriangles:true,sharedOutletJoin:true,radialWetFade:false};
@@ -1050,10 +1050,10 @@ export class WaterRenderer{
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
-    mesh.material=this.surfaceMaterial;mesh.alphaIndex=10;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
+    mesh.material=this.surfaceMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.STORED_WATER;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
-      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:10,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
+      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);mesh.setVerticesData("waterSource",waterSource,false,2);}
@@ -1299,7 +1299,7 @@ export class WaterRenderer{
     BABYLON.VertexData.ComputeNormals(positions,indices,normals);
     const mesh=new BABYLON.Mesh(`runoff-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,normals,uvs,colors});data.applyToMesh(mesh,false);
-    mesh.material=this.runoffMaterial;mesh.alphaIndex=11;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
+    mesh.material=this.runoffMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.RUNOFF;mesh.isPickable=false;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.visibility=(from.fogged&&to.fogged)?.16:1;
     const fromNetwork=this.sheetFlowNetwork?.get(keyOf(from.x,from.y));
     const toNetwork=this.sheetFlowNetwork?.get(keyOf(to.x,to.y));
     const publishedEdge=fromNetwork?.outgoing.find(item=>item.id===edge.id);
@@ -1739,7 +1739,7 @@ export class WaterRenderer{
 
     const mesh=new BABYLON.Mesh(`cascade-${edge.id}`,this.scene),data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.uvs=uvs;data.applyToMesh(mesh,false);
-    mesh.material=this.cascadeMaterial;mesh.alphaIndex=12;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
+    mesh.material=this.cascadeMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.CASCADE;mesh.isPickable=false;mesh.visibility=edge.tile.fogged?.16:1;
     mesh.metadata={kind:"water-cascade",drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,hydraulicPower:edge.hydraulicPower,renderedCliffGeometry:true,exactCliffFace:true,exactWaterPolygonCliffIntersection:true,spillIntervals:spans.map(span=>({start:span.start,end:span.end})),wetSpans:spans.length,weldedBoundarySeams:true,sharedWaterGeometryRegistry:true,actualRenderedRockFaces:true,matchingRockFaceTriangulation:true,receiverWet:edge.receiverWet,hydrologyEdgeReason:edge.hydrologyEdgeReason,storedWaterOvertopping:edge.storedWaterOvertopping===true};
 
     const root=new BABYLON.TransformNode(`cascade-root-${edge.id}`,this.scene);mesh.parent=root;
@@ -1747,11 +1747,11 @@ export class WaterRenderer{
     for(const group of impactGroups){
       const count=Math.max(1,group.points.length),center=group.points.reduce((acc,point)=>({x:acc.x+point.x/count,y:acc.y+point.y/count,z:acc.z+point.z/count}),{x:0,y:0,z:0});
       const foam=BABYLON.MeshBuilder.CreateTorus(`cascade-foam-${edge.id}-${group.spanIndex}`,{diameter:TILE_SIZE*(.30+.22*impactScale),thickness:.026+.018*Math.min(1,impactScale),tessellation:20},this.scene);
-      foam.material=this.foamMaterial;foam.alphaIndex=13;foam.isPickable=false;foam.position.set(center.x,center.y+.020,center.z);foam.visibility=mesh.visibility;foam.parent=root;
+      foam.material=this.foamMaterial;foam.alphaIndex=SURFACE_RENDER_ORDER.FOAM;foam.isPickable=false;foam.position.set(center.x,center.y+.020,center.z);foam.visibility=mesh.visibility;foam.parent=root;
       const ripples=[];
       for(let i=0;i<2;i++){
         const ripple=BABYLON.MeshBuilder.CreateTorus(`cascade-ripple-${i}-${edge.id}-${group.spanIndex}`,{diameter:TILE_SIZE*(.28+.12*i+.16*impactScale),thickness:.020,tessellation:18},this.scene);
-        ripple.material=this.foamMaterial;ripple.alphaIndex=13;ripple.isPickable=false;ripple.position.set(center.x+dir.dx*TILE_SIZE*.035,center.y+.012+i*.002,center.z+dir.dy*TILE_SIZE*.035);ripple.visibility=0;ripple.parent=root;ripples.push(ripple);
+        ripple.material=this.foamMaterial;ripple.alphaIndex=SURFACE_RENDER_ORDER.FOAM;ripple.isPickable=false;ripple.position.set(center.x+dir.dx*TILE_SIZE*.035,center.y+.012+i*.002,center.z+dir.dy*TILE_SIZE*.035);ripple.visibility=0;ripple.parent=root;ripples.push(ripple);
       }
       impacts.push({foam,ripples,center});
     }
