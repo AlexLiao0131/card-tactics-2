@@ -15,14 +15,21 @@ export class BattleInputController{
   }
 
   install(){
+    // The battlefield owns touch gestures. Otherwise Safari may switch a drag
+    // into native page pinch/double-tap zoom when a pointer is interrupted.
+    this.canvas.style.touchAction="none";
     this.onPointerDown=event=>{
       const touch=event.pointerType==="touch";
       const panPointer=touch||event.button===0;
       const rotatePointer=!touch&&event.button===1;
       if(!panPointer&&!rotatePointer)return;
       event.preventDefault();
+      // A new *primary* touch starts a new physical contact sequence. Any
+      // previous pointer left behind by Safari/backgrounding is no longer down.
+      // Non-primary touches remain untouched, preserving real two-finger pinch.
+      if(touch&&event.isPrimary===true&&this.pointers.size)this.resetPointers();
       this.pointers.set(event.pointerId,{x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,type:pointerTypeOf(event),moved:false,button:event.button});
-      this.canvas.setPointerCapture?.(event.pointerId);
+      try{this.canvas.setPointerCapture?.(event.pointerId)}catch(_){}
       if(this.pointers.size>=2)this.beginMultiTouch();
       else if(rotatePointer)this.gesture={type:"ROTATE_MOUSE",id:event.pointerId,lastX:event.clientX,accumulatedX:0};
       else this.gesture={type:"PAN",id:event.pointerId,lastX:event.clientX,lastY:event.clientY};
@@ -123,6 +130,13 @@ export class BattleInputController{
       event.preventDefault();
       this.camera.zoomBy(event.deltaY>0?.9:1.1);
     };
+    // Pointer capture can be lost while leaving the canvas or when iOS Safari
+    // backgrounds the tab. Release outside touches without generating a tile tap.
+    this.onOutsidePointerUp=event=>{
+      if(event.target!==this.canvas)this.onPointerCancel(event);
+    };
+    this.onInterrupted=()=>this.resetPointers();
+    this.onVisibilityChange=()=>{if(document.hidden)this.resetPointers();};
 
     this.canvas.addEventListener("pointerdown",this.onPointerDown);
     this.canvas.addEventListener("pointermove",this.onPointerMove);
@@ -130,6 +144,38 @@ export class BattleInputController{
     this.canvas.addEventListener("pointercancel",this.onPointerCancel);
     this.canvas.addEventListener("lostpointercapture",this.onLostPointerCapture);
     this.canvas.addEventListener("wheel",this.onWheel,{passive:false});
+    window.addEventListener("pointerup",this.onOutsidePointerUp);
+    window.addEventListener("pointercancel",this.onPointerCancel);
+    window.addEventListener("blur",this.onInterrupted);
+    window.addEventListener("pagehide",this.onInterrupted);
+    document.addEventListener("visibilitychange",this.onVisibilityChange);
+  }
+
+  resetPointers(){
+    const ids=[...this.pointers.keys()];
+    this.pointers.clear();
+    this.gesture=null;
+    for(const id of ids)try{this.canvas.releasePointerCapture?.(id)}catch(_){}
+  }
+
+  dispose(){
+    this.resetPointers();
+    this.canvas.removeEventListener("pointerdown",this.onPointerDown);
+    this.canvas.removeEventListener("pointermove",this.onPointerMove);
+    this.canvas.removeEventListener("pointerup",this.onPointerUp);
+    this.canvas.removeEventListener("pointercancel",this.onPointerCancel);
+    this.canvas.removeEventListener("lostpointercapture",this.onLostPointerCapture);
+    this.canvas.removeEventListener("wheel",this.onWheel);
+    window.removeEventListener("pointerup",this.onOutsidePointerUp);
+    window.removeEventListener("pointercancel",this.onPointerCancel);
+    window.removeEventListener("blur",this.onInterrupted);
+    window.removeEventListener("pagehide",this.onInterrupted);
+    document.removeEventListener("visibilitychange",this.onVisibilityChange);
+  }
+
+  diagnostics(){
+    return{gesture:this.gesture?.type||null,activePointers:this.pointers.size,
+      pointerTypes:[...this.pointers.values()].map(pointer=>pointer.type)};
   }
 
   multiTouchMetrics(){

@@ -143,6 +143,7 @@ export class BabylonRenderer{
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
+    this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
     this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,renderTotal:0,renderPeak:0};
@@ -326,12 +327,15 @@ export class BabylonRenderer{
     const night=LIGHTING_PROFILES.NIGHT[weather]||LIGHTING_PROFILES.NIGHT.CLEAR;
     const phase=String(moonlight||"PARTIAL").toUpperCase();
     const factor=phase==="FULL"?1.55:phase==="NONE"?.30:1;
-    const diffuseFactor=phase==="FULL"?1.40:phase==="NONE"?.49:1;
+    // Unlit terrain inside real night LOS must remain legible on mobile.
+    // Darkness OUTSIDE LOS is already rendered by EnvironmentRenderer's
+    // optical haze; moonless sight is not a second light or detection rule.
+    const diffuseFactor=phase==="FULL"?1.40:phase==="NONE"?.90:1;
     const nightLit={...night,
       sunIntensity:night.sunIntensity*factor,
       hemiIntensity:night.hemiIntensity*diffuseFactor,
       fillIntensity:night.fillIntensity*diffuseFactor,
-      ambientScale:night.ambientScale*(phase==="NONE"?.62:phase==="FULL"?1.18:1)};
+      ambientScale:night.ambientScale*(phase==="NONE"?.90:phase==="FULL"?1.18:1)};
     const mixArray=(a,b)=>mixSkyColor(a,b,blend);
     return{
       label:blend<=.001?day.label:blend>=.999?`${night.label}_${phase}`:`${day.label}_TO_${night.label}_${phase}`,
@@ -533,6 +537,7 @@ export class BabylonRenderer{
       projection:this.camera.getViewState().projection,
       rotation:this.camera.getViewState().rotation,
       zoom:this.camera.getViewState().zoom,
+      input:this.input.diagnostics(),
       sky:this.skyState||null,
       lighting:this.lightingState||null,
       shadows:this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0},

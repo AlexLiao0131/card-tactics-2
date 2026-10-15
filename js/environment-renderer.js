@@ -86,7 +86,9 @@ const VISIBILITY_HAZE_PROFILE=Object.freeze({
   NIGHT:Object.freeze({
     FOG:Object.freeze({color:Object.freeze([.10,.13,.16]),alpha:.65,edgeFactor:.24,height:.42}),
     BLIZZARD:Object.freeze({color:Object.freeze([.14,.17,.20]),alpha:.63,edgeFactor:.28,height:.48}),
-    DARKNESS:Object.freeze({color:Object.freeze([.035,.045,.065]),alpha:.68,edgeFactor:.26,height:.44})
+    // The darkness field must contrast with the existing low-light scene.
+    // Within TacticalEngine LOS it fades out, without illuminating enemies.
+    DARKNESS:Object.freeze({color:Object.freeze([.035,.045,.065]),alpha:.86,edgeFactor:.26,height:.44})
   })
 });
 
@@ -1278,7 +1280,7 @@ export class EnvironmentRenderer{
     const moonOpacity=opticalProfile==="DARKNESS"
       ?(moonlight==="FULL"?.50:moonlight==="NONE"?1:.75):1;
     return {...profile,alpha:clamp(profile.alpha*moonOpacity*
-      (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,.72)};
+      (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,opticalProfile==="DARKNESS"?.90:.72)};
   }
 
   visibilityHazeStateSignature(state){
