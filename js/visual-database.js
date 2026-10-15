@@ -616,6 +616,62 @@ export const VISUALS={
         }
       }
     },
+    cassandra_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",
+        baseFacing:"E",
+        height:1.70,
+        figure:{
+          style:"ARCANE_WITCH_MENTOR",
+          braid:false,
+          longHair:true,
+          witchHat:true,
+          cape:true,
+          capeLayers:true,
+          skirtPanels:true,
+          skirtTrim:true,
+          scholarRobe:true,
+          scholarGear:true,
+          corsetDetail:true,
+          beltDetail:true,
+          neckAccessory:true,
+          clothSleeves:true,
+          bareHands:true,
+          bootDetail:true,
+          arcaneStaff:true,
+          friendlySmile:true,
+          colors:{
+            skin:"#eccabc",
+            hair:"#d4ced7",
+            hairDark:"#9a91a8",
+            cape:"#5d3f7f",
+            capeDark:"#271c33",
+            leather:"#4a3734",
+            leatherDark:"#241b22",
+            shirt:"#efe8e0",
+            pants:"#3c3340",
+            boots:"#2f2630",
+            metal:"#a88658",
+            gold:"#b89055",
+            weapon:"#4d404a",
+            eyes:"#8f69b9",
+            accent:"#7e5aa8",
+            gem:"#9e63d8",
+            arcane:"#9f6ae2",
+            arcaneEmissive:"#8d4fe0"
+          }
+        },
+        animations:{
+          IDLE:{duration:1290,loop:true,procedural:"BREATHE"},
+          WALK:{duration:188,loop:true,procedural:"STEP",figureMotion:{bodyBob:.041,rootSway:.019,bodySway:.017,torsoBob:.011,legSwing:.44,armSwing:.26,bowSwing:0,capeSwing:.19,capeTwist:.078,braidSwing:.22,braidTwist:.086,followLag:.79}},
+          ATTACK:{duration:365,loop:false,procedural:"LUNGE"},
+          CAST:{duration:575,loop:false,procedural:"CAST"},
+          HURT:{duration:245,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:770,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     velsa_default:{
       expressions:{},
       battle:{

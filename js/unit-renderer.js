@@ -548,6 +548,19 @@ export class UnitRenderer{
       box("figure-hood-fold",[.40,.16,.12],material.capeDark,[0,1.35,-.15],[.12,0,0],"cape");
     }
 
+    if(figure.witchHat){
+      // Broad-brim witch silhouette for senior arcane casters. The entire hat is
+      // attached to the head pivot so casting, recoil and death keep it aligned.
+      const brim=BABYLON.MeshBuilder.CreateTorus(`figure-witch-hat-brim-${unit.id}`,{diameter:.92*scale,thickness:.036*scale,tessellation:22},this.scene);
+      finish(brim,material.cape,[0,1.72,-.020],[Math.PI/2,0,0],[1.16,.38,1.00],{part:"head"});
+      cylinder("figure-witch-hat-crown",.34,.16,.23,material.cape,[0,1.86,-.025],[0,0,-.08],12,"head");
+      cylinder("figure-witch-hat-tip",.32,.02,.15,material.cape,[.06,2.08,-.035],[0,0,.32],12,"head");
+      box("figure-witch-hat-band",[.29,.040,.19],material.gold,[0,1.73,.07],[0,0,0],"head");
+      sphere("figure-witch-hat-gem",.055,material.gem,[.135,1.73,.145],[.70,.95,.42],6,"head");
+      box("figure-witch-hat-chain",[.016,.18,.016],material.gold,[.26,1.67,.03],[.10,0,.08],"head");
+      sphere("figure-witch-hat-charm",.045,material.gem,[.285,1.55,.045],[.60,.95,.38],5,"head");
+    }
+
     // Tapered torso gives a readable shoulder/waist silhouette at tactical zoom.
     // Some armour sets (for example a fitted scale cuirass) are the torso garment
     // themselves and must not reveal the generic shirt/vest underneath.
