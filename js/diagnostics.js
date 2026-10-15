@@ -15,7 +15,7 @@ let previousSession=null,previousStatus="",recoveredIncident=null,lifecycle="ACT
 // Compact, durable history survives the 320-event rolling window. These are
 // observations of the ONE battle state, never another simulation or game state.
 const roundHistory=[],perfPeaks=Object.create(null),spikeNotifiedAt=Object.create(null);
-let lastEvidence=null;
+let lastEvidence=null,lastWaterSeamWarningKey="",lastWaterSeamCaptureAt=0;
 
 function readStorage(key){try{return localStorage.getItem(key);}catch(_){return null;}}
 function writeStorage(key,value){try{localStorage.setItem(key,value);return true;}catch(err){storageWarning=String(err?.name||err||"Storage unavailable");return false;}}
@@ -193,6 +193,9 @@ function checkpoint(){
     weather,timeOfDay:env.timeOfDay,moonlight:env.moonlight,
     climate:climate?{precipitation:climate.precipitation?.type,intensity:numeric(climate.precipitation?.intensity),fog:numeric(climate.fog?.intensity),thunder:numeric(climate.thunder?.intensity),heat:numeric(climate.heat?.intensity),wind:climate.wind?{direction:climate.wind.direction,strength:numeric(climate.wind.strength)}:null}:null,
     hydrology:{storedD:numeric(storedD),soil:numeric(soil),wetTiles:wet,deepTiles:deep,maxDepth:numeric(maxDepth),snow:numeric(snow),ice:numeric(ice),flowingTiles:flowing},
+    // Cached geometry audit: O(1) between actual surface rebuilds. Its
+    // "open boundary" count includes legitimate shorelines, not just cracks.
+    waterSeams:visual?.water?.waterSeamDiagnostics?.()??null,
     lighting:{sourceTypes:lightTypes,physicalLights:visual?.environment?.physicalLightsById?.size??null,sourceIds:lightSources.filter(source=>source?.source==="CORE_LIGHT"||source?.source==="CAPTURE_LIGHT").slice(0,12).map(source=>`${source.source}:${source.sourceId??"unknown"}`)},
     scene:scene?{meshes:scene.meshes?.length??null,materials:scene.materials?.length??null,textures:scene.textures?.length??null,lights:scene.lights?.length??null,activeMeshes:scene.getActiveMeshes?.()?.length??null}:null,
      performance:perfSnapshot(),
@@ -203,7 +206,8 @@ function ensureRoundHistory(round,at=now()){
   if(!entry){
     entry={round,firstAt:at,lastAt:at,samples:0,minFps:null,maxFps:null,
       maxRenderPeakMs:0,maxWaterMs:0,maxObjectsMs:0,weathers:[],nightSamples:0,
-      maxMeshes:0,maxShadowCasters:0};
+      maxMeshes:0,maxShadowCasters:0,
+      maxWaterSeamWarnings:0,maxWaveInputMismatches:0,maxWaterVisualBoundaryCandidates:0};
     roundHistory.push(entry);
     while(roundHistory.length>ROUND_MAX)roundHistory.shift();
   }
@@ -225,6 +229,10 @@ function keepRoundHistory(sample){
   entry.maxRenderPeakMs=Math.max(entry.maxRenderPeakMs,Number(visual?.performanceStats?.renderPeakMs||0));
   entry.maxMeshes=Math.max(entry.maxMeshes,Number(sample.scene?.meshes||0));
   entry.maxShadowCasters=Math.max(entry.maxShadowCasters,Number(visual?.shadowState?.casters||0));
+  entry.maxWaterSeamWarnings=Math.max(entry.maxWaterSeamWarnings,Number(sample.waterSeams?.warningCount||0));
+  entry.maxWaveInputMismatches=Math.max(entry.maxWaveInputMismatches,Number(sample.waterSeams?.crossMeshVertexMotionMismatch||0));
+  entry.maxWaterVisualBoundaryCandidates=Math.max(entry.maxWaterVisualBoundaryCandidates,
+    Number(sample.waterSeams?.visualBoundaryCandidates||0));
 }
 
 // A deliberately explicit "capture now" command for black terrain, missing
@@ -235,7 +243,21 @@ function capture(label="MANUAL_VISUAL"){
   try{
     const current=checkpoint(),visual=window.CardTacticsRenderer?.captureVisualDiagnostics?.()||null;
     lastEvidence={at:now(),label:shorten(label,48),checkpoint:current,
-      presentation:audit(),visual};
+      presentation:audit(),visual,
+      waterSeams:window.CardTacticsRenderer?.water?.waterSeamDiagnostics?.({detailed:true})||null,
+      overlays:{deployment:window.CardTacticsRenderer?.highlights?.areas?.size??null,
+        tactical:window.CardTacticsRenderer?.highlights?.dynamic?.size??null,
+        fog:window.CardTacticsRenderer?.environment?.visibilityHazeMesh?.name??null,
+        lightField:window.CardTacticsRenderer?.environment?.lightFieldMesh?.name??null,
+        transparentMeshes:(window.CardTacticsRenderer?.scene?.meshes||[]).reduce((counts,mesh)=>{
+          const kind=String(mesh?.metadata?.kind||""),name=String(mesh?.name||"");
+          if(kind.startsWith("water")||name.startsWith("water-")||name.startsWith("runoff-")||name.startsWith("cascade-"))counts.water++;
+          else if(kind==="tactical-ground-highlight")counts.tactical++;
+          else if(kind==="weather-visibility-haze")counts.visibility++;
+          else if(kind==="environment-light-field")counts.illumination++;
+          else if(name.startsWith("environment-surface-"))counts.snowIce++;
+          return counts;
+        },{water:0,tactical:0,visibility:0,illumination:0,snowIce:0})}};
     push("VISUAL_CAPTURE",{label:lastEvidence.label,round:current?.round,
       weather:current?.weather,timeOfDay:current?.timeOfDay,
       sightTiles:visual?.opticalSight?.visibleTiles??null,
@@ -261,7 +283,30 @@ function sample(){
     }
     lastWater=water;lastCheckpoint=sample;
     keepRoundHistory(sample);
-    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,lighting:sample.lighting,scene:sample.scene,performance:sample.performance,heap:sample.heap});}
+    const seams=sample.waterSeams;
+    if(seams?.warningCount>0){
+      const warningKey=`${seams.revision}:${seams.warningCount}`;
+      if(warningKey!==lastWaterSeamWarningKey){
+        lastWaterSeamWarningKey=warningKey;
+        push("WATER_SEAM_WARNING",{round:sample.round,weather:sample.weather,
+          revision:seams.revision,regions:seams.surfaceRegions,
+          reused:seams.update?.reused,built:seams.update?.built,
+          invalid:seams.invalidIndices+seams.invalidVertices,
+          degenerate:seams.degenerateTriangles,
+          nonManifold:seams.nonManifoldEdges,
+          waveInputMismatch:seams.crossMeshVertexMotionMismatch,
+          colorAlphaCandidates:seams.crossMeshColorMismatch,
+          normalCandidates:seams.crossMeshNormalMismatch,
+          missingAnimation:seams.missingSurfaceAnimation});
+        // Readback and long-form evidence can be expensive on mobile. Keep
+        // periodic summaries, but at most one automatic full capture/minute.
+        if(Date.now()-lastWaterSeamCaptureAt>=60000){
+          lastWaterSeamCaptureAt=Date.now();
+          capture("AUTO_WATER_SEAM");
+        }
+      }
+    }
+    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,waterSeams:sample.waterSeams,lighting:sample.lighting,scene:sample.scene,performance:sample.performance,heap:sample.heap});}
     store();
   }catch(err){push("DIAGNOSTICS_SAMPLE_FAILED",errorData(err));}
 }
@@ -300,7 +345,7 @@ function clear(){events.length=0;roundHistory.length=0;
   for(const key of Object.keys(perfCounters))delete perfCounters[key];
   for(const key of Object.keys(perfPeaks))delete perfPeaks[key];
   for(const key of Object.keys(spikeNotifiedAt))delete spikeNotifiedAt[key];
-  lastEvidence=null;previousSession=null;previousStatus="";recoveredIncident=null;
+  lastEvidence=null;lastWaterSeamWarningKey="";lastWaterSeamCaptureAt=0;previousSession=null;previousStatus="";recoveredIncident=null;
   lastCheckpoint=null;lastWater=null;lastClimateKey="";lastSampleAt=0;lastSavedWaterLog=0;
   removeStorage(STORE_KEY);removeStorage(INCIDENT_KEY);if(enabled)store(true);}
 function mount(){
@@ -352,6 +397,7 @@ function mount(){
       c?.scene?`Babylon meshes ${c.scene.meshes}｜materials ${c.scene.materials}｜textures ${c.scene.textures}｜lights ${c.scene.lights}｜physical ${c.lighting?.physicalLights??"-"}`:"",
       v?.performance?`最近每幀 Draw Calls ≈ ${v.performance.drawCallsPerFrame??"無可靠資料"}｜渲染 ${v.performance.renderMeanMs??"-"} ms` :"",
       `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類`,
+      c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜幾何／波浪警訊 ${c.waterSeams.warningCount}`:"",
       lastEvidence?`視覺現場：${lastEvidence.at}（${lastEvidence.label}）`:"尚未手動擷取視覺現場",
       v?`Babylon｜Tiles ${v.tiles??"-"}｜Units ${v.units??"-"}｜Zoom ${v.zoom??"-"}`:"",
       m?`JS Heap ${m.usedMB}/${m.totalMB} MB`:"iOS 無法提供 JS Heap 數值",

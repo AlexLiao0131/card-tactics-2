@@ -90,6 +90,9 @@ export class WaterRenderer{
     this.seenRogueWaveSequences=new Set();
     this.whirlpools=new Map();
     this.waterSeamRegistry=new Map();
+    // Read-only geometry audit is computed on demand, never during animation.
+    this.seamAuditRevision=0;
+    this.seamAuditCache=null;
 
     this.surfaceMaterial=this.makeSurfaceMaterial();
 
@@ -1840,6 +1843,8 @@ export class WaterRenderer{
     const surfaceSignature=this.surfaceSignatureFor([],state);
     const surfaceChanged=surfaceSignature!==this.surfaceSignature;
     if(surfaceChanged){
+      this.seamAuditRevision++;
+      this.seamAuditCache=null;
       const tiles=tilesOf(state),allMap=this.allByKey(state);
       const solveStart=performance.now();
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
@@ -1970,6 +1975,7 @@ export class WaterRenderer{
       this.sheetFlowSurfaces.clear();this.sheetFlowMeshes.clear();
       this.surfacePresentation.clear();
       this.resetWaterSeamRegistry();
+      this.seamAuditRevision++;this.seamAuditCache=null;
       this.surfaceSignature=this.runoffSignature=this.sourceSignature="";
       this.cascadeMeshSignatures.clear();
       this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
@@ -1977,6 +1983,175 @@ export class WaterRenderer{
       this.surfaceMeshUpdate={reused:0,built:0};
     }
     this.levelSamples=null;
+  }
+
+  // Diagnostic-only audit of the PRESENTED water mesh, not a second water
+  // topology builder. Uses the actual index buffers and the same rest positions
+  // and motion attributes supplied to the GPU/CPU surface animator.
+  // Coastline edges are legitimate: an open boundary alone is NOT a crack.
+  waterSeamDiagnostics({detailed=false}={}){
+    if(this.seamAuditCache?.revision===this.seamAuditRevision)
+      return detailed?{...this.seamAuditCache.full,
+        wind:{...this.wind},waveTime:Math.round(this.waveTime*100000)/100000,
+        specialAnimatedRegions:[...this.surfaceAnimations.values()].filter(entry=>entry.specialActive).length}
+        :this.seamAuditCache.summary;
+    const started=performance.now();
+    const key=(x,y,z)=>`${Number(x).toFixed(5)}:${Number(y).toFixed(5)}:${Number(z).toFixed(5)}`;
+    const round=n=>Math.round(n*100000)/100000;
+    const edgeKeys=new Map(),vertexLocations=new Map(),meshAttributes=new Map();
+    const regions=[],issues=[];
+    const counters={triangles:0,vertices:0,invalidVertices:0,invalidIndices:0,
+      degenerateTriangles:0,nonManifoldEdges:0,openBoundaryEdges:0,
+      sharedCrossMeshEdges:0,
+      coincidentCrossMeshVertices:0,crossMeshVertexMotionMismatch:0,
+      crossMeshColorMismatch:0,crossMeshNormalMismatch:0,
+      missingSurfaceAnimation:0,
+      differentHeightAtSameXZ:0,registeredSeamPositions:this.waterSeamRegistry.size};
+    const addIssue=(kind,point,extra={})=>{
+      if(issues.length>=24)return;
+      issues.push({kind,x:round(point[0]),y:round(point[1]),z:round(point[2]),...extra});
+    };
+    const scalar=(array,i)=>Number(array?.[i]||0);
+    const waveDifference=(a,b)=>{
+      const x=a.attributes,y=b.attributes;
+      // Identical world position and time are necessary but not sufficient:
+      // different per-vertex weights/flow/source values animate differently.
+      return Math.max(...x.map((value,i)=>Math.abs(value-y[i])));
+    };
+    for(const [id,mesh] of this.surfaceMeshes){
+      const animation=this.surfaceAnimations.get(id);
+      const positions=animation?.basePositions||mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
+      const indices=mesh?.getIndices?.()||[];
+      const colors=mesh?.getVerticesData?.(BABYLON.VertexBuffer.ColorKind)||[];
+      const vertexCount=Math.floor(positions.length/3);
+      const region={id,tiles:mesh?.metadata?.tileCount??null,
+        vertices:vertexCount,triangles:Math.floor(indices.length/3),
+        alphaIndex:mesh?.alphaIndex??null,visibility:mesh?.visibility??null,
+        transparent:!!mesh?.hasVertexAlpha,
+        gpuWave:this.gpuSurfaceWaves,animationPresent:!!animation,
+        invalidTriangles:0,degenerateTriangles:0,openBoundaryEdges:0};
+      regions.push(region);counters.vertices+=vertexCount;
+      if(!animation)counters.missingSurfaceAnimation++;
+      meshAttributes.set(id,{positions,animation,colors,mesh});
+      const keys=new Array(vertexCount);
+      for(let i=0;i<vertexCount;i++){
+        const x=Number(positions[i*3]),y=Number(positions[i*3+1]),z=Number(positions[i*3+2]);
+        if(![x,y,z].every(Number.isFinite)){counters.invalidVertices++;continue;}
+        const k=key(x,y,z);keys[i]=k;
+      }
+      // One undirected edge record per triangle. Interior shared edges within
+      // a region cancel out; the remaining edges are physical coastlines OR
+      // potential open seams, not automatic evidence of holes.
+      for(let i=0;i+2<indices.length;i+=3){
+        const face=[Number(indices[i]),Number(indices[i+1]),Number(indices[i+2])];
+        if(face.some(n=>!Number.isInteger(n)||n<0||n>=vertexCount||!keys[n])){
+          counters.invalidIndices++;region.invalidTriangles++;continue;
+        }
+        const a=face[0]*3,b=face[1]*3,c=face[2]*3;
+        const ax=positions[b]-positions[a],az=positions[b+2]-positions[a+2],
+          bx=positions[c]-positions[a],bz=positions[c+2]-positions[a+2];
+        if(Math.abs(ax*bz-az*bx)<1e-10){
+          counters.degenerateTriangles++;region.degenerateTriangles++;
+          addIssue("DEGENERATE_WATER_TRIANGLE",
+            [positions[a],positions[a+1],positions[a+2]],{mesh:id});
+        }
+        counters.triangles++;
+        for(const [u,v] of [[face[0],face[1]],[face[1],face[2]],[face[2],face[0]]]){
+          const k1=keys[u],k2=keys[v];
+          if(k1===k2)continue;
+          const edge=k1<k2?`${k1}|${k2}`:`${k2}|${k1}`;
+          const list=edgeKeys.get(edge)||[];
+          list.push({id,vertex1:u,vertex2:v});edgeKeys.set(edge,list);
+        }
+      }
+    }
+    // A large lake may have tens of thousands of *interior* vertices. Check
+    // motion inputs only on actual region boundary endpoints; avoid allocating
+    // per-vertex objects for the whole lake on a hot iPhone.
+    const checkedBoundaryVertices=new Set();
+    const registerBoundaryVertex=(id,index)=>{
+      const identity=`${id}:${index}`;
+      if(checkedBoundaryVertices.has(identity))return;
+      checkedBoundaryVertices.add(identity);
+      const {positions,animation,colors,mesh}=meshAttributes.get(id)||{};
+      if(!positions)return;
+      const x=Number(positions[index*3]),y=Number(positions[index*3+1]),z=Number(positions[index*3+2]);
+      const item={mesh:id,point:[x,y,z],attributes:[
+        scalar(animation?.flowX,index),scalar(animation?.flowZ,index),
+        scalar(animation?.flowSpeeds,index),scalar(animation?.waveWeights,index),
+        scalar(animation?.sourceWeights,index),scalar(animation?.sourcePhases,index)],
+        color:[scalar(colors,index*4),scalar(colors,index*4+1),
+          scalar(colors,index*4+2),scalar(colors,index*4+3)],
+        normal:[scalar(animation?.baseNormals,index*3),
+          scalar(animation?.baseNormals,index*3+1),scalar(animation?.baseNormals,index*3+2)],
+        visibility:Number(mesh?.visibility??1)};
+      const xy=`${x.toFixed(5)}:${z.toFixed(5)}`,same=vertexLocations.get(xy)||[];
+      for(const other of same){
+        if(other.mesh===id)continue;
+        if(Math.abs(y-other.point[1])>0.001){
+          counters.differentHeightAtSameXZ++;
+          continue; // a waterfall or a stepped water surface can legitimately differ
+        }
+        counters.coincidentCrossMeshVertices++;
+        const colorDelta=Math.max(...item.color.map((v,i)=>Math.abs(v-other.color[i])));
+        if(colorDelta>.02||Math.abs(item.visibility-other.visibility)>.02){
+          counters.crossMeshColorMismatch++;
+          addIssue("CROSS_MESH_COLOR_ALPHA",item.point,{meshes:[other.mesh,id],
+            maxColorDelta:round(colorDelta),visibility:[other.visibility,item.visibility]});
+        }
+        const normalDelta=Math.max(...item.normal.map((v,i)=>Math.abs(v-other.normal[i])));
+        if(normalDelta>.02)counters.crossMeshNormalMismatch++;
+        const delta=waveDifference(item,other);
+        if(delta>0.0001){
+          counters.crossMeshVertexMotionMismatch++;
+          addIssue("CROSS_MESH_WAVE_INPUT",item.point,
+            {meshes:[other.mesh,id],maxAttributeDelta:round(delta)});
+        }
+      }
+      same.push(item);vertexLocations.set(xy,same);
+    };
+    for(const [edge,list] of edgeKeys){
+      // More than two coincident faces on one 3D edge is a topology error,
+      // independent of whether that edge lies at a tile boundary.
+      if(list.length>2){
+        counters.nonManifoldEdges++;
+        if(issues.length<24){const nums=edge.split('|')[0].split(':').map(Number);
+          addIssue("NON_MANIFOLD_WATER_EDGE",nums,{meshes:[...new Set(list.map(x=>x.id))]});}
+      }else if(list.length===1){
+        counters.openBoundaryEdges++;
+        const region=regions.find(r=>r.id===list[0].id);
+        if(region)region.openBoundaryEdges++;
+      }else if(list[0].id!==list[1].id){
+        counters.sharedCrossMeshEdges++;
+      }
+      if(list.length===1||list.some(record=>record.id!==list[0].id))
+        for(const record of list){
+          registerBoundaryVertex(record.id,record.vertex1);
+          registerBoundaryVertex(record.id,record.vertex2);
+        }
+    }
+    const summary={revision:this.seamAuditRevision,
+      topology:"EXISTING_REGION_COMPONENTS",waveSampleSpace:"WORLD_XZ",
+      waveMode:this.gpuSurfaceWaves?"GPU_SHADER":"CPU_VERTEX",
+      surfaceRegions:this.surfaceMeshes.size,surfaceMeshes:this.surfaceMeshes.size,
+      update:{...this.surfaceMeshUpdate},cascades:{count:this.cascades.size,update:{...this.cascadeMeshUpdate}},
+      ...counters,warningCount:counters.invalidVertices+counters.invalidIndices+
+        counters.degenerateTriangles+counters.nonManifoldEdges+
+        counters.crossMeshVertexMotionMismatch+counters.missingSurfaceAnimation,
+      visualBoundaryCandidates:counters.crossMeshColorMismatch+
+        counters.crossMeshNormalMismatch,
+      openEdgesAreNotNecessarilyCracks:true,
+      waveAttributeCheck:"CROSS_REGION_BOUNDARY_ONLY",
+      gpuDisplacedPositionsNotReadBack:true,
+      measuredGeometryVersion:"REST_POSITIONS_AND_WAVE_INPUTS",
+      auditMs:round(performance.now()-started)};
+    const full={...summary,regions:regions.slice(0,30),issues,
+      wind:{...this.wind},waveTime:round(this.waveTime),
+      transparentWater:{alphaIndex:[...new Set(regions.map(r=>r.alphaIndex))],
+        prepass:!!this.surfaceMaterial?.needDepthPrePass,
+        mode:this.surfaceMaterial?.transparencyMode??null}};
+    this.seamAuditCache={revision:this.seamAuditRevision,summary,full};
+    return detailed?full:summary;
   }
 
   diagnostics(){
