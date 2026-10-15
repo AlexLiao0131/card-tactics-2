@@ -241,13 +241,22 @@ export class UnitRenderer{
     makePart("weapon",[.30,.90,.02]);
     makePart("leftWeapon",[-.30,.80,.05]);
     makePart("rightWeapon",[.30,.80,.05]);
+    if(figure.fieldTowerShield)makePart("shield",[-.305,.75,.07]);
     makePart("tail",[0,.88,-.17]);
     // Reusable angelic silhouette roots. Each wing hinges at the shoulder so
     // flight, aiming, and landing can articulate without moving the torso.
     makePart("leftWing",[-.24,1.36,-.22]);
     makePart("rightWing",[.24,1.36,-.22]);
     makePart("halo",[0,1.82,-.08]);
-    if(figure.armingSword||figure.blessedGreatsword){
+    if(figure.sturdyBuild){
+      // Body proportions are selected in VisualDatabase. Save the expanded
+      // bases so resetPose() never shrinks a sturdy warrior after an event.
+      for(const [part,width] of [["body",1.13],["leftArm",1.09],["rightArm",1.09],["leftLeg",1.07],["rightLeg",1.07]]){
+        figureParts[part].scaling.x=width;
+        figureParts[part].metadata.figureBase.scaling.copyFrom(figureParts[part].scaling);
+      }
+    }
+    if(figure.armingSword||figure.blessedGreatsword||figure.fieldWarHammer){
       // The hilt is centered inside the RIGHT glove. Rotating that arm carries
       // the entire arming sword; it cannot drift when walking or slashing.
       const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
@@ -256,6 +265,17 @@ export class UnitRenderer{
       swordRoot.position.set((hand[0]-shoulder[0])*scale,(hand[1]-shoulder[1])*scale,(hand[2]-shoulder[2])*scale);
       swordRoot.metadata.figurePivot=[...hand];
       swordRoot.metadata.figureBase.position.copyFrom(swordRoot.position);
+    }
+
+    if(figure.fieldTowerShield){
+      // Field shields remain attached to the LEFT hand through every
+      // facing, walking, blocking and death pose; never a world-space prop.
+      const hand=[-.305,.75,.07],shoulder=figureParts.leftArm.metadata.figurePivot;
+      const shieldRoot=figureParts.shield;
+      shieldRoot.parent=figureParts.leftArm;
+      shieldRoot.position.set((hand[0]-shoulder[0])*scale,(hand[1]-shoulder[1])*scale,(hand[2]-shoulder[2])*scale);
+      shieldRoot.metadata.figurePivot=[...hand];
+      shieldRoot.metadata.figureBase.position.copyFrom(shieldRoot.position);
     }
 
     if(figure.fieldSpear){
@@ -417,6 +437,15 @@ export class UnitRenderer{
     if(!figure.soldierHelm){
       sphere("figure-eye-l",.032,material.eye,[-.055,1.545,.158],[1,.62,.40],4,"head");
       sphere("figure-eye-r",.032,material.eye,[.055,1.545,.158],[1,.62,.40],4,"head");
+    }
+    if(figure.friendlySmile&&!figure.soldierHelm){
+      // A subtle curved smile; local head coordinates let it follow HURT,
+      // IDLE and WALK without a second facial-animation system.
+      const smilePoints=[[-.068,1.453,.181],[-.036,1.442,.190],[0,1.437,.194],[.036,1.442,.190],[.068,1.453,.181]].map(p=>localPoint("head",p));
+      const smile=BABYLON.MeshBuilder.CreateTube(`figure-smile-${unit.id}`,{
+        path:smilePoints,radius:.008*scale,tessellation:5,cap:BABYLON.Mesh.CAP_ALL
+      },this.scene);
+      finish(smile,material.hairDark,null,null,null,{part:"head",castShadow:false});
     }
     if(figure.soldierHelm){
       // Plain issued sallet, projecting visor and rear/side neck plates.
@@ -1219,6 +1248,51 @@ export class UnitRenderer{
       sphere("figure-cat-tail-tip",.15,material.tailTip,[-.12,1.31,-.18],[1.0,.78,.78],6,"tail");
     }
 
+    if(figure.fieldTowerShield){
+      // Reusable low-poly tower shield: solid steel core, forest-green field,
+      // a simple branch emblem. Geometry is built in shield local space and
+      // inherits the left glove pivot instead of floating in world space.
+      const outline=[
+        [-.55,1.57],[-.79,1.48],[-.87,1.09],[-.78,.55],
+        [-.56,.20],[-.35,.55],[-.28,1.09],[-.36,1.48]
+      ];
+      const shieldPlate=(name,shape,front,back,mat)=>{
+        const n=shape.length;
+        const pts=[...shape.map(([x,y])=>[x,y,front]),...shape.map(([x,y])=>[x,y,back])];
+        const indices=[];
+        for(let i=1;i<n-1;i++)indices.push(0,i,i+1,n,n+i+1,n+i);
+        for(let i=0;i<n;i++){
+          const j=(i+1)%n;
+          indices.push(i,n+i,j,j,n+i,n+j);
+        }
+        return custom(name,pts,indices,mat,"shield");
+      };
+      shieldPlate("figure-tower-shield-iron",outline,.260,.190,material.armor);
+      // A flat front panel is opaque: no transparency sorting cost on mobile.
+      const inset=outline.map(([x,y])=>[-.56+(x+.56)*.90,.885+(y-.885)*.94]);
+      shieldPlate("figure-tower-shield-painted-field",inset,.285,.262,material.cape);
+      box("figure-tower-shield-center-rib",[.034,.83,.025],material.metal,[-.56,.925,.303],null,"shield");
+      for(const side of [-1,1]){
+        box(`figure-tower-shield-leaf-${side}`,[.17,.034,.024],material.tabard,
+          [-.56+side*.09,1.16,.321],[0,0,side*.42],"shield");
+        box(`figure-tower-shield-lower-leaf-${side}`,[.13,.030,.024],material.tabard,
+          [-.56+side*.07,.87,.322],[0,0,side*.48],"shield");
+      }
+      sphere("figure-tower-shield-center-boss",.080,material.metal,[-.56,1.05,.326],[.8,.8,.35],7,"shield");
+    }
+
+    if(figure.fieldWarHammer){
+      // The leather haft crosses the RIGHT glove. The hammerhead sits below
+      // the grip in a relaxed stance and swings as a single wrist-owned part.
+      cylinder("figure-field-hammer-haft",.65,.067,.073,material.leatherDark,[.307,.545,.075],null,8,"weapon");
+      cylinder("figure-field-hammer-ferrule",.07,.103,.103,material.metal,[.307,.32,.075],null,8,"weapon");
+      box("figure-field-hammer-head",[.34,.22,.24],material.armor,[.307,.247,.075],null,"weapon");
+      box("figure-field-hammer-face",[.24,.15,.024],material.cape,[.307,.247,.210],null,"weapon");
+      box("figure-field-hammer-crest",[.035,.11,.026],material.tabard,[.307,.247,.227],null,"weapon");
+      box("figure-field-hammer-grip-band",[.085,.028,.082],material.metal,[.307,.745,.075],null,"weapon");
+      sphere("figure-field-hammer-pommel",.082,material.metal,[.307,.889,.075],[.85,.8,.85],6,"weapon");
+    }
+
     if(figure.dualDaggers){
       const dagger=(side,part,x)=>{
         box(`figure-dagger-blade-${side}`,[.060,.34,.035],material.weapon,[x,.59,.075],[0,0,side==="l"?.10:-.10],part);
@@ -1724,8 +1798,12 @@ export class UnitRenderer{
 
     if(parts.leftLeg)parts.leftLeg.rotation.x+=stride*legSwing;
     if(parts.rightLeg)parts.rightLeg.rotation.x-=stride*legSwing;
-    if(parts.leftArm)parts.leftArm.rotation.x-=stride*armSwing;
+    if(parts.leftArm)parts.leftArm.rotation.x-=stride*armSwing*(entry.definition?.figure?.fieldTowerShield?.20:1);
     if(parts.rightArm)parts.rightArm.rotation.x+=stride*armSwing;
+    if(entry.definition?.figure?.fieldTowerShield&&parts.shield){
+      parts.shield.rotation.z+=stride*.024;
+      parts.shield.rotation.y+=capeFollow*.017;
+    }
     if(parts.bow)parts.bow.rotation.x-=stride*bowSwing;
 
     if(parts.body){
@@ -1825,6 +1903,7 @@ export class UnitRenderer{
     if(type!=="INHERIT")return type;
     const figure=entry?.definition?.figure||{};
     if(figure.fieldSpear)return"PIERCE";
+    if(figure.fieldWarHammer)return"STRIKE";
     if(figure.fieldBow||figure.holyBow||figure.bow===true)return"SHOT";
     if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldGreatsword)return"SLASH";
     return type;
@@ -1919,6 +1998,22 @@ export class UnitRenderer{
       if(parts.cape)parts.cape.rotation.x+=thrust*(twoHanded?.20:.16);
       if(parts.hairBack)parts.hairBack.rotation.x+=thrust*.12;
       entry.root.position.x+=vector.x*thrust*(twoHanded?.66:.58);entry.root.position.z+=vector.z*thrust*(twoHanded?.66:.58);
+      return true;
+    }
+
+    if(type==="STRIKE"&&parts.weapon&&entry.definition?.figure?.fieldWarHammer){
+      const brace=ease(progress/.24);
+      const impact=Math.sin(Math.PI*clamp01((progress-.24)/.55));
+      const recover=ease((progress-.79)/.21);
+      if(parts.rightArm){parts.rightArm.rotation.x-=brace*.77+impact*.63-recover*.20;parts.rightArm.rotation.z-=brace*.34+impact*.22;}
+      parts.weapon.rotation.x-=brace*.32+impact*.63;
+      parts.weapon.rotation.z-=impact*.28;
+      if(parts.leftArm&&entry.definition?.figure?.fieldTowerShield)parts.leftArm.rotation.x-=brace*.22;
+      if(parts.shield)parts.shield.rotation.x+=brace*.16-impact*.08;
+      if(parts.body){parts.body.rotation.y-=brace*.13+impact*.16;parts.body.rotation.x+=impact*.07;}
+      if(parts.cape)parts.cape.rotation.x+=impact*.15;
+      entry.root.position.x+=vector.x*impact*.24;
+      entry.root.position.z+=vector.z*impact*.24;
       return true;
     }
 
@@ -2033,7 +2128,7 @@ export class UnitRenderer{
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
     const weaponAction=this.figureAttackType(entry,event);
-    if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
+    if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH","STRIKE"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
     if(entry.kind==="BIRD"&&(state==="IDLE"||procedural==="FLAP")){
       this.applyBirdPose(entry,state,progress,now);return;
@@ -2073,6 +2168,17 @@ export class UnitRenderer{
 
     if(procedural==="CAST"||state==="CAST"){
       const pulse=Math.sin(Math.PI*progress);
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.fieldTowerShield){
+        // Shared guard/support stance: brace the shield instead of the
+        // unrelated generic spell spin for a shield-bearing defender.
+        const parts=entry.figureParts||{};
+        if(parts.leftArm){parts.leftArm.rotation.x-=pulse*.33;parts.leftArm.rotation.z+=pulse*.12;}
+        if(parts.shield){parts.shield.rotation.x-=pulse*.18;parts.shield.rotation.y+=pulse*.14;}
+        if(parts.rightArm)parts.rightArm.rotation.x-=pulse*.19;
+        if(parts.body)parts.body.rotation.x+=pulse*.045;
+        entry.root.position.y-=pulse*.035;
+        return;
+      }
       if(entry.kind==="FIGURE"&&entry.definition?.figure?.holyBow){
         const parts=entry.figureParts||{},ready=Math.sin(Math.PI*progress);
         if(parts.leftArm){parts.leftArm.rotation.x-=ready*.85;parts.leftArm.rotation.z-=ready*.16;}
@@ -2145,6 +2251,15 @@ export class UnitRenderer{
 
     if(procedural==="RECOIL"||state==="HURT"){
       const recoil=Math.sin(Math.PI*progress);
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.fieldTowerShield){
+        const parts=entry.figureParts||{};
+        if(parts.leftArm)parts.leftArm.rotation.x-=recoil*.28;
+        if(parts.shield){parts.shield.rotation.x-=recoil*.22;parts.shield.rotation.y+=recoil*.10;}
+        if(parts.body)parts.body.rotation.x+=recoil*.05;
+        entry.root.position.x-=vector.x*recoil*.15;
+        entry.root.position.z-=vector.z*recoil*.15;
+        return;
+      }
       entry.root.position.x-=vector.x*recoil*.48;
       entry.root.position.z-=vector.z*recoil*.48;
       entry.root.rotation.z=recoil*.38;

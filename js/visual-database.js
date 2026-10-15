@@ -320,6 +320,42 @@ export const VISUALS={
         }
       }
     },
+    colin_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.80,
+        figure:{
+          style:"FOREST_SHIELD_GUARD",
+          braid:false,messyHair:true,pointedEars:true,friendlySmile:true,
+          sturdyBuild:true,chainmail:true,mediumPlate:true,
+          cape:true,capeLayers:false,militaryTabard:true,
+          chestHarness:true,beltDetail:true,bracerDetail:true,gloveDetail:true,
+          darkGloves:true,bootDetail:true,
+          bow:false,quiver:false,sideSword:false,
+          fieldTowerShield:true,fieldWarHammer:true,twoHanded:false,
+          colors:{
+            skin:"#ddb99e",hair:"#b6a17c",hairDark:"#887356",eyes:"#569269",
+            cape:"#41694b",capeDark:"#24412f",accent:"#e3d5b5",
+            shirt:"#344e3c",tabard:"#355941",pants:"#393a34",
+            leather:"#614a38",leatherDark:"#342d27",boots:"#4b3c30",
+            metal:"#a8a69c",armor:"#9a9d94",chainmail:"#5b6260",
+            steelDark:"#505752",weapon:"#aeb0a7",gold:"#b7a68a",gem:"#438765"
+          }
+        },
+        animations:{
+          IDLE:{duration:1220,loop:true,procedural:"BREATHE"},
+          WALK:{duration:200,loop:true,procedural:"STEP",figureMotion:{
+            bodyBob:.027,rootSway:.011,bodySway:.014,torsoBob:.008,
+            legSwing:.37,armSwing:.21,bowSwing:0,
+            capeSwing:.095,capeTwist:.035,braidSwing:.03,braidTwist:.015,followLag:.70
+          }},
+          ATTACK:{duration:420,loop:false,procedural:"LUNGE"},
+          CAST:{duration:460,loop:false,procedural:"CAST"},
+          HURT:{duration:280,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:780,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     seraphina_default:{
       expressions:{},
       battle:{
