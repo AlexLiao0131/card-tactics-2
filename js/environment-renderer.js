@@ -1266,12 +1266,19 @@ export class EnvironmentRenderer{
     // A fog climate channel may coexist with precipitation: it still deserves
     // its own ground-hugging mist without replacing rain or snow particles.
     const fogIntensity=Math.max(0,Number(environment.fogIntensity||0));
-    const moonless=timeOfDay==="NIGHT"&&String(environment.moonlight||"PARTIAL").toUpperCase()==="NONE";
+    const moonlight=String(environment.moonlight||"PARTIAL").toUpperCase();
+    // EnvironmentEngine.visionRange() limits sight on EVERY night (FULL,
+    // PARTIAL and NONE). Use that same published LOS mask to darken places
+    // outside sight; moon phase changes opacity, never the sight calculation.
+    // Weather haze has priority: do not stack a second darkness mesh on fog.
     const opticalProfile=fogIntensity>0?"FOG":VISIBILITY_HAZE_PROFILE[timeOfDay]?.[weather]
-      ?weather:moonless?"DARKNESS":null;
+      ?weather:timeOfDay==="NIGHT"?"DARKNESS":null;
     const profile=VISIBILITY_HAZE_PROFILE[timeOfDay]?.[opticalProfile]||null;
     if(!profile)return null;
-    return {...profile,alpha:clamp(profile.alpha*(fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,.72)};
+    const moonOpacity=opticalProfile==="DARKNESS"
+      ?(moonlight==="FULL"?.50:moonlight==="NONE"?1:.75):1;
+    return {...profile,alpha:clamp(profile.alpha*moonOpacity*
+      (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,.72)};
   }
 
   visibilityHazeStateSignature(state){
@@ -1458,8 +1465,14 @@ export class EnvironmentRenderer{
       activeTiles:Number(mesh.metadata?.activeTiles||0),
       mergedMesh:mesh.metadata?.mergedMesh===true
     };
+    const visibleSightTiles=(this.lastState?.map?.tiles||[]).filter(tile=>tile.atmosphericVisible===true).length;
+    const hazeProfile=this.visibilityHazeProfile(this.lastState);
     return{
       total:this.nodes.size,
+      opticalSight:{night:this.lastState?.presentation?.environment?.timeOfDay==="NIGHT",
+        moonlight:this.lastState?.presentation?.environment?.moonlight||"PARTIAL",
+        visibleTiles:visibleSightTiles,totalTiles:this.lastState?.map?.tiles?.length||0,
+        hazeActive:!!this.visibilityHazeMesh,hazeOpacity:Number(hazeProfile?.alpha||0)},
       byType,
       currentOverlay:false,
       currentVisualOwner:"WaterRenderer",

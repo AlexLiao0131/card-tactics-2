@@ -79,7 +79,9 @@ function mixSkyNumber(a,b,t){
 export class BabylonRenderer{
   constructor(canvas,state,{onTilePicked}={}){
     this.canvas=canvas;
-    this.engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true});
+    // No code path captures the WebGL back buffer. Retaining it costs an extra
+    // presentation buffer on mobile GPUs; OS screenshots are unaffected.
+    this.engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:false,stencil:true});
     this.scene=new BABYLON.Scene(this.engine);
     this.scene.clearColor=new BABYLON.Color4(.035,.055,.08,1);
     this.subsystemErrors=new Map();
@@ -166,6 +168,11 @@ export class BabylonRenderer{
         this.performanceStats.framePeakMs=rounded(sample.framePeak);
         this.performanceStats.renderMeanMs=rounded(sample.renderTotal/sample.count);
         this.performanceStats.renderPeakMs=rounded(sample.renderPeak);
+        // Diagnostic counters only, sampled once per 5-second window. These
+        // distinguish scene overdraw/draw calls from one-off sync spikes.
+        this.performanceStats.activeMeshes=this.scene.getActiveMeshes?.()?.length??null;
+        this.performanceStats.drawCalls=Number.isFinite(this.engine._drawCalls?.current)
+          ?this.engine._drawCalls.current:null;
         globalThis.CardTacticsDiagnostics?.recordPerf?.("frame.cpuElapsed",this.performanceStats.framePeakMs);
         globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.renderElapsed",this.performanceStats.renderPeakMs);
         sample.start=performance.now();sample.count=0;
@@ -407,7 +414,11 @@ export class BabylonRenderer{
 
     const casters=this.collectShadowCasters();
     const renderList=shadowMap.renderList||(shadowMap.renderList=[]);
-    renderList.splice(0,renderList.length,...casters);
+    // The same Babylon Mesh references remain valid while vegetation, units
+    // and light positions animate. Do not rewrite a thousand-element renderList
+    // on every BattlePresentation sync unless membership/order changed.
+    if(renderList.length!==casters.length||casters.some((mesh,i)=>renderList[i]!==mesh))
+      renderList.splice(0,renderList.length,...casters);
 
     let receivers=0;
     for(const mesh of this.terrain?.meshes?.values?.()||[]){
