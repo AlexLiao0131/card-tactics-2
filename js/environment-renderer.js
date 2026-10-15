@@ -143,6 +143,7 @@ export class EnvironmentRenderer{
     this.lightFieldTerrain=null;
     this.lightFieldCells=0;
     this.fireGlows=new Map();
+    this.structureGlowMaterials=new Map();
     this.fireCameraKey="";
     this.friendlyMaterialSignature="";
     this.meteorBursts=[];
@@ -713,10 +714,34 @@ export class EnvironmentRenderer{
     return map;
   }
 
+  // Sample the actual published ground vertex, then the existing water/snow/ice
+  // render surfaces. This remains one colour field, not additional PointLights.
+  // Illumination must not be buried below ice, floodwater or snow.
+  lightFieldVertexY(tile,byKey,x,y,z){
+    if(!tile)return y+.026;
+    const sample={height:y/ELEVATION_HEIGHT,ox:clamp(x/TILE_SIZE-tile.x,-.5,.5),oz:clamp(z/TILE_SIZE-tile.y,-.5,.5)};
+    let top=y;
+    const water=this.surfaceResolver.waterSurfaceOf(tile);
+    if(water!=null)top=Math.max(top,Number(water)*ELEVATION_HEIGHT);
+    for(const type of ["ICE","SNOW"]){
+      if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
+      const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
+      if(amount>SURFACE_EPSILON&&this.vertexLayerAlpha(type,tile,sample,amount)>0)
+        top=Math.max(top,this.layerVertexY(type,tile,sample,amount));
+    }
+    return top+.055;
+  }
+
   syncLightField(state){
     const terrain=this.scene.getMeshByName("terrain-surface"),cells=this.litCellColors(state);
+    const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
     const stamp=[...cells].sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([key,values])=>`${key}:${values.map(n=>n.toFixed(3)).join(",")}`).join("|");
+      .map(([key,values])=>{
+        const tile=byKey.get(key);
+        // Visible surface height changes independently of the lighting source.
+        const layers=tile?[tile.waterSurfaceZ??"n",snowDepth(tile),iceThickness(tile)].map(v=>String(v)).join(":"):"";
+        return`${key}:${values.map(n=>n.toFixed(3)).join(",")}:${layers}`;
+      }).join("|");
     if(terrain===this.lightFieldTerrain&&stamp===this.lightFieldSignature)return;
     this.lightFieldSignature=stamp;this.lightFieldTerrain=terrain;
     this.lightFieldMesh?.dispose();this.lightFieldMesh=null;this.lightFieldCells=cells.size;
@@ -728,19 +753,16 @@ export class EnvironmentRenderer{
       const offsets=[sourceIndices[i]*3,sourceIndices[i+1]*3,sourceIndices[i+2]*3];
       const cx=(sourceVertices[offsets[0]]+sourceVertices[offsets[1]]+sourceVertices[offsets[2]])/3;
       const cz=(sourceVertices[offsets[0]+2]+sourceVertices[offsets[1]+2]+sourceVertices[offsets[2]+2])/3;
-      const lit=cells.get(`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`);
-      if(!lit)continue;
-      // One broad material alpha with RGB vertex values produces a colour
-      // reflection on exactly the surface triangles belonging to each cell.
+      const key=`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`;
+      const lit=cells.get(key),tile=byKey.get(key);
+      if(!lit||!tile)continue;
       const base=positions.length/3;
-      // Store colour as chromaticity and emission as alpha, instead of
-      // multiplying the same energy into BOTH RGB and alpha. The old encoding
-      // made visible output proportional to radiance^2, which darkened captured
-      // deployments after terrain was intentionally removed from PointLights.
+      // Vertex RGB stores the source colour; alpha stores its brightness once.
       const peak=Math.max(0,...lit),alpha=Math.min(1,peak);
       const tint=peak>1e-8?lit.map(channel=>Math.min(1,channel/peak)):[0,0,0];
       for(const offset of offsets){
-        positions.push(sourceVertices[offset],sourceVertices[offset+1]+.014,sourceVertices[offset+2]);
+        const x=sourceVertices[offset],y=sourceVertices[offset+1],z=sourceVertices[offset+2];
+        positions.push(x,this.lightFieldVertexY(tile,byKey,x,y,z),z);
         colors.push(tint[0],tint[1],tint[2],alpha);
       }
       indices.push(base,base+1,base+2);
@@ -750,53 +772,73 @@ export class EnvironmentRenderer{
     const data=new BABYLON.VertexData();data.positions=positions;data.colors=colors;data.indices=indices;
     data.applyToMesh(mesh,false);
     mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+    // WaterRenderer publishes translucent water at alphaIndex 10–13. The
+    // aggregated radiance must reach its exposed water/ice/snow surface AFTER
+    // those layers, while the optical haze and tactical markers remain above.
+    mesh.alphaIndex=15;
     mesh.material=this.lightFieldMaterial;
     mesh.isPickable=false;mesh.receiveShadows=false;
     mesh.metadata={kind:"environment-light-field",castShadow:false,mergedMesh:true,litCells:cells.size,
-      boundedFireFootprint:"3x3",structureFootprint:"DEPLOYMENT_AREA",unitFootprint:"OWN_TILE"};
+      exposedSurfaceAligned:true,boundedFireFootprint:"3x3",structureFootprint:"DEPLOYMENT_AREA",unitFootprint:"OWN_TILE"};
     this.lightFieldMesh=mesh;
   }
 
-  makeFireGlowMaterial(){
-    const size=64,pixels=new Uint8Array(size*size*4);
+  makeFireGlowMaterial(color=[1,125/255,30/255]){
+    const tint=lightColor(color),size=64,pixels=new Uint8Array(size*size*4);
     for(let y=0;y<size;y++)for(let x=0;x<size;x++){
       const r=Math.hypot((x+.5-size/2)/(size/2),(y+.5-size/2)/(size/2)),i=(y*size+x)*4;
-      pixels[i]=255;pixels[i+1]=125;pixels[i+2]=30;
+      pixels[i]=Math.round(tint[0]*255);pixels[i+1]=Math.round(tint[1]*255);pixels[i+2]=Math.round(tint[2]*255);
       pixels[i+3]=Math.round(255*Math.pow(Math.max(0,1-r),2.2));
     }
     const texture=BABYLON.RawTexture.CreateRGBATexture(pixels,size,size,this.scene,false,false,BABYLON.Texture.BILINEAR_SAMPLINGMODE);
     texture.hasAlpha=true;
-    const material=new BABYLON.StandardMaterial("fire-mist-glow",this.scene);
+    const material=new BABYLON.StandardMaterial(`environment-source-glow-${tint.map(n=>Math.round(n*255)).join("-")}`,this.scene);
     material.diffuseTexture=texture;material.useAlphaFromDiffuseTexture=true;
     material.emissiveColor=BABYLON.Color3.White();material.disableLighting=true;
     material.alphaMode=BABYLON.Engine.ALPHA_ADD;material.disableDepthWrite=true;
     material.backFaceCulling=false;material.fogEnabled=false;
-    // Engine transmission already accounts for mist/smoke. Keep depth testing so
-    // the soft billboard cannot draw over foreground terrain or opaque props.
     return material;
   }
 
   syncFireGlows(state){
-    const weather=state?.presentation?.environment?.weather;
-    const mist=weather==="FOG"?1:weather==="BLIZZARD"?.7:0;
+    const environment=state?.presentation?.environment||{},weather=environment.weather;
+    const night=environment.timeOfDay==="NIGHT",mist=weather==="FOG"?1:weather==="BLIZZARD"?.7:0;
     const alive=new Set(),byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
     const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
-    const sources=(state?.presentation?.environment?.lightSources||[]).filter(source=>Number(source.transmission||0)>0)
-      .sort((a,b)=>Math.hypot(a.x*TILE_SIZE-focus.x,a.y*TILE_SIZE-focus.z)-Math.hypot(b.x*TILE_SIZE-focus.x,b.y*TILE_SIZE-focus.z)).slice(0,48);
-    for(const source of sources){
-      const tile=byKey.get(`${source.x},${source.y}`),smoky=tile?.effects?.includes("SMOKE");
-      if(!mist&&!smoky)continue;
-      const key=`${source.x},${source.y}:${source.source}`;alive.add(key);
+    const candidates=(environment.lightSources||[]).filter(source=>source.visible!==false&&Number(source.transmission||0)>0);
+    const isStructure=source=>source.source==="CORE_LIGHT"||source.source==="CAPTURE_LIGHT";
+    // Persistent structures must never be evicted by dozens of fire clusters.
+    const structures=candidates.filter(isStructure),others=candidates.filter(source=>!isStructure(source))
+      .sort((a,b)=>Math.hypot(a.x*TILE_SIZE-focus.x,a.y*TILE_SIZE-focus.z)-Math.hypot(b.x*TILE_SIZE-focus.x,b.y*TILE_SIZE-focus.z))
+      .slice(0,Math.max(0,48-structures.length));
+    for(const source of [...structures,...others]){
+      const structure=isStructure(source),tile=byKey.get(`${source.x},${source.y}`),smoky=tile?.effects?.includes("SMOKE");
+      if(!structure&&!mist&&!smoky)continue;
+      const key=`${source.source}:${source.sourceId??`${source.x},${source.y}`}`;alive.add(key);
       let mesh=this.fireGlows.get(key);
       if(!mesh){
-        this.fireGlowMaterial??=this.makeFireGlowMaterial();
         mesh=BABYLON.MeshBuilder.CreatePlane(`fire-glow-${key}`,{size:1},this.scene);
-        mesh.material=this.fireGlowMaterial;mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
-        mesh.isPickable=false;mesh.metadata={castShadow:false};this.fireGlows.set(key,mesh);
+        mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;mesh.isPickable=false;
+        // Permanent crystal glow is composed after weather haze; real smoke
+        // still controls optical transmission before this material is drawn.
+        if(structure)mesh.alphaIndex=18;
+        mesh.metadata={kind:"environment-source-glow",source:source.source,castShadow:false};
+        this.fireGlows.set(key,mesh);
       }
-      mesh.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+.8,source.y*TILE_SIZE);
-      mesh.scaling.setAll((1.6+mist*1.7)*Math.max(1,Number(source.radius||1)/2));
-      mesh.visibility=Math.min(.7,Number(source.transmission||0)*(.45+mist*.25));
+      if(structure){
+        const tint=lightColor(source.color),tone=tint.map(n=>Math.round(n*255)).join("-");
+        if(!this.structureGlowMaterials.has(tone))this.structureGlowMaterials.set(tone,this.makeFireGlowMaterial(tint));
+        mesh.material=this.structureGlowMaterials.get(tone);
+      }else{
+        this.fireGlowMaterial??=this.makeFireGlowMaterial();
+        mesh.material=this.fireGlowMaterial;
+      }
+      // Core geometry itself is centred .825 above its published support.
+      mesh.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+(structure?.85:.8),source.y*TILE_SIZE);
+      mesh.scaling.setAll(structure?Math.min(3.4,1.65+Number(source.radius||1)*.13)
+        :(1.6+mist*1.7)*Math.max(1,Number(source.radius||1)/2));
+      mesh.visibility=structure?Math.min(night?.62:.28,.16+Number(source.transmission||0)*(night?.46:.13))
+        :Math.min(.7,Number(source.transmission||0)*(.45+mist*.25));
     }
     for(const [key,mesh] of this.fireGlows)if(!alive.has(key)){mesh.dispose();this.fireGlows.delete(key);}
   }
@@ -1279,8 +1321,12 @@ export class EnvironmentRenderer{
     if(!profile)return null;
     const moonOpacity=opticalProfile==="DARKNESS"
       ?(moonlight==="FULL"?.50:moonlight==="NONE"?1:.75):1;
-    return {...profile,alpha:clamp(profile.alpha*moonOpacity*
-      (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,opticalProfile==="DARKNESS"?.90:.72)};
+    const alpha=clamp(profile.alpha*moonOpacity*
+      (fogIntensity>0?clamp(fogIntensity,.5,1.5):1),0,opticalProfile==="DARKNESS"?.90:.72);
+    // Optical legibility is not physical illumination: a faint moon-coloured
+    // reflection is composed by the same LOS haze, never by new PointLights.
+    const clarity=timeOfDay==="NIGHT"?(moonlight==="NONE"?.24:moonlight==="FULL"?.10:.16):0;
+    return {...profile,alpha,sightAlpha:clarity,sightColor:[.30,.37,.46]};
   }
 
   visibilityHazeStateSignature(state){
@@ -1289,7 +1335,8 @@ export class EnvironmentRenderer{
     return`${timeOfDay}|${weather}|${moonlight}|${Number(environment.fogIntensity||0).toFixed(3)}|`+(state?.map?.tiles||[]).map(tile=>[
       tile.x,tile.y,
       Number(tile.elevation||0).toFixed(3),
-      tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3)
+      tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3),
+      snowDepth(tile).toFixed(3),iceThickness(tile).toFixed(3)
     ].join(":" )).join("|");
   }
 
@@ -1299,12 +1346,10 @@ export class EnvironmentRenderer{
     this.visibilityHazeSamples=[];
   }
 
-  visibilityHazeAlpha(tile,byKey,ox,oz,profile){
-    if(!tile)return 0;
-    // The published LOS is read-only tactical data. This is optical clarity,
-    // not a second enemy-discovery rule, and fog never disappears completely.
-    // Blend neighbouring cells at shared vertices so moving a unit does not
-    // produce rectangular clear patches or cracks along terrain seams.
+  visibilityHazeColor(tile,byKey,ox,oz,profile){
+    if(!tile)return[0,0,0,0];
+    // TacticalEngine publishes the only LOS truth. Interpolate at shared
+    // corners for continuous optical borders with no square patches.
     const visible=sample=>sample?.atmosphericVisible===true?1:0;
     const wx=clamp(Math.abs(ox),0,.5),wy=clamp(Math.abs(oz),0,.5);
     const x=tile.x+(ox<0?-1:1),y=tile.y+(oz<0?-1:1);
@@ -1313,10 +1358,14 @@ export class EnvironmentRenderer{
       wx*(1-wy)*visible(at(x,tile.y))+
       (1-wx)*wy*visible(at(tile.x,y))+
       wx*wy*visible(at(x,y));
-    // A seen point is unobscured by the *field* mask; mist particles and real
-    // terrain blockers remain in their existing renderers. Interpolation keeps
-    // the boundary continuous without a rectangular clearing or separate FOV.
-    return clamp(Number(profile.alpha||0)*(1-sight),0,1);
+    const base=profile.color,sightColor=profile.sightColor||base;
+    const color=base.map((value,i)=>value+(sightColor[i]-value)*sight);
+    const alpha=clamp(Number(profile.alpha||0)*(1-sight)+Number(profile.sightAlpha||0)*sight,0,1);
+    return[...color,alpha];
+  }
+
+  visibilityHazeAlpha(tile,byKey,ox,oz,profile){
+    return this.visibilityHazeColor(tile,byKey,ox,oz,profile)[3];
   }
 
   buildVisibilityHaze(state,profile){
@@ -1333,10 +1382,15 @@ export class EnvironmentRenderer{
       activeTiles++;
       for(let row=0;row<4;row++)for(let col=0;col<4;col++){
         const sample=patch[row][col],sampleHeight=Number(sample.height||0);
-        const visualHeight=Math.max(sampleHeight,waterSurface==null?sampleHeight:Number(waterSurface));
-        const alpha=this.visibilityHazeAlpha(tile,byKey,sample.ox,sample.oz,profile);
-        positions.push(sample.x,visualHeight*ELEVATION_HEIGHT+Number(profile.height||.4),sample.z);
-        colors.push(profile.color[0],profile.color[1],profile.color[2],alpha);
+        let visualY=Math.max(sampleHeight,waterSurface==null?sampleHeight:Number(waterSurface))*ELEVATION_HEIGHT;
+        for(const type of ["ICE","SNOW"]){
+          if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
+          const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
+          if(amount>SURFACE_EPSILON&&this.vertexLayerAlpha(type,tile,sample,amount)>0)
+            visualY=Math.max(visualY,this.layerVertexY(type,tile,sample,amount));
+        }
+        positions.push(sample.x,visualY+Number(profile.height||.4),sample.z);
+        colors.push(...this.visibilityHazeColor(tile,byKey,sample.ox,sample.oz,profile));
         samples.push({x:tile.x,y:tile.y,ox:sample.ox,oz:sample.oz});
       }
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
@@ -1354,6 +1408,9 @@ export class EnvironmentRenderer{
     data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,true);
     this.visibilityHazeSamples=samples;
     mesh.material=this.visibilityHazeMaterial;
+    // The LOS optical layer must obscure even transparent water and its foam,
+    // otherwise flooded terrain glows through darkness outside real sight.
+    mesh.alphaIndex=17;
     mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;
     mesh.metadata={
       kind:"weather-visibility-haze",
@@ -1382,7 +1439,8 @@ export class EnvironmentRenderer{
     if(!colors)return;
     for(let i=0;i<this.visibilityHazeSamples.length;i++){
       const sample=this.visibilityHazeSamples[i],tile=byKey.get(this.surfaceResolver.keyOf(sample.x,sample.y));
-      colors[i*4+3]=this.visibilityHazeAlpha(tile,byKey,sample.ox,sample.oz,profile);
+      const sampleColor=this.visibilityHazeColor(tile,byKey,sample.ox,sample.oz,profile);
+      for(let channel=0;channel<4;channel++)colors[i*4+channel]=sampleColor[channel];
     }
     this.visibilityHazeMesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
     this.visibilityHazeSightSignature=sightSignature;
@@ -1497,8 +1555,10 @@ export class EnvironmentRenderer{
       lightningBursts:this.lightningBursts.length,
       meteorBursts:this.meteorBursts.length,
       fireGlows:this.fireGlows.size,
+      structureGlows:[...this.fireGlows.values()].filter(mesh=>mesh.metadata?.source==="CORE_LIGHT"||mesh.metadata?.source==="CAPTURE_LIGHT").length,
       fireLights:{physicalLights:this.fireLights.filter(light=>light.isEnabled()).length,
-        cellField:{active:!!this.lightFieldMesh,cells:this.lightFieldCells},globalLightLimit:null,fireClusters:true},
+        cellField:{active:!!this.lightFieldMesh,cells:this.lightFieldCells,
+          exposedSurfaceAligned:this.lightFieldMesh?.metadata?.exposedSurfaceAligned===true},globalLightLimit:null,fireClusters:true},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
     };
