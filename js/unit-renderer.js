@@ -247,7 +247,7 @@ export class UnitRenderer{
     makePart("leftWing",[-.24,1.36,-.22]);
     makePart("rightWing",[.24,1.36,-.22]);
     makePart("halo",[0,1.82,-.08]);
-    if(figure.armingSword){
+    if(figure.armingSword||figure.blessedGreatsword){
       // The hilt is centered inside the RIGHT glove. Rotating that arm carries
       // the entire arming sword; it cannot drift when walking or slashing.
       const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
@@ -486,6 +486,20 @@ export class UnitRenderer{
       }
       box("figure-long-hair-back",[.46,.52,.10],material.hair,[0,1.22,-.145],[.10,0,0],"hairBack");
     }
+    if(figure.elfHairVines){
+      // Reusable elven ceremonial hair ornaments; attached to the same head
+      // and long-hair pivots as the rest of the procedural hairstyle.
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r";
+        for(let i=0;i<4;i++){
+          const x=side*(.070+i*.038),y=1.716-i*.012;
+          sphere(`figure-elf-hair-leaf-${tag}-${i}`,.047,material.gold,[x,y,.015+i*.008],[.65,.35,1.25],5,"head");
+        }
+        sphere(`figure-elf-hair-gem-${tag}`,.043,material.gem,[side*.17,1.69,.09],[.65,.8,.40],7,"head");
+      }
+      box("figure-elf-braided-clasp",[.085,.042,.055],material.gold,[.19,1.01,.105],[0,0,.18],"braid");
+    }
+
     if(figure.hairRibbon){
       box("figure-hair-ribbon-knot",[.15,.10,.08],material.accent,[-.19,1.54,-.10],[0,.18,.12],"hairBack");
       box("figure-hair-ribbon-tail-a",[.065,.40,.035],material.accent,[-.23,1.32,-.12],[.18,0,.15],"hairBack");
@@ -598,6 +612,23 @@ export class UnitRenderer{
       box("figure-upper-breastplate-ridge",[.038,.165,.026],material.steelDark,[0,1.275,.205],null,"body");
       box("figure-upper-breastplate-strap-l",[.045,.30,.025],material.leatherDark,[-.175,1.29,.198],[0,0,-.12],"body");
       box("figure-upper-breastplate-strap-r",[.045,.30,.025],material.leatherDark,[.175,1.29,.198],[0,0,.12],"body");
+    }
+
+    if(figure.elfCourtArmor){
+      // Gold-framed green-and-ivory armour is a reusable elven court style.
+      // All panels use existing torso/arm roots; no extra state or renderer.
+      box("figure-elf-cuirass-collar",[.32,.038,.045],material.gold,[0,1.39,.125],null,"body");
+      box("figure-elf-cuirass-center",[.044,.33,.029],material.gold,[0,1.18,.210],null,"body");
+      sphere("figure-elf-heart-gem",.072,material.gem,[0,1.325,.229],[.72,1.12,.43],8,"body");
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r";
+        box(`figure-elf-cuirass-edge-${tag}`,[.030,.29,.035],material.gold,[side*.175,1.235,.163],[0,0,-side*.20],"body");
+        box(`figure-elf-cuirass-chevrons-${tag}`,[.17,.026,.034],material.gold,[side*.100,1.08,.211],[0,0,side*.24],"body");
+        sphere(`figure-elf-shoulder-jewel-${tag}`,.075,material.gem,[side*.30,1.34,.108],[.78,.70,.50],7,tag==="l"?"leftArm":"rightArm");
+        box(`figure-elf-arm-scroll-${tag}`,[.145,.026,.030],material.gold,[side*.29,1.205,.133],[0,0,side*.15],tag==="l"?"leftArm":"rightArm");
+      }
+      box("figure-elf-waist-crest",[.23,.068,.032],material.gold,[0,.95,.160],null,"body");
+      sphere("figure-elf-waist-emerald",.064,material.gem,[0,.951,.194],[.85,.85,.45],7,"body");
     }
 
     if(figure.scaleArmor){
@@ -1064,6 +1095,29 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.elfCourtDrapes){
+      // Asymmetric ceremonial panels, moving with the existing skirt joint.
+      // Wide panels echo the illustrated flowing green cape without obscuring
+      // both legs or introducing transparent overdraw-heavy materials.
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r",x=side*.24;
+        custom(`figure-elf-long-overpanel-${tag}`,[
+          [side*.10,.945,.11],[side*.32,.945,.09],
+          [side*.47,.15,.06],[side*.08,.19,.135]
+        ],[0,2,1,0,3,2],material.cape,"skirt");
+        custom(`figure-elf-silk-lining-${tag}`,[
+          [side*.16,.93,.12],[side*.26,.92,.12],
+          [side*.35,.21,.089],[side*.17,.24,.13]
+        ],[0,2,1,0,3,2],material.tabard,"skirt");
+        box(`figure-elf-hem-band-${tag}`,[.15,.021,.022],material.gold,[side*.24,.24,.157],[0,0,side*.08],"skirt");
+        sphere(`figure-elf-hem-gem-${tag}`,.055,material.gem,[side*.30,.23,.173],[.62,1.08,.50],6,"skirt");
+      }
+      custom("figure-elf-front-leaf-tab",[
+        [-.095,.95,.165],[.095,.95,.165],[.075,.42,.183],[-.075,.42,.183]
+      ],[0,2,1,0,3,2],material.capeDark,"skirt");
+      box("figure-elf-front-gold-inlay",[.038,.39,.024],material.gold,[0,.72,.189],null,"skirt");
+    }
+
     if(figure.scholarRobe){
       custom("figure-scholar-inner-front",[[-.15,.96,.155],[.15,.96,.155],[.19,.24,.13],[-.19,.24,.13]],[0,2,1,0,3,2],material.shirt,"skirt");
       custom("figure-scholar-robe-l",[[-.32,.94,.02],[-.08,.95,.03],[-.12,.10,-.02],[-.43,.22,-.04]],[0,2,1,0,3,2],material.cape,"skirt");
@@ -1307,6 +1361,41 @@ export class UnitRenderer{
         box("figure-greatsword-edge-r",[.018,.98,.060],material.holy,[.355,.50,.076],[0,0,-.04],"weapon");
         sphere("figure-greatsword-pommel-aura",.13,material.holy,[.27,1.295,.075],[.85,.85,.40],7,"weapon");
       }
+    }
+
+    if(figure.blessedGreatsword){
+      // Knightly elven two-hand sword. Grip lies inside the existing right
+      // glove; the blade is a wrist-owned part rather than a floating prop.
+      // Forward (positive Z) faces the viewer and reads at tactical zoom.
+      const blade=[
+        [.245,.615,.10],[.38,.615,.10],
+        [.385,.26,.105],[.355,.10,.105],[.315,.015,.102],
+        [.275,.10,.105],[.242,.26,.105]
+      ];
+      custom("figure-blessed-sword-blade",blade,[
+        0,1,2, 0,2,3, 0,3,4, 0,4,5, 0,5,6,
+        2,1,0, 3,2,0, 4,3,0, 5,4,0, 6,5,0
+      ],material.weapon,"weapon");
+      box("figure-blessed-sword-fuller",[.030,.43,.018],material.armor,[.315,.395,.118],null,"weapon");
+      box("figure-blessed-sword-gold-inlay",[.018,.33,.025],material.gold,[.315,.39,.136],null,"weapon");
+      box("figure-blessed-sword-guard",[.41,.047,.095],material.gold,[.314,.638,.098],[0,0,-.045],"weapon");
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r";
+        box(`figure-blessed-sword-wing-${tag}`,[.13,.036,.059],material.armor,[.314+side*.185,.655,.098],[0,0,side*.35],"weapon");
+        sphere(`figure-blessed-sword-guard-gem-${tag}`,.048,material.gem,[.314+side*.14,.665,.137],[.7,.9,.5],6,"weapon");
+      }
+      cylinder("figure-blessed-sword-hilt",.355,.066,.066,material.leatherDark,[.307,.775,.07],null,8,"weapon");
+      for(let i=0;i<4;i++){
+        cylinder(`figure-blessed-sword-hilt-wrap-${i}`,.023,.073,.073,material.gold,[.307,.705+i*.060,.071],null,8,"weapon");
+      }
+      sphere("figure-blessed-sword-pommel",.090,material.gold,[.307,.972,.070],[.86,.96,.82],8,"weapon");
+      sphere("figure-blessed-sword-pommel-jewel",.060,material.gem,[.307,.972,.122],[.62,.76,.33],7,"weapon");
+      sphere("figure-blessed-sword-heart",.087,material.holy,[.315,.635,.165],[.69,.82,.42],8,"weapon");
+      box("figure-blessed-sword-blessing",[.012,.39,.014],material.holy,[.315,.39,.153],null,"weapon");
+      // Glove knuckles are attached to the arm, not the sword, so they
+      // remain coherent when swinging and resetting the wrist pivot.
+      for(let i=0;i<3;i++)box(`figure-blessed-sword-knuckle-${i}`,[.028,.040,.026],material.leatherDark,
+        [.280+i*.028,.690+i*.008,.122],[0,0,-.12],"rightArm");
     }
 
     // Keep FIGURE parts under the character root. Merging child meshes that already
@@ -1737,7 +1826,7 @@ export class UnitRenderer{
     const figure=entry?.definition?.figure||{};
     if(figure.fieldSpear)return"PIERCE";
     if(figure.fieldBow||figure.holyBow||figure.bow===true)return"SHOT";
-    if(figure.armingSword)return"SLASH";
+    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldGreatsword)return"SLASH";
     return type;
   }
 
@@ -1860,8 +1949,10 @@ export class UnitRenderer{
     }
 
     if(type==="SLASH"&&(parts.sword||parts.weapon)){
-      const weapon=entry.definition?.figure?.armingSword?parts.weapon:(parts.sword||parts.weapon),wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
-      const twoHanded=entry.definition?.figure?.twoHanded===true;
+      const figure=entry.definition?.figure||{},twoHanded=figure.twoHanded===true;
+      const weapon=(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldGreatsword)
+        ?parts.weapon:(parts.sword||parts.weapon);
+      const wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
       if(parts.rightArm){parts.rightArm.rotation.x-=wind*(twoHanded?.70:.48);parts.rightArm.rotation.z-=wind*(twoHanded?.78:.64)-swing*(twoHanded?1.42:1.28);}
       if(twoHanded&&parts.leftArm){parts.leftArm.rotation.x-=wind*.60+swing*.18;parts.leftArm.rotation.z+=wind*.55-swing*.96;}
       weapon.rotation.x-=wind*(twoHanded?.44:.30);weapon.rotation.z-=wind*(twoHanded?.72:.55)-swing*(twoHanded?1.52:1.36);
@@ -1992,6 +2083,20 @@ export class UnitRenderer{
         if(parts.hairBack)parts.hairBack.rotation.x+=ready*.14;
         if(parts.skirt)parts.skirt.rotation.x+=ready*.12;
         entry.root.position.y+=ready*.075;
+        return;
+      }
+      if(entry.kind==="FIGURE"&&entry.definition?.figure?.blessedGreatsword){
+        // Shared blessing-and-command stance for an enchanted two-hand
+        // weapon; unlike the generic CAST fallback it does not spin the unit.
+        const parts=entry.figureParts||{},ready=Math.sin(Math.PI*progress);
+        if(parts.rightArm){parts.rightArm.rotation.x-=ready*.45;parts.rightArm.rotation.z-=ready*.22;}
+        if(parts.weapon){parts.weapon.rotation.x-=ready*.37;parts.weapon.rotation.z-=ready*.32;}
+        if(parts.leftArm){parts.leftArm.rotation.x-=ready*.48;parts.leftArm.rotation.z+=ready*.34;}
+        if(parts.body)parts.body.rotation.y+=ready*.09;
+        if(parts.cape)parts.cape.rotation.x+=ready*.18;
+        if(parts.hairBack)parts.hairBack.rotation.x+=ready*.10;
+        if(parts.skirt)parts.skirt.rotation.x+=ready*.09;
+        entry.root.position.y+=ready*.040;
         return;
       }
       if(entry.kind==="FIGURE"&&entry.definition?.figure?.arcaneStaff){

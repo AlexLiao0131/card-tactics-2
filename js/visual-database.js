@@ -175,6 +175,43 @@ export const VISUALS={
         }
       }
     },
+    reina_default:{
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.78,
+        figure:{
+          style:"ELVEN_COURT_SWORD_CAPTAIN",
+          braid:true,longHair:true,pointedEars:true,elfHairVines:true,
+          cape:true,capeLayers:true,skirtPanels:true,skirtTrim:true,
+          elfCourtArmor:true,elfCourtDrapes:true,
+          upperBreastplate:true,mediumPlate:true,
+          beltDetail:true,bracerDetail:true,gloveDetail:true,bootDetail:true,
+          bow:false,quiver:false,sideSword:false,
+          blessedGreatsword:true,twoHanded:true,
+          colors:{
+            skin:"#f3d6bf",hair:"#e3c47a",hairDark:"#b79559",eyes:"#6c9f61",
+            cape:"#326448",capeDark:"#194633",accent:"#44855b",
+            shirt:"#f3ecdf",tabard:"#faf4e8",pants:"#292c2c",
+            leather:"#56402e",leatherDark:"#302922",boots:"#3b3028",
+            metal:"#c5ae85",armor:"#c7c6b8",steelDark:"#59605e",
+            gold:"#cfad66",weapon:"#eef1e5",gem:"#42ae76",
+            holy:"#7be1a2",holyEmissive:"#51c989"
+          }
+        },
+        animations:{
+          IDLE:{duration:1260,loop:true,procedural:"BREATHE"},
+          WALK:{duration:205,loop:true,procedural:"STEP",figureMotion:{
+            bodyBob:.035,rootSway:.018,bodySway:.014,torsoBob:.009,
+            legSwing:.40,armSwing:.22,bowSwing:0,
+            capeSwing:.16,capeTwist:.055,braidSwing:.18,braidTwist:.065,followLag:.74
+          }},
+          ATTACK:{duration:435,loop:false,procedural:"LUNGE"},
+          CAST:{duration:540,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:790,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     leon_default:{
       expressions:{},
       battle:{
