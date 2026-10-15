@@ -3,7 +3,7 @@
 
 // Existing developer diagnostics owns both the live timeline and the last-session
 // recovery record. This is observational only: it never mutates Battle/Grid State.
-const MAX=320,SAVED_MAX=200,STORE_KEY="ct:diagnostics:session:v1",INCIDENT_KEY="ct:diagnostics:incident:v1",PREF_KEY="ct:diagnostics";
+const MAX=320,SAVED_MAX=200,ROUND_MAX=36,STORE_KEY="ct:diagnostics:session:v1",INCIDENT_KEY="ct:diagnostics:incident:v1",PREF_KEY="ct:diagnostics";
 const events=[];
 const perfCounters=Object.create(null);
 const now=()=>new Date().toISOString();
@@ -12,6 +12,10 @@ const sessionId=`${Date.now().toString(36)}-${Math.random().toString(36).slice(2
 let frames=0,lastFpsAt=started,fps=0,lastCheckpoint=null,lastClimateKey="",lastWater=null;
 let lastStoredAt=0,lastSavedWaterLog=0,lastSampleAt=0,lastPhaseKey="",lastGameRound=null;
 let previousSession=null,previousStatus="",recoveredIncident=null,lifecycle="ACTIVE",storageWarning="";
+// Compact, durable history survives the 320-event rolling window. These are
+// observations of the ONE battle state, never another simulation or game state.
+const roundHistory=[],perfPeaks=Object.create(null),spikeNotifiedAt=Object.create(null);
+let lastEvidence=null;
 
 function readStorage(key){try{return localStorage.getItem(key);}catch(_){return null;}}
 function writeStorage(key,value){try{localStorage.setItem(key,value);return true;}catch(err){storageWarning=String(err?.name||err||"Storage unavailable");return false;}}
@@ -48,8 +52,9 @@ function store(force=false){
   if(!enabled)return;
   const ms=Date.now();if(!force&&ms-lastStoredAt<6500)return;
   lastStoredAt=ms;
-  const record={schema:1,sessionId,startedAt:new Date(Date.now()-(performance.now()-started)).toISOString(),
-    updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX)};
+  const record={schema:2,sessionId,startedAt:new Date(Date.now()-(performance.now()-started)).toISOString(),
+    updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX),
+    roundHistory,perfPeaks,lastEvidence};
   writeStorage(STORE_KEY,JSON.stringify(record));
 }
 function recordPerf(name,elapsed){
@@ -57,6 +62,29 @@ function recordPerf(name,elapsed){
   const ms=Number(elapsed);if(!Number.isFinite(ms)||ms<0)return;
   const stat=perfCounters[name]||(perfCounters[name]={samples:0,lastMs:0,maxMs:0,totalMs:0});
   stat.samples++;stat.lastMs=Math.round(ms*100)/100;stat.maxMs=Math.max(stat.maxMs,stat.lastMs);stat.totalMs+=ms;
+  // Record the true session high-water mark separately: the rolling aggregate
+  // resets after 120 samples and used to erase the biggest long-game stalls.
+  if(!perfPeaks[name]||ms>perfPeaks[name].ms)
+    perfPeaks[name]={ms:Math.round(ms*100)/100,at:now(),round:lastGameRound??lastCheckpoint?.round??null,
+      weather:lastCheckpoint?.weather??null,phase:lastCheckpoint?.phase??null};
+  // Attribute individual expensive syncs to their actual round, even when a
+  // 5-second checkpoint happens only after the spike has already finished.
+  if(name==="renderSync.water"||name==="renderSync.mapObjects"){
+    const round=Number(lastGameRound??lastCheckpoint?.round);
+    if(Number.isFinite(round)){
+      const entry=ensureRoundHistory(round);
+      if(name==="renderSync.water")entry.maxWaterMs=Math.max(entry.maxWaterMs,ms);
+      else entry.maxObjectsMs=Math.max(entry.maxObjectsMs,ms);
+    }
+  }
+  const threshold=name.startsWith("renderSync.")?350:
+    (name==="scene.renderElapsed"||name==="frame.cpuElapsed"?180:Infinity);
+  const time=Date.now();
+  if(ms>=threshold&&time-(spikeNotifiedAt[name]||0)>=30000){
+    spikeNotifiedAt[name]=time;
+    push("PERF_SPIKE",{metric:name,ms:Math.round(ms*100)/100,
+      round:lastCheckpoint?.round??null,weather:lastCheckpoint?.weather??null});
+  }
   // Last 120 samples: bounded aggregation, not a second diagnostics event stream.
   if(stat.samples>120){stat.samples=1;stat.totalMs=ms;stat.maxMs=stat.lastMs;}
 }
@@ -126,7 +154,11 @@ function memory(){
 function audit(){
   const s=window.CardTacticsRuntime?.getBattleSnapshot?.(),v=renderer();if(!s)return null;
   const expected={tiles:s.map?.tiles?.length||0,mapObjects:(s.map?.objects||[]).filter(o=>!o.destroyed&&o.type!=="CORE").length,units:s.units?.length||0,enemyHand:s.presentation?.enemyHandCount||0};
-  const actual={tiles:v?.tiles??null,mapObjects:v?.mapObjects?.objects??null,units:v?.units??null,enemyHand:document.querySelectorAll(".opponent-hand .opponent-card-back").length};
+  // renderer.tiles counts terrain MESHES, not map tiles; v.units is an
+  // object of renderer statistics, not a scalar. Do not flag false mismatches.
+  const actual={tiles:null,mapObjects:v?.mapObjects?.objects??null,
+    units:typeof v?.units?.units==="number"?v.units.units:null,
+    enemyHand:document.querySelectorAll(".opponent-hand .opponent-card-back").length};
   const mismatch=[];
   for(const key of ["tiles","mapObjects","units","enemyHand"])if(actual[key]!==null&&expected[key]!==actual[key])mismatch.push(`${key}:${expected[key]}!=${actual[key]}`);
   return{expected,actual,ok:!mismatch.length,mismatch};
@@ -166,6 +198,53 @@ function checkpoint(){
      performance:perfSnapshot(),
     heap:memory()};
 }
+function ensureRoundHistory(round,at=now()){
+  let entry=roundHistory.find(item=>item.round===round);
+  if(!entry){
+    entry={round,firstAt:at,lastAt:at,samples:0,minFps:null,maxFps:null,
+      maxRenderPeakMs:0,maxWaterMs:0,maxObjectsMs:0,weathers:[],nightSamples:0,
+      maxMeshes:0,maxShadowCasters:0};
+    roundHistory.push(entry);
+    while(roundHistory.length>ROUND_MAX)roundHistory.shift();
+  }
+  return entry;
+}
+function keepRoundHistory(sample){
+  const round=Number(sample?.round);
+  if(!Number.isFinite(round))return;
+  const entry=ensureRoundHistory(round,sample.at);
+  entry.samples++;entry.lastAt=sample.at;
+  entry.lastPhase=sample.phase;entry.lastWeather=sample.weather;
+  if(!entry.weathers.includes(sample.weather))entry.weathers.push(sample.weather);
+  if(sample.timeOfDay==="NIGHT")entry.nightSamples++;
+  if(Number.isFinite(sample.fps)){
+    entry.minFps=entry.minFps==null?sample.fps:Math.min(entry.minFps,sample.fps);
+    entry.maxFps=entry.maxFps==null?sample.fps:Math.max(entry.maxFps,sample.fps);
+  }
+  const visual=window.CardTacticsRenderer;
+  entry.maxRenderPeakMs=Math.max(entry.maxRenderPeakMs,Number(visual?.performanceStats?.renderPeakMs||0));
+  entry.maxMeshes=Math.max(entry.maxMeshes,Number(sample.scene?.meshes||0));
+  entry.maxShadowCasters=Math.max(entry.maxShadowCasters,Number(visual?.shadowState?.casters||0));
+}
+
+// A deliberately explicit "capture now" command for black terrain, missing
+// crystal light, invisible deployment areas and night sight discrepancies.
+// It reads existing Renderer/Presentation ownership; it does not alter a mesh.
+function capture(label="MANUAL_VISUAL"){
+  if(!enabled)return null;
+  try{
+    const current=checkpoint(),visual=window.CardTacticsRenderer?.captureVisualDiagnostics?.()||null;
+    lastEvidence={at:now(),label:shorten(label,48),checkpoint:current,
+      presentation:audit(),visual};
+    push("VISUAL_CAPTURE",{label:lastEvidence.label,round:current?.round,
+      weather:current?.weather,timeOfDay:current?.timeOfDay,
+      sightTiles:visual?.opticalSight?.visibleTiles??null,
+      deploymentMeshes:visual?.deployment?.meshes??null,
+      contextLost:visual?.webgl?.contextLost??null});
+    store(true);
+    return lastEvidence;
+  }catch(err){push("VISUAL_CAPTURE_FAILED",errorData(err));store(true);return null;}
+}
 function sample(){
   if(!enabled||document.visibilityState==="hidden")return;
   try{
@@ -181,6 +260,7 @@ function sample(){
       }
     }
     lastWater=water;lastCheckpoint=sample;
+    keepRoundHistory(sample);
     if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,lighting:sample.lighting,scene:sample.scene,performance:sample.performance,heap:sample.heap});}
     store();
   }catch(err){push("DIAGNOSTICS_SAMPLE_FAILED",errorData(err));}
@@ -203,6 +283,7 @@ function report(){
   const data={generatedAt:now(),userAgent:navigator.userAgent,enabled,sessionId,
     uptimeSeconds:Math.round((performance.now()-started)/1000),fps,
     runtime:runtime(),renderer:renderer(),memory:memory(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
+    roundHistory,perfPeaks,lastEvidence,
     battleLog:{count:window.CardTacticsRuntime?.getBattleLog?.()?.entries?.length??null,max:window.BattleLog?.MAX_ENTRIES??null},
     presentation:audit(),storageWarning:storageWarning||null,
     previousSession:previousSession?{status:previousStatus,...previousSession}:null,
@@ -215,7 +296,13 @@ async function copy(){
   try{await navigator.clipboard.writeText(value);return true;}
   catch(_){const ta=document.createElement("textarea");ta.value=value;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();const ok=document.execCommand("copy");ta.remove();return ok;}
 }
-function clear(){events.length=0;previousSession=null;previousStatus="";recoveredIncident=null;lastCheckpoint=null;lastWater=null;lastClimateKey="";removeStorage(STORE_KEY);removeStorage(INCIDENT_KEY);if(enabled)store(true);}
+function clear(){events.length=0;roundHistory.length=0;
+  for(const key of Object.keys(perfCounters))delete perfCounters[key];
+  for(const key of Object.keys(perfPeaks))delete perfPeaks[key];
+  for(const key of Object.keys(spikeNotifiedAt))delete spikeNotifiedAt[key];
+  lastEvidence=null;previousSession=null;previousStatus="";recoveredIncident=null;
+  lastCheckpoint=null;lastWater=null;lastClimateKey="";lastSampleAt=0;lastSavedWaterLog=0;
+  removeStorage(STORE_KEY);removeStorage(INCIDENT_KEY);if(enabled)store(true);}
 function mount(){
   const panel=document.querySelector("#settingsScreen .settings-panel");
   if(!panel||document.getElementById("diagnosticsPanel"))return;
@@ -225,12 +312,34 @@ function mount(){
     <p class="diagnostics-note">記錄戰鬥、技能失敗、天氣、水文、光照資源及錯誤。手機閃退時無法當場寫入；下次開啟可查看最後儲存的檢查點。僅儲存在本機，不會自動上傳。</p>
     <pre id="diagnosticsSummary"></pre>
     <details><summary>查看最近事件與上次紀錄</summary><pre id="diagnosticsTimeline" style="max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
-    <div class="diagnostics-actions"><button id="diagnosticsCopy" type="button">複製診斷報告（含上次紀錄）</button><button id="diagnosticsClear" type="button">清除紀錄</button></div>`;
+    <div class="diagnostics-actions"><button id="diagnosticsCapture" type="button">擷取當下渲染現場（不截圖）</button><button id="diagnosticsCopy" type="button">複製診斷報告（含上次紀錄）</button><button id="diagnosticsClear" type="button">清除紀錄</button></div>`;
   panel.appendChild(box);
+  // Keep the capture action accessible WHILE the damaged battlefield is on
+  // screen; navigating to Settings would destroy the evidence on some flows.
+  const battleRail=document.querySelector("#battleScreen .battle-right-rail");
+  let battleCapture=document.getElementById("diagnosticsCaptureBattle");
+  if(battleRail&&!battleCapture){
+    battleCapture=document.createElement("button");
+    battleCapture.id="diagnosticsCaptureBattle";
+    battleCapture.type="button";
+    battleCapture.textContent="LOG";
+    battleCapture.title="擷取當下畫面診斷（不截圖、不重建場景）";
+    battleCapture.hidden=!enabled;
+    battleCapture.onclick=()=>{
+      const evidence=capture("BATTLE_VISUAL");
+      battleCapture.title=evidence?"現場已保留，請至設定複製診斷報告":"擷取失敗，請確認診斷已啟用";
+    };
+    battleRail.insertBefore(battleCapture,battleRail.querySelector("#endTurn")||null);
+  }
   const toggle=box.querySelector("#diagnosticsToggle"),summary=box.querySelector("#diagnosticsSummary"),timeline=box.querySelector("#diagnosticsTimeline"),copyBtn=box.querySelector("#diagnosticsCopy");
   toggle.checked=enabled;
-  toggle.onchange=()=>{enabled=toggle.checked;writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);refresh();};
+  toggle.onchange=()=>{enabled=toggle.checked;writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);if(battleCapture)battleCapture.hidden=!enabled;refresh();};
   box.querySelector("#diagnosticsClear").onclick=()=>{clear();refresh();};
+  box.querySelector("#diagnosticsCapture").onclick=()=>{
+    const evidence=capture("SETTINGS_VISUAL");
+    box.querySelector("#diagnosticsCapture").textContent=evidence?"已保留現場，請複製報告":"擷取失敗，請檢查診斷是否啟用";
+    refresh();
+  };
   copyBtn.onclick=async()=>{const ok=await copy(),old=copyBtn.textContent;copyBtn.textContent=ok?"已複製":"複製失敗";setTimeout(()=>copyBtn.textContent=old,1200);};
   function refresh(){
     const m=memory(),c=lastCheckpoint,v=window.CardTacticsRenderer?.diagnostics?.();
@@ -241,6 +350,9 @@ function mount(){
       c?`Round ${c.round}｜${c.phase}｜環境回合 ${c.environmentSteps}｜${c.weather}｜${c.timeOfDay}｜Units ${c.units}`:"Runtime 尚未完成檢查點",
       c?`水文 D ${c.hydrology.storedD}｜濕格 ${c.hydrology.wetTiles}｜最大深度 ${c.hydrology.maxDepth}｜雪 ${c.hydrology.snow}`:"",
       c?.scene?`Babylon meshes ${c.scene.meshes}｜materials ${c.scene.materials}｜textures ${c.scene.textures}｜lights ${c.scene.lights}｜physical ${c.lighting?.physicalLights??"-"}`:"",
+      v?.performance?`最近每幀 Draw Calls ≈ ${v.performance.drawCallsPerFrame??"無可靠資料"}｜渲染 ${v.performance.renderMeanMs??"-"} ms` :"",
+      `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類`,
+      lastEvidence?`視覺現場：${lastEvidence.at}（${lastEvidence.label}）`:"尚未手動擷取視覺現場",
       v?`Babylon｜Tiles ${v.tiles??"-"}｜Units ${v.units??"-"}｜Zoom ${v.zoom??"-"}`:"",
       m?`JS Heap ${m.usedMB}/${m.totalMB} MB`:"iOS 無法提供 JS Heap 數值",
       storageWarning?`儲存警告：${storageWarning}`:""
@@ -257,6 +369,6 @@ function mount(){
   refresh();
 }
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",mount);else mount();
-window.CardTacticsDiagnostics={push,gameAction,recordPerf,report,copy,clear,isEnabled:()=>enabled};
+window.CardTacticsDiagnostics={push,gameAction,recordPerf,report,copy,capture,clear,isEnabled:()=>enabled};
 if(enabled){push("SESSION_START",{previousStatus:previousStatus||null});sample();store(true);}
 })();

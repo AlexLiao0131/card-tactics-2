@@ -147,6 +147,7 @@ export class BabylonRenderer{
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
     this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,renderTotal:0,renderPeak:0};
+    this.lastDrawCallsCounter=null;
     this.engine.runRenderLoop(()=>{
       const frameStart=performance.now();
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
@@ -171,9 +172,22 @@ export class BabylonRenderer{
         this.performanceStats.renderPeakMs=rounded(sample.renderPeak);
         // Diagnostic counters only, sampled once per 5-second window. These
         // distinguish scene overdraw/draw calls from one-off sync spikes.
-        this.performanceStats.activeMeshes=this.scene.getActiveMeshes?.()?.length??null;
-        this.performanceStats.drawCalls=Number.isFinite(this.engine._drawCalls?.current)
-          ?this.engine._drawCalls.current:null;
+        // Babylon's engine draw-call counter accumulates across frames.
+        // Report WINDOW DELTA / FRAMES, never the raw 30-million-like total as
+        // if that were one frame. A reset/discontinuity is reported as unknown.
+        const counter=Number(this.engine._drawCalls?.current);
+        const valid=Number.isFinite(counter)&&counter>=0;
+        const delta=valid&&this.lastDrawCallsCounter!=null&&counter>=this.lastDrawCallsCounter
+          ?counter-this.lastDrawCallsCounter:null;
+        this.performanceStats.drawCallsPerFrame=delta==null?null:rounded(delta/sample.count);
+        this.performanceStats.drawCallsWindow=delta;
+        this.performanceStats.drawCallsCounterTotal=valid?counter:null;
+        this.lastDrawCallsCounter=valid?counter:null;
+        // Babylon can clear its active list after the frame. Zero here is
+        // not proof that an actively rendering 3D scene has zero active meshes.
+        const observed=this.scene.getActiveMeshes?.()?.length??null;
+        this.performanceStats.activeMeshes=observed===0&&this.scene.meshes?.length>0?null:observed;
+        this.performanceStats.activeMeshesReliable=this.performanceStats.activeMeshes!==null;
         globalThis.CardTacticsDiagnostics?.recordPerf?.("frame.cpuElapsed",this.performanceStats.framePeakMs);
         globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.renderElapsed",this.performanceStats.renderPeakMs);
         sample.start=performance.now();sample.count=0;
@@ -530,6 +544,71 @@ export class BabylonRenderer{
   toggleProjection(){return this.camera.toggleProjection()}
   resetView(){return this.camera.resetView()}
   getViewState(){return this.camera.getViewState()}
+
+  // Manual read-only capture: expensive geometry sampling runs ONLY when the
+  // user explicitly observes a broken scene, never in the per-frame loop.
+  captureVisualDiagnostics(){
+    const scene=this.scene,source=this.lastState,map=source?.map?.tiles||[];
+    const meshInfo=mesh=>{
+      if(!mesh)return{exists:false};
+      const positions=mesh.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
+      const colors=mesh.getVerticesData?.(BABYLON.VertexBuffer.ColorKind)||[];
+      let invalidPositionSamples=0,invalidColorSamples=0;
+      for(let i=0;i<positions.length;i+=Math.max(3,Math.ceil(positions.length/300/3)*3))
+        if(!Number.isFinite(positions[i])||!Number.isFinite(positions[i+1])||!Number.isFinite(positions[i+2]))invalidPositionSamples++;
+      for(let i=0;i<colors.length;i+=Math.max(4,Math.ceil(colors.length/400/4)*4))
+        if(![colors[i],colors[i+1],colors[i+2],colors[i+3]].every(Number.isFinite))invalidColorSamples++;
+      const material=mesh.material;
+      return{exists:true,name:mesh.name,enabled:mesh.isEnabled?.()??null,
+        visible:mesh.isVisible!==false,visibility:mesh.visibility,
+        vertices:mesh.getTotalVertices?.()??null,indices:mesh.getTotalIndices?.()??null,
+        positions:positions.length,colors:colors.length,
+        invalidPositionSamples,invalidColorSamples,
+        material:material?{name:material.name,alpha:material.alpha??null,
+          disableLighting:!!material.disableLighting,maxSimultaneousLights:material.maxSimultaneousLights??null,
+          hasMixTexture:!!material.mixTexture1,mixTextureReady:material.mixTexture1?.isReady?.()??null}:null};
+    };
+    const terrain=scene.getMeshByName("terrain-surface");
+    const haze=this.environment?.visibilityHazeMesh;
+    const field=this.environment?.lightFieldMesh;
+    const lights=(source?.presentation?.environment?.lightSources||[]);
+    const types={};for(const light of lights){const kind=String(light.source||"UNKNOWN");types[kind]=(types[kind]||0)+1;}
+    const optical=this.environment?.diagnostics?.()?.opticalSight||null;
+    const areas=this.highlights?.areas;
+    const areaExpect=map.filter(tile=>!!tile.deploymentAreaOwner).length;
+    const alive=Array.isArray(map)?map.filter(tile=>tile.atmosphericVisible===true).length:0;
+    const physical=[...this.environment?.physicalLightsById?.values?.()||[]];
+    const shadowMap=this.shadowGenerator?.getShadowMap?.();
+    const gl=this.engine._gl;
+    return{
+      at:new Date().toISOString(),
+      webgl:{version:this.engine.webGLVersion,
+        contextLost:gl?.isContextLost?.()??null,
+        renderWidth:this.engine.getRenderWidth(),renderHeight:this.engine.getRenderHeight(),
+        hardwareScalingLevel:this.engine.getHardwareScalingLevel?.()??null},
+      scene:{meshes:scene.meshes.length,materials:scene.materials.length,
+        textures:scene.textures.length,lights:scene.lights.length},
+      terrain:meshInfo(terrain),
+      cliffs:meshInfo(scene.getMeshByName("terrain-cliffs")),
+      lightField:{...meshInfo(field),litCells:this.environment?.lightFieldCells??null},
+      visibilityHaze:{...meshInfo(haze),opticalSight:optical,visiblePublishedTiles:alive,
+        publishedTiles:map.length},
+      deployment:{expectedTiles:areaExpect,meshes:areas?.size??null,
+        enabledMeshes:[...(areas?.values?.()||[])].filter(mesh=>mesh.isEnabled?.()).length,
+        sample:[...(areas?.values?.()||[])].slice(0,8).map(mesh=>({name:mesh.name,alpha:mesh.material?.alpha??null,
+          worldY:mesh.position.y,enabled:mesh.isEnabled?.()??null}))},
+      cores:{count:this.objectives?.cores?.size??null,
+        sample:[...this.objectives?.cores?.entries?.()||[]].slice(0,8).map(([id,mesh])=>({id,enabled:mesh.isEnabled?.()??null,
+          emissive:[mesh.material?.emissiveColor?.r,mesh.material?.emissiveColor?.g,mesh.material?.emissiveColor?.b]}))},
+      lights:{sourceTypes:types,physicalCount:physical.length,
+        enabledPhysical:physical.filter(light=>light.isEnabled?.()).length,
+        receivers:physical.slice(0,18).map(light=>({name:light.name,enabled:light.isEnabled?.()??null,
+          intensity:light.intensity,range:light.range,includedMeshes:light.includedOnlyMeshes?.length??null}))},
+      shadow:{candidateCasters:this.shadowState?.casters??null,
+        actualShadowRenderList:shadowMap?.renderList?.length??null},
+      performance:{...this.performanceStats}
+    };
+  }
 
   diagnostics(){
     return{
