@@ -1379,7 +1379,7 @@ export class EnvironmentRenderer{
       tile.x,tile.y,
       Number(tile.elevation||0).toFixed(3),
       tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(3),
-      snowDepth(tile).toFixed(3),iceThickness(tile).toFixed(3)
+      waterDepth(tile).toFixed(3),snowDepth(tile).toFixed(3),iceThickness(tile).toFixed(3)
     ].join(":" )).join("|");
   }
 
@@ -1413,12 +1413,19 @@ export class EnvironmentRenderer{
     if(!tiles.length)return null;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
     const positions=[],indices=[],colors=[],samples=[];
+    // LOS haze is one continuous optical sheet, not independent transparent
+    // tile plates. Ground/water/ice may publish DIFFERENT surface heights on
+    // opposite sides of a tile boundary. Weld those shared world-XZ vertices
+    // once, so the haze itself cannot open cracks or double-blend its edges.
+    // This changes neither published gameplay sight nor water/terrain geometry.
+    const sharedVertices=new Map();
+    let reusedVertices=0,heightConflicts=0,maxHeightConflict=0;
     let activeTiles=0;
 
     for(const tile of tiles){
       const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
-      const baseIndex=positions.length/3;
       const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
+      const local=[];
       activeTiles++;
       for(let row=0;row<4;row++)for(let col=0;col<4;col++){
         const sample=patch[row][col],sampleHeight=Number(sample.height||0);
@@ -1429,12 +1436,32 @@ export class EnvironmentRenderer{
           if(amount>SURFACE_EPSILON&&this.vertexLayerAlpha(type,tile,sample,amount)>0)
             visualY=Math.max(visualY,this.layerVertexY(type,tile,sample,amount));
         }
-        positions.push(sample.x,visualY+Number(profile.height||.4),sample.z);
-        colors.push(...this.visibilityHazeColor(tile,byKey,sample.ox,sample.oz,profile));
-        samples.push({x:tile.x,y:tile.y,ox:sample.ox,oz:sample.oz});
+        const requestedY=visualY+Number(profile.height||.4);
+        const coord=`${Number(sample.x).toFixed(7)}:${Number(sample.z).toFixed(7)}`;
+        let index=sharedVertices.get(coord);
+        if(index===undefined){
+          index=positions.length/3;
+          sharedVertices.set(coord,index);
+          positions.push(sample.x,requestedY,sample.z);
+          colors.push(...this.visibilityHazeColor(tile,byKey,sample.ox,sample.oz,profile));
+          samples.push({x:tile.x,y:tile.y,ox:sample.ox,oz:sample.oz});
+        }else{
+          reusedVertices++;
+          const oldY=positions[index*3+1],difference=Math.abs(oldY-requestedY);
+          if(difference>1e-6){
+            heightConflicts++;
+            maxHeightConflict=Math.max(maxHeightConflict,difference);
+          }
+          // The optical sheet has one height at each world-XZ coordinate.
+          // Keep it above either exposed neighbour instead of letting one
+          // transparent plate disappear below the other near a flooded bank.
+          positions[index*3+1]=Math.max(oldY,requestedY);
+        }
+        local.push(index);
       }
       for(let row=0;row<3;row++)for(let col=0;col<3;col++){
-        const nw=baseIndex+row*4+col,ne=nw+1,sw=baseIndex+(row+1)*4+col,se=sw+1;
+        const nw=local[row*4+col],ne=local[row*4+col+1],
+          sw=local[(row+1)*4+col],se=local[(row+1)*4+col+1];
         const alternate=(Number(tile.x)+Number(tile.y)+row+col)&1;
         if(alternate===0)indices.push(nw,ne,se,nw,se,sw);
         else indices.push(nw,ne,sw,ne,se,sw);
@@ -1443,21 +1470,20 @@ export class EnvironmentRenderer{
 
     if(!indices.length)return null;
     const mesh=new BABYLON.Mesh("weather-visibility-haze",this.scene),data=new BABYLON.VertexData();
-    // Colour alpha is updatable; unit movement never rebuilds the terrain
-    // geometry, water surface or the mist mesh itself.
+    // Sight changes update only the canonical vertex colours. The tile geometry
+    // and water surfaces are never rebuilt on unit movement alone.
     data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,true);
     this.visibilityHazeSamples=samples;
     mesh.material=this.visibilityHazeMaterial;
-    // The LOS optical layer must obscure even transparent water and its foam,
-    // otherwise flooded terrain glows through darkness outside real sight.
     mesh.alphaIndex=SURFACE_RENDER_ORDER.OPTICAL_HAZE;
     mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;
     mesh.metadata={
-      kind:"weather-visibility-haze",
-      activeTiles,
-      weatherDriven:true,
-      mergedMesh:true,
-      continuousAcrossTiles:true,
+      kind:"weather-visibility-haze",activeTiles,
+      weatherDriven:true,mergedMesh:true,continuousAcrossTiles:true,
+      sharedWorldVertices:true,uniqueVertices:positions.length/3,
+      reusedBoundaryVertices:reusedVertices,
+      candidateBoundaryHeightConflicts:heightConflicts,
+      maxBoundaryHeightConflict:maxHeightConflict,
       gameplayVisibilityOwner:"TacticalEngine"
     };
     return mesh;
@@ -1586,7 +1612,7 @@ export class EnvironmentRenderer{
       mudIntegratedIntoTerrain:true,
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0,globalSceneFog:false},
       atmosphere:this.atmosphereState||{globalSceneFog:false,visibilityOwner:"FOV"},
-      visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),softBoundary:true}:{active:false,tiles:0,softBoundary:true},
+      visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),softBoundary:true,sharedWorldVertices:this.visibilityHazeMesh.metadata?.sharedWorldVertices===true,uniqueVertices:this.visibilityHazeMesh.metadata?.uniqueVertices,reusedBoundaryVertices:this.visibilityHazeMesh.metadata?.reusedBoundaryVertices,candidateBoundaryHeightConflicts:this.visibilityHazeMesh.metadata?.candidateBoundaryHeightConflicts,maxBoundaryHeightConflict:this.visibilityHazeMesh.metadata?.maxBoundaryHeightConflict}:{active:false,tiles:0,softBoundary:true},
       smokeDensityFromEffectDetails:true,
       smokePresentation:{clusters:this.smokeClusters.size,risingParticles:true,mergedHaze:true,visionOwner:"EnvironmentEngine.visionModifier"},
       firePresentation:{radianceFields:this.fireFields.size,flickeringFlames:true,adjacentHeatGlow:true},
