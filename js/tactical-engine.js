@@ -72,10 +72,27 @@ export const TacticalEngine=(()=>{
     const effect=Number(effectMovementRules(u)?.[key]);if(Number.isFinite(effect))value=Math.max(value,effect);
     return value;
   }
+  // Swimming crosses connected water volume, not a land-style step measured
+  // from the diver's current visual pose. The authoritative hydrology ground
+  // and free surface must overlap vertically on BOTH adjacent wet tiles.
+  // This is a general AQUATIC movement rule, shared by monsters and heroes;
+  // dry banks, solid ice, collision objects and occupied cells remain blocked.
+  function hasConnectedSwimColumn(fromTile,toTile,traits){
+    if(!traits.includes("AQUATIC")||!isLiveWater(fromTile)||!isLiveWater(toTile))return false;
+    if(globalThis.ClimateEngine?.isSolidIce?.(fromTile)||globalThis.ClimateEngine?.isSolidIce?.(toTile))return false;
+    const surfaceA=window.HydrologyEngine?.waterSurfaceZ?.(fromTile);
+    const surfaceB=window.HydrologyEngine?.waterSurfaceZ?.(toTile);
+    if(surfaceA==null||surfaceB==null)return false;
+    const sharedBottom=Math.max(elevation(fromTile),elevation(toTile));
+    const sharedTop=Math.min(Number(surfaceA),Number(surfaceB));
+    return Number.isFinite(sharedTop)&&sharedTop>sharedBottom+1e-4;
+  }
   function canTraverseElevation(fromTile,toTile,u=null){
     if(!fromTile||!toTile)return false;
     if(u&&window.VerticalMobilityEngine?.ignoresElevation?.(u))return true;
-    const traits=terrainTraits(u),mountainWalk=traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile));
+    const traits=terrainTraits(u);
+    if(hasConnectedSwimColumn(fromTile,toTile,traits))return true;
+    const mountainWalk=traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile));
     const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u),baseClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),baseDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP),maxClimb=baseClimb+(mountainWalk?1:0),maxDrop=baseDrop+(mountainWalk?1:0);
     return delta<=maxClimb&&delta>=-maxDrop;
   }
