@@ -231,6 +231,8 @@ function keepRoundHistory(sample){
   entry.maxShadowCasters=Math.max(entry.maxShadowCasters,Number(visual?.shadowState?.casters||0));
   entry.maxWaterSeamWarnings=Math.max(entry.maxWaterSeamWarnings,Number(sample.waterSeams?.warningCount||0));
   entry.maxWaveInputMismatches=Math.max(entry.maxWaveInputMismatches,Number(sample.waterSeams?.crossMeshVertexMotionMismatch||0));
+  entry.maxMissingWetSurfaceEdges=Math.max(Number(entry.maxMissingWetSurfaceEdges||0),
+    Number(sample.waterSeams?.internalBoundaries?.internalMissingSurfaceEdges||0));
   entry.maxWaterVisualBoundaryCandidates=Math.max(entry.maxWaterVisualBoundaryCandidates,
     Number(sample.waterSeams?.visualBoundaryCandidates||0));
 }
@@ -294,7 +296,10 @@ function sample(){
           invalid:seams.invalidIndices+seams.invalidVertices,
           degenerate:seams.degenerateTriangles,
           nonManifold:seams.nonManifoldEdges,
+          internalMissingSurfaceEdges:seams.internalBoundaries?.internalMissingSurfaceEdges||0,
+          internalUnweldedEdges:seams.internalBoundaries?.internalUnweldedEdges||0,
           waveInputMismatch:seams.crossMeshVertexMotionMismatch,
+          sameMeshWaveInputMismatch:seams.sameMeshWaveInputMismatch||0,
           colorAlphaCandidates:seams.crossMeshColorMismatch,
           normalCandidates:seams.crossMeshNormalMismatch,
           missingAnimation:seams.missingSurfaceAnimation});
@@ -397,7 +402,7 @@ function mount(){
       c?.scene?`Babylon meshes ${c.scene.meshes}｜materials ${c.scene.materials}｜textures ${c.scene.textures}｜lights ${c.scene.lights}｜physical ${c.lighting?.physicalLights??"-"}`:"",
       v?.performance?`最近每幀 Draw Calls ≈ ${v.performance.drawCallsPerFrame??"無可靠資料"}｜渲染 ${v.performance.renderMeanMs??"-"} ms` :"",
       `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類`,
-      c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜幾何／波浪警訊 ${c.waterSeams.warningCount}`:"",
+      c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜疑似缺水邊 ${c.waterSeams.internalBoundaries?.internalMissingSurfaceEdges??"-"}｜幾何警訊 ${c.waterSeams.warningCount}`:"",
       lastEvidence?`視覺現場：${lastEvidence.at}（${lastEvidence.label}）`:"尚未手動擷取視覺現場",
       v?`Babylon｜Tiles ${v.tiles??"-"}｜Units ${v.units??"-"}｜Zoom ${v.zoom??"-"}`:"",
       m?`JS Heap ${m.usedMB}/${m.totalMB} MB`:"iOS 無法提供 JS Heap 數值",

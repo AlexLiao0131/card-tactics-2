@@ -1989,21 +1989,235 @@ export class WaterRenderer{
   // topology builder. Uses the actual index buffers and the same rest positions
   // and motion attributes supplied to the GPU/CPU surface animator.
   // Coastline edges are legitimate: an open boundary alone is NOT a crack.
+  // Read-only audit: published D/Q polygons are the expected wet footprint,
+  // and the same Surface Mesh triangles are the actual visible footprint.
+  // A boundary beyond the wet polygon is a legitimate shoreline; an unmatched
+  // edge whose exterior still belongs to wet polygons is a stitching candidate.
+  auditInternalWaterBoundaries(edgeKeys,meshAttributes,addIssue){
+    const bins=new Map(),actualBins=new Map(),binSize=TILE_SIZE;
+    const binId=(x,z)=>`${x},${z}`;
+    const place=(table,item,minX,maxX,minZ,maxZ)=>{
+      for(let x=Math.floor(minX/binSize);x<=Math.floor(maxX/binSize);x++)
+        for(let z=Math.floor(minZ/binSize);z<=Math.floor(maxZ/binSize);z++){
+          const id=binId(x,z),bucket=table.get(id)||[];
+          bucket.push(item);table.set(id,bucket);
+        }
+    };
+    const insideTriangle=(x,z,a,b,c)=>{
+      const dx=b.x-a.x,dz=b.z-a.z,ex=c.x-a.x,ez=c.z-a.z;
+      const det=dx*ez-dz*ex;if(Math.abs(det)<1e-12)return false;
+      const rx=x-a.x,rz=z-a.z,u=(rx*ez-rz*ex)/det,v=(dx*rz-dz*rx)/det;
+      return u>=-1e-7&&v>=-1e-7&&u+v<=1+1e-7;
+    };
+    const insidePolygon=(x,z,p)=>{
+      let inside=false;
+      for(let i=0,j=p.length-1;i<p.length;j=i++){
+        const a=p[i],b=p[j];
+        if((a.z>z)!==(b.z>z)&&x<(b.x-a.x)*(z-a.z)/(b.z-a.z)+a.x)inside=!inside;
+      }
+      return inside;
+    };
+    for(const item of this.surfacePresentation?.values?.()||[]){
+      for(const polygon of item.polygons||[]){
+        if(polygon.length<3)continue;
+        const xs=polygon.map(v=>v.x),zs=polygon.map(v=>v.z);
+        place(bins,polygon,Math.min(...xs),Math.max(...xs),Math.min(...zs),Math.max(...zs));
+      }
+    }
+    for(const [id,{positions,mesh}] of meshAttributes){
+      const ids=mesh.getIndices?.()||[];
+      for(let i=0;i+2<ids.length;i+=3){
+        const tri=[ids[i],ids[i+1],ids[i+2]].map(index=>({
+          x:positions[index*3],z:positions[index*3+2]}));
+        if(tri.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.z)))continue;
+        place(actualBins,tri,Math.min(...tri.map(v=>v.x)),Math.max(...tri.map(v=>v.x)),
+          Math.min(...tri.map(v=>v.z)),Math.max(...tri.map(v=>v.z)));
+      }
+    }
+    const covered=(table,x,z,triangle=false)=>{
+      const options=table.get(binId(Math.floor(x/binSize),Math.floor(z/binSize)))||[];
+      for(const p of options){
+        if(triangle?insideTriangle(x,z,p[0],p[1],p[2]):insidePolygon(x,z,p))return true;
+      }
+      return false;
+    };
+    const result={expectedWetPolygons:[...this.surfacePresentation.values()].reduce((a,b)=>a+(b.polygons?.length||0),0),
+      shorelineEdges:0,internalMissingSurfaceEdges:0,internalUnweldedEdges:0,
+      testedOpenEdges:0,unknownBoundaryEdges:0,locations:[]};
+    for(const list of edgeKeys.values()){
+      if(list.length!==1)continue;
+      const edge=list[0],positions=meshAttributes.get(edge.id)?.positions;
+      if(!positions||edge.third==null){result.unknownBoundaryEdges++;continue;}
+      const a=edge.vertex1*3,b=edge.vertex2*3,c=edge.third*3;
+      const ax=positions[a],az=positions[a+2],bx=positions[b],bz=positions[b+2];
+      const cx=positions[c],cz=positions[c+2],dx=bx-ax,dz=bz-az;
+      const len=Math.hypot(dx,dz);
+      if(len<=1e-7){result.unknownBoundaryEdges++;continue;}
+      // Offset away from the only triangle bordering this open edge.
+      const side=Math.sign(dx*(cz-az)-dz*(cx-ax));
+      if(!side){result.unknownBoundaryEdges++;continue;}
+      const gap=Math.min(TILE_SIZE*.015,len*.08),mx=(ax+bx)*.5,mz=(az+bz)*.5;
+      const sx=mx+side*dz/len*gap,sz=mz-side*dx/len*gap;
+      result.testedOpenEdges++;
+      if(!covered(bins,sx,sz)){
+        result.shorelineEdges++;
+        continue;
+      }
+      if(covered(actualBins,sx,sz,true)){
+        result.internalUnweldedEdges++;
+        const location={kind:"UNWELDED_WET_BOUNDARY",mesh:edge.id,
+          x:Number(mx.toFixed(5)),z:Number(mz.toFixed(5))};
+        if(result.locations.length<24)result.locations.push(location);
+        addIssue(location.kind,[mx,positions[a+1],mz],
+          {mesh:edge.id,expectedWet:true,actualWet:true,sample:[Number(sx.toFixed(5)),Number(sz.toFixed(5))]});
+      }else{
+        result.internalMissingSurfaceEdges++;
+        const location={kind:"MISSING_WET_SURFACE_TRIANGLE",mesh:edge.id,
+          x:Number(mx.toFixed(5)),z:Number(mz.toFixed(5))};
+        if(result.locations.length<24)result.locations.push(location);
+        addIssue(location.kind,[mx,positions[a+1],mz],
+          {mesh:edge.id,expectedWet:true,actualWet:false,sample:[Number(sx.toFixed(5)),Number(sz.toFixed(5))]});
+      }
+    }
+    return result;
+  }
+
+  // Mirror of the existing waterAmbientWave vertex shader, solely for manual
+  // diagnostics. Never writes Mesh/State; it cannot read the final GPU pixels.
+  diagnosticWaveHeight(entry,i,time,windVisual){
+    if(entry?.specialActive)return null;
+    const x=Number(entry.basePositions[i*3]),z=Number(entry.basePositions[i*3+2]);
+    const fx=Number(entry.flowX?.[i]||0),fz=Number(entry.flowZ?.[i]||0);
+    const speed=clamp(Number(entry.flowSpeeds?.[i]||0),0,3.2);
+    const weight=Number(entry.waveWeights?.[i]||0);
+    const source=Number(entry.sourceWeights?.[i]||0),sourcePhase=Number(entry.sourcePhases?.[i]||0);
+    const raw=clamp(this.wind?.strength||0,0,8),visual=clamp(windVisual,0,8);
+    let wave=0;
+    const fl=Math.hypot(fx,fz);
+    if(speed>.001&&fl>.001){
+      const a=fx/fl,b=fz/fl,perpX=-b,perpZ=a,flowUnit=smooth01(speed/3.2);
+      const amp=ELEVATION_HEIGHT*(.014+.026*flowUnit);
+      const k=(3+speed*1.25)/TILE_SIZE,crossK=(4.3+speed*.85)/TILE_SIZE;
+      const rate=.82+speed*.96;
+      const p1=(x*a+z*b)*k-time*rate*2.8;
+      const p2=(x*perpX+z*perpZ)*crossK-time*rate*1.12;
+      wave+=amp*(Math.sin(p1)+.28*Math.sin(p2));
+    }else if(raw<=.001){
+      const p1=(x*.78+z*.42)*(2/TILE_SIZE)-time*.46;
+      const p2=(x*.31-z*.86)*(2.6/TILE_SIZE)+time*.31;
+      wave+=ELEVATION_HEIGHT*.009*(Math.sin(p1)+.42*Math.sin(p2));
+    }
+    if(raw>.001){
+      const windX=Number(this.wind?.x||0),windZ=Number(this.wind?.z||0);
+      const len=Math.hypot(windX,windZ),a=len>.001?windX/len:windX,b=len>.001?windZ/len:windZ;
+      const presence=smooth01(raw/.8);
+      const amp=ELEVATION_HEIGHT*Math.min(.24,.010*presence+.012*visual+.0036*visual*visual);
+      const k=(2.15+visual*.72)/TILE_SIZE,rate=.75+visual*.82;
+      const p1=(x*a+z*b)*k-time*rate*2.35;
+      const p2=(x*-b+z*a)*(k*1.42)+time*rate*.72;
+      wave+=amp*(Math.sin(p1)+.36*Math.sin(p2));
+    }
+    return Number(entry.basePositions[i*3+1])+wave*weight+
+      ELEVATION_HEIGHT*.034*source*(.58+.42*Math.sin(time*4.4-sourcePhase*Math.PI*2));
+  }
+
+  // Compare diagnostically displaced GPU-wave vertices interpolated over the
+  // existing water triangles against published TERRAIN triangles. Manual only:
+  // sampled shader-equation mirror, never GPU readback or a new mesh solver.
+  waveTerrainDiagnostics(){
+    const started=performance.now(),t=this.waveTime;
+    const windVisual=globalThis.EnvironmentEngine?.windVisualStrength?.(
+      clamp(this.wind?.strength||0,0,8))??clamp(this.wind?.strength||0,0,8);
+    const times=[t,t+.2,t+.4,t+.6];
+    const points=[],result={mode:"READ_ONLY_SHADER_EQUATION_MIRROR_NOT_GPU_READBACK",
+      sampleTimes:times.map(v=>Math.round(v*1000)/1000),testedTriangles:0,
+      terrainSamples:0,intersectingTriangleSamples:0,distinctAffectedTriangles:0,
+      specialSurfaceTriangles:0,positions:points};
+    const resolver=this.surfaceResolver;
+    for(const [id,mesh] of this.surfaceMeshes){
+      const animation=this.surfaceAnimations.get(id),indices=mesh.getIndices?.()||[];
+      if(!animation)continue;
+      if(animation.specialActive){result.specialSurfaceTriangles+=Math.floor(indices.length/3);continue;}
+      const heights=times.map(time=>{
+        const values=new Float32Array(animation.basePositions.length/3);
+        for(let v=0;v<values.length;v++)values[v]=this.diagnosticWaveHeight(animation,v,time,windVisual);
+        return values;
+      });
+      const positions=animation.basePositions;
+      for(let j=0;j+2<indices.length;j+=3){
+        const a=indices[j],b=indices[j+1],c=indices[j+2];
+        if([a,b,c].some(v=>v<0||v*3+2>=positions.length))continue;
+        const x=(positions[a*3]+positions[b*3]+positions[c*3])/3;
+        const z=(positions[a*3+2]+positions[b*3+2]+positions[c*3+2])/3;
+        const tx=Math.round(x/TILE_SIZE),tz=Math.round(z/TILE_SIZE);
+        let ground=null;
+        for(const [dx,dz] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]){
+          const point=resolver.publishedSurfacePoint?.({x:tx+dx,y:tz+dz},x,z);
+          if(point){ground=point.y;break;}
+        }
+        if(ground==null)continue;
+        result.terrainSamples++;result.testedTriangles++;
+        let affected=false;
+        for(let k=0;k<times.length;k++){
+          const y=(heights[k][a]+heights[k][b]+heights[k][c])/3;
+          if(y<ground){
+            affected=true;result.intersectingTriangleSamples++;
+            if(points.length<24)points.push({mesh:id,triangle:j/3,
+              x:Number(x.toFixed(5)),z:Number(z.toFixed(5)),
+              terrainY:Number(ground.toFixed(5)),waveY:Number(y.toFixed(5)),
+              difference:Number((ground-y).toFixed(5)),time:result.sampleTimes[k]});
+          }
+        }
+        if(affected)result.distinctAffectedTriangles++;
+      }
+    }
+    result.auditMs=Math.round((performance.now()-started)*100)/100;
+    return result;
+  }
+
+  // Read the SAME render client's surface footprint and actual tactical mesh
+  // ownership; no new overlay surfaces, colliders, or visual state.
+  overlayWaterDiagnostics(highlights){
+    const waterKeys=new Set([...this.surfacePresentation.entries()]
+      .filter(([,v])=>(v?.polygons?.length||0)>0).map(([key])=>key));
+    const spots=[],result={wetSurfaceTiles:waterKeys.size,
+      overlayMeshes:0,overlayWetTileMeshes:0,overlayDryTileMeshes:0,
+      activeTransparentWetOverlays:0,locations:spots,
+      interpretation:"COINCIDENT_WET_TILE_CANDIDATES_NOT_PIXEL_OCCLUSION"};
+    for(const [type,meshes] of [["DEPLOYMENT",highlights?.areas],["TACTICAL",highlights?.dynamic]]){
+      for(const [key,mesh] of meshes||[]){
+        result.overlayMeshes++;
+        if(!waterKeys.has(key)){result.overlayDryTileMeshes++;continue;}
+        result.overlayWetTileMeshes++;
+        const alpha=Number(mesh.material?.alpha??1),visible=mesh.isEnabled?.()!==false&&mesh.isVisible!==false&&mesh.visibility!==0;
+        if(alpha<1&&visible)result.activeTransparentWetOverlays++;
+        if(spots.length<24)spots.push({tile:key,type,alpha,visible,
+          alphaIndex:mesh.alphaIndex??null,vertices:mesh.getTotalVertices?.()??null});
+      }
+    }
+    return result;
+  }
+
   waterSeamDiagnostics({detailed=false}={}){
     if(this.seamAuditCache?.revision===this.seamAuditRevision)
       return detailed?{...this.seamAuditCache.full,
         wind:{...this.wind},waveTime:Math.round(this.waveTime*100000)/100000,
-        specialAnimatedRegions:[...this.surfaceAnimations.values()].filter(entry=>entry.specialActive).length}
+        specialAnimatedRegions:[...this.surfaceAnimations.values()].filter(entry=>entry.specialActive).length,
+        waveTerrain:this.waveTerrainDiagnostics(),
+        overlayWater:this.overlayWaterDiagnostics(globalThis.CardTacticsRenderer?.highlights)}
         :this.seamAuditCache.summary;
     const started=performance.now();
     const key=(x,y,z)=>`${Number(x).toFixed(5)}:${Number(y).toFixed(5)}:${Number(z).toFixed(5)}`;
     const round=n=>Math.round(n*100000)/100000;
     const edgeKeys=new Map(),vertexLocations=new Map(),meshAttributes=new Map();
-    const regions=[],issues=[];
+    const sameMeshPositions=new Map();
+    const regions=[],issues=[],differentLevelLocations=[];
     const counters={triangles:0,vertices:0,invalidVertices:0,invalidIndices:0,
       degenerateTriangles:0,nonManifoldEdges:0,openBoundaryEdges:0,
       sharedCrossMeshEdges:0,
       coincidentCrossMeshVertices:0,crossMeshVertexMotionMismatch:0,
+      coincidentSameMeshVertices:0,sameMeshWaveInputMismatch:0,
+      sameMeshColorMismatch:0,sameMeshNormalMismatch:0,
       crossMeshColorMismatch:0,crossMeshNormalMismatch:0,
       missingSurfaceAnimation:0,
       differentHeightAtSameXZ:0,registeredSeamPositions:this.waterSeamRegistry.size};
@@ -2038,6 +2252,25 @@ export class WaterRenderer{
         const x=Number(positions[i*3]),y=Number(positions[i*3+1]),z=Number(positions[i*3+2]);
         if(![x,y,z].every(Number.isFinite)){counters.invalidVertices++;continue;}
         const k=key(x,y,z);keys[i]=k;
+        const identity=`${id}:${k}`;
+        const attrs=[scalar(animation?.flowX,i),scalar(animation?.flowZ,i),
+          scalar(animation?.flowSpeeds,i),scalar(animation?.waveWeights,i),
+          scalar(animation?.sourceWeights,i),scalar(animation?.sourcePhases,i)];
+        const color=[scalar(colors,i*4),scalar(colors,i*4+1),
+          scalar(colors,i*4+2),scalar(colors,i*4+3)];
+        const normal=[scalar(animation?.baseNormals,i*3),
+          scalar(animation?.baseNormals,i*3+1),scalar(animation?.baseNormals,i*3+2)];
+        const other=sameMeshPositions.get(identity);
+        if(other){
+          counters.coincidentSameMeshVertices++;
+          const delta=Math.max(...attrs.map((v,j)=>Math.abs(v-other.attrs[j])));
+          if(delta>0.0001){
+            counters.sameMeshWaveInputMismatch++;
+            addIssue("SAME_MESH_WAVE_INPUT",[x,y,z],{mesh:id,indices:[other.index,i],delta:round(delta)});
+          }
+          if(Math.max(...color.map((v,j)=>Math.abs(v-other.color[j])))>.02)counters.sameMeshColorMismatch++;
+          if(Math.max(...normal.map((v,j)=>Math.abs(v-other.normal[j])))>.02)counters.sameMeshNormalMismatch++;
+        }else sameMeshPositions.set(identity,{index:i,attrs,color,normal});
       }
       // One undirected edge record per triangle. Interior shared edges within
       // a region cancel out; the remaining edges are physical coastlines OR
@@ -2061,7 +2294,8 @@ export class WaterRenderer{
           if(k1===k2)continue;
           const edge=k1<k2?`${k1}|${k2}`:`${k2}|${k1}`;
           const list=edgeKeys.get(edge)||[];
-          list.push({id,vertex1:u,vertex2:v});edgeKeys.set(edge,list);
+          const third=face.find(index=>index!==u&&index!==v);
+          list.push({id,vertex1:u,vertex2:v,third});edgeKeys.set(edge,list);
         }
       }
     }
@@ -2090,6 +2324,9 @@ export class WaterRenderer{
         if(other.mesh===id)continue;
         if(Math.abs(y-other.point[1])>0.001){
           counters.differentHeightAtSameXZ++;
+          if(differentLevelLocations.length<16)differentLevelLocations.push({
+            x:round(x),z:round(z),firstMesh:other.mesh,secondMesh:id,
+            firstY:round(other.point[1]),secondY:round(y)});
           continue; // a waterfall or a stepped water surface can legitimately differ
         }
         counters.coincidentCrossMeshVertices++;
@@ -2130,28 +2367,35 @@ export class WaterRenderer{
           registerBoundaryVertex(record.id,record.vertex2);
         }
     }
+    const internalBoundaries=this.auditInternalWaterBoundaries(edgeKeys,meshAttributes,addIssue);
     const summary={revision:this.seamAuditRevision,
       topology:"EXISTING_REGION_COMPONENTS",waveSampleSpace:"WORLD_XZ",
       waveMode:this.gpuSurfaceWaves?"GPU_SHADER":"CPU_VERTEX",
       surfaceRegions:this.surfaceMeshes.size,surfaceMeshes:this.surfaceMeshes.size,
       update:{...this.surfaceMeshUpdate},cascades:{count:this.cascades.size,update:{...this.cascadeMeshUpdate}},
-      ...counters,warningCount:counters.invalidVertices+counters.invalidIndices+
+      ...counters,internalBoundaries,warningCount:counters.invalidVertices+counters.invalidIndices+
         counters.degenerateTriangles+counters.nonManifoldEdges+
-        counters.crossMeshVertexMotionMismatch+counters.missingSurfaceAnimation,
+        counters.crossMeshVertexMotionMismatch+counters.sameMeshWaveInputMismatch+
+        counters.missingSurfaceAnimation+
+        internalBoundaries.internalMissingSurfaceEdges,
       visualBoundaryCandidates:counters.crossMeshColorMismatch+
-        counters.crossMeshNormalMismatch,
+        counters.crossMeshNormalMismatch+counters.sameMeshColorMismatch+
+        counters.sameMeshNormalMismatch+internalBoundaries.internalUnweldedEdges,
       openEdgesAreNotNecessarilyCracks:true,
       waveAttributeCheck:"CROSS_REGION_BOUNDARY_ONLY",
+      internalWetBoundaryCheck:"EXPECTED_PUBLISHED_WET_POLYGONS_VS_ACTUAL_TRIANGLES",
       gpuDisplacedPositionsNotReadBack:true,
       measuredGeometryVersion:"REST_POSITIONS_AND_WAVE_INPUTS",
       auditMs:round(performance.now()-started)};
-    const full={...summary,regions:regions.slice(0,30),issues,
+    const full={...summary,regions:regions.slice(0,30),issues,differentLevelLocations,
       wind:{...this.wind},waveTime:round(this.waveTime),
       transparentWater:{alphaIndex:[...new Set(regions.map(r=>r.alphaIndex))],
         prepass:!!this.surfaceMaterial?.needDepthPrePass,
         mode:this.surfaceMaterial?.transparencyMode??null}};
     this.seamAuditCache={revision:this.seamAuditRevision,summary,full};
-    return detailed?full:summary;
+    return detailed?{...full,
+      waveTerrain:this.waveTerrainDiagnostics(),
+      overlayWater:this.overlayWaterDiagnostics(globalThis.CardTacticsRenderer?.highlights)}:summary;
   }
 
   diagnostics(){
