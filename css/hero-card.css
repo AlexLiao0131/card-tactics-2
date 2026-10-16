@@ -1,0 +1,123 @@
+/* Card Tactics 2.0 — shared HERO card face.
+   Decorative PNGs are presentation only; card text/stats come from the official databases.
+   All HERO assets live in one directory for mobile-friendly uploads. */
+.hero-card {
+  position: relative; display: block; width: 100%; aspect-ratio: 2 / 3;
+  overflow: hidden; isolation: isolate; container-type: inline-size;
+  border-radius: 2.2%; color: #fff6dc; user-select: none;
+  font-family: system-ui, -apple-system, 'Noto Sans TC', sans-serif;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+.hero-card *, .hero-card *::before, .hero-card *::after { box-sizing: border-box; }
+.hero-card__background {
+  position: absolute; inset: 0; z-index: 0;
+  background: #162b48 url('../assets/images/cards/heroes/hero-background.png') center / cover no-repeat;
+}
+.hero-card__art {
+  position: absolute; z-index: 1; left: 14.7%; right: 14.6%; top: 17%; bottom: 27.9%;
+  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
+}
+.hero-card__figure {
+  display: block; width: 100%; height: 100%; object-fit: contain; object-position: center bottom;
+  pointer-events: none;
+  filter: drop-shadow(0 1cqw 1.2cqw rgba(0,0,0,.68));
+}
+.hero-card__missing {
+  position: absolute; top: 45%; left: 0; width: 100%; text-align: center;
+  font-size: clamp(7px, 5cqw, 15px); color: #dfd5b8; opacity: 0;
+  background: rgba(4,12,22,.45); padding: 4% 0;
+}
+.hero-card--missing-art .hero-card__missing { opacity: 1; }
+.hero-card__frame {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background: url('../assets/images/cards/heroes/hero-frame.png') center / 100% 100% no-repeat;
+}
+.hero-card__cost, .hero-card__hp, .hero-card__mp {
+  position: absolute; z-index: 4; display: flex; align-items: center; justify-content: center;
+  width: 17%; height: 11.3%; transform: translate(-50%, -50%);
+  line-height: 1; font-size: clamp(10px, 11cqw, 38px); font-weight: 900;
+  color: #fff; text-shadow: 0 1px 2px #0c1826, 0 2px 5px #02102a, 0 0 6px #122a66;
+}
+/* Calibrated to the actual orb centers of the 1024x1536 PNG. */
+.hero-card__hp, .hero-card__mp { font-size: clamp(8px, 8cqw, 30px); }
+.hero-card__cost { left: 13%; top: 11%; }
+.hero-card__hp { left: 14%; top: 89%; }
+.hero-card__mp { left: 85%; top: 88%; }
+.hero-card__hp { text-shadow: 0 1px 2px #360709, 0 2px 5px #300a1a, 0 0 5px #702222; }
+.hero-card__name {
+  position: absolute; z-index: 4; left: 25%; right: 24%; top: 7.9%; height: 5.7%;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  color: #4a2f1d; font-size: clamp(7px, 6.8cqw, 24px); font-weight: 900;
+  white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+}
+.hero-card__role {
+  position: absolute; z-index: 4; left: 21%; right: 21%; top: 73.2%;
+  text-align: center; font-size: clamp(6px, 4.9cqw, 16px);
+  color: #59412a; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+  font-weight: 700;
+}
+.hero-card__details {
+  position: absolute; z-index: 4; top: 77.5%; left: 16%; right: 16%; height: 7.8%;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  color: #533d31; font-weight: 600; line-height: 1.3;
+  font-size: clamp(7px, 4.0cqw, 14px); overflow: hidden; overflow-wrap: anywhere;
+}
+.hero-card__rarity {
+  position: absolute; z-index: 4; left: 29%; right: 29%; top: 90.1%; height: 4.1%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fbe6b3; font-size: clamp(6px, 5.1cqw, 16px); font-weight: 850;
+  letter-spacing: .17em; text-shadow: 0 1px 4px #0b0c1c;
+}
+/* Existing hand buttons remain the sole interactive controls. */
+.fan-card.hero-fan-card {
+  padding: 0; background: none; border: 0; border-radius: 8px;
+  box-shadow: none; width: 112px; min-width: 112px; height: 168px;
+}
+.fan-card.hero-fan-card .hero-card--hand { width: 100%; height: 100%; }
+.fan-card.hero-fan-card:disabled { opacity: .67; filter: grayscale(.44); }
+.fan-card.hero-fan-card:focus-visible { outline: 2px solid #f1c674; outline-offset: 2px; }
+.fan-card.hero-fan-card.mulligan-selected { outline: 2px solid #ffe1a2; }
+.card-preview.hero-preview {
+  width: min(300px, 84vw, calc((100dvh - 225px)*.66));
+  min-width: 0; padding: 7px; background: rgba(10,17,27,.94);
+  max-height: calc(100dvh - 148px);
+}
+.card-preview.hero-preview .preview-card-face {
+  width: 100%; height: auto; aspect-ratio: 2 / 3;
+  display: block; position: relative; padding: 0; overflow: hidden;
+  border: 0; border-radius: 0; background: transparent;
+}
+.card-preview.hero-preview .hero-card--preview { height: 100%; }
+/* Collection and pack results use the same face renderer and the same database values. */
+.collection-card.hero-collection-card {
+  display: block; position: relative; width: 100%; min-width: 0; min-height: 0;
+  padding: 0 0 21px; text-align: center; overflow: visible;
+  border: 0; border-radius: 9px; background: none;
+}
+.collection-card.hero-collection-card .hero-card { width: 100%; }
+.collection-card.hero-collection-card em {
+  display: block; margin: 2px 0 0; padding: 2px 0;
+  font-size: 11px; color: #efd9a2; font-weight: 650;
+  line-height: 17px; white-space: normal;
+}
+.collection-card.hero-collection-card.chosen .hero-card {
+  outline: 2px solid #efd57c; outline-offset: 1px;
+}
+.collection-card.hero-collection-card:focus-visible { outline: 2px solid #efd57c; }
+/* At card-thumbnail size keep only legible essentials; the full preview retains skills. */
+.hero-card--hand .hero-card__details,
+.hero-card--hand .hero-card__role,
+.hero-card--collection .hero-card__details,
+.hero-card--pack .hero-card__details { display: none; }
+@media (max-width: 700px) {
+  .fan-card.hero-fan-card { width: 88px; min-width: 88px; height: 132px; }
+  .card-preview.hero-preview { bottom: 132px; }
+  .hero-card--collection .hero-card__role,
+  .hero-card--pack .hero-card__role { display: none; }
+}
+@media (max-height: 620px) {
+  .card-preview.hero-preview {
+    bottom: 105px; width: min(210px, 64vw, calc((100dvh - 175px)*.66));
+  }
+}
