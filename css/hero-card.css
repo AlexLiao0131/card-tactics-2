@@ -1,94 +1,154 @@
-/* Card Tactics 2.0 — shared HERO card face.
-   Decorative PNGs are presentation only; card text/stats come from the official databases.
-   All HERO assets live in one directory for mobile-friendly uploads. */
+/* Card Tactics 2.0: one authoritative DOM/CSS geometry for HERO cards.
+   The existing .fan-card dimensions (app.css) own the hand layout.
+   A 1024x1536 content canvas fits that host preserving PNG aspect ratio.
+   The same canvas owns the PNG and all live labels in every UI state.
+   Orb centers are measured from the source frame PNG, never viewport guesses. */
 .hero-card {
-  position: relative; display: block; width: 100%; aspect-ratio: 2 / 3;
-  overflow: hidden; isolation: isolate; container-type: inline-size;
-  border-radius: 2.2%; color: #fff6dc; user-select: none;
+  --hero-art-left: 15.6%;
+  --hero-art-right: 15.6%;
+  --hero-art-top: 16.9%;
+  --hero-art-bottom: 29.7%;
+  --hero-cost-x: 12.85%; /* sampled from PNG blue-orb center */
+  --hero-cost-y: 11.16%;
+  --hero-hp-x: 13.50%;   /* sampled from PNG red-orb center */
+  --hero-hp-y: 88.92%;
+  --hero-mp-x: 86.09%;   /* sampled from PNG right blue-orb center */
+  --hero-mp-y: 88.61%;
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1024 / 1536;
+  overflow: visible;
+  isolation: isolate;
+  container-type: inline-size;
+  color: #fff6dc;
+  user-select: none;
   font-family: system-ui, -apple-system, 'Noto Sans TC', sans-serif;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
 .hero-card *, .hero-card *::before, .hero-card *::after { box-sizing: border-box; }
+/* The art and its background use the same CSS rectangle, rather than an unrelated
+   card-wide dark image leaking through the PNG's transparent outer edges. */
+.hero-card__background, .hero-card__art {
+  position: absolute;
+  left: var(--hero-art-left);
+  right: var(--hero-art-right);
+  top: var(--hero-art-top);
+  bottom: var(--hero-art-bottom);
+  overflow: hidden;
+  border-radius: 7% 7% 9% 9%;
+}
 .hero-card__background {
-  position: absolute; inset: 0; z-index: 0;
+  z-index: 0;
   background: #162b48 url('../assets/images/cards/heroes/hero-background.png') center / cover no-repeat;
 }
 .hero-card__art {
-  position: absolute; z-index: 1; left: 14.7%; right: 14.6%; top: 17%; bottom: 27.9%;
-  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
 }
 .hero-card__figure {
-  display: block; width: 100%; height: 100%; object-fit: contain; object-position: center bottom;
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
   pointer-events: none;
   filter: drop-shadow(0 1cqw 1.2cqw rgba(0,0,0,.68));
 }
 .hero-card__missing {
-  position: absolute; top: 45%; left: 0; width: 100%; text-align: center;
-  font-size: clamp(7px, 5cqw, 15px); color: #dfd5b8; opacity: 0;
+  position: absolute; top: 45%; left: 0; width: 100%;
+  text-align: center; font-size: clamp(7px, 5cqw, 15px);
+  color: #dfd5b8; opacity: 0;
   background: rgba(4,12,22,.45); padding: 4% 0;
 }
 .hero-card--missing-art .hero-card__missing { opacity: 1; }
+/* The PNG is scaled to precisely the CSS card rectangle; no extra border or inset. */
 .hero-card__frame {
-  position: absolute; inset: 0; z-index: 3; pointer-events: none;
-  background: url('../assets/images/cards/heroes/hero-frame.png') center / 100% 100% no-repeat;
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  z-index: 3;
+  pointer-events: none;
+  background: url('../assets/images/cards/heroes/hero-frame.png') 0 0 / 100% 100% no-repeat;
 }
 .hero-card__cost, .hero-card__hp, .hero-card__mp {
-  position: absolute; z-index: 4; display: flex; align-items: center; justify-content: center;
-  width: 17%; height: 11.3%; transform: translate(-50%, -50%);
-  line-height: 1; font-size: clamp(10px, 11cqw, 38px); font-weight: 900;
-  color: #fff; text-shadow: 0 1px 2px #0c1826, 0 2px 5px #02102a, 0 0 6px #122a66;
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 16%;
+  aspect-ratio: 1;
+  height: auto;
+  transform: translate(-50%, -50%);
+  padding: 0;
+  margin: 0;
+  line-height: 1;
+  white-space: nowrap;
+  font-size: clamp(10px, 9.2cqw, 29px);
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 1px 2px #0c1826, 0 2px 5px #02102a, 0 0 6px #122a66;
 }
-/* Calibrated to the actual orb centers of the 1024x1536 PNG. */
-.hero-card__hp, .hero-card__mp { font-size: clamp(8px, 8cqw, 30px); }
-.hero-card__cost { left: 13%; top: 11%; }
-.hero-card__hp { left: 14%; top: 89%; }
-.hero-card__mp { left: 85%; top: 88%; }
+.hero-card__cost { left: var(--hero-cost-x); top: var(--hero-cost-y); }
+.hero-card__hp { left: var(--hero-hp-x); top: var(--hero-hp-y); }
+.hero-card__mp { left: var(--hero-mp-x); top: var(--hero-mp-y); }
+.hero-card__hp, .hero-card__mp { font-size: clamp(8px, 7.5cqw, 24px); }
 .hero-card__hp { text-shadow: 0 1px 2px #360709, 0 2px 5px #300a1a, 0 0 5px #702222; }
 .hero-card__name {
-  position: absolute; z-index: 4; left: 25%; right: 24%; top: 7.9%; height: 5.7%;
+  position: absolute; z-index: 4;
+  left: 25%; right: 24%; top: 7.9%; height: 5.7%;
   display: flex; align-items: center; justify-content: center; text-align: center;
   color: #4a2f1d; font-size: clamp(7px, 6.8cqw, 24px); font-weight: 900;
   white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
 }
+/* Combat role is a pictogram, not hardcoded MELEE/RANGED text. */
 .hero-card__role {
-  position: absolute; z-index: 4; left: 21%; right: 21%; top: 73.2%;
-  text-align: center; font-size: clamp(6px, 4.9cqw, 16px);
-  color: #59412a; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
-  font-weight: 700;
+  position: absolute; z-index: 4;
+  left: 43%; top: 72%; width: 14%; height: 5.7%;
+  display: grid; place-items: center;
+  color: #745023;
 }
+.hero-card__role svg { display: block; width: min(75%, 32px); height: 75%; }
 .hero-card__details {
-  position: absolute; z-index: 4; top: 77.5%; left: 16%; right: 16%; height: 7.8%;
-  display: flex; align-items: center; justify-content: center; text-align: center;
-  color: #533d31; font-weight: 600; line-height: 1.3;
-  font-size: clamp(7px, 4.0cqw, 14px); overflow: hidden; overflow-wrap: anywhere;
+  position: absolute; z-index: 4;
+  top: 77.2%; left: 15.7%; right: 15.7%; height: 8.7%;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  text-align: center;
+  color: #533d31; font-weight: 600; line-height: 1.4;
+  font-size: clamp(7px, 4cqw, 13px);
+  overflow: hidden; overflow-wrap: anywhere;
 }
 .hero-card__rarity {
-  position: absolute; z-index: 4; left: 29%; right: 29%; top: 90.1%; height: 4.1%;
+  position: absolute; z-index: 4;
+  left: 29%; right: 29%; top: 90.1%; height: 4.1%;
   display: flex; align-items: center; justify-content: center;
   color: #fbe6b3; font-size: clamp(6px, 5.1cqw, 16px); font-weight: 850;
   letter-spacing: .17em; text-shadow: 0 1px 4px #0b0c1c;
 }
 /* Existing hand buttons remain the sole interactive controls. */
 .fan-card.hero-fan-card {
-  padding: 0; background: none; border: 0; border-radius: 8px;
-  box-shadow: none; width: 112px; min-width: 112px; height: 168px;
+  padding: 0; line-height: normal;
+  background: none; border: 0; border-radius: 0;
+  box-shadow: none;
 }
-.fan-card.hero-fan-card .hero-card--hand { width: 100%; height: 100%; }
+.fan-card.hero-fan-card .hero-card--hand {
+  width: auto; max-width: 100%; height: 100%;
+  aspect-ratio: 1024 / 1536;
+  margin-inline: auto;
+}
 .fan-card.hero-fan-card:disabled { opacity: .67; filter: grayscale(.44); }
 .fan-card.hero-fan-card:focus-visible { outline: 2px solid #f1c674; outline-offset: 2px; }
 .fan-card.hero-fan-card.mulligan-selected { outline: 2px solid #ffe1a2; }
 .card-preview.hero-preview {
-  width: min(300px, 84vw, calc((100dvh - 225px)*.66));
-  min-width: 0; padding: 7px; background: rgba(10,17,27,.94);
+  width: min(300px, 84vw, calc((100dvh - 225px) * 2 / 3));
+  min-width: 0;
+  padding: 0; border: 0; border-radius: 0;
+  background: transparent; box-shadow: none;
   max-height: calc(100dvh - 148px);
 }
-.card-preview.hero-preview .preview-card-face {
-  width: 100%; height: auto; aspect-ratio: 2 / 3;
-  display: block; position: relative; padding: 0; overflow: hidden;
-  border: 0; border-radius: 0; background: transparent;
-}
-.card-preview.hero-preview .hero-card--preview { height: 100%; }
+.card-preview.hero-preview .hero-card--preview { width: 100%; }
 /* Collection and pack results use the same face renderer and the same database values. */
 .collection-card.hero-collection-card {
   display: block; position: relative; width: 100%; min-width: 0; min-height: 0;
@@ -105,19 +165,89 @@
   outline: 2px solid #efd57c; outline-offset: 1px;
 }
 .collection-card.hero-collection-card:focus-visible { outline: 2px solid #efd57c; }
-/* At card-thumbnail size keep only legible essentials; the full preview retains skills. */
+/* At thumbnail size keep only legible essentials; expanded preview shows biography. */
 .hero-card--hand .hero-card__details,
 .hero-card--hand .hero-card__role,
 .hero-card--collection .hero-card__details,
 .hero-card--pack .hero-card__details { display: none; }
 @media (max-width: 700px) {
-  .fan-card.hero-fan-card { width: 88px; min-width: 88px; height: 132px; }
   .card-preview.hero-preview { bottom: 132px; }
   .hero-card--collection .hero-card__role,
   .hero-card--pack .hero-card__role { display: none; }
 }
 @media (max-height: 620px) {
   .card-preview.hero-preview {
-    bottom: 105px; width: min(210px, 64vw, calc((100dvh - 175px)*.66));
+    bottom: 105px; width: min(210px, 64vw, calc((100dvh - 175px) * 2 / 3));
   }
 }
+
+/* The preview sits above map HUD and has no second visible frame around the PNG. */
+.card-phase-panel.hero-preview-open { z-index: 115; }
+.card-preview.hero-preview .preview-actions {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 6px;
+  margin-top: 5px;
+}
+.card-preview.hero-preview .preview-actions button {
+  min-width: 0;
+  padding: 10px 3px;
+  border-radius: 8px;
+  font-size: clamp(12px, 3.5vw, 16px);
+}
+/* Single read-only character detail sheet; all values come from existing databases. */
+.hero-info-overlay {
+  position: fixed;
+  z-index: 130;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(14px,env(safe-area-inset-top)) 14px max(14px,env(safe-area-inset-bottom));
+  pointer-events: auto;
+  background: rgba(4,9,19,.78);
+  backdrop-filter: blur(4px);
+}
+.hero-info-dialog {
+  width: min(440px, calc(100vw - 28px));
+  max-height: min(80dvh, 660px);
+  display: flex; flex-direction: column;
+  min-height: 0;
+  border: 1px solid #b89b66;
+  border-radius: 13px;
+  overflow: hidden;
+  background: linear-gradient(160deg,#182538,#0a131f);
+  box-shadow: 0 18px 60px #000a;
+  color: #f5ebd4;
+  font-family: system-ui,-apple-system,'Noto Sans TC',sans-serif;
+}
+.hero-info-header {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 11px 13px;
+  color: #ffe2a4; border-bottom: 1px solid #76674b;
+}
+.hero-info-header button {
+  min-width: 42px; min-height: 42px;
+  border-radius: 8px;
+}
+.hero-info-content {
+  padding: 13px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.hero-info-intro { color: #f3dfbf; line-height: 1.55; margin: 0 0 13px; }
+.hero-info-dialog h4 { color: #e9c67a; margin: 14px 0 7px; }
+.hero-info-value-list {
+  display: grid; grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 6px;
+}
+.hero-info-value {
+  min-width: 0; border: 1px solid #594d3c;
+  border-radius: 7px; padding: 7px 2px;
+  text-align: center; background: #0f1b2d;
+}
+.hero-info-value span { display: block; font-size: 10px; color: #c9b6a0; }
+.hero-info-value strong { display: block; font-size: 15px; }
+.hero-info-skills { margin: 0; padding: 0 0 0 20px; line-height: 1.6; }
+.hero-info-skills li { margin: 0 0 6px; }
+.hero-info-skills small { display: block; color: #c7b79d; }
