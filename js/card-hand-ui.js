@@ -27,7 +27,19 @@ function heroDisplay(card){
   // Description is character lore, never the generated skill summary.
   const introduction=c?.lore?.introduction||c?.lore?.summary||c?.lore?.notes||"角色簡介尚未設定。";
   const skills=(c?.skills||[]).map(id=>{try{return globalThis.SkillDatabase?.get?.(id)||{id,name:id}}catch(_error){return{id,name:id}}});
-  return{artwork,hp:maxHP??"—",mp:maxMP??"—",role,introduction,skills,character:c,stats:c?.combat||{}};
+  return{artwork,hp:maxHP??"—",mp:maxMP??"—",role,introduction,skills,character:c,stats:c?.combat||{},extraResources:heroExtraResources(c)};
+}
+
+// Extra resources use each character's official resourceRules; these values
+// are display-only and never become a parallel combat resource authority.
+function heroExtraResources(character){
+  return Object.entries(character?.resourceRules||{}).filter(([key,rule])=>key!=="mana"&&rule&&typeof rule==="object").map(([key,rule])=>({
+    id:key,label:String(rule.shortLabel||rule.label||key.toUpperCase()),
+    initial:Number(rule.initial??rule.max??0),max:Number(rule.max??0),
+    naturalRecovery:Number(rule.naturalRecovery??0),
+    allowOverdraft:rule.allowOverdraft===true,
+    magicScaling:rule.magicScaling||null
+  }));
 }
 
 // Inline SVG icon shares the game's DOM presentation layer; this is not a card image or runtime.
@@ -47,7 +59,7 @@ function heroRoleIcon(archetype){
 
 // Present only mechanics that exist in the official SkillDatabase. Every skill,
 // including nested variants, uses the same explanation contract.
-function skillExplanation(skill,{variant=false,parent=null}={}){
+function skillExplanation(skill,{variant=false,parent=null,resourceRules={}}={}){
   const s=skill||{},base=parent||s,lines=[];
   const add=value=>{if(value)lines.push(value)};
   const target={SELF:"自己",ALLY:"友方單位",ENEMY:"敵方單位",TILE:"指定地格",CORE:"核心"};
@@ -58,7 +70,7 @@ function skillExplanation(skill,{variant=false,parent=null}={}){
   if(range?.min!=null&&range?.max!=null)add(`施放距離：${String(range.min)}～${String(range.max)} 格`);
   const mana=variant?base.manaCost:s.manaCost;
   if(Number(mana)>0)add(`消耗：MP ${String(mana)}`);
-  for(const [resource,cost] of Object.entries(s.resourceCosts||base.resourceCosts||{}))if(Number(cost)>0)add(`消耗：${String(resource.toUpperCase())} ${String(cost)}`);
+  for(const [resource,cost] of Object.entries(s.resourceCosts||base.resourceCosts||{}))if(Number(cost)>0)add(`消耗：${String(resourceRules[resource]?.shortLabel||resourceRules[resource]?.label||resource.toUpperCase())} ${String(cost)}`);
   if(s.weapon||(!variant&&base.weapon))add(`使用武器：${String(s.weapon||base.weapon)}`);
   if(Number(s.power)>0)add(`傷害係數：${String(s.power)} 倍（不是固定傷害值）`);
   if(s.attackType&&s.attackType!=="INHERIT")add(`攻擊種類：${String(s.attackType)}`);
@@ -113,7 +125,7 @@ function skillExplanation(skill,{variant=false,parent=null}={}){
   }
   if(s.description)add(s.description);
   const variants=Array.isArray(s.variants)?s.variants:[];
-  const children=variants.map(v=>`<li><strong>${esc(v.name||v.id)}</strong><div class="hero-skill-points">${skillExplanation(v,{variant:true,parent:s})}</div></li>`).join("");
+  const children=variants.map(v=>`<li><strong>${esc(v.name||v.id)}</strong><div class="hero-skill-points">${skillExplanation(v,{variant:true,parent:s,resourceRules})}</div></li>`).join("");
   const details=lines.map(t=>`<li>${esc(t)}</li>`).join("")||"<li>目前資料庫未提供更詳細的效果描述。</li>";
   return `<ul class="hero-skill-points">${details}</ul>${children?`<strong class="hero-skill-variants-title">技能變化</strong><ul class="hero-skill-variants">${children}</ul>`:""}`;
 }
@@ -127,7 +139,17 @@ function heroDetailedInformation(card,{unit=null}={}){
   const passives=(c.passives||[]).map(id=>{let p=null;try{p=globalThis.SkillDatabase?.getPassive?.(id)}catch(_error){}return`<li><strong>${esc(p?.name||id)}</strong><small>${esc(p?.description||"此被動尚無文字說明。")}</small></li>`}).join("");
   const ids=unit?(globalThis.EffectEngine?.skillIds?.(unit)||c.skills||[]):(c.skills||[]);
   const skills=ids.map(id=>{try{return globalThis.SkillDatabase?.get?.(id)||{id,name:id}}catch(_error){return{id,name:id}}});
-  const skillList=skills.map(s=>`<li class="hero-info-skill"><details><summary>${esc(s.name||s.id)}<span>${esc(s.category||"SKILL")}</span></summary>${skillExplanation(s)}</details></li>`).join("");
+  const skillList=skills.map(s=>`<li class="hero-info-skill"><details><summary>${esc(s.name||s.id)}<span>${esc(s.category||"SKILL")}</span></summary>${skillExplanation(s,{resourceRules:c.resourceRules||{}})}</details></li>`).join("");
+  const resourceRules=heroExtraResources(c);
+  const resourceBasics=resourceRules.map(rule=>`<div class="hero-info-value hero-info-resource"><span>${esc(rule.label)}</span><strong>${esc(rule.initial)}/${esc(rule.max)}</strong></div>`).join("");
+  const resourceGuides=resourceRules.map(rule=>{
+    const lines=[`初始 ${rule.initial}／上限 ${rule.max}`];
+    lines.push(rule.naturalRecovery===0?"每回合不會自然恢復":`每回合自然恢復 ${rule.naturalRecovery}`);
+    if(rule.allowOverdraft)lines.push("即使資源不足仍可能允許使用，消耗後最低為 0（依技能規則判定）");
+    const cap=Number(rule.magicScaling?.maxBonus);
+    if(Number.isFinite(cap)&&cap>0)lines.push(`此資源越低，魔法技能威力加成最高 ${Math.round(cap*100)}%`);
+    return `<li><strong>${esc(rule.label)}</strong><small>${esc(lines.join("；"))}</small></li>`;
+  }).join("");
   const resources=unit?Object.entries(unit.resources||{}).map(([key,resource])=>`<div class="hero-info-value"><span>${esc(resource.label||key.toUpperCase())}</span><strong>${esc(resource.value??0)}/${esc(resource.max??0)}</strong></div>`).join(""):"";
   const liveInfo=unit?`<h4>戰場即時狀態</h4><div class="hero-info-value-list"><div class="hero-info-value"><span>目前 HP</span><strong>${esc(unit.hp)}/${esc(combat.hp??unit.hp)}</strong></div><div class="hero-info-value"><span>目前 MP</span><strong>${esc(unit.mana??0)}/${esc(unit.maxMana??0)}</strong></div>${resources}</div><p class="hero-info-action">${esc(unit.acted?(unit.waited?"已待機":"已完成主動行動"):unit.moved?"已移動／尚可行動":"尚未行動")}｜位置（${esc(unit.x)}, ${esc(unit.y)}）</p>`:"";
   const cost=card.cost==null?"":`<div class="hero-info-value"><span>水晶</span><strong>${esc(card.cost)}</strong></div>`;
@@ -139,6 +161,7 @@ function heroDetailedInformation(card,{unit=null}={}){
         <p class="hero-info-intro">${esc(introduction)}</p>
         ${liveInfo}
         <h4>角色能力（${unit?"目前角色配置":"卡牌基礎配置"}）</h4><div class="hero-info-value-list">${cost}<div class="hero-info-value"><span>最大 MP</span><strong>${esc(unit?.maxMana??m.mp)}</strong></div>${values(combatKeys,combat)}</div>
+        ${resourceRules.length?`<h4>特殊資源（${unit?"基礎設定":"初始值"}）</h4><div class="hero-info-value-list">${resourceBasics}</div><ul class="hero-info-resources">${resourceGuides}</ul>`:""}
         <h4>角色屬性</h4><div class="hero-info-value-list">${values(attributeKeys,attr)}</div>
         <h4>技能說明</h4><p class="hero-info-help">點擊技能名稱，展開操作方法、消耗、距離、效果與施放條件。</p><ul class="hero-info-skills">${skillList||"<li>尚無技能資料</li>"}</ul>
         <h4>被動能力</h4><ul class="hero-info-skills">${passives||"<li>尚無被動資料</li>"}</ul>
@@ -168,7 +191,8 @@ export function heroCardFace(card,{variant="hand"}={}){
   if(!isHeroCard(card))return"";
   const model=heroDisplay(card),src=esc(model.artwork),name=esc(card.name);
   const icon=heroRoleIcon(model.character?.archetype);
-  return `<span class="hero-card hero-card--${esc(variant)}" data-hero-card="${esc(card.id)}" aria-label="${name}，消耗 ${esc(card.cost)} 水晶，HP ${esc(model.hp)}，MP ${esc(model.mp)}">
+  const resourceLine=model.extraResources.map(resource=>`<span class="hero-card__resource" title="${esc(resource.label)} 初始值">${esc(resource.label)} ${esc(resource.initial)}/${esc(resource.max)}</span>`).join("");
+  return `<span class="hero-card hero-card--${esc(variant)}${resourceLine?" hero-card--has-resources":""}" data-hero-card="${esc(card.id)}" aria-label="${name}，消耗 ${esc(card.cost)} 水晶，HP ${esc(model.hp)}，MP ${esc(model.mp)}">
     <span class="hero-card__background" aria-hidden="true"></span>
     <span class="hero-card__art"><span class="hero-card__missing">立繪待上傳</span><img class="hero-card__figure" src="${src}" alt="" draggable="false" loading="lazy"></span>
     <span class="hero-card__frame" aria-hidden="true"></span>
@@ -176,6 +200,7 @@ export function heroCardFace(card,{variant="hand"}={}){
     <span class="hero-card__name">${name}</span>
     <span class="hero-card__role" aria-label="${icon.label}" title="${icon.label}">${icon.svg}</span>
     <span class="hero-card__details">${esc(model.introduction)}</span>
+    <span class="hero-card__resources" aria-label="特殊能量">${resourceLine}</span>
     <span class="hero-card__hp" title="角色基礎 HP">${esc(model.hp)}</span>
     <span class="hero-card__mp" title="角色初始最大 MP">${esc(model.mp)}</span>
     <span class="hero-card__rarity">HERO</span>

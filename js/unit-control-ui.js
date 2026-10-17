@@ -89,12 +89,6 @@ export class UnitControlUI{
     this.altitudeRow.append(this.down,this.altitudeLabel,this.up);
 
     this.host.append(this.facingRow,this.altitudeRow);
-    this.statusButton=button("狀態","開啟我方角色詳細資訊");
-    this.statusButton.className="unit-status-toggle";
-    this.statusButton.hidden=true;
-    const rail=document.querySelector("#battleScreen .battle-right-rail");
-    if(!rail)throw new Error("UnitControlUI requires .battle-right-rail.");
-    rail.insertBefore(this.statusButton,rail.querySelector("#infoToggle"));
     this.statusRoot=document.createElement("div");
     this.statusRoot.className="unit-status-modal-root";
     this.statusUnitId=null;
@@ -114,7 +108,9 @@ export class UnitControlUI{
     this.runtime=runtime;
     this.left.onclick=()=>this.rotate(-1);this.right.onclick=()=>this.rotate(1);
     this.down.onclick=()=>this.changeAltitude(-1);this.up.onclick=()=>this.changeAltitude(1);
-    this.statusButton.onclick=()=>this.openStatus();
+    // The tactical command menu calls the existing detail presenter with the
+    // selected unit ID; this component no longer injects a duplicate rail UI.
+    globalThis.CardTacticsUnitStatus=Object.freeze({open:unitId=>this.openStatus(unitId)});
     this.onRender=()=>this.render();
     window.addEventListener("cardtactics:battle-render",this.onRender);
     window.addEventListener("cardtactics:state",this.onRender);
@@ -141,35 +137,31 @@ export class UnitControlUI{
     this.runtime?.refresh?.();return true;
   }
 
-  // Pick the inspected friendly unit when present; otherwise use the selected
-  // friendly unit. All data comes from the existing runtime snapshot/roster.
-  statusUnit(snapshot=this.runtime?.getBattleSnapshot?.()){
-    if(!snapshot)return null;
-    const tile=snapshot.map?.tiles?.find(tile=>tile.inspected);
-    const inspected=tile?(snapshot.units||[]).find(u=>u.team==="PLAYER"&&u.x===tile.x&&u.y===tile.y):null;
-    const chosen=inspected||(snapshot.units||[]).find(u=>u.team==="PLAYER"&&u.selected)||null;
-    return chosen?globalThis.UnitRuntimeEngine?.getLiveUnit?.(chosen.id)||null:null;
-  }
-
-  openStatus(){
-    const unit=this.statusUnit();
-    if(!unit||unit.team!=="PLAYER")return;
+  openStatus(unitId){
+    // Only the tactical command's selected actor can open this presentation.
+    // Do not derive the target from the last inspected map tile.
+    const unit=globalThis.UnitRuntimeEngine?.getLiveUnit?.(unitId);
+    const selected=this.runtime?.getBattleSnapshot?.()?.units?.find(u=>u.id===unitId&&u.team==="PLAYER"&&u.selected);
+    if(!unit?.alive||unit.team!=="P"||!selected)return false;
+    this.returnFocus=document.activeElement;
     this.statusUnitId=unit.id;
+    this.statusMarkup="";
     this.renderStatus();
     this.statusRoot.querySelector(".hero-info-header button")?.focus();
+    return true;
   }
 
   closeStatus(){
     this.statusUnitId=null;
     this.statusMarkup="";
     this.statusRoot.replaceChildren();
-    this.statusButton.focus();
+    if(this.returnFocus?.isConnected)this.returnFocus.focus();
   }
 
   renderStatus(){
     if(!this.statusUnitId)return;
     const unit=globalThis.UnitRuntimeEngine?.getLiveUnit?.(this.statusUnitId);
-    if(!unit?.alive||unit.team!=="PLAYER"){this.closeStatus();return;}
+    if(!unit?.alive||unit.team!=="P"){this.closeStatus();return;}
     const card=Object.values(globalThis.CARDS||{}).find(c=>c.type==="CHARACTER"&&c.characterId===unit.character?.id)
       ||{name:unit.character?.name||"角色",characterId:unit.character?.id||null,cost:null};
     const markup=globalThis.CardTacticsHeroCard?.detail?.(card,{unit})||"";
@@ -187,9 +179,6 @@ export class UnitControlUI{
     const snapshot=this.runtime?.getBattleSnapshot?.();
     const unit=this.selected(snapshot);
     this.host.hidden=!unit;
-    const status=this.statusUnit(snapshot);
-    this.statusButton.hidden=!status;
-    this.statusButton.disabled=!status;
     this.renderStatus();
     if(!unit)return;
     const facing=String(unit.facing||"N").toUpperCase();
