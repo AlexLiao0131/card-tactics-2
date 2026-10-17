@@ -107,7 +107,11 @@ export function heroCardFace(card,{variant="hand"}={}){
   </span>`;
 }
 
-globalThis.CardTacticsHeroCard=Object.freeze({face:heroCardFace,isHero:isHeroCard,ensureStyles:ensureHeroCardStyles});
+globalThis.CardTacticsHeroCard=Object.freeze({
+  face:heroCardFace,isHero:isHeroCard,ensureStyles:ensureHeroCardStyles,
+  introduction:card=>heroDisplay(card).introduction,
+  detail:heroDetailedInformation,describe
+});
 
 export class CardHandUI{
   constructor(){
