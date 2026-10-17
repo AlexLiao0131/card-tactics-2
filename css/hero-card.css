@@ -8,6 +8,9 @@
   --hero-art-right: 15.6%;
   --hero-art-top: 16.9%;
   --hero-art-bottom: 29.7%;
+  /* Transparent window begins at source PNG Y=239/1536;
+     extend the existing rectangular background under the opaque gold rim. */
+  --hero-background-top: 15%;
   --hero-cost-x: 12.85%; /* sampled from PNG blue-orb center */
   --hero-cost-y: 11.16%;
   --hero-hp-x: 13.50%;   /* sampled from PNG red-orb center */
@@ -31,23 +34,25 @@
   -webkit-font-smoothing: antialiased;
 }
 .hero-card *, .hero-card *::before, .hero-card *::after { box-sizing: border-box; }
-/* The art and its background use the same CSS rectangle, rather than an unrelated
-   card-wide dark image leaking through the PNG's transparent outer edges. */
+/* Both layers share the same card-space left/right/bottom coordinates.
+   Only the rectangular background extends upward under the frame's curved gold edge.
+   The character remains in its original portrait crop, without a second mask layer. */
 .hero-card__background, .hero-card__art {
   position: absolute;
   left: var(--hero-art-left);
   right: var(--hero-art-right);
-  top: var(--hero-art-top);
   bottom: var(--hero-art-bottom);
   overflow: hidden;
-  border-radius: 7% 7% 9% 9%;
 }
 .hero-card__background {
+  top: var(--hero-background-top);
   z-index: 0;
   background: #162b48 url('../assets/images/cards/heroes/hero-background.png') center / cover no-repeat;
 }
 .hero-card__art {
+  top: var(--hero-art-top);
   z-index: 1;
+  border-radius: 7% 7% 9% 9%;
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -153,23 +158,23 @@
   max-height: calc(100dvh - 148px);
 }
 .card-preview.hero-preview .hero-card--preview { width: 100%; }
-/* Hero collection buttons are not legacy .collection-card elements. The legacy
-   descendant span/strong margins and colors must not leak into hero layers. */
-.hero-collection-card {
-  display: block; position: relative; width: 100%; min-width: 0; min-height: 0;
-  padding: 0 0 21px; text-align: center; overflow: visible;
-  border: 0; border-radius: 9px; background: none;
-}
-.hero-collection-card .hero-card { width: 100%; }
-.hero-collection-card em {
-  display: block; margin: 2px 0 0; padding: 2px 0;
-  font-size: 11px; color: #efd9a2; font-weight: 650;
-  line-height: 17px; white-space: normal;
-}
-.hero-collection-card.chosen .hero-card {
-  filter: drop-shadow(0 0 5px #efd57c);
-}
-.hero-collection-card:focus-visible { outline: 2px solid #efd57c; }
+/* Collection/pack use one face geometry for HERO, UNIT and SPELL. The face owns
+   the 2:3 ratio; action captions are outside it, never counted in card height. */
+.collection-entry{align-self:start;display:block;width:100%;min-width:0;height:auto;min-height:0;padding:0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:center;overflow:visible}
+.collection-entry__face{display:block;position:relative;width:100%;aspect-ratio:2/3;height:auto;min-height:0;margin:0;padding:0}
+.collection-entry__face>.hero-card{width:100%;height:100%;margin:0}
+.collection-entry__face--text{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;gap:12px;padding:clamp(10px,3vw,16px);border:1px solid #675a43;border-radius:8px;background:linear-gradient(145deg,#172333,#0b1119)}
+.collection-entry__face--text>strong{font-size:clamp(13px,3.7vw,19px);line-height:1.25;overflow-wrap:anywhere;color:#f5f1ed}
+.collection-entry__face--text>span{font-size:clamp(10px,2.7vw,14px);line-height:1.3;color:#aaa;margin:0}
+.collection-entry__action{display:block;min-height:24px;margin:6px 0 0;padding:0;font-size:clamp(10px,2.8vw,14px);line-height:18px;font-style:normal;font-weight:700;color:#e9c67d;text-align:center}
+.collection-entry.chosen .collection-entry__face{filter:drop-shadow(0 0 5px #efd57c)}
+.collection-entry:focus-visible{outline:2px solid #efd57c;outline-offset:2px}
+.collection-entry--result .collection-entry__action{display:none}
+
+/* Keep pack result cards in the same fixed-ratio grid; item-shop rows stay unaffected. */
+.collection-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:start}
+@media(max-width:700px){.collection-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
 /* At thumbnail size keep only legible essentials; expanded preview shows biography. */
 .hero-card--hand .hero-card__details,
 .hero-card--hand .hero-card__role,
