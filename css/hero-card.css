@@ -343,3 +343,18 @@
   .collection-inspector__header strong { font-size: 16px; }
   .collection-inspector__description h3 { margin-top: 6px; }
 }
+
+/* Existing shared character-detail sheet: scrollable skill explanations on mobile. */
+.hero-info-skill { margin: 0 0 9px; list-style: none; }
+.hero-info-skills { padding: 0; }
+.hero-info-skill details { border: 1px solid #564b3b; border-radius: 8px; background: #102033; overflow: hidden; }
+.hero-info-skill summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px; cursor: pointer; color: #ffe0a4; font-weight: 750; }
+.hero-info-skill summary span { color: #aebbd0; font-size: 11px; }
+.hero-skill-points { margin: 0; padding: 6px 12px 10px 27px; font-size: 12px; line-height: 1.55; color: #e3d8c7; }
+.hero-skill-points li { margin-bottom: 5px; overflow-wrap: anywhere; }
+.hero-skill-variants { padding: 0 10px 10px 25px; margin: 0; }
+.hero-skill-variants>li { margin: 8px 0; }
+.hero-skill-variants-title { display: block; padding: 3px 12px; color: #e9c67a; }
+.hero-info-help,.hero-info-action { color: #d7c9b0; font-size: 12px; line-height: 1.5; }
+.hero-info-content { touch-action: pan-y; }
+.unit-status-modal-root:empty { display: none; }
