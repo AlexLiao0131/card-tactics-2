@@ -19,6 +19,8 @@
   width: 100%;
   aspect-ratio: 1024 / 1536;
   overflow: visible;
+  margin: 0;
+  padding: 0;
   isolation: isolate;
   container-type: inline-size;
   color: #fff6dc;
@@ -149,22 +151,23 @@
   max-height: calc(100dvh - 148px);
 }
 .card-preview.hero-preview .hero-card--preview { width: 100%; }
-/* Collection and pack results use the same face renderer and the same database values. */
-.collection-card.hero-collection-card {
+/* Hero collection buttons are not legacy .collection-card elements. The legacy
+   descendant span/strong margins and colors must not leak into hero layers. */
+.hero-collection-card {
   display: block; position: relative; width: 100%; min-width: 0; min-height: 0;
   padding: 0 0 21px; text-align: center; overflow: visible;
   border: 0; border-radius: 9px; background: none;
 }
-.collection-card.hero-collection-card .hero-card { width: 100%; }
-.collection-card.hero-collection-card em {
+.hero-collection-card .hero-card { width: 100%; }
+.hero-collection-card em {
   display: block; margin: 2px 0 0; padding: 2px 0;
   font-size: 11px; color: #efd9a2; font-weight: 650;
   line-height: 17px; white-space: normal;
 }
-.collection-card.hero-collection-card.chosen .hero-card {
-  outline: 2px solid #efd57c; outline-offset: 1px;
+.hero-collection-card.chosen .hero-card {
+  filter: drop-shadow(0 0 5px #efd57c);
 }
-.collection-card.hero-collection-card:focus-visible { outline: 2px solid #efd57c; }
+.hero-collection-card:focus-visible { outline: 2px solid #efd57c; }
 /* At thumbnail size keep only legible essentials; expanded preview shows biography. */
 .hero-card--hand .hero-card__details,
 .hero-card--hand .hero-card__role,
