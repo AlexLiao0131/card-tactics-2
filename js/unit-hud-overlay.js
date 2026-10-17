@@ -110,6 +110,9 @@ export class UnitHudOverlay{
     let actionCompleted=false;
 
     for(const unit of this.units){
+      // Friendly units are inspected through the Status button. Keep the existing
+      // enemy/neutral inspect HUD, but do not build a floating PLAYER HUD.
+      if(unit.team==="PLAYER")continue;
       alive.add(unit.id);
       const previous=this.finishedState.get(unit.id);
       if(previous===false&&unit.finished===true)actionCompleted=true;

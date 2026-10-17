@@ -89,24 +89,42 @@ export class UnitControlUI{
     this.altitudeRow.append(this.down,this.altitudeLabel,this.up);
 
     this.host.append(this.facingRow,this.altitudeRow);
+    this.statusButton=button("狀態","開啟我方角色詳細資訊");
+    this.statusButton.className="unit-status-toggle";
+    this.statusButton.hidden=true;
+    const rail=document.querySelector("#battleScreen .battle-right-rail");
+    if(!rail)throw new Error("UnitControlUI requires .battle-right-rail.");
+    rail.insertBefore(this.statusButton,rail.querySelector("#infoToggle"));
+    this.statusRoot=document.createElement("div");
+    this.statusRoot.className="unit-status-modal-root";
+    this.statusUnitId=null;
+    this.statusMarkup="";
     const battleScreen=document.getElementById("battleScreen");
     if(!battleScreen)throw new Error("UnitControlUI requires #battleScreen.");
-    battleScreen.appendChild(this.host);
+    battleScreen.append(this.host,this.statusRoot);
+    this.statusRoot.addEventListener("click",event=>{
+      const close=event.target.closest?.("[data-close-hero-info]");
+      if(!close)return;
+      if(close.dataset.closeHeroInfo==="backdrop"&&event.target!==close)return;
+      this.closeStatus();
+    });
   }
 
   bind(runtime){
     this.runtime=runtime;
     this.left.onclick=()=>this.rotate(-1);this.right.onclick=()=>this.rotate(1);
     this.down.onclick=()=>this.changeAltitude(-1);this.up.onclick=()=>this.changeAltitude(1);
+    this.statusButton.onclick=()=>this.openStatus();
     this.onRender=()=>this.render();
     window.addEventListener("cardtactics:battle-render",this.onRender);
     window.addEventListener("cardtactics:state",this.onRender);
+    window.addEventListener("cardtactics:inspection",this.onRender);
     window.addEventListener("cardtactics:battle-screen-enter",this.onRender);
+    window.addEventListener("keydown",event=>{if(event.key==="Escape"&&this.statusUnitId)this.closeStatus();});
     this.render();
   }
 
-  selected(){
-    const snapshot=this.runtime?.getBattleSnapshot?.();
+  selected(snapshot=this.runtime?.getBattleSnapshot?.()){
     if(!snapshot||snapshot.phase!=="PLAYER_TURN")return null;
     return(snapshot.units||[]).find(unit=>unit.selected&&unit.team==="PLAYER"&&!unit.finished)||null;
   }
@@ -123,8 +141,57 @@ export class UnitControlUI{
     this.runtime?.refresh?.();return true;
   }
 
+  // Pick the inspected friendly unit when present; otherwise use the selected
+  // friendly unit. All data comes from the existing runtime snapshot/roster.
+  statusUnit(snapshot=this.runtime?.getBattleSnapshot?.()){
+    if(!snapshot)return null;
+    const tile=snapshot.map?.tiles?.find(tile=>tile.inspected);
+    const inspected=tile?(snapshot.units||[]).find(u=>u.team==="PLAYER"&&u.x===tile.x&&u.y===tile.y):null;
+    const chosen=inspected||(snapshot.units||[]).find(u=>u.team==="PLAYER"&&u.selected)||null;
+    return chosen?globalThis.UnitRuntimeEngine?.getLiveUnit?.(chosen.id)||null:null;
+  }
+
+  openStatus(){
+    const unit=this.statusUnit();
+    if(!unit||unit.team!=="PLAYER")return;
+    this.statusUnitId=unit.id;
+    this.renderStatus();
+    this.statusRoot.querySelector(".hero-info-header button")?.focus();
+  }
+
+  closeStatus(){
+    this.statusUnitId=null;
+    this.statusMarkup="";
+    this.statusRoot.replaceChildren();
+    this.statusButton.focus();
+  }
+
+  renderStatus(){
+    if(!this.statusUnitId)return;
+    const unit=globalThis.UnitRuntimeEngine?.getLiveUnit?.(this.statusUnitId);
+    if(!unit?.alive||unit.team!=="PLAYER"){this.closeStatus();return;}
+    const card=Object.values(globalThis.CARDS||{}).find(c=>c.type==="CHARACTER"&&c.characterId===unit.character?.id)
+      ||{name:unit.character?.name||"角色",characterId:unit.character?.id||null,cost:null};
+    const markup=globalThis.CardTacticsHeroCard?.detail?.(card,{unit})||"";
+    if(!markup||markup===this.statusMarkup)return;
+    const scroll=this.statusRoot.querySelector(".hero-info-content")?.scrollTop||0;
+    const opened=[...this.statusRoot.querySelectorAll(".hero-info-skill details")].map((node,i)=>node.open?i:-1).filter(i=>i>=0);
+    this.statusRoot.innerHTML=markup;
+    this.statusMarkup=markup;
+    this.statusRoot.querySelectorAll(".hero-info-skill details").forEach((node,i)=>{node.open=opened.includes(i);});
+    const content=this.statusRoot.querySelector(".hero-info-content");
+    if(content)content.scrollTop=scroll;
+  }
+
   render(){
-    const unit=this.selected();this.host.hidden=!unit;if(!unit)return;
+    const snapshot=this.runtime?.getBattleSnapshot?.();
+    const unit=this.selected(snapshot);
+    this.host.hidden=!unit;
+    const status=this.statusUnit(snapshot);
+    this.statusButton.hidden=!status;
+    this.statusButton.disabled=!status;
+    this.renderStatus();
+    if(!unit)return;
     const facing=String(unit.facing||"N").toUpperCase();
     this.facingLabel.innerHTML=`角色朝向<strong>${FACING_LABEL[facing]||facing}</strong>`;
 

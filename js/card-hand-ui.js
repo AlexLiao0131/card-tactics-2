@@ -45,27 +45,102 @@ function heroRoleIcon(archetype){
   return{label,svg:`<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[category]}</svg>`};
 }
 
-function heroDetailedInformation(card){
-  const m=heroDisplay(card),c=m.character||{},combat=m.stats,attr=c.attributes||{};
+// Present only mechanics that exist in the official SkillDatabase. Every skill,
+// including nested variants, uses the same explanation contract.
+function skillExplanation(skill,{variant=false,parent=null}={}){
+  const s=skill||{},base=parent||s,lines=[];
+  const add=value=>{if(value)lines.push(value)};
+  const target={SELF:"自己",ALLY:"友方單位",ENEMY:"敵方單位",TILE:"指定地格",CORE:"核心"};
+  const category=base.category==="ATTACK"?"攻擊":base.category==="MAGIC"?"魔法":"特殊技能";
+  const kind=s.target||base.target||"ENEMY",range=s.range||base.range;
+  if(!variant)add(`操作：選取角色 → ${base.category==="ATTACK"?"攻擊":"魔法／特殊技能"} → 選擇「${s.name||s.id}」${Array.isArray(s.variants)&&s.variants.length?" → 選擇變化型態":""}${kind==="SELF"?"（以自己為目標）":` → 指定${target[kind]||kind}`}`);
+  else add(`目標：${target[kind]||kind}`);
+  if(range?.min!=null&&range?.max!=null)add(`施放距離：${String(range.min)}～${String(range.max)} 格`);
+  const mana=variant?base.manaCost:s.manaCost;
+  if(Number(mana)>0)add(`消耗：MP ${String(mana)}`);
+  for(const [resource,cost] of Object.entries(s.resourceCosts||base.resourceCosts||{}))if(Number(cost)>0)add(`消耗：${String(resource.toUpperCase())} ${String(cost)}`);
+  if(s.weapon||(!variant&&base.weapon))add(`使用武器：${String(s.weapon||base.weapon)}`);
+  if(Number(s.power)>0)add(`傷害係數：${String(s.power)} 倍（不是固定傷害值）`);
+  if(s.attackType&&s.attackType!=="INHERIT")add(`攻擊種類：${String(s.attackType)}`);
+  if(s.element&&s.element!=="INHERIT"&&s.element!=="NONE")add(`元素：${String(s.element)}`);
+  if(s.radius!=null)add(`範圍：半徑 ${String(s.radius)} 格`);
+  if(s.aoeDamage!=null)add(`範圍效果傷害：${String(s.aoeDamage)}`);
+  if(s.backstabMultiplier!=null)add(`背刺倍率：${String(s.backstabMultiplier)} 倍`);
+  if(s.onHitBonusDamage)add(`命中附加傷害：${String(s.onHitBonusDamage.amount??"—")}（${String(s.onHitBonusDamage.damageType||"額外效果")}）`);
+  if(s.moveToTarget)add("施放後會依技能規則移動施放者的位置");
+  if(s.ignorePath)add("移動效果不依一般路徑檢查");
+  if(s.requiresVision)add("條件：目標必須位於可觀測範圍內");
+  if(s.environmentRequirement)add(`環境條件：${String(s.environmentRequirement)}`);
+  if(s.targeting?.requiresObservationNetwork)add(`必須具備 ${String(s.targeting.requiresObservationNetwork)} 觀測網路`);
+  if(s.targeting?.companionId)add(`遠距觀測夥伴：${String(s.targeting.companionId)}`);
+  if(s.targeting?.directRange)add(`直接觀測距離：${String(s.targeting.directRange.min)}～${String(s.targeting.directRange.max)} 格`);
+  if(s.targeting?.remoteRange)add(`共享觀測距離：${String(s.targeting.remoteRange.min)}～${String(s.targeting.remoteRange.max)} 格`);
+  if(s.trajectory)add(`彈道：${String(s.trajectory)}`);
+  const requirements={water:"必須位於水域",carrying:"需要正在攜帶目標",notCarrying:"不能正在攜帶目標",notMoved:"本回合尚未移動"};
+  for(const [key,value] of Object.entries(s.requirements||{}))if(value===true)add(`使用條件：${requirements[key]||String(key)}`);
+  if(s.trapPlacement)add(`放置陷阱：${String(s.trapPlacement.name||"陷阱")}｜傷害 ${String(s.trapPlacement.damage??"—")}｜持續 ${String(s.trapPlacement.duration??"—")} 回合`);
+  if(s.hydrologyFlood)add(`水文效果：水面上升 ${String(s.hydrologyFlood.surfaceRise??"—")}`);
+  if(s.soundMagic)add("此技能標記為聲音魔法");
+  if(s.informationSkill)add("此技能用於觀測／資訊支援");
+  if(s.support)add("允許參與支援攻擊（仍須符合戰鬥條件）");
+  const utility={STEAL_CARD:"偷取卡牌",ENTER_STEALTH:"進入潛行",LIFT_DROP:"升空摔落",CARRY_ALLY:"攜帶友軍",RELEASE_CARRIED:"放下攜帶目標",SET_VERTICAL_MODE:"切換垂直移動模式"};
+  if(s.utilityAction){
+    const u=s.utilityAction;
+    add(`特殊操作：${utility[u.type]||String(u.type||"技能操作")}${u.mode?`（${String(u.mode)}）`:""}`);
+    if(u.minDrop!=null)add(`最低摔落高度：${String(u.minDrop)}`);
+    if(u.consumeTurn===false)add("資料設定：此操作不消耗本回合行動");
+    if(u.consumeTurn===true)add("資料設定：此操作會消耗本回合行動");
+  }
+  const effectLabel={BUFF:"增益／減益",HEAL:"恢復 HP",HEAL_OVER_TIME:"持續治療",DAMAGE_OVER_TIME:"持續傷害",DAMAGE:"傷害",KNOCKBACK:"擊退",SHIELD:"護盾",BURN:"燃燒",STUN:"暈眩"};
+  function describeEffect(effect){
+    if(!effect||typeof effect!=="object")return"";
+    const name=effect.name||effectLabel[effect.type]||effect.type||"效果";
+    const parts=[name];
+    if(effect.amount!=null)parts.push(`數值 ${effect.amount}`);
+    if(effect.duration!=null)parts.push(`持續 ${effect.duration} 回合`);
+    if(effect.chance!=null)parts.push(`觸發率 ${effect.chance}%`);
+    if(effect.distance!=null)parts.push(`位移 ${effect.distance} 格`);
+    if(effect.modifiers){const labels=Object.entries(effect.modifiers).map(([k,v])=>`${k} ${v>=0?"+":""}${v}`);if(labels.length)parts.push(labels.join("／"));}
+    if(effect.movementRules?.immobilized)parts.push("不能移動");
+    if(effect.negativeEffectGuard?.charges!=null)parts.push(`抵消負面效果 ${effect.negativeEffectGuard.charges} 次`);
+    return parts.join("｜");
+  }
+  for(const key of ["statusEffects","effects","postEffects","relationEffects"]){
+    for(const e of s[key]||[]){
+      const rel=e?.relation?`${({ALLY:"友方",ENEMY:"敵方",SELF:"自己"}[e.relation]||e.relation)}：`:"";
+      add(`附加效果：${rel}${describeEffect(e)}`);
+    }
+  }
+  if(s.description)add(s.description);
+  const variants=Array.isArray(s.variants)?s.variants:[];
+  const children=variants.map(v=>`<li><strong>${esc(v.name||v.id)}</strong><div class="hero-skill-points">${skillExplanation(v,{variant:true,parent:s})}</div></li>`).join("");
+  const details=lines.map(t=>`<li>${esc(t)}</li>`).join("")||"<li>目前資料庫未提供更詳細的效果描述。</li>";
+  return `<ul class="hero-skill-points">${details}</ul>${children?`<strong class="hero-skill-variants-title">技能變化</strong><ul class="hero-skill-variants">${children}</ul>`:""}`;
+}
+
+function heroDetailedInformation(card,{unit=null}={}){
+  if(!card)return"";
+  const m=heroDisplay(card),c=unit?.character||m.character||{},combat=c.combat||m.stats||{},attr=c.attributes||{};
   const combatKeys=[["hp","HP"],["atk","ATK"],["matk","MATK"],["def","DEF"],["mdef","MDEF"],["move","MOVE"]];
   const attributeKeys=[["str","STR"],["agi","AGI"],["int","INT"],["wil","WIL"],["vit","VIT"],["luk","LUK"]];
   const values=(entries,obj)=>entries.map(([key,label])=>`<div class="hero-info-value"><span>${label}</span><strong>${esc(obj[key]??"—")}</strong></div>`).join("");
-  const passives=(c.passives||[]).map(id=>{let p=null;try{p=globalThis.SkillDatabase?.getPassive?.(id)}catch(_error){}return`<li>${esc(p?.name||id)}</li>`}).join("");
-  const skills=m.skills.map(s=>{
-    const facts=[];
-    if(Number.isFinite(Number(s.manaCost))&&Number(s.manaCost)>0)facts.push(`MP ${esc(s.manaCost)}`);
-    if(s.range?.min!=null&&s.range?.max!=null)facts.push(`距離 ${esc(s.range.min)}–${esc(s.range.max)}`);
-    if(s.description)facts.push(esc(s.description));
-    return `<li><strong>${esc(s.name||s.id)}</strong>${facts.length?`<small>${facts.join(" · ")}</small>`:""}</li>`;
-  }).join("");
+  const passives=(c.passives||[]).map(id=>{let p=null;try{p=globalThis.SkillDatabase?.getPassive?.(id)}catch(_error){}return`<li><strong>${esc(p?.name||id)}</strong><small>${esc(p?.description||"此被動尚無文字說明。")}</small></li>`}).join("");
+  const ids=unit?(globalThis.EffectEngine?.skillIds?.(unit)||c.skills||[]):(c.skills||[]);
+  const skills=ids.map(id=>{try{return globalThis.SkillDatabase?.get?.(id)||{id,name:id}}catch(_error){return{id,name:id}}});
+  const skillList=skills.map(s=>`<li class="hero-info-skill"><details><summary>${esc(s.name||s.id)}<span>${esc(s.category||"SKILL")}</span></summary>${skillExplanation(s)}</details></li>`).join("");
+  const resources=unit?Object.entries(unit.resources||{}).map(([key,resource])=>`<div class="hero-info-value"><span>${esc(resource.label||key.toUpperCase())}</span><strong>${esc(resource.value??0)}/${esc(resource.max??0)}</strong></div>`).join(""):"";
+  const liveInfo=unit?`<h4>戰場即時狀態</h4><div class="hero-info-value-list"><div class="hero-info-value"><span>目前 HP</span><strong>${esc(unit.hp)}/${esc(combat.hp??unit.hp)}</strong></div><div class="hero-info-value"><span>目前 MP</span><strong>${esc(unit.mana??0)}/${esc(unit.maxMana??0)}</strong></div>${resources}</div><p class="hero-info-action">${esc(unit.acted?(unit.waited?"已待機":"已完成主動行動"):unit.moved?"已移動／尚可行動":"尚未行動")}｜位置（${esc(unit.x)}, ${esc(unit.y)}）</p>`:"";
+  const cost=card.cost==null?"":`<div class="hero-info-value"><span>水晶</span><strong>${esc(card.cost)}</strong></div>`;
+  const introduction=c.lore?.introduction||c.lore?.summary||c.lore?.notes||m.introduction;
   return `<div class="hero-info-overlay" data-close-hero-info="backdrop">
-    <section class="hero-info-dialog" role="dialog" aria-modal="true" aria-label="${esc(card.name)} 詳細資訊">
-      <header class="hero-info-header"><strong>${esc(card.name)} · 詳細資訊</strong><button type="button" data-close-hero-info="button" aria-label="關閉詳細資訊">✕</button></header>
+    <section class="hero-info-dialog" role="dialog" aria-modal="true" aria-label="${esc(c.name||card.name)} 詳細資訊">
+      <header class="hero-info-header"><strong>${esc(c.name||card.name)} · 詳細資訊</strong><button type="button" data-close-hero-info="button" aria-label="關閉詳細資訊">✕</button></header>
       <div class="hero-info-content">
-        <p class="hero-info-intro">${esc(m.introduction)}</p>
-        <div class="hero-info-value-list"><div class="hero-info-value"><span>水晶</span><strong>${esc(card.cost)}</strong></div><div class="hero-info-value"><span>MP</span><strong>${esc(m.mp)}</strong></div>${values(combatKeys,combat)}</div>
+        <p class="hero-info-intro">${esc(introduction)}</p>
+        ${liveInfo}
+        <h4>角色能力（${unit?"目前角色配置":"卡牌基礎配置"}）</h4><div class="hero-info-value-list">${cost}<div class="hero-info-value"><span>最大 MP</span><strong>${esc(unit?.maxMana??m.mp)}</strong></div>${values(combatKeys,combat)}</div>
         <h4>角色屬性</h4><div class="hero-info-value-list">${values(attributeKeys,attr)}</div>
-        <h4>角色技能</h4><ul class="hero-info-skills">${skills||"<li>尚無技能資料</li>"}</ul>
+        <h4>技能說明</h4><p class="hero-info-help">點擊技能名稱，展開操作方法、消耗、距離、效果與施放條件。</p><ul class="hero-info-skills">${skillList||"<li>尚無技能資料</li>"}</ul>
         <h4>被動能力</h4><ul class="hero-info-skills">${passives||"<li>尚無被動資料</li>"}</ul>
       </div>
     </section>
