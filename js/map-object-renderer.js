@@ -453,7 +453,7 @@ export class MapObjectRenderer{
       const tile=byKey.get(tileKey(object.x+x,object.y+y));
       neighborhood.push(tile?[tile.terrain,tile.dryTerrain,tile.material,
         tile.elevation,tile.waterSurfaceZ,tile.waterDepth,tile.soilMoisture,
-        tile.snowDepth,tile.debrisMass].join(":"):"-");
+        tile.debrisMass].join(":"):"-");
     }
     return neighborhood.join("|");
   }
@@ -479,6 +479,7 @@ export class MapObjectRenderer{
       const positionChanged=entry.placementSignature!==placement;
       const tintChanged=positionChanged||entry.tintSignature!==tint;
       const detailChanged=positionChanged||entry.detailSignature!==detail;
+      let detailMeshReplaced=false;
       if(positionChanged||tintChanged||detailChanged){
         // Soil/shore colour changes do not change the published terrain
         // triangle normals. Reuse the same geometric placement sample until
@@ -494,7 +495,9 @@ export class MapObjectRenderer{
         if(detailChanged){
           const floating=signature!=="SPRING"&&object.floatOnWater===true&&
             Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
+          const previousDetailMesh=entry.detail;
           this.updateGroundDetail(entry,object,tile,byKey,profile,floating);
+          detailMeshReplaced=previousDetailMesh!==entry.detail;
           updates.contact++;
         }
         entry.placementSignature=placement;
@@ -502,7 +505,9 @@ export class MapObjectRenderer{
         entry.detailSignature=detail;
       }
       const visibility=tile?.fogged?.24:1;
-      if(entry.visibility!==visibility||detailChanged){
+      // Newly created/replaced contact meshes must inherit existing LOS opacity.
+      // An in-place colour/position update does not require rewalking all meshes.
+      if(entry.visibility!==visibility||detailMeshReplaced){
         this.setNodeVisibility(entry.node,visibility);entry.visibility=visibility;updates.visibility++;
       }
     }

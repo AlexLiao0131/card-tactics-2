@@ -294,7 +294,7 @@
       if(stage?.ruleset==="CORE_CAPTURE"&&canUnitCapture(selected)){const point=capturePointForUnit(selected);addActionButton(`佔領｜${point.name}`,()=>executeCapture(selected));}
       directVerticalActions(selected).forEach(({parent,variant})=>addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant)));
       if(selected.canAttack!==false)addActionButton("攻擊",()=>{selectedSkill=null;mode="attack-menu";render();});
-      addActionButton("狀態",()=>window.CardTacticsUnitStatus?.open?.(selected.id));
+      addActionButton("狀態",()=>window.TacticalUIController?.openStatus?.(selected.id));
       addActionButton("道具",()=>{mode="item-menu";render();});
       addActionButton("對話",()=>{pushLog(`${selected.character.name}｜目前沒有可對話目標。`);render();});
       addActionButton("魔法／特殊技能",()=>{selectedSkill=null;mode="special-menu";render();});

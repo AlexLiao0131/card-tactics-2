@@ -124,6 +124,10 @@ export class EnvironmentRenderer{
     this.surfaceMeshes=new Map();
     this.surfaceSignature="";
     this.surfaceLayerMetrics={rebuilds:0,vertexUpdates:0};
+    this.surfaceLayerTypeSignatures=new Map();
+    this.surfacePatchStencil=null;
+    this.visibilityHazeMetrics={meshBuilds:0,geometryUpdates:0};
+    this.visibilityHazeTopologySignature="";
     this.visibilityHazeMesh=null;
     this.visibilityHazeSignature="";
     this.visibilityHazeSightSignature="";
@@ -1190,6 +1194,23 @@ export class EnvironmentRenderer{
     return Number(sample.height||0)*ELEVATION_HEIGHT+.006;
   }
 
+  // The published VisualSurfaceResolver remains the ONLY terrain-height authority.
+  // Read its canonical sampling positions once; later snow/ice/haze geometry
+  // needs only ring elevations, not 16 biome/shore colours per tile and update.
+  surfaceHeightPatch(tile,byKey){
+    if(!this.surfacePatchStencil){
+      this.surfacePatchStencil=this.surfaceResolver.patchGrid(tile,byKey)
+        .map(row=>row.map(sample=>({ox:sample.ox,oz:sample.oz})));
+    }
+    const ring=this.surfaceResolver.ringSamples(tile,byKey);
+    const elevation=this.surfaceResolver.elevationOf(tile);
+    const x=Number(tile.x)*TILE_SIZE,z=Number(tile.y)*TILE_SIZE;
+    return this.surfacePatchStencil.map(row=>row.map(({ox,oz})=>({
+      ox,oz,x:x+ox*TILE_SIZE,z:z+oz*TILE_SIZE,
+      height:this.surfaceResolver.sampleHeightFromRing(elevation,ring,ox,oz)
+    })));
+  }
+
   buildSurfaceLayer(type,tiles,byKey){
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
@@ -1200,7 +1221,7 @@ export class EnvironmentRenderer{
       if(localAmount<=SURFACE_EPSILON)continue;
       layerKeys.push(this.surfaceResolver.keyOf(tile.x,tile.y));
       activeTiles++;
-      const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+      const patch=this.surfaceHeightPatch(tile,byKey);
       const baseIndex=positions.length/3;
       const alpha=[];
 
@@ -1252,7 +1273,7 @@ export class EnvironmentRenderer{
     const positions=[],colors=[];
     for(const tile of tiles){
       if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
-      const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+      const patch=this.surfaceHeightPatch(tile,byKey);
       for(let row=0;row<4;row++)for(let col=0;col<4;col++){
         const sample=patch[row][col],amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
         positions.push(sample.x,this.layerVertexY(type,tile,sample,amount),sample.z);
@@ -1286,12 +1307,28 @@ export class EnvironmentRenderer{
     this.surfaceMeshes.clear();
   }
 
+  surfaceLayerTypeSignature(type,tiles){
+    return tiles.map(tile=>{
+      // Snow sits on published terrain or solid ice; ice sits on stored water.
+      // Only data that affects THIS layer's geometry/alpha invalidates it.
+      const base=[tile.x,tile.y,this.surfaceResolver.elevationOf(tile),
+        waterDepth(tile),tile.waterSurfaceZ??"n",iceThickness(tile),tile.fogged?1:0];
+      if(type==="SNOW")base.push(snowDepth(tile));
+      return base.join(":");
+    }).join("|");
+  }
+
   syncSurfaceLayers(state){
     const tiles=state?.map?.tiles||[];
     const signature=this.surfaceLayerSignature(tiles);
     if(signature===this.surfaceSignature)return;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
+    let changed=false;
     for(const type of ["SNOW","ICE"]){
+      const ownSignature=this.surfaceLayerTypeSignature(type,tiles);
+      if(this.surfaceLayerTypeSignatures.get(type)===ownSignature)continue;
+      this.surfaceLayerTypeSignatures.set(type,ownSignature);
+      changed=true;
       const layerTiles=tiles.filter(tile=>this.surfaceLayerAmount(type,tile)>SURFACE_EPSILON);
       const layerKeys=layerTiles.map(tile=>this.surfaceResolver.keyOf(tile.x,tile.y));
       const prior=this.surfaceMeshes.get(type);
@@ -1302,7 +1339,7 @@ export class EnvironmentRenderer{
       if(mesh){this.surfaceMeshes.set(type,mesh);this.surfaceLayerMetrics.rebuilds++;}
     }
     this.surfaceSignature=signature;
-    this.publishedCoverRevision=(this.publishedCoverRevision||0)+1;
+    if(changed)this.publishedCoverRevision=(this.publishedCoverRevision||0)+1;
   }
 
   // Read-only query against the already published snow / ice geometry.
@@ -1408,7 +1445,7 @@ export class EnvironmentRenderer{
     return this.visibilityHazeColor(tile,byKey,ox,oz,profile)[3];
   }
 
-  buildVisibilityHaze(state,profile){
+  buildVisibilityHaze(state,profile,reusable=null){
     const tiles=state?.map?.tiles||[];
     if(!tiles.length)return null;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
@@ -1423,7 +1460,7 @@ export class EnvironmentRenderer{
     let activeTiles=0;
 
     for(const tile of tiles){
-      const patch=this.surfaceResolver.resolveTile(tile,byKey).patchGrid;
+      const patch=this.surfaceHeightPatch(tile,byKey);
       const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
       const local=[];
       activeTiles++;
@@ -1469,10 +1506,24 @@ export class EnvironmentRenderer{
     }
 
     if(!indices.length)return null;
-    const mesh=new BABYLON.Mesh("weather-visibility-haze",this.scene),data=new BABYLON.VertexData();
-    // Sight changes update only the canonical vertex colours. The tile geometry
-    // and water surfaces are never rebuilt on unit movement alone.
-    data.positions=positions;data.indices=indices;data.colors=colors;data.applyToMesh(mesh,true);
+    // Geometry indices never change while the published tile layout is stable.
+    // Snow accumulation only changes already-published vertex positions, not
+    // the mesh identity, shader/material, triangles or draw-call count.
+    const canReuse=reusable&&!reusable.isDisposed?.()&&
+      reusable.getTotalVertices()===positions.length/3&&
+      reusable.getIndices()?.length===indices.length;
+    const mesh=canReuse?reusable:new BABYLON.Mesh("weather-visibility-haze",this.scene);
+    if(canReuse){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
+      mesh.refreshBoundingInfo();
+      this.visibilityHazeMetrics.geometryUpdates++;
+    }else{
+      const data=new BABYLON.VertexData();
+      data.positions=positions;data.indices=indices;data.colors=colors;
+      data.applyToMesh(mesh,true);
+      this.visibilityHazeMetrics.meshBuilds++;
+    }
     this.visibilityHazeSamples=samples;
     mesh.material=this.visibilityHazeMaterial;
     mesh.alphaIndex=SURFACE_RENDER_ORDER.OPTICAL_HAZE;
@@ -1493,8 +1544,12 @@ export class EnvironmentRenderer{
     const signature=this.visibilityHazeStateSignature(state),profile=this.visibilityHazeProfile(state);
     const sightSignature=(state?.map?.tiles||[]).map(tile=>tile.atmosphericVisible===true?"1":"0").join("");
     if(signature!==this.visibilityHazeSignature){
-      this.disposeVisibilityHaze();
-      if(profile)this.visibilityHazeMesh=this.buildVisibilityHaze(state,profile);
+      const layout=(state?.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`).join("|");
+      if(!profile||layout!==this.visibilityHazeTopologySignature){
+        this.disposeVisibilityHaze();
+      }
+      if(profile)this.visibilityHazeMesh=this.buildVisibilityHaze(state,profile,this.visibilityHazeMesh);
+      this.visibilityHazeTopologySignature=profile?layout:"";
       this.visibilityHazeSignature=signature;
       this.visibilityHazeSightSignature=sightSignature;
       return;
@@ -1548,20 +1603,28 @@ export class EnvironmentRenderer{
     };
   }
 
+  timedEnvironmentSync(name,run){
+    const started=performance.now();
+    try{return run();}
+    finally{
+      globalThis.CardTacticsDiagnostics?.recordPerf?.(`environmentSync.${name}`,performance.now()-started);
+    }
+  }
+
   sync(state,presentationEvents=[]){
     this.lastState=state;
-    this.syncAtmosphere(state);
-    this.syncSurfaceLayers(state);
-    this.syncVisibilityHaze(state);
-    this.syncWeatherParticles(state);
-    this.syncPresentationEvents(presentationEvents,state);
-    this.syncTornadoClusters(state);
-    this.syncSmokeClusters(state);
-    this.syncFireFields(state);
-    this.syncFriendlyVisibility(state);
-    this.syncFireLights(state);
-    this.syncLightField(state);
-    this.syncFireGlows(state);
+    this.timedEnvironmentSync("atmosphere",()=>this.syncAtmosphere(state));
+    this.timedEnvironmentSync("surfaceLayers",()=>this.syncSurfaceLayers(state));
+    this.timedEnvironmentSync("visibilityHaze",()=>this.syncVisibilityHaze(state));
+    this.timedEnvironmentSync("weatherParticles",()=>this.syncWeatherParticles(state));
+    this.timedEnvironmentSync("presentationEvents",()=>this.syncPresentationEvents(presentationEvents,state));
+    this.timedEnvironmentSync("tornadoClusters",()=>this.syncTornadoClusters(state));
+    this.timedEnvironmentSync("smokeClusters",()=>this.syncSmokeClusters(state));
+    this.timedEnvironmentSync("fireFields",()=>this.syncFireFields(state));
+    this.timedEnvironmentSync("friendlyVisibility",()=>this.syncFriendlyVisibility(state));
+    this.timedEnvironmentSync("physicalLights",()=>this.syncFireLights(state));
+    this.timedEnvironmentSync("lightField",()=>this.syncLightField(state));
+    this.timedEnvironmentSync("fireGlows",()=>this.syncFireGlows(state));
     const visibleLights=new Set((state?.presentation?.environment?.lightSources||[]).filter(light=>light.visible).map(light=>`${light.x},${light.y}:${light.source}`));
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
@@ -1603,7 +1666,7 @@ export class EnvironmentRenderer{
       currentOverlay:false,
       currentVisualOwner:"WaterRenderer",
       waterFlowPresentation:"animated-water-surface",
-      surfaceLayers,surfaceLayerMetrics:{...this.surfaceLayerMetrics},
+      surfaceLayers,surfaceLayerMetrics:{...this.surfaceLayerMetrics},visibilityHazeMetrics:{...this.visibilityHazeMetrics},
       visualSurfaceResolver:true,
       microRegionSurfaceLayers:true,
       perTileSnowBoxes:false,

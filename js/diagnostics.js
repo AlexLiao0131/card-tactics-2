@@ -78,6 +78,7 @@ function recordPerf(name,elapsed){
     }
   }
   const threshold=name.startsWith("renderSync.")?350:
+    name.startsWith("environmentSync.")?75:
     (name==="scene.renderElapsed"||name==="frame.cpuElapsed"?180:Infinity);
   const time=Date.now();
   if(ms>=threshold&&time-(spikeNotifiedAt[name]||0)>=30000){

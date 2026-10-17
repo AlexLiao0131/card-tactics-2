@@ -18,6 +18,11 @@ export class BattleUI{
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
     this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
+    this.statusUnitId=null;
+    this.statusMarkup="";
+    this.statusRoot=document.createElement("div");
+    this.statusRoot.className="battle-unit-status-root";
+    this.statusReturnFocus=null;
      this.logRenderQueued=false;this.logRenderedTail=null;this.logRenderedLength=-1;this.logRenderedTab=null;
   }
 
@@ -55,9 +60,23 @@ export class BattleUI{
     q("logToggle").onclick=()=>{this.togglePanel(this.logShell,"active");this.renderLog();};
     q("logClose").onclick=()=>this.logShell.classList.remove("active");
 
+    // BattleUI owns every battlefield inspector, including the shared
+    // character-card detail view.  UnitControlUI only owns facing and altitude.
+    q("battleScreen").appendChild(this.statusRoot);
+    this.statusRoot.addEventListener("click",event=>{
+      const close=event.target.closest?.("[data-close-hero-info]");
+      if(!close)return;
+      if(close.dataset.closeHeroInfo==="backdrop"&&event.target!==close)return;
+      this.closeStatus();
+    });
+    window.addEventListener("keydown",event=>{
+      if(event.key==="Escape"&&this.statusUnitId)this.closeStatus();
+    });
+
     window.TacticalUIController=Object.freeze({
       renderEngagement:()=>this.renderEngagement(),
       openInspector:(tab=null)=>{if(tab)this.contextTab=tab;this.setContextOpen(true)},
+      openStatus:unitId=>this.openStatus(unitId),
       closeInspector:()=>this.setContextOpen(false),
       toggleInspector:()=>this.toggleContext()
     });
@@ -73,6 +92,54 @@ export class BattleUI{
     window.addEventListener("cardtactics:inspection",()=>this.renderContext());
 
     this.render();
+  }
+
+  // A command-menu action opens the already-existing hero card detail
+  // presenter. The unit ID and current values belong to UnitRuntimeEngine.
+  openStatus(unitId){
+    const selected=this.runtime?.getBattleSnapshot?.()?.units?.find(
+      unit=>unit.id===unitId&&unit.team==="PLAYER"&&unit.selected
+    );
+    const live=globalThis.UnitRuntimeEngine?.getLiveUnit?.(unitId);
+    if(!selected||!live?.alive||live.team!=="P")return false;
+    if(!globalThis.CardTacticsHeroCard?.detail)return false;
+    this.statusReturnFocus=document.activeElement;
+    this.statusUnitId=unitId;
+    this.statusMarkup="";
+    this.renderStatus();
+    this.statusRoot.querySelector(".hero-info-header button")?.focus();
+    return true;
+  }
+
+  closeStatus({restoreFocus=true}={}){
+    this.statusUnitId=null;
+    this.statusMarkup="";
+    this.statusRoot.replaceChildren();
+    if(restoreFocus&&this.statusReturnFocus?.isConnected)this.statusReturnFocus.focus();
+    this.statusReturnFocus=null;
+  }
+
+  renderStatus(snapshot=this.runtime?.getBattleSnapshot?.()){
+    if(!this.statusUnitId)return;
+    const unit=globalThis.UnitRuntimeEngine?.getLiveUnit?.(this.statusUnitId);
+    const selected=snapshot?.units?.some(
+      candidate=>candidate.id===this.statusUnitId&&candidate.team==="PLAYER"&&candidate.selected
+    );
+    if(!unit?.alive||unit.team!=="P"||!selected){this.closeStatus({restoreFocus:false});return;}
+    const card=Object.values(globalThis.CARDS||{}).find(
+      item=>item.type==="CHARACTER"&&item.characterId===unit.character?.id
+    )||{name:unit.character?.name||"角色",characterId:unit.character?.id||null,cost:null};
+    const markup=globalThis.CardTacticsHeroCard?.detail?.(card,{unit})||"";
+    if(!markup||markup===this.statusMarkup)return;
+    const scroll=this.statusRoot.querySelector(".hero-info-content")?.scrollTop||0;
+    const expanded=[...this.statusRoot.querySelectorAll(".hero-info-skill details")]
+      .map((node,index)=>node.open?index:-1).filter(index=>index>=0);
+    this.statusRoot.innerHTML=markup;
+    this.statusMarkup=markup;
+    this.statusRoot.querySelectorAll(".hero-info-skill details")
+      .forEach((node,index)=>{node.open=expanded.includes(index)});
+    const content=this.statusRoot.querySelector(".hero-info-content");
+    if(content)content.scrollTop=scroll;
   }
 
   togglePanel(panel,cls){
@@ -120,7 +187,7 @@ export class BattleUI{
     ].filter(Boolean).join("\n");
 
     this.endTurn.disabled=phase!=="PLAYER_TURN";
-    this.renderWeather(snapshot);this.renderView();this.renderContext();this.renderLog();
+    this.renderWeather(snapshot);this.renderView();this.renderContext();this.renderStatus(snapshot);this.renderLog();
   }
 
   renderWeather(snapshot){
