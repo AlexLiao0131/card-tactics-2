@@ -14,6 +14,7 @@
   --hero-hp-y: 88.92%;
   --hero-mp-x: 86.09%;   /* sampled from PNG right blue-orb center */
   --hero-mp-y: 88.61%;
+  --hero-plaque-center-y: 89.94%; /* sampled from original PNG black-plaque interior center */
   position: relative;
   display: block;
   width: 100%;
@@ -124,7 +125,8 @@
 }
 .hero-card__rarity {
   position: absolute; z-index: 4;
-  left: 29%; right: 29%; top: 90.1%; height: 4.1%;
+  left: 29%; right: 29%; top: var(--hero-plaque-center-y); height: 4.1%;
+  transform: translateY(-50%);
   display: flex; align-items: center; justify-content: center;
   color: #fbe6b3; font-size: clamp(6px, 5.1cqw, 16px); font-weight: 850;
   letter-spacing: .17em; text-shadow: 0 1px 4px #0b0c1c;
