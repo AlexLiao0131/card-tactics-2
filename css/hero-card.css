@@ -128,6 +128,16 @@
   font-size: clamp(7px, 4cqw, 13px);
   overflow: hidden; overflow-wrap: anywhere;
 }
+/* Only the full-size previews allow touch scrolling inside the card's own
+   description plate. Hand and collection thumbnails stay noninteractive. */
+.hero-card--preview .hero-card__details {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
 .hero-card__rarity {
   position: absolute; z-index: 4;
   left: 29%; right: 29%; top: var(--hero-plaque-center-y); height: 4.1%;
@@ -261,3 +271,75 @@
 .hero-info-skills { margin: 0; padding: 0 0 0 20px; line-height: 1.6; }
 .hero-info-skills li { margin: 0 0 6px; }
 .hero-info-skills small { display: block; color: #c7b79d; }
+
+/* Collection, deck list, and pack results share one read-only preview.
+   This dialog is presentation-only; actual deck contents remain owned by DeckEngine/ShellUI. */
+.collection-inspector {
+  position: fixed; inset: 0; z-index: 300;
+  display: grid; place-items: center;
+  padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  background: rgba(3, 8, 18, .88);
+  overscroll-behavior: contain;
+}
+.collection-inspector__dialog {
+  display: flex; flex-direction: column;
+  width: min(760px, 100%); max-height: 100%; min-height: 0;
+  border: 1px solid #c9a972; border-radius: 14px;
+  color: #f7eddd; background: linear-gradient(160deg, #172438, #08121e);
+  box-shadow: 0 20px 70px rgba(0,0,0,.7);
+  overflow: hidden;
+}
+.collection-inspector__header,
+.collection-inspector__footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; flex: none;
+}
+.collection-inspector__header { justify-content: space-between; border-bottom: 1px solid #594c3d; }
+.collection-inspector__header strong { font-size: 18px; }
+.collection-inspector__header button { min-width: 44px; min-height: 44px; padding: 5px; }
+.collection-inspector__body {
+  display: grid; grid-template-columns: minmax(0, 265px) minmax(0, 1fr);
+  gap: 18px; min-height: 0; overflow: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding: 12px; align-items: start;
+}
+.collection-inspector__card { width: 100%; min-width: 0; }
+.collection-inspector__card .collection-entry__face { width: 100%; }
+.collection-inspector__card .hero-card--preview { width: 100%; height: 100%; }
+.collection-inspector__description { min-width: 0; text-align: left; line-height: 1.65; }
+.collection-inspector__description h3 { color: #ebca87; font-size: 18px; margin: 12px 0 8px; }
+.collection-inspector__meta { color: #d4bc95; margin: 0; }
+.collection-inspector__introduction {
+  max-block-size: min(30dvh, 235px);
+  min-block-size: 44px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  padding: 7px 10px;
+  border: 1px solid #4b4f53;
+  border-radius: 8px;
+  background: rgba(5, 12, 23, .4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+.collection-inspector__introduction p { margin: 0; }
+.collection-inspector__introduction:focus-visible { outline: 2px solid #d0ad73; outline-offset: 2px; }
+.collection-inspector__description button { min-height: 44px; }
+.collection-inspector__footer { flex-wrap: wrap; justify-content: flex-end; border-top: 1px solid #594c3d; }
+.collection-inspector__footer [data-inspector-status] { flex: 1; min-width: 0; font-size: 12px; color: #d6bf95; text-align: left; }
+.collection-inspector__footer button { min-height: 44px; }
+.collection-inspector__footer [data-inspector-add] { color: #ffe9bb; border-color: #bb9857; }
+.deck-row--preview { display: flex; align-items: center; gap: 6px; }
+.deck-row--preview button[data-deck-preview] { flex: 1; text-align: left; background: transparent; border: 0; }
+.deck-row--preview button[data-remove] { flex: none; color: #e6bb68; }
+@media (max-width: 700px) {
+  .collection-inspector__body { grid-template-columns: 1fr; gap: 6px; }
+  .collection-inspector__card { width: min(235px, 69vw); margin: auto; }
+  .collection-inspector__header strong { font-size: 16px; }
+  .collection-inspector__description h3 { margin-top: 6px; }
+}
