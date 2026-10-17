@@ -373,4 +373,3 @@
 .hero-skill-variants-title { display: block; padding: 3px 12px; color: #e9c67a; }
 .hero-info-help,.hero-info-action { color: #d7c9b0; font-size: 12px; line-height: 1.5; }
 .hero-info-content { touch-action: pan-y; }
-.unit-status-modal-root:empty { display: none; }
