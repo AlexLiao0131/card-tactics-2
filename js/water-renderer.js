@@ -1026,14 +1026,153 @@ export class WaterRenderer{
 
   pushTriangle(out,a,b,c){
     if(a===b||b===c||c===a)return;
-    const ax=out.positions[a*3],az=out.positions[a*3+2];
-    const bx=out.positions[b*3],bz=out.positions[b*3+2];
-    const cx=out.positions[c*3],cz=out.positions[c*3+2];
-    const abx=bx-ax,abz=bz-az,acx=cx-ax,acz=cz-az;
-    const geometricY=abz*acx-abx*acz;
-    if(Math.abs(geometricY)<=EPSILON)return;
-    if(geometricY>0){const swap=b;b=c;c=swap;}
+    // The rendering buffer stores float32 positions. Test whether the actual
+    // GPU-representable XZ triangle has area, rather than applying the global
+    // EPSILON (a linear simulation tolerance) as a world-area cutoff. The old
+    // cutoff silently removed valid, narrow clipped shoreline triangles.
+    const ax=Math.fround(out.positions[a*3]),az=Math.fround(out.positions[a*3+2]);
+    const bx=Math.fround(out.positions[b*3]),bz=Math.fround(out.positions[b*3+2]);
+    const cx=Math.fround(out.positions[c*3]),cz=Math.fround(out.positions[c*3+2]);
+    const area=(bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+    if(area===0)return;
+    if(area>0){const swap=b;b=c;c=swap;}
     out.indices.push(a,b,c);
+  }
+
+  // One conforming triangulation for the EXISTING published wet polygons.
+  // D-only polygons have the terrain's original tessellation; Q transport
+  // triangles can be subdivided. At a shared edge their vertices must become
+  // part of both triangles, otherwise a valid D/Q boundary becomes a T-junction
+  // despite having the same water level. Use the actual float32 render-space
+  // coordinates and split the original polygon edges BEFORE triangulating;
+  // there is no second water surface, patch mesh, or visual shoreline offset.
+  triangulateSurfacePolygons(out,polygons){
+    const vertexCount=out.positions.length/3;
+    const positions=out.positions;
+    const renderPoints=new Array(vertexCount);
+    const cellSize=TILE_SIZE/3;
+    const buckets=new Map();
+    const cell=(x,z)=>`${Math.floor(x/cellSize)}:${Math.floor(z/cellSize)}`;
+    for(let i=0;i<vertexCount;i++){
+      const p={x:Math.fround(positions[i*3]),y:Math.fround(positions[i*3+1]),z:Math.fround(positions[i*3+2])};
+      renderPoints[i]=p;
+      const k=cell(p.x,p.z),indices=buckets.get(k)||[];
+      indices.push(i);buckets.set(k,indices);
+    }
+    const edgeSplits=new Map();
+    let splitEdges=0,insertedEdgeVertices=0;
+    // The spacing is governed by the float32 render buffer and the existing
+    // five-decimal canonical water-coordinate registry, not an artistic tuning
+    // parameter. Any vertices with genuinely different Y stay separate.
+    const renderTolerance=(...values)=>Math.max(0.00001,
+      2*Math.pow(2,-23)*Math.max(1,...values.map(v=>Math.abs(v))));
+    const edgeVertices=(a,b)=>{
+      const id=a<b?`${a}:${b}`:`${b}:${a}`;
+      const cached=edgeSplits.get(id);
+      if(cached)return a<b?cached:[...cached].reverse();
+      const u=a<b?a:b,v=a<b?b:a;
+      const A=renderPoints[u],B=renderPoints[v],dx=B.x-A.x,dz=B.z-A.z;
+      const len2=dx*dx+dz*dz;
+      const result=[{index:u,t:0},{index:v,t:1}];
+      if(len2>0){
+        const spatial=renderTolerance(A.x,A.z,B.x,B.z),vertical=renderTolerance(A.y,B.y);
+        const minX=Math.floor((Math.min(A.x,B.x)-spatial)/cellSize);
+        const maxX=Math.floor((Math.max(A.x,B.x)+spatial)/cellSize);
+        const minZ=Math.floor((Math.min(A.z,B.z)-spatial)/cellSize);
+        const maxZ=Math.floor((Math.max(A.z,B.z)+spatial)/cellSize);
+        const seen=new Set([u,v]);
+        for(let ix=minX;ix<=maxX;ix++)for(let iz=minZ;iz<=maxZ;iz++){
+          for(const candidate of buckets.get(`${ix}:${iz}`)||[]){
+            if(seen.has(candidate))continue;
+            seen.add(candidate);
+            const P=renderPoints[candidate],px=P.x-A.x,pz=P.z-A.z;
+            const t=(px*dx+pz*dz)/len2;
+            if(t<=0||t>=1)continue;
+            if(Math.hypot(px-dx*t,pz-dz*t)>spatial)continue;
+            if(Math.abs(P.y-(A.y+(B.y-A.y)*t))>vertical)continue;
+            result.push({index:candidate,t});
+          }
+        }
+      }
+      result.sort((a,b)=>a.t-b.t||a.index-b.index);
+      // A canonical vertex can have aliases at a shared edge. Retain only
+      // one representative of each float32-renderable XYZ position.
+      const unique=[];
+      for(const item of result){
+        const previous=unique.at(-1),P=renderPoints[item.index];
+        if(previous){
+          const Q=renderPoints[previous.index];
+          if(P.x===Q.x&&P.y===Q.y&&P.z===Q.z)continue;
+        }
+        unique.push(item);
+      }
+      const ids=unique.map(v=>v.index);
+      if(ids.length>2){splitEdges++;insertedEdgeVertices+=ids.length-2;}
+      edgeSplits.set(id,ids);
+      return a<b?ids:[...ids].reverse();
+    };
+    let sourcePolygons=0;
+    for(const face of polygons){
+      if(face.length<3)continue;
+      sourcePolygons++;
+      const boundary=[];
+      for(let i=0;i<face.length;i++){
+        const chain=edgeVertices(face[i],face[(i+1)%face.length]);
+        for(let j=0;j<chain.length-1;j++){
+          if(boundary.at(-1)!==chain[j])boundary.push(chain[j]);
+        }
+      }
+      if(boundary.length>2){
+        // Fan triangulation can discard a collinear sub-edge attached to its
+        // pivot. Ear clipping the convex published polygon instead preserves
+        // EVERY split boundary segment without adding synthetic centroids.
+        while(boundary.length>3){
+          let ear=-1;
+          for(let i=0;i<boundary.length;i++){
+            const a=renderPoints[boundary[(i+boundary.length-1)%boundary.length]];
+            const b=renderPoints[boundary[i]];
+            const c=renderPoints[boundary[(i+1)%boundary.length]];
+            if((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x)===0)continue;
+            // A legal ear must leave a NON-degenerate polygon. Otherwise a
+            // long unsplit edge would swallow the split points at the end.
+            const rest=boundary.filter((_,j)=>j!==i);
+            let restArea=0;
+            for(let k=0;k<rest.length;k++){
+              const p=renderPoints[rest[k]],q=renderPoints[rest[(k+1)%rest.length]];
+              restArea+=p.x*q.z-p.z*q.x;
+            }
+            if(restArea!==0){ear=i;break;}
+          }
+          if(ear<0)break;
+          this.pushTriangle(out,boundary[(ear+boundary.length-1)%boundary.length],
+            boundary[ear],boundary[(ear+1)%boundary.length]);
+          boundary.splice(ear,1);
+        }
+        if(boundary.length===3)this.pushTriangle(out,boundary[0],boundary[1],boundary[2]);
+      }
+    }
+    return{sourcePolygons,splitEdges,insertedEdgeVertices};
+  }
+
+  // Rugged cliff shoulders are published as real terrain triangles OUTSIDE
+  // their tile's nominal bounds. When both sides belong to the same submerged
+  // D water body, the lower tile's published bed already owns that XZ area.
+  // Drawing water over the upper shoulder as well makes two coplanar alpha
+  // surfaces and non-manifold seam edges. The exposed lip, dry shore and
+  // waterfall remain untouched: those are NOT submerged connected water.
+  isDuplicateSubmergedWaterShoulder(tile,polygon,componentTiles){
+    const centerX=Number(tile.x)*TILE_SIZE,centerZ=Number(tile.y)*TILE_SIZE;
+    const midpointX=polygon.reduce((sum,p)=>sum+Number(p.x),0)/polygon.length;
+    const midpointZ=polygon.reduce((sum,p)=>sum+Number(p.z),0)/polygon.length;
+    const half=TILE_SIZE*.5;
+    const dx=midpointX>centerX+half?1:midpointX<centerX-half?-1:0;
+    const dz=midpointZ>centerZ+half?1:midpointZ<centerZ-half?-1:0;
+    if(Math.abs(dx)+Math.abs(dz)!==1)return false;
+    const neighbor=componentTiles.get(keyOf(Number(tile.x)+dx,Number(tile.y)+dz));
+    if(!neighbor||!hasAnyWater(tile)||!hasAnyWater(neighbor))return false;
+    if(!this.surfaceResolver.getRenderedCliffGeometry(tile,{dx,dy:dz}))return false;
+    return !!this.surfaceResolver.submergedStoredWaterCliff(tile,neighbor)
+      &&this.continuousWaterEdge(tile,neighbor);
   }
 
   buildSurface(component,state,presentation){
@@ -1041,22 +1180,31 @@ export class WaterRenderer{
     const cache=new Map(),allMap=this.allByKey(state),sources=this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
+    let exclusiveSubmergedShoulders=0;
+    const componentTiles=new Map(component.tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    const wetPolygons=[];
     for(const tile of component.tiles){
       const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
       terrainTriangles+=geometry?.triangles?.length||0;
       for(const polygon of presentation.get(keyOf(tile.x,tile.y))?.polygons||[]){
+        if(this.isDuplicateSubmergedWaterShoulder(tile,polygon,componentTiles)){
+          exclusiveSubmergedShoulders++;
+          continue;
+        }
         waterPolygons++;clippedPoints+=polygon.filter(point=>point.clipped).length;
         const vertices=polygon.map(point=>this.addVertex(out,cache,point,allMap,componentTurbidity,tile,sources));
-        for(let i=1;i<vertices.length-1;i++)this.pushTriangle(out,vertices[0],vertices[i],vertices[i+1]);
+        wetPolygons.push(vertices);
       }
     }
+    const triangulation=this.triangulateSurfacePolygons(out,wetPolygons);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.STORED_WATER;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
-      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3};
+      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
+      exclusiveSubmergedShoulders};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);mesh.setVerticesData("waterSource",waterSource,false,2);}
@@ -2217,6 +2365,8 @@ export class WaterRenderer{
       sharedCrossMeshEdges:0,
       coincidentCrossMeshVertices:0,crossMeshVertexMotionMismatch:0,
       coincidentSameMeshVertices:0,sameMeshWaveInputMismatch:0,
+      conformingSplitEdges:0,conformingInsertedEdgeVertices:0,
+      excludedSubmergedShoulderPolygons:0,
       sameMeshColorMismatch:0,sameMeshNormalMismatch:0,
       crossMeshColorMismatch:0,crossMeshNormalMismatch:0,
       missingSurfaceAnimation:0,
@@ -2243,8 +2393,14 @@ export class WaterRenderer{
         alphaIndex:mesh?.alphaIndex??null,visibility:mesh?.visibility??null,
         transparent:!!mesh?.hasVertexAlpha,
         gpuWave:this.gpuSurfaceWaves,animationPresent:!!animation,
+        conformingSplitEdges:mesh?.metadata?.conformingTriangulation?.splitEdges??0,
+        conformingInsertedEdgeVertices:mesh?.metadata?.conformingTriangulation?.insertedEdgeVertices??0,
+        excludedSubmergedShoulderPolygons:mesh?.metadata?.exclusiveSubmergedShoulders??0,
         invalidTriangles:0,degenerateTriangles:0,openBoundaryEdges:0};
       regions.push(region);counters.vertices+=vertexCount;
+      counters.conformingSplitEdges+=region.conformingSplitEdges;
+      counters.conformingInsertedEdgeVertices+=region.conformingInsertedEdgeVertices;
+      counters.excludedSubmergedShoulderPolygons+=region.excludedSubmergedShoulderPolygons;
       if(!animation)counters.missingSurfaceAnimation++;
       meshAttributes.set(id,{positions,animation,colors,mesh});
       const keys=new Array(vertexCount);
