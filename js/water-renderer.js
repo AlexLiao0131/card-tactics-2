@@ -740,7 +740,13 @@ export class WaterRenderer{
           queue.push(neighbor);
         }
       }
-      out.push({id:`${group}:${out.length}`,group,tiles:members});
+      // A stable location-derived component identity prevents another region's
+      // insertion/deletion from renumbering unrelated water meshes. The exact
+      // polygon/signature comparison below still owns the actual reuse decision.
+      const anchor=members.reduce((min,tile)=>
+        !min||Number(tile.y)<Number(min.y)||
+        (Number(tile.y)===Number(min.y)&&Number(tile.x)<Number(min.x))?tile:min,null);
+      out.push({id:`${group}:${anchor.x},${anchor.y}`,group,tiles:members});
     }
     return out;
   }
@@ -961,32 +967,37 @@ export class WaterRenderer{
     return{depth,color,alpha};
   }
 
-  onRenderedCliffWaterSeam(tile,point,allMap){
-    // Water waves are GPU-displaced, the waterfall sheet is not. Find the
-    // actual common rock lip or foot by reading the geometry registered by
-    // TerrainRenderer. A pinned vertex retains the hydrologic surface height.
-    const touches=series=>{
-      for(let i=0;i<(series?.length||0)-1;i++){
-        const a=series[i],b=series[i+1],vx=b.x-a.x,vz=b.z-a.z,wx=point.x-a.x,wz=point.z-a.z,len=vx*vx+vz*vz;
+  onRenderedCliffWaterSeam(tile,point,allMap,localCliffSeams=null){
+    // Published rock geometry is immutable during a single water-surface
+    // build. Gather the same upstream lips and downhill feet once per tile,
+    // rather than repeating eight geometry lookups at every water vertex.
+    const tileKey=keyOf(tile.x,tile.y);
+    let series=localCliffSeams?.get(tileKey);
+    if(!series){
+      series=[];
+      for(const dir of DIRS){
+        const lip=this.surfaceResolver.getRenderedCliffGeometry(tile,dir)?.lip;
+        if(lip)series.push(lip);
+        const uphill=allMap?.get(keyOf(tile.x-dir.dx,tile.y-dir.dy));
+        const foot=uphill?this.surfaceResolver.getRenderedCliffGeometry(uphill,dir)?.foot:null;
+        if(foot)series.push(foot);
+      }
+      localCliffSeams?.set(tileKey,series);
+    }
+    for(const line of series){
+      for(let i=0;i<line.length-1;i++){
+        const a=line[i],b=line[i+1],vx=b.x-a.x,vz=b.z-a.z,wx=point.x-a.x,wz=point.z-a.z,len=vx*vx+vz*vz;
         if(len<=1e-12)continue;
         const t=(wx*vx+wz*vz)/len;
         if(t<0||t>1)continue;
         const dx=a.x+vx*t-point.x,dz=a.z+vz*t-point.z;
         if(dx*dx+dz*dz<=1e-12)return true;
       }
-      return false;
-    };
-    for(const dir of DIRS){
-      // Upstream cliff lips belong to this tile; downstream cliff feet belong
-      // to a higher neighbour but can meet a stored surface in THIS tile.
-      if(touches(this.surfaceResolver.getRenderedCliffGeometry(tile,dir)?.lip))return true;
-      const uphill=allMap?.get(keyOf(tile.x-dir.dx,tile.y-dir.dy));
-      if(uphill&&touches(this.surfaceResolver.getRenderedCliffGeometry(uphill,dir)?.foot))return true;
     }
     return false;
   }
 
-  addVertex(out,cache,point,allMap,turbidity,tile,sources=[],knownMotion=null){
+  addVertex(out,cache,point,allMap,turbidity,tile,sources=[],knownMotion=null,localCliffSeams=null){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const seam=this.canonicalWaterPoint({x:Number(point.x),y,z:Number(point.z)});
     const cacheKey=`${seam.x.toFixed(5)}:${seam.y.toFixed(5)}:${seam.z.toFixed(5)}`;
@@ -1001,7 +1012,7 @@ export class WaterRenderer{
         out.colors[existing*4+1]=visual.color[1];
         out.colors[existing*4+2]=visual.color[2];
         out.colors[existing*4+3]=visual.alpha;
-        const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap);
+        const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap,localCliffSeams);
         out.waveWeights[existing]=onCliffLip?0:smooth01(visual.depth/.34);
         const sourceField=visual.depth<=EPSILON||onCliffLip
           ?{weight:0,phase:0}:this.sourceFieldAt(point,sources);
@@ -1019,7 +1030,7 @@ export class WaterRenderer{
     out.uvs.push(seam.x/(TILE_SIZE*3.25),seam.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
     out.storedVertexAuthority.push(hasAnyWater(tile));
-    const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap);
+    const onCliffLip=this.onRenderedCliffWaterSeam(tile,point,allMap,localCliffSeams);
     out.waveWeights.push(onCliffLip?0:smooth01(visual.depth/.34));
     const sourceField=visual.depth<=EPSILON||onCliffLip?{weight:0,phase:0}:this.sourceFieldAt(point,sources);
     out.sourceWeights.push(sourceField.weight);out.sourcePhases.push(sourceField.phase);
@@ -1247,7 +1258,8 @@ export class WaterRenderer{
 
   buildSurface(component,state,presentation,resolvedSurface=null,allMap=null){
     const out={positions:[],indices:[],normals:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
-    const cache=new Map(),tileMap=allMap||this.allByKey(state),sources=this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
+    const cache=new Map(),localCliffSeams=new Map(),tileMap=allMap||this.allByKey(state),
+      sources=component.sources??this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
     const resolved=resolvedSurface||this.componentSurfacePolygons(component,presentation);
@@ -1259,7 +1271,7 @@ export class WaterRenderer{
       terrainTriangles+=geometry?.triangles?.length||0;
       for(const polygon of polygons){
         waterPolygons++;clippedPoints+=polygon.filter(point=>point.clipped).length;
-        const vertices=polygon.map(point=>this.addVertex(out,cache,point,tileMap,componentTurbidity,tile,sources,motion));
+        const vertices=polygon.map(point=>this.addVertex(out,cache,point,tileMap,componentTurbidity,tile,sources,motion,localCliffSeams));
         wetPolygons.push(vertices);
       }
     }
@@ -2047,6 +2059,27 @@ export class WaterRenderer{
     return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${groups}#${terrain}#Q:${qEdges}`;
   }
 
+  // Only a source capable of influencing a real vertex in THIS published
+  // water region belongs to that region's shader-input dependency. The radius
+  // is exactly the one used by sourceFieldAt(); no new flow/visual threshold.
+  // The bounding box is conservative (false positives are safe, false
+  // negatives are not), and all polygons remain owned by the one resolver.
+  componentHydrologySources(resolved,sources){
+    let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
+    for(const item of resolved.tiles)for(const polygon of item.polygons)for(const point of polygon){
+      const x=Number(point.x),z=Number(point.z);
+      if(x<minX)minX=x;if(x>maxX)maxX=x;
+      if(z<minZ)minZ=z;if(z>maxZ)maxZ=z;
+    }
+    if(minX===Infinity)return[];
+    return sources.filter(source=>{
+      const radius=TILE_SIZE*(.55+.18*Math.sqrt(Math.max(0,source.rate)));
+      const dx=Math.max(minX-source.x,0,source.x-maxX);
+      const dz=Math.max(minZ-source.z,0,source.z-maxZ);
+      return dx*dx+dz*dz<radius*radius;
+    });
+  }
+
   surfaceMeshSignatureFor(component,presentation,sources,byKey,resolvedSurface=null){
     // Cache identity is the EXACT geometry AND shader inputs consumed by THIS
     // water region, not the global terrain/cliff registry revision. A registry
@@ -2155,10 +2188,11 @@ export class WaterRenderer{
       // floods do not temporarily double WebGL memory during an update.
       const planned=components.map(component=>{
         const resolved=this.componentSurfacePolygons(component,presentation);
-        const signature=this.surfaceMeshSignatureFor(component,presentation,sources,allMap,resolved);
+        const localSources=this.componentHydrologySources(resolved,sources);
+        const signature=this.surfaceMeshSignatureFor(component,presentation,localSources,allMap,resolved);
         const mesh=previousMeshes.get(component.id);
         const reuse=!!mesh&&!mesh.isDisposed?.()&&previousSignatures.get(component.id)===signature;
-        return{component,resolved,signature,mesh:reuse?mesh:null};
+        return{component:{...component,sources:localSources},resolved,signature,mesh:reuse?mesh:null};
       });
       const retained=new Set(planned.filter(item=>item.mesh).map(item=>item.component.id));
       this.surfaceMeshUpdate={reused:retained.size,built:0};
