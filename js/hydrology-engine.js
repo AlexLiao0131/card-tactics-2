@@ -963,53 +963,70 @@ export const HydrologyEngine=(()=>{
     entry.maxHead=Math.max(entry.maxHead,head);entry.maxFromSurface=Math.max(entry.maxFromSurface,Number(fromSurface));entry.minToSurface=Math.min(entry.minToSurface,Number(toSurface));
   }
 
-  // One synchronous/Jacobi-style flow pass. Every edge proposes against the same
-  // snapshot, then all proposals are applied together. This removes the old scan
-  // order bias where a protected spring could dump its entire new volume through
-  // the first neighbour visited and leave equally-low sides dry.
-  function flowIteration(map,by,fed,edgeNet){
-    const snapshots=new Map();
-    for(const tile of map.tiles)snapshots.set(key(tile.x,tile.y),{depth:waterDepth(tile),turbidity:turbidity(tile)});
-    const proposals=[],outgoing=new Map();
-    for(const tile of map.tiles){
-      if(!canHoldWater(tile))continue;
-      const aSnap=snapshots.get(key(tile.x,tile.y));
-      for(const[dx,dy]of FLOW_DIRS){
-        const other=by.get(key(tile.x+dx,tile.y+dy));if(!other||!canHoldWater(other))continue;
-        // Authored rivers move physical D along their existing directed Q network
-        // once per hydrology step. Numerical lake equilibration must not move it
-        // through an entire river in 256 solver iterations in the same turn.
-        if(map.hydrology?.generatedRiverProfile===true&&(tile.river===true||other.river===true))continue;
-        const bSnap=snapshots.get(key(other.x,other.y));
-        const minA=fed.has(key(tile.x,tile.y))?baselineDepth(tile):0,minB=fed.has(key(other.x,other.y))?baselineDepth(other):0;
-        const target=pairTargetDepths(tile,other,aSnap.depth,bSnap.depth,minA,minB);
-        const signed=(target.nextB-bSnap.depth)*FLOW_RELAXATION;
-        if(Math.abs(signed)<=EPSILON)continue;
-        const from=signed>0?tile:other,to=signed>0?other:tile,amount=Math.abs(signed);
-        const fromSnap=signed>0?aSnap:bSnap,toSnap=signed>0?bSnap:aSnap;
-        const fromSurface=elevation(from)+fromSnap.depth,toSurface=elevation(to)+(toSnap.depth>EPSILON?toSnap.depth:0);
-        proposals.push({from,to,amount,fromSurface,toSurface});
-        const fk=key(from.x,from.y);outgoing.set(fk,Number(outgoing.get(fk)||0)+amount);
+  // A Jacobi flow solve reads the same fixed neighbour topology throughout one
+  // redistribute() call. Resolve tile identity, coordinates and protected source
+  // floors once per physical flow step; water depth/turbidity remain live inputs
+  // on EVERY solver iteration. This is only a solver workspace, not a second
+  // hydrology store or a persistent cache of changing map geometry.
+  function flowTopology(map,by,fed){
+    const tiles=map.tiles,index=new Map(tiles.map((tile,i)=>[tile,i]));
+    const floors=tiles.map(tile=>fed.has(key(tile.x,tile.y))?baselineDepth(tile):0);
+    const edges=[];
+    const authoredRiver=map.hydrology?.generatedRiverProfile===true;
+    for(let i=0;i<tiles.length;i++){
+      const tile=tiles[i];if(!canHoldWater(tile))continue;
+      for(const [dx,dy]of FLOW_DIRS){
+        const other=by.get(key(tile.x+dx,tile.y+dy));
+        if(!other||!canHoldWater(other))continue;
+        if(authoredRiver&&(tile.river===true||other.river===true))continue;
+        const j=index.get(other);if(j!==undefined)edges.push([i,j]);
       }
+    }
+    return{tiles,floors,edges};
+  }
+
+  // Same proposal order, equilibrium calculation and floating-point arithmetic
+  // as the original Jacobi solver. Indexed Float64 storage eliminates thousands
+  // of string-key Map operations/temporary objects during long lake equalization.
+  function flowIteration(map,by,fed,edgeNet,topology){
+    const {tiles,floors,edges}=topology,n=tiles.length;
+    const snapshots=tiles.map(tile=>({depth:waterDepth(tile),turbidity:turbidity(tile)}));
+    const proposals=[],outgoing=new Float64Array(n);
+    for(const [ai,bi]of edges){
+      const a=tiles[ai],b=tiles[bi],aSnap=snapshots[ai],bSnap=snapshots[bi];
+      const target=pairTargetDepths(a,b,aSnap.depth,bSnap.depth,floors[ai],floors[bi]);
+      const signed=(target.nextB-bSnap.depth)*FLOW_RELAXATION;
+      if(Math.abs(signed)<=EPSILON)continue;
+      const fromIndex=signed>0?ai:bi,toIndex=signed>0?bi:ai,amount=Math.abs(signed);
+      const from=tiles[fromIndex],to=tiles[toIndex];
+      const fromSnap=snapshots[fromIndex],toSnap=snapshots[toIndex];
+      const fromSurface=elevation(from)+fromSnap.depth,toSurface=elevation(to)+(toSnap.depth>EPSILON?toSnap.depth:0);
+      proposals.push({fromIndex,toIndex,amount,fromSurface,toSurface});
+      outgoing[fromIndex]+=amount;
     }
     if(!proposals.length)return 0;
 
-    const depthDelta=new Map(),sedimentDelta=new Map();
+    const depthDelta=new Float64Array(n),sedimentDelta=new Float64Array(n);
     let maxDelta=0;
     for(const proposal of proposals){
-      const fk=key(proposal.from.x,proposal.from.y),tk=key(proposal.to.x,proposal.to.y);
-      const snap=snapshots.get(fk),floor=fed.has(fk)?baselineDepth(proposal.from):0,available=Math.max(0,snap.depth-floor),requested=Math.max(EPSILON,Number(outgoing.get(fk)||0));
-      const scale=Math.min(1,available/requested),amount=proposal.amount*scale;if(amount<=EPSILON)continue;
-      depthDelta.set(fk,Number(depthDelta.get(fk)||0)-amount);depthDelta.set(tk,Number(depthDelta.get(tk)||0)+amount);
-      const sediment=amount*Number(snap.turbidity||0);sedimentDelta.set(fk,Number(sedimentDelta.get(fk)||0)-sediment);sedimentDelta.set(tk,Number(sedimentDelta.get(tk)||0)+sediment);
-      accumulateEdgeTransfer(edgeNet,proposal.from,proposal.to,amount,proposal.fromSurface,proposal.toSurface);
+      const fi=proposal.fromIndex,ti=proposal.toIndex,snap=snapshots[fi];
+      const available=Math.max(0,snap.depth-floors[fi]);
+      const requested=Math.max(EPSILON,outgoing[fi]);
+      const scale=Math.min(1,available/requested),amount=proposal.amount*scale;
+      if(amount<=EPSILON)continue;
+      depthDelta[fi]-=amount;depthDelta[ti]+=amount;
+      const sediment=amount*Number(snap.turbidity||0);
+      sedimentDelta[fi]-=sediment;sedimentDelta[ti]+=sediment;
+      accumulateEdgeTransfer(edgeNet,tiles[fi],tiles[ti],amount,proposal.fromSurface,proposal.toSurface);
     }
 
-    for(const tile of map.tiles){
-      const k=key(tile.x,tile.y),snap=snapshots.get(k),delta=Number(depthDelta.get(k)||0);if(Math.abs(delta)<=EPSILON)continue;
-      const floor=fed.has(k)?baselineDepth(tile):0,next=Math.max(floor,snap.depth+delta);
-      const sedimentMass=Math.max(0,snap.depth*snap.turbidity+Number(sedimentDelta.get(k)||0));
-      tile.waterDepth=next;tile.waterTurbidity=next>EPSILON?clean(clamp(sedimentMass/next,0,1)):0;
+    for(let i=0;i<n;i++){
+      const tile=tiles[i],snap=snapshots[i],delta=depthDelta[i];
+      if(Math.abs(delta)<=EPSILON)continue;
+      const next=Math.max(floors[i],snap.depth+delta);
+      const sedimentMass=Math.max(0,snap.depth*snap.turbidity+sedimentDelta[i]);
+      tile.waterDepth=next;
+      tile.waterTurbidity=next>EPSILON?clean(clamp(sedimentMass/next,0,1)):0;
       maxDelta=Math.max(maxDelta,Math.abs(next-snap.depth));
     }
     return maxDelta;
@@ -1878,6 +1895,7 @@ export const HydrologyEngine=(()=>{
     // iterate many times to converge, but those iterations do not advance time.
     const infiltrationBudget=createInfiltrationBudget(map,volumeScale);
     const edgeNet=new Map();
+    const topology=flowTopology(map,by,fed);
     const initialOutletDrain=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
     const recession=releaseStoredRiverWater(map,events,source,volumeScale,edgeNet);
     let iterations=0,maxDelta=0,totalDrained=clean(initialOutletDrain+recession.reduce((sum,r)=>sum+r.drained,0)),totalAbsorbed=0;
@@ -1889,7 +1907,7 @@ export const HydrologyEngine=(()=>{
     // the whole basin and pulling river D sideways in a single turn.
     const iterationLimit=map?.hydrology?.generatedRiverProfile===true?1:MAX_FLOW_ITERATIONS;
     for(;iterations<iterationLimit;iterations++){
-      maxDelta=flowIteration(map,by,fed,edgeNet);
+      maxDelta=flowIteration(map,by,fed,edgeNet,topology);
 
       const absorbed=absorbStandingWater(map,events,source,fed,infiltrationBudget);
       const drained=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
