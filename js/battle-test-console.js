@@ -11,11 +11,165 @@ function items(){return globalThis.ItemDatabase?.list?.()||[]}
 function option(value,label){return`<option value="${value}">${label}</option>`}
 function ensureStyles(){if(document.getElementById("battleTestConsoleStyles"))return;const style=document.createElement("style");style.id="battleTestConsoleStyles";style.textContent=`.battle-test-console{display:none;position:absolute;z-index:135;right:80px;bottom:96px;width:min(430px,calc(100vw - 92px));max-height:72vh;overflow:auto;border:1px solid #8a7147;border-radius:11px;background:#081018f7;box-shadow:0 16px 48px #000c;font-size:11px}.battle-test-console.open{display:block}.battle-test-console>header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #3c4654;background:#081018fc}.battle-test-console>header button{width:30px;height:30px;padding:0}.battle-test-body{padding:8px;display:grid;gap:8px}.battle-test-section{border:1px solid #2f3b49;border-radius:8px;padding:8px;background:#0b141e}.battle-test-section h4{margin:0 0 6px;color:#f0d494;font-size:11px}.battle-test-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.battle-test-row.triple{grid-template-columns:1fr 1fr 1fr}.battle-test-console select,.battle-test-console input,.battle-test-console button{min-width:0;width:100%;padding:7px;font-size:10px}.battle-test-status{padding:6px 8px;border-radius:6px;background:#071018;color:#b9c6d4;min-height:28px}.battle-test-status.ok{color:#9ff2af}.battle-test-status.bad{color:#ff9b9b}@media(max-width:700px){.battle-test-console{right:68px;bottom:92px;width:calc(100vw - 78px);max-height:66vh}.battle-test-row,.battle-test-row.triple{grid-template-columns:1fr}}.test-annotation-layer{position:fixed;inset:0;pointer-events:none;z-index:220}.test-annotation-toolbar{position:fixed;top:max(12px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;gap:7px;align-items:center;max-width:calc(100vw - 20px);padding:8px;background:#07121cf2;border:1px solid #c99a45;border-radius:9px;box-shadow:0 8px 30px #0009;pointer-events:auto;color:#fff;font-size:12px}.test-annotation-toolbar button{font:inherit;border:1px solid #8a7147;border-radius:6px;background:#172a38;color:#f7e6be;padding:7px;white-space:nowrap}.test-annotation-toolbar button:disabled{opacity:.5}.test-annotation-drag{position:fixed;border:2px dashed #ffc466;background:#ffb93030;pointer-events:none;box-sizing:border-box}.test-annotation-mark{position:fixed;width:16px;height:16px;border-radius:50%;border:2px solid #ffd16e;background:#fe9f4844;transform:translate(-50%,-50%);box-shadow:0 0 4px #000;pointer-events:none}.test-annotation-help{font-size:10px;color:#d5decf}@media(max-width:600px){.test-annotation-toolbar{flex-wrap:wrap;justify-content:center;width:calc(100vw - 20px)}.test-annotation-help{width:100%;text-align:center}}`;document.head.appendChild(style)}
 
+// Observe the existing Babylon scene without wrapping Renderer.sync(),
+// creating a second diagnostics store, or touching the GL error flag.
+// A completed onAfterRender callback means the scene submitted a render;
+// it does NOT prove that each subsystem synced or that the GPU drew every pixel.
+function makeRenderEvidence(){
+  let boundScene=null,observer=null,lastSampleMs=0,lastObserved=null;
+  let lastPresented=null,lastDrawn=null;
+  let lastFailureCapture=-Infinity,lastMismatchAt=null,lastMismatchLogged=false;
+  const recent=[];
+  const maxRecent=24;
+  const subsystemLedger=new Map();
+  const subsystemNames=['sky','lighting','camera','picker','terrain','water','mapObjects','units','environment','objectives','highlights','shadows','unitHud','actionAnchor'];
+  const diag=()=>window.CardTacticsDiagnostics;
+  const live=()=>window.CardTacticsRenderer;
+  const asNum=value=>Number.isFinite(Number(value))?Number(value):null;
+  const meshState=mesh=>{
+    if(!mesh||mesh.isDisposed?.())return{exists:false};
+    const mat=mesh.material,effect=mesh.subMeshes?.find(sub=>sub?._drawWrapper?.effect)?._drawWrapper?.effect||mat?.getEffect?.();
+    return{exists:true,id:mesh.uniqueId,name:mesh.name,enabled:mesh.isEnabled?.()??null,visible:mesh.isVisible!==false,
+      vertices:mesh.getTotalVertices?.()??null,indices:mesh.getTotalIndices?.()??null,
+      material:mat?.name||null,maxSimultaneousLights:mat?.maxSimultaneousLights??null,
+      shaderReady:effect?.isReady?.()??null,
+      shaderError:String(effect?.getCompilationError?.()||'').slice(0,500)||null};
+  };
+  function snapshot(){
+    const v=live(),s=v?.scene;if(!v||!s)return null;
+    const state=window.CardTacticsRuntime?.getBattleSnapshot?.();
+    const errors=Object.fromEntries([...(v.subsystemErrors||new Map())].map(([key,val])=>[key,String(val).slice(0,700)]));
+    const terrain=meshState(v.terrain?.meshes?.get('surface')),
+      cliffs=meshState(v.terrain?.meshes?.get('cliffs'));
+    const water=v.water?.waterSeamDiagnostics?.()||null;
+    const burning=(v.lastState?.map?.tiles||[]).filter(tile=>(tile.effects||[]).includes('BURNING')).length;
+    const lightReceivers=(v.environment?.fireLights||[]).map(light=>({
+      name:light.name,enabled:light.isEnabled?.()??null,
+      count:light.includedOnlyMeshes?.length??null,
+      terrain:light.includedOnlyMeshes?.includes(v.terrain?.meshes?.get('surface'))??false,
+      cliffs:light.includedOnlyMeshes?.includes(v.terrain?.meshes?.get('cliffs'))??false
+    }));
+    const stateRevision=asNum(state?.revision),presentedRevision=asNum(v.lastState?.revision);
+    return{
+      at:new Date().toISOString(),round:state?.round??v.lastState?.round??null,
+      phase:state?.phase??v.lastState?.phase??null,
+      weather:v.lastState?.presentation?.environment?.weather??null,
+      stateRevision,presentedRevision,
+      // onAfterRender supplies evidence of scene submission, not a GPU completion fence.
+      lastSceneSubmissionRevision:lastDrawn?.presentedRevision??null,
+      revisionAgreement:stateRevision!=null&&presentedRevision!=null?stateRevision===presentedRevision:null,
+      contextLost:v.engine?._gl?.isContextLost?.()??null,
+      rendererErrors:errors,
+      terrain:{surface:terrain,cliffs,builds:{...v.terrain?.updateCounts}},
+      water:{revision:water?.revision??null,regions:water?.surfaceRegions??null,
+        meshes:water?.surfaceMeshes??null,warnings:water?.warningCount??null,
+        missingWetEdges:water?.internalBoundaries?.internalMissingSurfaceEdges??null,
+        unweldedEdges:water?.internalBoundaries?.internalUnweldedEdges??null},
+      fire:{burningTiles:burning,physicalLights:v.environment?.fireLights?.length??null,
+        sources:lightReceivers.slice(0,16)},
+      scene:{meshes:s.meshes?.length??null,activeMeshes:s.getActiveMeshes?.()?.length??null},
+      performance:{frameMs:v.performanceStats?.frameMs??null,renderMs:v.performanceStats?.renderMs??null,
+        drawCalls:v.performanceStats?.drawCallsPerFrame??null}
+    };
+  }
+  function emit(type,data){
+    if(diag()?.isEnabled?.())diag().push(type,data);
+  }
+  function remember(entry){
+    recent.push(entry);if(recent.length>maxRecent)recent.shift();
+  }
+  function observe(fromScene=false){
+    const v=live(),s=v?.scene;if(!v||!s)return;
+    const ms=performance.now();
+    if(fromScene&&ms-lastSampleMs<500)return;
+    lastSampleMs=ms;
+    const next=snapshot();if(!next)return;
+    if(fromScene)lastDrawn={at:next.at,presentedRevision:next.presentedRevision};
+    const currErrors=next.rendererErrors;
+    // The authoritative sync outcome belongs to BabylonRenderer; this is
+    // *observed* after scene submission, not a wrapper of syncSubsystem().
+    // Preserve last exception-free revision across subsequent failures.
+    for(const name of subsystemNames){
+      const record=subsystemLedger.get(name)||{lastObservedExceptionFreeRevision:null,
+        lastObservedFailureRevision:null,lastFailureAt:null,observedFailures:0};
+      if(Object.prototype.hasOwnProperty.call(currErrors,name)){
+        if(!lastObserved||lastObserved.rendererErrors[name]!==currErrors[name]){
+          record.lastObservedFailureRevision=next.presentedRevision;
+          record.lastFailureAt=next.at;record.observedFailures++;
+        }
+      }else record.lastObservedExceptionFreeRevision=next.presentedRevision;
+      subsystemLedger.set(name,record);
+    }
+    const priorErrors=lastObserved?.rendererErrors||{};
+    const newlyFailed=Object.keys(currErrors).filter(key=>currErrors[key]!==priorErrors[key]);
+    const recovered=Object.keys(priorErrors).filter(key=>!(key in currErrors));
+    const missing=lastObserved?.terrain?.surface?.exists&& !next.terrain.surface.exists;
+    const missingCliffs=lastObserved?.terrain?.cliffs?.exists&& !next.terrain.cliffs.exists;
+    const returnedSurface=lastObserved?.terrain?.surface?.exists===false&&next.terrain.surface.exists===true;
+    const returnedCliffs=lastObserved?.terrain?.cliffs?.exists===false&&next.terrain.cliffs.exists===true;
+    // A short state/presentation gap is normal between actions; log only
+    // an observed disagreement that persists beyond multiple scene renders.
+    if(next.revisionAgreement===false){if(lastMismatchAt==null)lastMismatchAt=ms;}
+    else{lastMismatchAt=null;lastMismatchLogged=false;}
+    const lagging=lastMismatchAt!=null&&ms-lastMismatchAt>=1500&&!lastMismatchLogged;
+    if(lagging)lastMismatchLogged=true;
+    const currentShaders=[next.terrain.surface,next.terrain.cliffs].filter(m=>m.shaderError).map(m=>({name:m.name,error:m.shaderError}));
+    const previousShaders=[lastObserved?.terrain?.surface,lastObserved?.terrain?.cliffs].filter(m=>m?.shaderError).map(m=>m.name);
+    const shaderChange=currentShaders.filter(m=>!previousShaders.includes(m.name));
+    const problems=[];
+    if(newlyFailed.length)problems.push('SUBSYSTEM_ERROR');
+    if(missing||missingCliffs)problems.push('TERRAIN_MESH_DISAPPEARED');
+    if(shaderChange.length)problems.push('SHADER_COMPILATION_ERROR');
+    if(lagging)problems.push('PERSISTENT_PRESENTATION_REVISION_GAP');
+    if(next.contextLost===true&&lastObserved?.contextLost!==true)problems.push('CONTEXT_LOST');
+    const buildsChanged=lastObserved&&JSON.stringify(lastObserved.terrain.builds)!==JSON.stringify(next.terrain.builds);
+    const revisionChanged=lastObserved&&lastObserved.presentedRevision!==next.presentedRevision;
+    const geometryReturned=returnedSurface||returnedCliffs;
+    if(problems.length||recovered.length||geometryReturned||buildsChanged||revisionChanged){
+      const event={at:next.at,round:next.round,revision:next.presentedRevision,
+        currentRevision:next.stateRevision,sceneSubmissionRevision:next.lastSceneSubmissionRevision,
+        problems,recovered,geometryReturned,
+        errors:newlyFailed.map(key=>({name:key,message:currErrors[key]})),
+        shaderErrors:shaderChange,
+        terrain:next.terrain,water:next.water,
+        fire:{burningTiles:next.fire.burningTiles,physicalLights:next.fire.physicalLights}};
+      remember(event);
+      if(problems.length){emit('TEST_RENDER_ANOMALY',event);
+        // Existing Diagnostics capture persists error evidence across reloads.
+        if(ms-lastFailureCapture>60000){lastFailureCapture=ms;diag()?.capture?.('AUTO_RENDER_ANOMALY');}
+      }else if(recovered.length||geometryReturned)emit('TEST_RENDER_RECOVERED',event);
+    }
+    lastObserved=next;
+    lastPresented={at:next.at,revision:next.presentedRevision};
+  }
+  function bind(){
+    const scene=live()?.scene;
+    if(!scene||scene===boundScene)return;
+    if(boundScene&&observer)boundScene.onAfterRenderObservable?.remove(observer);
+    boundScene=scene;lastObserved=null;lastDrawn=null;subsystemLedger.clear();
+    observer=scene.onAfterRenderObservable?.add(()=>observe(true))||null;
+  }
+  // The TEST console exists before the game creates its Babylon scene.
+  // Bind only to that scene's supported render observation hook.
+  window.addEventListener('cardtactics:battle-render',bind);
+  window.addEventListener('cardtactics:state',bind);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)bind()});
+  bind();
+  return{
+    capture:()=>{bind();observe(false);return{schema:'TEST_RENDER_FORENSICS_V1',
+      at:new Date().toISOString(),current:lastObserved||snapshot(),
+      lastSubmission:lastDrawn,lastObservedRevision:lastPresented,
+      subsystemRevisions:Object.fromEntries(subsystemLedger),
+      transitions:recent.slice(-16),
+      interpretation:'scene submission != GPU pixel proof; no verified per-subsystem success revision without Renderer instrumentation'};}
+  };
+}
+
 // TEST-only, read-only geometry annotation. The normal GridPicker and
 // BattleInputController remain the only owners of gameplay picking/movement.
 // Capture-phase pointer handling prevents an annotation drag from panning,
 // selecting units, or triggering a card action; no second Renderer/State exists.
-function makeTileAnnotator(panel,status){
+function makeTileAnnotator(panel,status,renderEvidence){
   const layer=document.createElement("div");layer.className="test-annotation-layer";layer.hidden=true;
   const toolbar=document.createElement("div");toolbar.className="test-annotation-toolbar";
   const help=document.createElement("span");help.className="test-annotation-help";help.textContent="點選或拖曳框選格子，不會操作戰棋";
@@ -191,7 +345,8 @@ function makeTileAnnotator(panel,status){
         sources:v?.environment?.fireLights?.map(light=>({name:light.name,enabled:light.isEnabled?.()??null,range:light.range,
           includedMeshCount:light.includedOnlyMeshes?.length??0,includesCliffs:light.includedOnlyMeshes?.includes(v?.terrain?.meshes?.get("cliffs"))??false})).slice(0,16)||[],
         fireFields:v?.environment?.fireFields?.size??null,lightFieldCells:v?.environment?.lightFieldCells??null},
-      gpu:{webGLContextLost:v?.engine?._gl?.isContextLost?.()??null,webGLVersion:v?.engine?.webGLVersion??null}
+      gpu:{webGLContextLost:v?.engine?._gl?.isContextLost?.()??null,webGLVersion:v?.engine?.webGLVersion??null},
+      rendererEvidence:renderEvidence.capture()
     };
     d.push("TEST_TILE_ANNOTATION",evidence);
     d.capture("TEST_SELECTED_TILES"); // Existing capture force-persists the annotation event in Settings → TEST → LOG.
@@ -217,11 +372,19 @@ function mount(){
  <section class="battle-test-section"><h4>卡牌／生成單位</h4><select id="testCard"></select><div class="battle-test-row"><button id="testGivePlayerCard">加入我方手牌</button><button id="testGiveEnemyCard">加入敵方手牌</button></div><div class="battle-test-row triple"><select id="testSpawnOwner"><option value="PLAYER">我方</option><option value="ENEMY" selected>敵方</option><option value="NEUTRAL">中立</option></select><input id="testSpawnX" type="number" min="0" value="0" placeholder="X"><input id="testSpawnY" type="number" min="0" value="0" placeholder="Y"></div><button id="testSpawnUnit">以角色卡直接生成</button></section>
  <section class="battle-test-section"><h4>單位站位</h4><select id="testUnit"></select><div class="battle-test-row"><input id="testMoveX" type="number" min="0" value="0" placeholder="X"><input id="testMoveY" type="number" min="0" value="0" placeholder="Y"></div><button id="testMoveUnit">立即改變站位</button></section>
  <section class="battle-test-section"><h4>道具／Gold</h4><select id="testItem">${items().map(item=>option(item.id,`${item.name}｜${item.id}`)).join("")}</select><div class="battle-test-row"><button id="testGiveItem">Call 到選定單位</button><button id="testGroundItem">Call 到單位腳下</button></div><button id="testAddGold">Gold +500</button></section>
- <section class="battle-test-section"><h4>問題格子標註／LOG</h4><p>標註模式僅取證，不移動單位、不改動地形或水文。點擊單格，或拖曳框選多格，完成後寫入設定中的診斷 LOG。</p><button id="testMarkTiles">標註問題格（點選／框選）</button></section>
+ <section class="battle-test-section"><h4>問題格子標註／LOG</h4><p>標註模式僅取證，不移動單位、不改動地形或水文。點擊單格，或拖曳框選多格，完成後寫入設定中的診斷 LOG。</p><button id="testMarkTiles">標註問題格（點選／框選）</button><button id="testCaptureRender" type="button">記錄渲染異常狀態到 LOG</button></section>
  <div id="battleTestStatus" class="battle-test-status">待命。</div></div>`;battle.appendChild(panel);
  const $=id=>panel.querySelector(`#${id}`),status=(message,ok=true)=>{const el=$("battleTestStatus");el.textContent=message;el.classList.toggle("ok",ok);el.classList.toggle("bad",!ok)};
- const annotate=makeTileAnnotator(panel,status);
+ const renderEvidence=makeRenderEvidence();
+ const annotate=makeTileAnnotator(panel,status,renderEvidence);
  $("testMarkTiles").onclick=()=>annotate.start();
+ $("testCaptureRender").onclick=()=>{
+   const d=window.CardTacticsDiagnostics;
+   if(!d?.isEnabled?.()){status("請先在 Settings 開啟診斷紀錄。",false);return;}
+   const evidence=renderEvidence.capture();d.push("TEST_RENDER_FORENSICS",evidence);
+   d.capture("TEST_RENDER_FORENSICS");
+   status("已記錄渲染狀態、Revision 對照與最近重建／異常事件。",true);
+ };
  const cardSelect=$("testCard");for(const card of cards()){const kind=card.type==="CHARACTER"?"角色":"法術";cardSelect.insertAdjacentHTML("beforeend",option(card.id,`[${kind}] ${card.name}｜${card.id}`));}
  function syncEnvironmentControls(){const data=runtime()?.state?.(),wind=data?.wind;if(!wind)return;if(data?.moonlight)$("testMoonlight").value=data.moonlight;if(data?.timeOfDay)$("testTimeOfDay").value=data.timeOfDay;const direction=String(wind.direction||(wind.calm?"CALM":"CALM")).toUpperCase();if([...$("testWindDirection").options].some(o=>o.value===direction))$("testWindDirection").value=direction;$("testWindStrength").value=direction==="CALM"?0:Number(wind.strength||0)}
  function refreshUnits(){const debug=runtime(),data=debug?.state?.(),select=$("testUnit"),previous=select.value;select.innerHTML="";for(const unit of data?.units||[]){const team=unit.team==="P"?"我":unit.team==="E"?"敵":"中";select.insertAdjacentHTML("beforeend",option(unit.id,`[${team}] ${unit.name} (${unit.x},${unit.y})${unit.stealthed?"｜潛行":""}`));}if([...select.options].some(o=>o.value===previous))select.value=previous;syncMoveCoords()}
