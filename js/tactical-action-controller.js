@@ -156,6 +156,50 @@
       return out;
     }
 
+    // A skill can explicitly opt in to aiming at an environmental state,
+    // independently of its normal combat target. Normal ENEMY combat keeps
+    // BattleResolution, reaction, hit chance and damage unchanged.
+    function environmentTargetTiles(unit,skill){
+      if(skill?.environmentTarget!=="BURNING"||skill?.waterContact!=="RAIN_EVENT"||!unit?.alive||unit.acted)return[];
+      const {map,units,environmentState}=state();
+      return targetRangeTiles(unit,skill).filter(tile=>
+        !ctx.unitAt(tile.x,tile.y)&&!ctx.coreAt(tile.x,tile.y)&&
+        EnvironmentEngine.isBurning(environmentState,tile.x,tile.y)&&
+        TacticalEngine.teamCanSee(map,units,unit.team,tile,environmentState));
+    }
+    function executeEnvironmentTargetSkill(unit,tile,skill){
+      const {map,environmentState}=state();
+      if(!ctx.canUseSkill(unit,skill)||!environmentTargetTiles(unit,skill).includes(tile))
+        return skillFailure(unit,skill,"ENVIRONMENT_TARGET_INVALID",tile);
+      const r=TacticalEngine.range(skill),originalFacing=unit.facing;
+      let origin=null,path=[];
+      for(const candidate of attackOrigins(unit)){
+        const d=Math.abs(candidate.x-tile.x)+Math.abs(candidate.y-tile.y);
+        if(d<r.min||d>r.max)continue;
+        if(!TacticalEngine.hasLineOfSight(map,{...unit,x:candidate.x,y:candidate.y},tile,skill,environmentState))continue;
+        const route=candidate.x===unit.x&&candidate.y===unit.y?[]:
+          TacticalEngine.pathTo(map,state().units,unit,candidate.x,candidate.y);
+        unit.facing=originalFacing;
+        if(route.length||candidate.x===unit.x&&candidate.y===unit.y){origin=candidate;path=route;break;}
+      }
+      if(!origin)return skillFailure(unit,skill,"NO_ATTACK_PATH",tile);
+      if(path.length){
+        if(!pendingMove||pendingMove.unitId!==unit.id)beginPendingMove(unit);
+        const moved=ctx.traverseUnitPath(unit,path,{kind:"UNIT"});unit.moved=true;
+        if(!moved.completed){commitPendingMove(unit);ctx.render();return false;}
+      }
+      // Recheck the actual landing position before spending a resource.
+      if(!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y)||
+        !TacticalEngine.hasLineOfSight(map,unit,tile,skill,environmentState))return skillFailure(unit,skill,"ENVIRONMENT_TARGET_CHANGED",tile);
+      globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
+      const cast=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,cast);
+      const events=EnvironmentEngine.waterImpact(map,environmentState,tile.x,tile.y,{source:cast.id});
+      events.forEach(ctx.logEnvironmentEvent);
+      ctx.resolveEnvironmentEvents?.(events,{reason:`${cast.name} 水流接觸`});
+      ctx.pushLog(`${unit.character.name} 使用 ${cast.name} 澆向燃燒格 (${tile.x},${tile.y})。`,"BATTLE");
+      return finishActiveSkill(unit);
+    }
+
     function beginPendingMove(unit){pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};}
     function commitPendingMove(unit){if(pendingMove?.unitId===unit?.id)pendingMove=null;}
 
@@ -621,7 +665,7 @@
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,
-      attackPlanForTarget,targetableEntities,targetRangeTiles,approachTargetForAttack,resolveDirectTargetAttack,
+      attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
       selectedSupportActions,confirmEngagement,executeEngagement

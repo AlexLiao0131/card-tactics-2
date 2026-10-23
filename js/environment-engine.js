@@ -287,10 +287,10 @@ export const EnvironmentEngine=(()=>{
     return HydrologyEngine.RAIN_FILL_PER_EVENT*turns*
       (fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"?1.7:1);
   }
-  function exchangeWaterFire(map,state,tile,volume,events,{source="WATER",precipitation=false,clusterKeys=null}={}){
+  function exchangeWaterFire(map,state,tile,volume,events,{source="WATER",precipitation=false,clusterKeys=null,fireOverride=null}={}){
     const incoming=Math.max(0,Number(volume||0));
     if(!tile||incoming<=0)return incoming;
-    const active=effectAt(state,tile.x,tile.y),fire=active.find(e=>e.type===EFFECT.BURNING)||active.find(e=>e.type===EFFECT.FIRE_TORNADO);
+    const active=effectAt(state,tile.x,tile.y),fire=fireOverride||active.find(e=>e.type===EFFECT.BURNING)||active.find(e=>e.type===EFFECT.FIRE_TORNADO);
     if(!fire)return incoming;
     const reserve=fireHeatReserve(fire),vaporized=Math.min(incoming,reserve);
     if(vaporized<=0)return incoming;
@@ -314,7 +314,7 @@ export const EnvironmentEngine=(()=>{
     }
     if(remainingHeat<=HydrologyEngine.EPSILON){
       removeEffect(state,tile.x,tile.y,fire.type);
-      if(fire.type===EFFECT.FIRE_TORNADO){
+      if(fire.type===EFFECT.FIRE_TORNADO&&!fireOverride){
         const {type,element,thermalWaterReserve,...rest}=fire;
         addEffect(state,tile.x,tile.y,{...rest,type:EFFECT.TORNADO,element:"AIR"});
       }
@@ -577,13 +577,35 @@ export const EnvironmentEngine=(()=>{
     }
     return released;
   }
-  function extinguishByWaterTornado(map,state,cells,events){
-    let count=0;
+  // Water vortex cargo is real Hydrology tile-volume, not an unlimited
+  // visual effect. The vortex borrows exactly the water stored in a source tile,
+  // and returns the unused quantity to real terrain on expiration.
+  function entrainTornadoWater(tile,events=[]){
+    const amount=waterDepth(tile);
+    if(amount<=HydrologyEngine.EPSILON)return 0;
+    HydrologyEngine.setWaterDepth(tile,0,events,"TORNADO_ENTRAINMENT");
+    events.push({type:"TORNADO_WATER_ENTRAINED",x:tile.x,y:tile.y,volume:amount});
+    return amount;
+  }
+  function depositTornadoWater(map,point,volume,events,source){
+    const tile=point&&tileAt(map,point.x,point.y);
+    if(!tile||volume<=HydrologyEngine.EPSILON)return false;
+    HydrologyEngine.setWaterDepth(tile,waterDepth(tile)+volume,events,source);
+    events.push({type:"TORNADO_WATER_DEPOSITED",x:tile.x,y:tile.y,volume,source});
+    return true;
+  }
+  function contactWaterTornadoFire(map,state,cells,available,events){
+    let remaining=available;
+    const clusterKeys=largeFireKeys(state);
     for(const point of tornadoNearbyCells(map,cells)){
-      if(!effectAt(state,point.x,point.y).some(effect=>effect.type===EFFECT.BURNING))continue;
-      removeEffect(state,point.x,point.y,EFFECT.BURNING);count++;events.push({type:"TORNADO_EXTINGUISHED_FIRE",x:point.x,y:point.y});
+      if(remaining<=HydrologyEngine.EPSILON)break;
+      const tile=tileAt(map,point.x,point.y);
+      if(!tile||!isBurning(state,point.x,point.y))continue;
+      const before=remaining;
+      remaining=exchangeWaterFire(map,state,tile,remaining,events,{source:"WATER_TORNADO",clusterKeys});
+      if(before>remaining)events.push({type:"TORNADO_WATER_FIRE_CONTACT",x:point.x,y:point.y,evaporated:before-remaining});
     }
-    return count;
+    return remaining;
   }
   function stokeByFireTornado(map,state,cells,events){
     let count=0;
@@ -604,6 +626,7 @@ export const EnvironmentEngine=(()=>{
     const groups=tornadoGroups(map,state);if(!groups.length)return events;
     const wind=windAt(state),dx=Math.sign(Number(wind.x||0)),dy=Math.sign(Number(wind.y||0)),moveSteps=Number(wind.strength||0)<.25?0:(Number(wind.strength||0)>=2?2:1);
     const runtime=groups.map(group=>({group,clusterId:tornadoClusterId(state,group)}));
+    let waterRelocated=false;
     for(const {group} of runtime)for(const entry of group){removeEffect(state,entry.x,entry.y,EFFECT.TORNADO);removeEffect(state,entry.x,entry.y,EFFECT.FIRE_TORNADO);}
     for(const {group,clusterId} of runtime){
       let carriedLogIds=rebindTornadoCargo(map,group,clusterId,events);const beforeStats=tornadoClusterStats(group,carriedLogIds),sweep=tornadoSweepCells(map,group,dx,dy,moveSteps);
@@ -611,16 +634,59 @@ export const EnvironmentEngine=(()=>{
       const destination=group.map(entry=>({x:entry.x+dx*moveSteps,y:entry.y+dy*moveSteps,effect:entry.effect})).filter(entry=>tileAt(map,entry.x,entry.y));
       if(!destination.length){
         const drop=sweep.length?[sweep[sweep.length-1]]:group.map(entry=>({x:entry.x,y:entry.y}));releaseTornadoCargo(map,clusterId,carriedLogIds,drop,events,"TORNADO_LEFT_MAP");
+        const cargo=group.reduce((total,entry)=>total+Math.max(0,Number(entry.effect.entrainedWaterVolume||0)),0);
+        if(depositTornadoWater(map,drop[0],cargo,events,"TORNADO_LEFT_MAP"))waterRelocated=true;
         events.push({type:"TORNADO_DISSIPATED",clusterId,clusterSize:beforeStats.size,reason:"LEFT_MAP"});continue;
       }
       const hadWater=group.some(entry=>String(entry.effect.element||"").toUpperCase()==="WATER"),hadFire=group.some(entry=>entry.effect.type===EFFECT.FIRE_TORNADO||String(entry.effect.element||"").toUpperCase()==="FIRE");
-      const waterTouched=hadWater||sweep.some(point=>HydrologyEngine.isWater(tileAt(map,point.x,point.y)));
-      const fireTouched=!waterTouched&&(hadFire||sweep.some(point=>effectAt(state,point.x,point.y).some(effect=>effect.type===EFFECT.BURNING)));
+      let entrainedWaterVolume=group.reduce((total,entry)=>total+Math.max(0,Number(entry.effect.entrainedWaterVolume||0)),0);
+      if(entrainedWaterVolume<=HydrologyEngine.EPSILON){
+        // Air vortex crossing water acquires one existing column of genuine
+        // Hydrology water. Do not mint water from an animation or wind strength.
+        const source=sweep.map(point=>tileAt(map,point.x,point.y)).find(tile=>HydrologyEngine.isWater(tile));
+        if(source)entrainedWaterVolume=entrainTornadoWater(source,events);
+      }
+      if(entrainedWaterVolume>HydrologyEngine.EPSILON){
+        entrainedWaterVolume=contactWaterTornadoFire(map,state,sweep,entrainedWaterVolume,events);
+        // FIRE_TORNADO effects were removed from the live map before movement;
+        // resolve their carried heat through the SAME thermal-exchange function
+        // using the original group snapshot, not a special "delete fire" rule.
+        for(const entry of group.filter(item=>item.effect.type===EFFECT.FIRE_TORNADO)){
+          if(entrainedWaterVolume<=HydrologyEngine.EPSILON)break;
+          entrainedWaterVolume=exchangeWaterFire(map,state,tileAt(map,entry.x,entry.y),
+            entrainedWaterVolume,events,{source:"WATER_TORNADO",fireOverride:entry.effect});
+        }
+      }
+      const activeFireHeat=group.some(entry=>entry.effect.type===EFFECT.FIRE_TORNADO&&fireHeatReserve(entry.effect)>HydrologyEngine.EPSILON);
+      const waterTouched=entrainedWaterVolume>HydrologyEngine.EPSILON;
+      const fireTouched=!waterTouched&&(activeFireHeat||sweep.some(point=>effectAt(state,point.x,point.y).some(effect=>effect.type===EFFECT.BURNING)));
       const element=waterTouched?"WATER":fireTouched?"FIRE":"AIR",type=element==="FIRE"?EFFECT.FIRE_TORNADO:EFFECT.TORNADO;
-      if(element==="WATER")extinguishByWaterTornado(map,state,sweep,events);else if(element==="FIRE")stokeByFireTornado(map,state,sweep,events);
+      if(element==="FIRE")stokeByFireTornado(map,state,sweep,events);
       const stats=tornadoClusterStats(destination.map(entry=>({x:entry.x,y:entry.y,effect:entry.effect})),carriedLogIds),duration=Math.max(1,...group.map(entry=>Number(entry.effect.duration||1))),resolvedDamage=element==="FIRE"?stats.fireDamage:stats.damage;
+      // On the final active turn, all remaining fluid returns to the actual
+      // destination tile. The tornado effect keeps no duplicated cargo.
+      if(duration<=1&&entrainedWaterVolume>HydrologyEngine.EPSILON){
+        if(depositTornadoWater(map,destination[0],entrainedWaterVolume,events,"TORNADO_EXPIRED"))waterRelocated=true;
+        entrainedWaterVolume=0;
+      }
+      const liveFireHeat=group.filter(entry=>entry.effect.type===EFFECT.FIRE_TORNADO)
+        .reduce((total,entry)=>total+fireHeatReserve(entry.effect),0);
+      const explicitFireHeat=group.some(entry=>entry.effect.type===EFFECT.FIRE_TORNADO&&
+        Number.isFinite(Number(entry.effect.thermalWaterReserve)));
       for(const entry of destination){
         const effect={type,duration,element,clusterId,clusterSize:stats.size,clusterStrength:stats.strength,windStrength:stats.windStrength,baseWindStrength:stats.baseWindStrength,basePushDistance:stats.basePushDistance,baseLift:stats.baseLift,baseDamage:stats.baseDamage,baseFireDamage:stats.baseFireDamage,pushDistance:stats.pushDistance,lift:stats.lift,damage:resolvedDamage,damageType:element==="FIRE"?"FIRE":element==="WATER"?"WATER":"PHYSICAL",resistAxes:{...(entry.effect.resistAxes||{horizontal:false,vertical:true})},visionBlock:false,carriedLogIds:[...carriedLogIds],carriedLogs:carriedLogIds.length,debrisDamage:stats.debrisDamage};
+        if(element==="FIRE"&&explicitFireHeat)effect.thermalWaterReserve=liveFireHeat/destination.length;
+        // The total cargo is represented once across current cluster cells.
+        // Every cell owns an equal share, never a duplicate full-cluster amount.
+        // Another vortex may have already reached the very same destination
+        // on this tick. Merge its existing cargo instead of overwriting it.
+        const previous=effectAt(state,entry.x,entry.y).find(item=>item.type===type);
+        const carried=entrainedWaterVolume/destination.length+Math.max(0,Number(previous?.entrainedWaterVolume||0));
+        if(carried>HydrologyEngine.EPSILON){
+          effect.entrainedWaterVolume=carried;
+          effect.element="WATER";
+          effect.damageType="WATER";
+        }
         if(element==="FIRE")effect.lightRadius=3;addEffect(state,entry.x,entry.y,effect);
       }
       if(element==="WATER"&&!hadWater)events.push({type:"WATER_TORNADO_FORMED",clusterId,x:destination[0].x,y:destination[0].y,clusterSize:stats.size});
@@ -628,6 +694,8 @@ export const EnvironmentEngine=(()=>{
       events.push({type:"TORNADO_ADVANCED",clusterId,path:sweep,from:group.map(entry=>({x:entry.x,y:entry.y})),to:destination.map(entry=>({x:entry.x,y:entry.y})),dx,dy,moved:moveSteps,wind:{...wind},windStrength:stats.windStrength,element,clusterSize:stats.size,clusterStrength:stats.strength,pushDistance:stats.pushDistance,lift:stats.lift,damage:resolvedDamage,damageType:element==="FIRE"?"FIRE":element==="WATER"?"WATER":"PHYSICAL",carriedLogs:carriedLogIds.length,debrisDamage:stats.debrisDamage,contactProfile:"AIR_COLUMN",height:stats.lift+3});
       if(duration<=1)releaseTornadoCargo(map,clusterId,carriedLogIds,destination,events,"TORNADO_EXPIRED");
     }
+    if(events.some(event=>event.type==="TORNADO_WATER_ENTRAINED"))waterRelocated=true;
+    if(waterRelocated)HydrologyEngine.redistribute(map,{source:"TORNADO_WATER_TRANSFER",events});
     if(window.EnvironmentResolver&&events.some(event=>String(event?.reason||event?.source||"").includes("TORNADO_WIND")))events.push(...EnvironmentResolver.resolve(map,state,{source:"TORNADO_WIND"}));
     recordDestroyedObjects(state,events);return events;
   }
@@ -848,8 +916,16 @@ export const EnvironmentEngine=(()=>{
   }
 
   function createTornado(state,x,y,{map=null,duration=2,pushDistance=2,lift=3,damage=20,fireDamage=45,resistAxes={horizontal:false,vertical:true}}={}){
-    const clusterId=nextTornadoClusterId(state),water=!!map&&HydrologyEngine.isWater(tileAt(map,x,y)),burning=!water&&isBurning(state,x,y),base={duration,clusterId,basePushDistance:pushDistance,baseLift:lift,baseDamage:damage,baseFireDamage:fireDamage,baseWindStrength:WIND_SCALE.TORNADO,windStrength:WIND_SCALE.TORNADO,pushDistance,lift,resistAxes:{...resistAxes},clusterSize:1,clusterStrength:1,carriedLogIds:[],carriedLogs:0,debrisDamage:0,visionBlock:false};
-    if(water){addEffect(state,x,y,{...base,type:EFFECT.TORNADO,element:"WATER",damage,damageType:"WATER"});return{type:"WATER_TORNADO_FORMED",clusterId,x,y,effect:EFFECT.TORNADO,clusterSize:1};}
+    const clusterId=nextTornadoClusterId(state),sourceTile=map?tileAt(map,x,y):null;
+    const existing=effectAt(state,x,y).find(effect=>effect.type===EFFECT.TORNADO);
+    const alreadyEntrained=Math.max(0,Number(existing?.entrainedWaterVolume||0));
+    const water=HydrologyEngine.isWater(sourceTile)||alreadyEntrained>HydrologyEngine.EPSILON;
+    const burning=!water&&isBurning(state,x,y),base={duration,clusterId,basePushDistance:pushDistance,baseLift:lift,baseDamage:damage,baseFireDamage:fireDamage,baseWindStrength:WIND_SCALE.TORNADO,windStrength:WIND_SCALE.TORNADO,pushDistance,lift,resistAxes:{...resistAxes},clusterSize:1,clusterStrength:1,carriedLogIds:[],carriedLogs:0,debrisDamage:0,visionBlock:false};
+    if(water){
+      const entrainedWaterVolume=alreadyEntrained+entrainTornadoWater(sourceTile);
+      addEffect(state,x,y,{...base,type:EFFECT.TORNADO,element:"WATER",damage,damageType:"WATER",entrainedWaterVolume});
+      return{type:"WATER_TORNADO_FORMED",clusterId,x,y,effect:EFFECT.TORNADO,clusterSize:1,entrainedWaterVolume};
+    }
     if(burning){addEffect(state,x,y,{...base,type:EFFECT.FIRE_TORNADO,element:"FIRE",lightRadius:3,damage:fireDamage,damageType:"FIRE"});return{type:"FIRE_TORNADO_CREATED",clusterId,x,y,effect:EFFECT.FIRE_TORNADO};}
     addEffect(state,x,y,{...base,type:EFFECT.TORNADO,element:"AIR",damage,damageType:"PHYSICAL"});return{type:"TORNADO_CREATED",clusterId,x,y,effect:EFFECT.TORNADO};
   }

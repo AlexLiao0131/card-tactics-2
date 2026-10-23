@@ -226,7 +226,7 @@ function create(ctx){
  function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];globalThis.EffectEngine?.syncConditionalPassives?.(s.units,s.environmentState);environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
-  const hasElectric=list.some(event=>event.type==="ELECTRIC_CONDUCTION"),hydrologyChanged=list.some(event=>["ELEVATION_CHANGED","WATER_FLOW","WATER_ACCUMULATED","WATER_REDUCED","BASIN_FILLED","BASIN_DRAINED","HYDROLOGY_REBALANCED","FLOOD_AREA_RESOLVED","WATER_EVAPORATION","WATER_DRAINED_OFF_MAP","SNOWMELT_WATER","ICE_MELT","ICE_THINNED","WATER_FROZEN","CLIMATE_WATER_CHANGED","FREEZE_PULSE","ICE_THAW"].includes(event.type));
+  const hasElectric=list.some(event=>event.type==="ELECTRIC_CONDUCTION"),hydrologyChanged=list.some(event=>["ELEVATION_CHANGED","WATER_FLOW","WATER_ACCUMULATED","WATER_REDUCED","BASIN_FILLED","BASIN_DRAINED","HYDROLOGY_REBALANCED","FLOOD_AREA_RESOLVED","WATER_EVAPORATION","WATER_DRAINED_OFF_MAP","SNOWMELT_WATER","ICE_MELT","ICE_THINNED","WATER_FROZEN","CLIMATE_WATER_CHANGED","FREEZE_PULSE","ICE_THAW","WATER_TORNADO_FORMED","TORNADO_WATER_ENTRAINED","TORNADO_WATER_DEPOSITED"].includes(event.type));
   const boilingTiles=new Set(list.filter(event=>event.type==="WATER_BOILING"||event.type==="WATER_EVAPORATION").map(event=>`${event.x},${event.y}`));
   // Each contact emits one blast event. Overlapping cells in a single
   // contact pulse share one pressure front (maximum exposure per unit).
@@ -288,12 +288,14 @@ function create(ctx){
   else if(event.type==="STONE_FRAGMENT")ctx.pushLog(`爆炸擊中石質物件，(${event.x},${event.y}) 產生破片${event.destroyed?"並炸開道路":""}。`,"SYSTEM");
   else if(event.type==="TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 形成龍捲風場。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 的燃燒區被風捲起，形成火龍捲。`,"SYSTEM");
-  else if(event.type==="WATER_TORNADO_FORMED")ctx.pushLog(`🌊 龍捲風捲入水體，轉化為水龍捲｜規模 ${event.clusterSize||1} 格。`,"SYSTEM");
+  else if(event.type==="WATER_TORNADO_FORMED")ctx.pushLog(`🌊 龍捲風捲入實際水量 ${Number(event.entrainedWaterVolume||0).toFixed(3)}｜規模 ${event.clusterSize||1} 格。`,"SYSTEM");
+  else if(event.type==="TORNADO_WATER_ENTRAINED")ctx.pushLog(`水龍捲從 (${event.x},${event.y}) 捲起 ${Number(event.volume||0).toFixed(3)} 水量。`,"DETAIL");
+  else if(event.type==="TORNADO_WATER_FIRE_CONTACT")ctx.pushLog(`水龍捲接觸 (${event.x},${event.y}) 火場｜汽化 ${Number(event.evaporated||0).toFixed(3)}。`,"DETAIL");
+  else if(event.type==="TORNADO_WATER_DEPOSITED")ctx.pushLog(`水龍捲將 ${Number(event.volume||0).toFixed(3)} 未汽化水量交還地格 (${event.x},${event.y})。`,"DETAIL");
   else if(event.type==="TORNADO_ADVANCED")ctx.pushLog(`${event.element==="FIRE"?"🔥 火龍捲":event.element==="WATER"?"🌊 水龍捲":"🌪️ 龍捲風"}${Number(event.moved||0)>0?`沿風向移動 ${event.moved} 格`:"原地盤旋"}｜融合規模 ${event.clusterSize||1}｜局部風力 ${Number(event.windStrength||0).toFixed(1)}｜升力 ${event.lift||0}${event.carriedLogs?`｜捲帶樹幹 ${event.carriedLogs}`:""}。`,"DETAIL");
   else if(event.type==="TREE_UPROOTED"&&String(event.reason||"").includes("WIND")){const tornado=String(event.reason||"").includes("TORNADO_WIND"),typhoon=String(event.reason||"").includes("TYPHOON_WIND");ctx.pushLog(`${tornado?"🌪️ 龍捲風":typhoon?"🌀 颱風":"💨 強風"}將 (${event.x},${event.y}) 的${event.from==="DEAD_TREE"?"枯木":"樹木"}連根拔起｜根系支撐 -${Number(event.rootStrengthLost||0).toFixed(2)}。`,"SYSTEM");}
   else if(event.type==="TREE_FELLED"&&String(event.reason||"").includes("WIND")){const tornado=String(event.reason||"").includes("TORNADO_WIND"),typhoon=String(event.reason||"").includes("TYPHOON_WIND");ctx.pushLog(`${tornado?"🌪️ 龍捲風":typhoon?"🌀 颱風":"💨 強風"}折倒 (${event.x},${event.y}) 的${event.from==="DEAD_TREE"?"枯木":"樹木"}，留下樹樁與倒木。`,"SYSTEM");}
   else if((event.type==="VEGETATION_UPROOTED"||event.type==="VEGETATION_BROKEN")&&String(event.reason||"").includes("WIND")){const label=event.objectType==="BUSH"?"灌木":event.objectType==="STUMP"?"樹樁":"植被";ctx.pushLog(`💨 (${event.x},${event.y}) 的${label}${event.type==="VEGETATION_UPROOTED"?"被拔除":"被吹毀"}｜根系支撐 -${Number(event.rootStrengthLost||0).toFixed(2)}。`,"DETAIL");}
-  else if(event.type==="TORNADO_EXTINGUISHED_FIRE")ctx.pushLog(`🌊 水龍捲撲滅 (${event.x},${event.y}) 的火焰。`,"DETAIL");
   else if(event.type==="FIRE_TORNADO_STOKED")ctx.pushLog(`🔥 火龍捲使 (${event.x},${event.y}) 的火勢轉為猛烈燃燒。`,"DETAIL");
   else if(event.type==="TORNADO_DISSIPATED")ctx.pushLog(`龍捲風移出戰場並消散。`,"DETAIL");
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
