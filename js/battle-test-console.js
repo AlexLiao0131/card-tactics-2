@@ -9,7 +9,7 @@ function runtime(){return window.CardTacticsRuntime?.debug||null}
 function cards(){return Object.values(window.CARDS||{}).filter(Boolean).sort((a,b)=>String(a.name).localeCompare(String(b.name),"zh-Hant"))}
 function items(){return globalThis.ItemDatabase?.list?.()||[]}
 function option(value,label){return`<option value="${value}">${label}</option>`}
-function ensureStyles(){if(document.getElementById("battleTestConsoleStyles"))return;const style=document.createElement("style");style.id="battleTestConsoleStyles";style.textContent=`.battle-test-console{display:none;position:absolute;z-index:135;right:80px;bottom:96px;width:min(430px,calc(100vw - 92px));max-height:72vh;overflow:auto;border:1px solid #8a7147;border-radius:11px;background:#081018f7;box-shadow:0 16px 48px #000c;font-size:11px}.battle-test-console.open{display:block}.battle-test-console>header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #3c4654;background:#081018fc}.battle-test-console>header button{width:30px;height:30px;padding:0}.battle-test-body{padding:8px;display:grid;gap:8px}.battle-test-section{border:1px solid #2f3b49;border-radius:8px;padding:8px;background:#0b141e}.battle-test-section h4{margin:0 0 6px;color:#f0d494;font-size:11px}.battle-test-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.battle-test-row.triple{grid-template-columns:1fr 1fr 1fr}.battle-test-console select,.battle-test-console input,.battle-test-console button{min-width:0;width:100%;padding:7px;font-size:10px}.battle-test-status{padding:6px 8px;border-radius:6px;background:#071018;color:#b9c6d4;min-height:28px}.battle-test-status.ok{color:#9ff2af}.battle-test-status.bad{color:#ff9b9b}@media(max-width:700px){.battle-test-console{right:68px;bottom:92px;width:calc(100vw - 78px);max-height:66vh}.battle-test-row,.battle-test-row.triple{grid-template-columns:1fr}}.test-annotation-layer{position:fixed;inset:0;pointer-events:none;z-index:220}.test-annotation-toolbar{position:fixed;top:max(12px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;gap:7px;align-items:center;max-width:calc(100vw - 20px);padding:8px;background:#07121cf2;border:1px solid #c99a45;border-radius:9px;box-shadow:0 8px 30px #0009;pointer-events:auto;color:#fff;font-size:12px}.test-annotation-toolbar button{font:inherit;border:1px solid #8a7147;border-radius:6px;background:#172a38;color:#f7e6be;padding:7px;white-space:nowrap}.test-annotation-toolbar button:disabled{opacity:.5}.test-annotation-drag{position:fixed;border:2px dashed #ffc466;background:#ffb93030;pointer-events:none;box-sizing:border-box}.test-annotation-mark{position:fixed;width:16px;height:16px;border-radius:50%;border:2px solid #ffd16e;background:#fe9f4844;transform:translate(-50%,-50%);box-shadow:0 0 4px #000;pointer-events:none}.test-annotation-help{font-size:10px;color:#d5decf}@media(max-width:600px){.test-annotation-toolbar{flex-wrap:wrap;justify-content:center;width:calc(100vw - 20px)}.test-annotation-help{width:100%;text-align:center}}`;document.head.appendChild(style)}
+function ensureStyles(){if(document.getElementById("battleTestConsoleStyles"))return;const style=document.createElement("style");style.id="battleTestConsoleStyles";style.textContent=`.battle-test-console{display:none;position:absolute;z-index:135;right:80px;bottom:96px;width:min(430px,calc(100vw - 92px));max-height:72vh;overflow:auto;border:1px solid #8a7147;border-radius:11px;background:#081018f7;box-shadow:0 16px 48px #000c;font-size:11px}.battle-test-console.open{display:block}.battle-test-console>header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #3c4654;background:#081018fc}.battle-test-console>header button{width:30px;height:30px;padding:0}.battle-test-body{padding:8px;display:grid;gap:8px}.battle-test-section{border:1px solid #2f3b49;border-radius:8px;padding:8px;background:#0b141e}.battle-test-section h4{margin:0 0 6px;color:#f0d494;font-size:11px}.battle-test-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.battle-test-row.triple{grid-template-columns:1fr 1fr 1fr}.battle-test-console select,.battle-test-console input,.battle-test-console button{min-width:0;width:100%;padding:7px;font-size:10px}.battle-test-status{padding:6px 8px;border-radius:6px;background:#071018;color:#b9c6d4;min-height:28px}.battle-test-status.ok{color:#9ff2af}.battle-test-status.bad{color:#ff9b9b}@media(max-width:700px){.battle-test-console{right:68px;bottom:92px;width:calc(100vw - 78px);max-height:66vh}.battle-test-row,.battle-test-row.triple{grid-template-columns:1fr}}.test-annotation-layer[hidden],.test-annotation-drag[hidden]{display:none!important}.test-annotation-layer{position:fixed;inset:0;pointer-events:none;z-index:220}.test-annotation-toolbar{position:fixed;top:max(12px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;gap:7px;align-items:center;max-width:calc(100vw - 20px);padding:8px;background:#07121cf2;border:1px solid #c99a45;border-radius:9px;box-shadow:0 8px 30px #0009;pointer-events:auto;color:#fff;font-size:12px}.test-annotation-toolbar button{font:inherit;border:1px solid #8a7147;border-radius:6px;background:#172a38;color:#f7e6be;padding:7px;white-space:nowrap}.test-annotation-toolbar button:disabled{opacity:.5}.test-annotation-drag{position:fixed;border:2px dashed #ffc466;background:#ffb93030;pointer-events:none;box-sizing:border-box}.test-annotation-mark{position:fixed;width:16px;height:16px;border-radius:50%;border:2px solid #ffd16e;background:#fe9f4844;transform:translate(-50%,-50%);box-shadow:0 0 4px #000;pointer-events:none}.test-annotation-help{font-size:10px;color:#d5decf}@media(max-width:600px){.test-annotation-toolbar{flex-wrap:wrap;justify-content:center;width:calc(100vw - 20px)}.test-annotation-help{width:100%;text-align:center}}`;document.head.appendChild(style)}
 
 // Observe the existing Babylon scene without wrapping Renderer.sync(),
 // creating a second diagnostics store, or touching the GL error flag.
@@ -169,7 +169,7 @@ function makeRenderEvidence(){
 // BattleInputController remain the only owners of gameplay picking/movement.
 // Capture-phase pointer handling prevents an annotation drag from panning,
 // selecting units, or triggering a card action; no second Renderer/State exists.
-function makeTileAnnotator(panel,status,renderEvidence){
+function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
   const layer=document.createElement("div");layer.className="test-annotation-layer";layer.hidden=true;
   const toolbar=document.createElement("div");toolbar.className="test-annotation-toolbar";
   const help=document.createElement("span");help.className="test-annotation-help";help.textContent="點選或拖曳框選格子，不會操作戰棋";
@@ -258,21 +258,35 @@ function makeTileAnnotator(panel,status,renderEvidence){
   function pointerCancel(e){if(!active||e.target!==canvas())return;stop(e);
     if(pointer?.id===e.pointerId){pointer=null;drag.hidden=true;}
   }
-  function keydown(e){if(active&&e.key==="Escape"){e.preventDefault();end(false);}}
-  function end(openPanel=true){
+  function keydown(e){
+    if(active&&e.key==="Escape"){
+      e.preventDefault();e.stopImmediatePropagation();end(false);
+    }
+  }
+  // One exit path owns cleanup for toolbar / TEST button / Escape / page hide.
+  // Exit means return to gameplay; reopening TEST is never implicit.
+  function end(openPanel=false){
     if(boundCanvas){
-      boundCanvas.removeEventListener("pointerdown",pointerDown,true);
-      boundCanvas.removeEventListener("pointermove",pointerMove,true);
-      boundCanvas.removeEventListener("pointerup",pointerUp,true);
-      boundCanvas.removeEventListener("pointercancel",pointerCancel,true);
-      boundCanvas.removeEventListener("lostpointercapture",pointerCancel,true);
+      const previousCanvas=boundCanvas;
+      previousCanvas.removeEventListener("pointerdown",pointerDown,true);
+      previousCanvas.removeEventListener("pointermove",pointerMove,true);
+      previousCanvas.removeEventListener("pointerup",pointerUp,true);
+      previousCanvas.removeEventListener("pointercancel",pointerCancel,true);
+      previousCanvas.removeEventListener("lostpointercapture",pointerCancel,true);
+      if(pointer){
+        try{
+          if(previousCanvas.hasPointerCapture?.(pointer.id))previousCanvas.releasePointerCapture(pointer.id);
+        }catch(_){}
+      }
       boundCanvas=null;
     }
     active=false;pointer=null;drag.hidden=true;layer.hidden=true;
     marks.forEach(node=>node.remove());marks=[];selected.clear();
-    if(openPanel)panel.classList.add("open");
+    panel.classList.toggle("open",openPanel);
+    onModeChange(false);
   }
   function start(){
+    if(active)return;
     const v=renderer();if(!v?.scene||!v?.picker?.hitMeshes?.size){status("無法標註：戰場尚未建立格子拾取資料。",false);return;}
     boundCanvas=v.canvas;
     if(!boundCanvas){status("無法標註：戰場畫布尚未建立。",false);return;}
@@ -281,7 +295,8 @@ function makeTileAnnotator(panel,status,renderEvidence){
     boundCanvas.addEventListener("pointerup",pointerUp,true);
     boundCanvas.addEventListener("pointercancel",pointerCancel,true);
     boundCanvas.addEventListener("lostpointercapture",pointerCancel,true);
-    active=true;selected.clear();layer.hidden=false;panel.classList.remove("open");update();
+    active=true;selected.clear();layer.hidden=false;panel.classList.remove("open");
+    onModeChange(true);update();
   }
   // All fields below are observations of the published state and actual
   // terrain/water meshes. A D surface is correctly level; a Q-only film is
@@ -351,9 +366,9 @@ function makeTileAnnotator(panel,status,renderEvidence){
     d.push("TEST_TILE_ANNOTATION",evidence);
     d.capture("TEST_SELECTED_TILES"); // Existing capture force-persists the annotation event in Settings → TEST → LOG.
     status(`已標註 ${chosen.length} 格並寫入 Settings → TEST → LOG。`,true);
-    end();
+    end(false);
   }
-  save.onclick=saveAnnotation;cancel.onclick=()=>end();undo.onclick=()=>{selected.clear();update()};
+  save.onclick=saveAnnotation;cancel.onclick=()=>end(false);undo.onclick=()=>{selected.clear();update()};
   const onHidden=()=>{if(document.hidden&&active)end(false)};
   const onPageExit=()=>{if(active)end(false)};
   document.addEventListener("visibilitychange",onHidden);
@@ -361,7 +376,7 @@ function makeTileAnnotator(panel,status,renderEvidence){
   window.addEventListener("keydown",keydown,true);
   // Canvas listeners are attached by start() because TEST mounts before a
   // battlefield renderer may exist. Removed on every exit; never leak handlers.
-  return{start,isActive:()=>active};
+  return{start,cancel:()=>end(false),isActive:()=>active};
 }
 
 function mount(){
@@ -376,7 +391,11 @@ function mount(){
  <div id="battleTestStatus" class="battle-test-status">待命。</div></div>`;battle.appendChild(panel);
  const $=id=>panel.querySelector(`#${id}`),status=(message,ok=true)=>{const el=$("battleTestStatus");el.textContent=message;el.classList.toggle("ok",ok);el.classList.toggle("bad",!ok)};
  const renderEvidence=makeRenderEvidence();
- const annotate=makeTileAnnotator(panel,status,renderEvidence);
+ const annotate=makeTileAnnotator(panel,status,renderEvidence,active=>{
+   toggle.textContent=active?"退出標註":"TEST";
+   toggle.title=active?"結束問題格標註，恢復戰棋操作":"Battle Test Console";
+   toggle.setAttribute("aria-pressed",String(active));
+ });
  $("testMarkTiles").onclick=()=>annotate.start();
  $("testCaptureRender").onclick=()=>{
    const d=window.CardTacticsDiagnostics;
@@ -391,7 +410,7 @@ function mount(){
  function selectedUnit(){return runtime()?.state?.()?.units?.find(unit=>unit.id===$("testUnit").value)||null}
  function liveSelectedUnit(){return globalThis.UnitRuntimeEngine?.getLiveUnit?.($("testUnit").value)||null}
  function syncMoveCoords(){const unit=selectedUnit();if(!unit)return;$("testMoveX").value=unit.x;$("testMoveY").value=unit.y}
- toggle.onclick=()=>{if(annotate.isActive())return;panel.classList.toggle("open");if(panel.classList.contains("open")){refreshUnits();syncEnvironmentControls()}};$("battleTestClose").onclick=()=>panel.classList.remove("open");$("testUnit").onchange=syncMoveCoords;
+ toggle.onclick=()=>{if(annotate.isActive()){annotate.cancel();return;}panel.classList.toggle("open");if(panel.classList.contains("open")){refreshUnits();syncEnvironmentControls()}};$("battleTestClose").onclick=()=>panel.classList.remove("open");$("testUnit").onchange=syncMoveCoords;
  $("testApplyTimeOfDay").onclick=()=>{const ok=runtime()?.setTimeOfDay?.($("testTimeOfDay").value);status(ok?`日夜已切換：${$("testTimeOfDay").selectedOptions[0]?.textContent}`:"日夜切換失敗。",!!ok)};
  $("testApplyMoonlight").onclick=()=>{const ok=runtime()?.setMoonlight?.($("testMoonlight").value);status(ok?`月光已切換：${$("testMoonlight").selectedOptions[0]?.textContent}`:"月光切換失敗。",!!ok)};
  $("testApplyWeather").onclick=()=>{const ok=runtime()?.setWeather?.($("testWeather").value,Number($("testWeatherTurns").value));status(ok?`天氣已切換：${$("testWeather").selectedOptions[0]?.textContent}`:"天氣切換失敗。",!!ok)};
