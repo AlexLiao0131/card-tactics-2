@@ -40,7 +40,7 @@ export const SKILLS={
   reina_rally:{id:"reina_rally",name:"遊俠號令",category:"SPECIAL",power:0,manaCost:14,range:{min:0,max:3},target:"ALLY",support:false,effects:[{type:"BUFF",id:"RANGER_CAPTAIN_ORDER",name:"遊俠號令",classification:"POSITIVE",duration:2,modifiers:{accuracy:10,evasion:10,speed:10}}]},
 
   nereia_trident_thrust:{id:"nereia_trident_thrust",name:"三叉戟突刺",category:"ATTACK",weapon:"trident",power:1.10,range:{min:1,max:2},attackType:"PIERCE",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
-  nereia_water_bullet:{id:"nereia_water_bullet",name:"水彈",category:"MAGIC",weapon:"trident",power:1.05,manaCost:12,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,affixes:[]},
+  nereia_water_bullet:{id:"nereia_water_bullet",name:"水彈",category:"MAGIC",weapon:"trident",power:1.05,manaCost:12,range:{min:2,max:4},attackType:"MAGIC",element:"WATER",speed:0,target:"ENEMY",support:false,affixes:[],waterContact:"RAIN_EVENT"},
   nereia_tsunami:{id:"nereia_tsunami",name:"海嘯",category:"MAGIC",weapon:"trident",power:0,manaCost:28,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,speed:-10,support:false,requiresVision:true,hydrologyFlood:{surfaceRise:1.25},affixes:["WATER_TERRAIN_CONTROL"]},
   aquatic_depth_control:{id:"aquatic_depth_control",name:"水深控制",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,variants:[
     {id:"AQUATIC_DIVE",name:"下潛",requirements:{water:true},utilityAction:{type:"SET_VERTICAL_MODE",mode:"DIVING",consumeTurn:false}},

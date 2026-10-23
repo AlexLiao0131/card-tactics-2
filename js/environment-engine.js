@@ -267,12 +267,123 @@ export const EnvironmentEngine=(()=>{
   const removeWater=(tile,amount,events=[])=>HydrologyEngine.removeWater(tile,amount,events);
   const deformTerrain=(map,x,y,options={})=>HydrologyEngine.deformTerrain(map,x,y,options);
 
+  function largeFireKeys(state){
+    const burning=new Set();
+    for(const [k,list] of state?.effects||[])if(list.some(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO))burning.add(k);
+    const clustered=new Set();
+    for(const k of burning){const [x,y]=k.split(",").map(Number);
+      if(DIRS.some(([dx,dy])=>burning.has(key(x+dx,y+dy))))clustered.add(k);
+    }
+    return clustered;
+  }
+  // A burning effect owns its thermal reserve, measured in the SAME tile-depth
+  // units as Hydrology's rainfall. Existing duration is the authored fire-size
+  // budget: each remaining fire turn is one ordinary rain event. Heavy fire uses
+  // the same 1.7 ratio already used for burning objects. No separate heat store.
+  function fireHeatReserve(fire){
+    const existing=Number(fire?.thermalWaterReserve);
+    if(Number.isFinite(existing))return Math.max(0,existing);
+    const turns=Math.max(1,Number(fire?.duration||1));
+    return HydrologyEngine.RAIN_FILL_PER_EVENT*turns*
+      (fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"?1.7:1);
+  }
+  function exchangeWaterFire(map,state,tile,volume,events,{source="WATER",precipitation=false,clusterKeys=null}={}){
+    const incoming=Math.max(0,Number(volume||0));
+    if(!tile||incoming<=0)return incoming;
+    const active=effectAt(state,tile.x,tile.y),fire=active.find(e=>e.type===EFFECT.BURNING)||active.find(e=>e.type===EFFECT.FIRE_TORNADO);
+    if(!fire)return incoming;
+    const reserve=fireHeatReserve(fire),vaporized=Math.min(incoming,reserve);
+    if(vaporized<=0)return incoming;
+    const remainingHeat=Math.max(0,reserve-vaporized);
+    fire.thermalWaterReserve=remainingHeat;
+    const strongFire=fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"||
+      (clusterKeys?clusterKeys.has(key(tile.x,tile.y)):
+        DIRS.some(([dx,dy])=>isBurning(state,tile.x+dx,tile.y+dy)));
+    const heavyContact=precipitation?precipitationAt(state).type===PRECIPITATION.HEAVY_RAIN
+      :incoming>=HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT;
+    events.push({type:"FIRE_WATER_EXCHANGE",x:tile.x,y:tile.y,source,contactWater:incoming,
+      evaporatedWater:vaporized,remainingWater:incoming-vaporized,thermalBefore:reserve,thermalAfter:remainingHeat});
+    addSteam(state,tile.x,tile.y,events,{duration:2,reason:"FIRE_WATER_EXCHANGE"});
+    // Sudden large-volume contact with a HEAVY fire causes an actual one-shot
+    // event. The damage scale is the existing boiling hazard and vapor volume;
+    // exposed cells define its contact area (no visual light-radius coupling).
+    if(strongFire&&heavyContact){
+      const damage=Math.round(HAZARD.BOILING_DAMAGE*vaporized/HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT);
+      if(damage>0)events.push({type:"STEAM_BLAST",x:tile.x,y:tile.y,source,
+        cells:[{x:tile.x,y:tile.y}],contactProfile:"AIR_COLUMN",evaporatedWater:vaporized,damage});
+    }
+    if(remainingHeat<=HydrologyEngine.EPSILON){
+      removeEffect(state,tile.x,tile.y,fire.type);
+      if(fire.type===EFFECT.FIRE_TORNADO){
+        const {type,element,thermalWaterReserve,...rest}=fire;
+        addEffect(state,tile.x,tile.y,{...rest,type:EFFECT.TORNADO,element:"AIR"});
+      }
+      events.push({type:"FIRE_EXTINGUISHED",x:tile.x,y:tile.y,source,from:fire.type});
+    }else if(fire.fireIntensity==="HEAVY"&&remainingHeat<=HydrologyEngine.RAIN_FILL_PER_EVENT*Math.max(1,Number(fire.duration||1))){
+      fire.fireIntensity="NORMAL";
+      fire.damage=HAZARD.BURNING_DAMAGE;
+      events.push({type:"FIRE_WEAKENED",x:tile.x,y:tile.y,source,thermalRemaining:remainingHeat});
+    }
+    return incoming-vaporized;
+  }
+  // Single point for both standing water (including a flood after real flow)
+  // and water delivered by a targeted magic hit. Hydrology alone owns water.
+  function resolveStandingWaterFire(map,state,events=[],{source="WATER_CONTACT"}={}){
+    if(!map||!state?.effects)return events;
+    let used=0;
+    const clusterKeys=largeFireKeys(state);
+    const byKey=new Map((map.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
+    for(const [k,active] of [...state.effects.entries()]){
+      if(!active.some(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO))continue;
+      const tile=byKey.get(k),volume=waterDepth(tile);
+      if(volume<=0)continue;
+      const remaining=exchangeWaterFire(map,state,tile,volume,events,{source,clusterKeys});
+      const consumed=volume-remaining;
+      if(consumed>0){HydrologyEngine.removeWater(tile,consumed,events);used+=consumed;}
+    }
+    if(used>0)HydrologyEngine.redistribute(map,{source:"FIRE_WATER_EVAPORATION",events});
+    return events;
+  }
+  function waterImpact(map,state,x,y,{volume=HydrologyEngine.RAIN_FILL_PER_EVENT,source="WATER_MAGIC"}={}){
+    const tile=tileAt(map,x,y),events=[];
+    if(!tile)return events;
+    const leftover=exchangeWaterFire(map,state,tile,volume,events,{source});
+    if(leftover>0){HydrologyEngine.addWater(tile,leftover,events);HydrologyEngine.redistribute(map,{source,events});}
+    return events;
+  }
+  function meltSnowByFire(map,state,events=[]){
+    let waterChanged=false;
+    const clusterKeys=largeFireKeys(state);
+    const byKey=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
+    for(const [k,list] of [...(state?.effects||new Map()).entries()]){
+      const fire=list.find(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO);
+      if(!fire)continue;
+      const tile=byKey.get(k);if(!tile||Number(tile.snowDepth||0)<=0)continue;
+      const {x,y}=tile;
+      // Reuse ClimateEngine.applyHeat's authored melt-per-contact amounts.
+      const melted=Math.min(Number(tile.snowDepth),fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"?2:1);
+      tile.snowDepth=Math.max(0,Number(tile.snowDepth)-melted);
+      const liquid=exchangeWaterFire(map,state,tile,melted,events,{source:"FIRE_SNOWMELT",clusterKeys});
+      if(liquid>0){HydrologyEngine.addWater(tile,liquid,events);waterChanged=true;}
+      events.push({type:"SNOW_MELT",x,y,amount:melted,source:"FIRE_CONTACT"});
+      globalThis.ClimateEngine?.syncTileVisuals?.(state,tile);
+    }
+    if(waterChanged)HydrologyEngine.redistribute(map,{source:"FIRE_SNOWMELT",events});
+    return events;
+  }
   function rainAmount(state){const precipitation=precipitationAt(state);if(hasThunder(state)&&precipitation.type===PRECIPITATION.HEAVY_RAIN)return Number(HydrologyEngine.STORM_RAIN_FILL_PER_EVENT??0.16);if(precipitation.type===PRECIPITATION.HEAVY_RAIN)return Number(HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT??0.12);return Number(HydrologyEngine.RAIN_FILL_PER_EVENT??0.06);}
-  function applyRainToTerrain(map,state){const precipitation=precipitationAt(state),heavy=precipitation.type===PRECIPITATION.HEAVY_RAIN;return HydrologyEngine.applyRain(map,{heavy,amount:rainAmount(state),source:legacyWeatherRaw(state)});}
+  function applyRainToTerrain(map,state){
+    const precipitation=precipitationAt(state),heavy=precipitation.type===PRECIPITATION.HEAVY_RAIN;
+    const clusterKeys=largeFireKeys(state);
+    return HydrologyEngine.applyRain(map,{heavy,amount:rainAmount(state),source:legacyWeatherRaw(state),
+      intercept:(tile,volume,events)=>exchangeWaterFire(map,state,tile,volume,events,{source:legacyWeatherRaw(state),precipitation:true,clusterKeys})});
+  }
   function weatherPulse(map,state,events=[]){
     if(isRain(state))events.push(...applyRainToTerrain(map,state));
     else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{amount:HydrologyEngine.DRYING_PER_CLEAR_TURN*Number(window.ClimateEngine?.config?.(state)?.extraDrying||1),source:legacyWeatherRaw(state)}));
     if(window.ClimateEngine)events.push(...ClimateEngine.advance(map,state));
+    meltSnowByFire(map,state,events);
+    resolveStandingWaterFire(map,state,events,{source:"HYDROLOGY_CONTACT"});
     advanceFireDryness(map,state,events);
     if(window.EnvironmentObjectEngine?.resolveWind){const ambientWind=windAt(state),source=legacyWeatherRaw(state)===WEATHER.TYPHOON?"TYPHOON_WIND":"AMBIENT_WIND";EnvironmentObjectEngine.resolveWind(map,state,ambientWind,{events,source});}
     if(window.EnvironmentResolver)events.push(...EnvironmentResolver.resolve(map,state,{source:"ENVIRONMENT_TICK"}));
@@ -479,7 +590,10 @@ export const EnvironmentEngine=(()=>{
     for(const point of tornadoNearbyCells(map,cells)){
       const burning=effectAt(state,point.x,point.y).find(effect=>effect.type===EFFECT.BURNING);if(!burning)continue;
       const before=String(burning.fireIntensity||"NORMAL").toUpperCase();
-      burning.fireIntensity="HEAVY";burning.duration=Math.max(4,Number(burning.duration||0));burning.lightRadius=Math.max(3,Number(burning.lightRadius||0));burning.damage=Math.max(Number(burning.damage||0),Math.round(HAZARD.BURNING_DAMAGE*1.35));
+      const previousHeat=fireHeatReserve(burning);
+      burning.fireIntensity="HEAVY";burning.duration=Math.max(4,Number(burning.duration||0));
+      burning.thermalWaterReserve=Math.max(previousHeat,HydrologyEngine.RAIN_FILL_PER_EVENT*burning.duration*1.7);
+      burning.lightRadius=Math.max(3,Number(burning.lightRadius||0));burning.damage=Math.max(Number(burning.damage||0),Math.round(HAZARD.BURNING_DAMAGE*1.35));
       addSmoke(state,point.x,point.y,{intensity:1.35,duration:3,source:"FIRE_TORNADO_STOKE"});
       if(before!=="HEAVY"){count++;events.push({type:"FIRE_TORNADO_STOKED",x:point.x,y:point.y});}
     }
@@ -540,7 +654,9 @@ export const EnvironmentEngine=(()=>{
     if(window.HydrologyEngine?.sourceRecessionActive?.(map)&&!events.some(event=>event?.type==="HYDROLOGY_REBALANCED")){
       HydrologyEngine.advanceSourceRecession(map,{events,source:"SPRING_SOURCE_RECESSION"});
     }
-    advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
+    advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);
+    resolveStandingWaterFire(map,state,events,{source:"TORNADO_AND_FLOW_CONTACT"});
+    events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true,source="MANUAL"}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];
@@ -548,12 +664,8 @@ export const EnvironmentEngine=(()=>{
     // precedence over the autonomous climate scheduler for their full duration.
     if(source!=="NATURAL"&&duration!=null)state.cardClimateOverride={weather:resolved,remaining:Math.max(1,Number(duration??WEATHER_TURNS[resolved]??1))};
     else if(source==="NATURAL")state.cardClimateOverride=null;
-    if(isRain(state)||isSnow(state)){
-      for(const [k,list] of [...state.effects.entries()]){
-        if(!list.some(e=>e.type===EFFECT.BURNING))continue;
-        const [x,y]=k.split(",").map(Number);removeEffect(state,x,y,EFFECT.BURNING);events.push({type:isRain(state)?"RAIN_EXTINGUISHED_FIRE":"SNOW_EXTINGUISHED_FIRE",x,y});
-      }
-    }
+    // Changing a weather label does not inject water. An actual rainfall or
+    // snowfall pulse drives all heat exchange, regardless of who changed it.
     if(map&&applyPulse){if(touched.includes(CLIMATE_CHANNEL.PRECIPITATION)||touched.includes(CLIMATE_CHANNEL.HEAT))weatherPulse(map,state,events);decrementClimate(state,touched);}
     events.push({type:"WEATHER_SET",weather:resolved,duration:resolved===WEATHER.CLEAR?0:Number(duration??WEATHER_TURNS[resolved]??1),remaining:Number(state.weatherTurnsRemaining??0),climate:climateSnapshot(state)});
     for(const channel of touched)events.push({type:"CLIMATE_SET",channel,climate:climateSnapshot(state)});
@@ -660,24 +772,27 @@ export const EnvironmentEngine=(()=>{
     return events;
   }
   function hasMetalEquipment(unit){return EquipmentDatabase.equippedItems(unit?.character).some(item=>item?.material==="METAL"||item?.conductive===true||METAL_EQUIPMENT_IDS.has(item?.id));}
-  function lightningRisk(map,unit,rules=WEATHER_RULES.THUNDERSTORM){if(!unit?.alive)return{weight:0,reasons:[]};let weight=1;const reasons=[];if(hasMetalEquipment(unit)){weight*=rules.metalWeight;reasons.push("METAL");}const material=environmentAt(map,unit.x,unit.y);if(material===ELEMENT.WATER){weight*=rules.waterWeight;reasons.push("WATER");}if(material===ELEMENT.GRASS){weight*=rules.treeWeight;reasons.push("TREE");}return{weight,reasons};}
-  function rollWeatherEvent({map,state,units=[],random=Math.random}){if(!state||!hasThunder(state))return[];const rules=legacyWeatherRaw(state)===WEATHER.TYPHOON?WEATHER_RULES.TYPHOON:WEATHER_RULES.THUNDERSTORM,intensity=Math.max(.1,Number(thunderAt(state).intensity||1)),chance=Math.min(.85,rules.lightningChance*intensity);if(random()>=chance)return[];const candidates=units.filter(u=>u?.alive).map(unit=>({unit,...lightningRisk(map,unit,rules)})).filter(x=>x.weight>0);if(!candidates.length)return[];let roll=random()*candidates.reduce((n,x)=>n+x.weight,0),chosen=candidates[candidates.length-1];for(const candidate of candidates){roll-=candidate.weight;if(roll<=0){chosen=candidate;break;}}return[{type:"LIGHTNING_STRIKE",unit:chosen.unit,x:chosen.unit.x,y:chosen.unit.y,damage:rules.lightningDamage,riskReasons:chosen.reasons,weight:chosen.weight}];}
+  function lightningRisk(map,unit,rules=WEATHER_RULES.THUNDERSTORM,state=null){if(!unit?.alive)return{weight:0,reasons:[]};let weight=1;const reasons=[];if(hasMetalEquipment(unit)){weight*=rules.metalWeight;reasons.push("METAL");}const material=environmentAt(map,unit.x,unit.y);if(material===ELEMENT.WATER||waterTornadoAt(state,unit.x,unit.y)){weight*=rules.waterWeight;reasons.push("WATER");}if(material===ELEMENT.GRASS){weight*=rules.treeWeight;reasons.push("TREE");}return{weight,reasons};}
+  function rollWeatherEvent({map,state,units=[],random=Math.random}){if(!state||!hasThunder(state))return[];const rules=legacyWeatherRaw(state)===WEATHER.TYPHOON?WEATHER_RULES.TYPHOON:WEATHER_RULES.THUNDERSTORM,intensity=Math.max(.1,Number(thunderAt(state).intensity||1)),chance=Math.min(.85,rules.lightningChance*intensity);if(random()>=chance)return[];const candidates=units.filter(u=>u?.alive).map(unit=>({unit,...lightningRisk(map,unit,rules,state)})).filter(x=>x.weight>0);if(!candidates.length)return[];let roll=random()*candidates.reduce((n,x)=>n+x.weight,0),chosen=candidates[candidates.length-1];for(const candidate of candidates){roll-=candidate.weight;if(roll<=0){chosen=candidate;break;}}return[{type:"LIGHTNING_STRIKE",unit:chosen.unit,x:chosen.unit.x,y:chosen.unit.y,damage:rules.lightningDamage,riskReasons:chosen.reasons,weight:chosen.weight}];}
   function effectAt(state,x,y){return state?.effects?.get(key(x,y))||[];}
   function addEffect(state,x,y,effect){const k=key(x,y),list=state.effects.get(k)||[],same=list.find(e=>e.type===effect.type);if(same)Object.assign(same,effect);else list.push({...effect,x,y});state.effects.set(k,list);return same||list[list.length-1];}
   function removeEffect(state,x,y,type){const k=key(x,y),next=(state.effects.get(k)||[]).filter(e=>e.type!==type);if(next.length)state.effects.set(k,next);else state.effects.delete(k);}
   function destroyStoneObject(map,state,object){if(!object?.destructible)return false;object.destroyed=true;state.destroyedObjects.add(object.id);const tile=tileAt(map,object.x,object.y);if(tile&&object.breaksIntoTerrain)tile.terrain=object.breaksIntoTerrain;return true;}
   function isBurning(state,x,y){return effectAt(state,x,y).some(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO);}
   function isBoiling(state,x,y){return effectAt(state,x,y).some(e=>e.type===EFFECT.BOILING);}
-  function isConductive(map,state,x,y){return HydrologyEngine.isWater(tileAt(map,x,y));}
+  function waterTornadoAt(state,x,y){return effectAt(state,x,y).some(effect=>effect.type===EFFECT.TORNADO&&effect.element==="WATER");}
+  function isConductive(map,state,x,y){return HydrologyEngine.isWater(tileAt(map,x,y))||waterTornadoAt(state,x,y);}
   function conductivePropagation(map,state,x,y,{power=ELECTRIC_CONDUCTION.BASE_POWER,maxDistance=ELECTRIC_CONDUCTION.MAX_DISTANCE}={}){
-    const origin=tileAt(map,x,y);if(!HydrologyEngine.isWater(origin))return[];
+    const origin=tileAt(map,x,y);if(!origin||!isConductive(map,state,x,y))return[];
     const startPower=Math.max(0,Number(power||0));if(startPower<ELECTRIC_CONDUCTION.MIN_POWER)return[];
     const limit=Math.max(0,Math.floor(Number(maxDistance||0))),queue=[{tile:origin,distance:0,power:startPower}],best=new Map([[key(x,y),startPower]]),out=[];
     while(queue.length){
       const current=queue.shift();out.push(current);if(current.distance>=limit)continue;
       for(const[dx,dy]of DIRS){
-        const next=tileAt(map,current.tile.x+dx,current.tile.y+dy);if(!next||!HydrologyEngine.isWater(next))continue;
-        const depth=waterDepth(next),shallowLoss=depth<.25?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS:depth<.55?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS*.5:0;
+        const next=tileAt(map,current.tile.x+dx,current.tile.y+dy);
+        if(!next||!isConductive(map,state,next.x,next.y))continue;
+        const depth=waterDepth(next),shallowLoss=waterTornadoAt(state,next.x,next.y)?0:
+          depth<.25?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS:depth<.55?ELECTRIC_CONDUCTION.SHALLOW_EXTRA_LOSS*.5:0;
         const nextPower=Math.max(0,current.power-ELECTRIC_CONDUCTION.STEP_LOSS-shallowLoss),nextDistance=current.distance+1,nk=key(next.x,next.y);
         if(nextPower<ELECTRIC_CONDUCTION.MIN_POWER||nextDistance>limit||nextPower<=Number(best.get(nk)||0)+1e-6)continue;
         best.set(nk,nextPower);queue.push({tile:next,distance:nextDistance,power:nextPower});
@@ -700,25 +815,25 @@ export const EnvironmentEngine=(()=>{
     const propagation=conductivePropagation(map,state,x,y,{power,maxDistance}),hitRegistry=[...new Set(damagedUnitIds.map(String))];
     for(const entry of propagation){
       const damage=Math.max(8,Math.round(HAZARD.ELECTRIC_DAMAGE*entry.power)),tile=entry.tile;
-      addEffect(state,tile.x,tile.y,{type:EFFECT.ELECTRIFIED,duration:1,damage,damageType:"THUNDER",damagedUnitIds:hitRegistry,origin:{x,y},conductionPower:entry.power,conductionDistance:entry.distance});
+      addEffect(state,tile.x,tile.y,{type:EFFECT.ELECTRIFIED,duration:1,damage,damageType:"THUNDER",
+        contactProfile:waterTornadoAt(state,tile.x,tile.y)?"AIR_COLUMN":"WATER_VOLUME",
+        damagedUnitIds:hitRegistry,origin:{x,y},conductionPower:entry.power,conductionDistance:entry.distance});
     }
     if(propagation.length)events.push({type:"ELECTRIC_CONDUCTION",x,y,effect:EFFECT.ELECTRIFIED,origin:{x,y},regionSize:propagation.length,maxDistance:Math.max(...propagation.map(entry=>entry.distance)),tiles:propagation.map(entry=>({x:entry.tile.x,y:entry.tile.y,distance:entry.distance,power:Number(entry.power.toFixed(3)),damage:Math.max(8,Math.round(HAZARD.ELECTRIC_DAMAGE*entry.power))}))});
     return propagation.map(entry=>entry.tile);
   }
 
   function apply({map,state,x,y,forces=[]}){
-    const forceSet=new Set(forces),events=[],raining=isRain(state),burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM),smokeBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.SMOKE),stoneObjectBefore=objectAt(map,x,y);
+    const forceSet=new Set(forces),events=[],burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM),smokeBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.SMOKE),stoneObjectBefore=objectAt(map,x,y);
     if((forceSet.has(FORCE.FIRE)||forceSet.has(FORCE.HEAVY_FIRE))&&window.ClimateEngine)events.push(...ClimateEngine.applyHeat(map,state,x,y,{heavy:forceSet.has(FORCE.HEAVY_FIRE)}));
     if(forceSet.has(FORCE.IMPACT))events.push(...deformTerrain(map,x,y,{deltaElevation:-1,source:"IMPACT"}));
-    if(window.EnvironmentObjectEngine){const objectForces=[...forceSet].filter(force=>force!==FORCE.FIRE||!raining);EnvironmentObjectEngine.applyForces(map,x,y,objectForces,{events});}
+    if(window.EnvironmentObjectEngine)EnvironmentObjectEngine.applyForces(map,x,y,[...forceSet],{events});
     const environment=environmentAt(map,x,y);
     if(forceSet.has(FORCE.WIND)&&steamBefore){removeEffect(state,x,y,EFFECT.STEAM);events.push({type:"STEAM_DISPERSED",x,y});}
     if(forceSet.has(FORCE.WIND)&&smokeBefore){removeEffect(state,x,y,EFFECT.SMOKE);events.push({type:"SMOKE_DISPERSED",x,y});}
     if(forceSet.has(FORCE.WIND)&&burningBefore)events.push(createTornado(state,x,y,{map,duration:2}));
-    if(raining&&forceSet.has(FORCE.FIRE)){if(effectAt(state,x,y).some(e=>e.type===EFFECT.BURNING)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}events.push({type:"RAIN_SUPPRESSED_FIRE",x,y});}
-    else if(!raining&&environment===ELEMENT.GRASS&&forceSet.has(FORCE.FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});addSmoke(state,x,y,{intensity:.9,duration:3,source:"IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
-    if(raining&&(forceSet.has(FORCE.HEAVY_FIRE)||forceSet.has(FORCE.EXPLOSION))){removeEffect(state,x,y,EFFECT.BURNING);addSteam(state,x,y,events,{duration:2,reason:forceSet.has(FORCE.HEAVY_FIRE)?"HEAVY_FIRE_IN_RAIN":"EXPLOSION_IN_RAIN"});}
-    else if(!raining&&environment===ELEMENT.GRASS&&forceSet.has(FORCE.HEAVY_FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"HEAVY"});addSmoke(state,x,y,{intensity:1.35,duration:3,source:"HEAVY_IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
+    if(environment===ELEMENT.GRASS&&forceSet.has(FORCE.FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});addSmoke(state,x,y,{intensity:.9,duration:3,source:"IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
+    if(environment===ELEMENT.GRASS&&forceSet.has(FORCE.HEAVY_FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"HEAVY"});addSmoke(state,x,y,{intensity:1.35,duration:3,source:"HEAVY_IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
     if(environment===ELEMENT.WATER){if(forceSet.has(FORCE.HEAVY_FIRE)){removeEffect(state,x,y,EFFECT.BURNING);const waterTile=tileAt(map,x,y);if(window.ClimateEngine?.isFrozen?.(waterTile))events.push({type:"ICE_HEATED",x,y,iceThickness:ClimateEngine.iceThickness(waterTile)});else heatWater(map,state,x,y,events);}else if(forceSet.has(FORCE.FIRE)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}}
     if(forceSet.has(FORCE.THUNDER)&&isConductive(map,state,x,y))conductThunder(map,state,x,y,events);
     const terrainEnvironment=TERRAINS[tileAt(map,x,y)?.terrain]?.environment||ELEMENT.NONE;
@@ -769,6 +884,6 @@ export const EnvironmentEngine=(()=>{
     return range;
   }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

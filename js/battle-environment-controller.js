@@ -228,6 +228,22 @@ function create(ctx){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
   const hasElectric=list.some(event=>event.type==="ELECTRIC_CONDUCTION"),hydrologyChanged=list.some(event=>["ELEVATION_CHANGED","WATER_FLOW","WATER_ACCUMULATED","WATER_REDUCED","BASIN_FILLED","BASIN_DRAINED","HYDROLOGY_REBALANCED","FLOOD_AREA_RESOLVED","WATER_EVAPORATION","WATER_DRAINED_OFF_MAP","SNOWMELT_WATER","ICE_MELT","ICE_THINNED","WATER_FROZEN","CLIMATE_WATER_CHANGED","FREEZE_PULSE","ICE_THAW"].includes(event.type));
   const boilingTiles=new Set(list.filter(event=>event.type==="WATER_BOILING"||event.type==="WATER_EVAPORATION").map(event=>`${event.x},${event.y}`));
+  // Each contact emits one blast event. Overlapping cells in a single
+  // contact pulse share one pressure front (maximum exposure per unit).
+  const steamDamageByUnit=new Map();
+  for(const blast of list.filter(event=>event.type==="STEAM_BLAST")){
+    const damage=Math.max(0,Number(blast.damage||0)),contactKeys=new Set((blast.cells||[]).map(cell=>`${cell.x},${cell.y}`));
+    if(damage<=0||!contactKeys.size)continue;
+    for(const unit of (s.units||[]).filter(u=>u?.alive&&contactKeys.has(`${u.x},${u.y}`))){
+      const tile=TacticalEngine.tile(s.map,unit.x,unit.y);
+      if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.AIR_COLUMN||"AIR_COLUMN",blast))continue;
+      const current=steamDamageByUnit.get(unit.id);
+      if(!current||damage>current.damage)steamDamageByUnit.set(unit.id,{unit,damage});
+    }
+  }
+  for(const {unit,damage} of steamDamageByUnit.values()){
+    if(unit.alive){ctx.damageUnitFlat(unit,damage,"蒸氣爆發");affected++;}
+  }
   if(hydrologyChanged)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水位／冰面／地形變化",waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(hasElectric)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHECK",includeElectric:true,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
@@ -255,6 +271,9 @@ function create(ctx){
  function logEnvironmentEvent(event){
   if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
   else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
+  else if(event.type==="FIRE_WATER_EXCHANGE")ctx.pushLog(`火水接觸 (${event.x},${event.y})｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量｜殘餘熱量 ${Number(event.thermalAfter||0).toFixed(3)}。`,"DETAIL");
+  else if(event.type==="FIRE_WEAKENED")ctx.pushLog(`(${event.x},${event.y}) 的重火降為普通火勢。`,"SYSTEM");
+  else if(event.type==="STEAM_BLAST")ctx.pushLog(`♨ 蒸氣爆發 (${event.x},${event.y})｜高溫接觸格 ${event.cells?.length||0}｜瞬間傷害 ${event.damage}。`,"BATTLE");
   else if(event.type==="RAIN_EXTINGUISHED_FIRE")ctx.pushLog(`豪雨熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
   else if(event.type==="SNOW_EXTINGUISHED_FIRE")ctx.pushLog(`降雪熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
   else if(event.type==="RAIN_SUPPRESSED_FIRE")ctx.pushLog(`豪雨壓制 (${event.x},${event.y}) 的小火，無法形成燃燒地形。`,"SYSTEM");

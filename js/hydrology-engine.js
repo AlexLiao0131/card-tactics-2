@@ -2011,11 +2011,18 @@ export const HydrologyEngine=(()=>{
   function addWater(tile,amount,events=[]){if(!tile)return 0;const incoming=Math.max(0,Number(amount||0)),excess=saturateSoil(tile,incoming,events,"ACCUMULATION"),before=waterDepth(tile),next=before+excess;return Math.max(0,setWaterDepth(tile,next,events,"ACCUMULATION"));}
   function removeWater(tile,amount,events=[]){if(!tile)return 0;const before=waterDepth(tile),next=Math.max(0,before-Math.max(0,Number(amount||0)));setWaterDepth(tile,next,events,"DRAINAGE");return before-next;}
 
-  function floodArea(map,tiles,{surfaceRise=1,source="FLOOD"}={}){
+  function floodArea(map,tiles,{surfaceRise=1,source="FLOOD",intercept=null}={}){
     const events=[],area=(tiles||[]).filter(tile=>tile&&canHoldWater(tile));if(!area.length)return events;
     const existingSurfaces=area.map(waterSurfaceZ).filter(value=>value!=null&&Number.isFinite(value)),baseSurface=existingSurfaces.length?Math.max(...existingSurfaces):Math.min(...area.map(elevation)),targetSurface=baseSurface+Math.max(0,Number(surfaceRise||0));let injectedVolume=0;
     const ordered=[...area].sort((a,b)=>elevation(a)-elevation(b)||a.y-b.y||a.x-b.x);
-    for(const tile of ordered){if(elevation(tile)>=targetSurface)continue;const before=waterDepth(tile),required=Math.max(before,targetSurface-elevation(tile));tile.waterDepth=required;injectedVolume+=Math.max(0,required-before);}
+    for(const tile of ordered){
+      if(elevation(tile)>=targetSurface)continue;
+      const before=waterDepth(tile),required=Math.max(before,targetSurface-elevation(tile));
+      const delivered=Math.max(0,required-before);
+      const remaining=typeof intercept==="function"?Math.max(0,Math.min(delivered,Number(intercept(tile,delivered,events)))):delivered;
+      tile.waterDepth=before+remaining;
+      injectedVolume+=delivered;
+    }
     redistribute(map,{source,events});events.push({type:"FLOOD_AREA_RESOLVED",source,targetSurface,injectedVolume,tiles:(map?.tiles||[]).map(tile=>({x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile),soilMoisture:soilMoisture(tile)}))});return events;
   }
 
@@ -2024,12 +2031,16 @@ export const HydrologyEngine=(()=>{
     const beforeDepth=waterDepth(tile);tile.elevation=after;tile.waterDepth=beforeDepth;const events=[{type:"ELEVATION_CHANGED",x,y,from:before,to:after,waterDepth:beforeDepth,source}];redistribute(map,{source,events});return events;
   }
 
-  function applyRain(map,{heavy=false,amount=null,source=null}={}){
+  function applyRain(map,{heavy=false,amount=null,source=null,intercept=null}={}){
     const resolvedAmount=Math.max(0,Number(amount??(heavy?HEAVY_RAIN_FILL_PER_EVENT:RAIN_FILL_PER_EVENT))),events=[];amount=resolvedAmount;const rainSource=source||(heavy?"HEAVY_RAIN":"RAIN");
     for(const tile of map?.tiles||[]){
       if(!canHoldWater(tile))continue;
-      if(isWater(tile)){const before=waterDepth(tile);tile.waterDepth=before+amount;events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
-      const excess=hasSoil(tile)?saturateSoil(tile,amount,events,rainSource):amount;
+      // Climate precipitation is real volume. Fire can vaporize some before it
+      // enters soil, runoff or standing water. Hydrology owns the remainder.
+      const received=typeof intercept==="function"?Math.max(0,Math.min(amount,Number(intercept(tile,amount,events)))):amount;
+      if(received<=EPSILON)continue;
+      if(isWater(tile)){const before=waterDepth(tile);tile.waterDepth=before+received;events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
+      const excess=hasSoil(tile)?saturateSoil(tile,received,events,rainSource):received;
       if(excess>EPSILON){const before=waterDepth(tile);tile.waterDepth=before+excess;events.push({type:"SURFACE_RUNOFF",x:tile.x,y:tile.y,amount:excess,source:rainSource});}
     }
     redistribute(map,{source:rainSource,events,riverPulse:true});return events;

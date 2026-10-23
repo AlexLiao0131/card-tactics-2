@@ -413,7 +413,10 @@
         environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);
       });
       if(skill.hydrologyFlood&&window.HydrologyEngine?.floodArea){
-        const floodEvents=HydrologyEngine.floodArea(map,affected,{surfaceRise:Number(skill.hydrologyFlood.surfaceRise||1),source:skill.id});
+        const clusterKeys=EnvironmentEngine.largeFireKeys(environmentState);
+        const floodEvents=HydrologyEngine.floodArea(map,affected,{surfaceRise:Number(skill.hydrologyFlood.surfaceRise||1),source:skill.id,
+          intercept:(tile,volume,events)=>EnvironmentEngine.exchangeWaterFire(map,environmentState,tile,volume,events,{source:skill.id,clusterKeys})});
+        EnvironmentEngine.resolveStandingWaterFire(map,environmentState,floodEvents,{source:skill.id});
         environmentEvents.push(...floodEvents);floodEvents.forEach(ctx.logEnvironmentEvent);
         const resolved=floodEvents.find(event=>event.type==="FLOOD_AREA_RESOLVED"),wetCount=resolved?.tiles?.filter(tile=>Number(tile.waterDepth||0)>0).length||0;
         ctx.pushLog(`${skill.name}｜注入 Water Volume ${Number(resolved?.injectedVolume||0).toFixed(2)}｜${wetCount} 格形成／加深水域。`,"SYSTEM");
@@ -597,7 +600,14 @@
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
         {map,units,initiator:attacker,target:defender,skill,actions},
-        {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
+        {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
+          onAction:entry=>{
+            ctx.logBattleAction(entry);
+            if(!entry.result?.hit||entry.skill?.waterContact!=="RAIN_EVENT")return;
+            const events=EnvironmentEngine.waterImpact(map,state().environmentState,entry.target.x,entry.target.y,{source:entry.skill.id});
+            events.forEach(ctx.logEnvironmentEvent);
+            ctx.resolveEnvironmentEvents?.(events,{reason:`${entry.skill.name} 水流接觸`});
+          },onPostEffect:ctx.logPostEffect}
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
       commitPendingMove(attacker);
