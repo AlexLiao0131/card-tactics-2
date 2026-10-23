@@ -182,6 +182,7 @@ export const EnvironmentEngine=(()=>{
     if(name===CLIMATE_CHANNEL.PRECIPITATION){
       const input=typeof value==="object"?value:{type:value};const type=PRECIPITATION[input?.type]?input.type:PRECIPITATION.NONE;
       climate.precipitation={type,intensity:type===PRECIPITATION.NONE?0:Math.max(0,Number(input?.intensity??intensity??1)),turnsRemaining:type===PRECIPITATION.NONE?null:turns(input?.turnsRemaining,duration)};
+      climate.lastPrecipitationPulseTurn=null;
     }else if(name===CLIMATE_CHANNEL.FOG){
       const input=typeof value==="object"?value:{intensity:value===false||value==="NONE"?0:Number(value)||1};const fogIntensity=Math.max(0,Number(input?.intensity??intensity??1));
       climate.fog={intensity:fogIntensity,turnsRemaining:fogIntensity<=0?null:turns(input?.turnsRemaining,duration)};
@@ -211,6 +212,7 @@ export const EnvironmentEngine=(()=>{
   function applyClimatePreset(state,weather,{duration=null}={}){
     if(!state)return[];const climate=ensureClimate(state),resolved=WEATHER[weather]?weather:WEATHER.CLEAR,d=duration==null?WEATHER_TURNS[resolved]??null:Math.max(0,Number(duration||0)),touched=[];
     delete climate.waveFronts;
+    climate.lastPrecipitationPulseTurn=null;
     // Changing a weather preset replaces the previous sky, rather than leaving
     // an expired rain/fog/thunder channel running behind the new preset.
     climate.precipitation={type:PRECIPITATION.NONE,intensity:0,turnsRemaining:null};
@@ -283,7 +285,8 @@ export const EnvironmentEngine=(()=>{
   function fireHeatReserve(fire){
     const existing=Number(fire?.thermalWaterReserve);
     if(Number.isFinite(existing))return Math.max(0,existing);
-    const turns=Math.max(1,Number(fire?.duration||1));
+    // Both map fire and unit BURN use the same authored remaining-turn budget.
+    const turns=Math.max(1,Number(fire?.remaining??fire?.duration??1));
     return HydrologyEngine.RAIN_FILL_PER_EVENT*turns*
       (fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"?1.7:1);
   }
@@ -344,10 +347,15 @@ export const EnvironmentEngine=(()=>{
     if(used>0)HydrologyEngine.redistribute(map,{source:"FIRE_WATER_EVAPORATION",events});
     return events;
   }
-  function waterImpact(map,state,x,y,{volume=HydrologyEngine.RAIN_FILL_PER_EVENT,source="WATER_MAGIC"}={}){
+  function waterImpact(map,state,x,y,{volume=HydrologyEngine.RAIN_FILL_PER_EVENT,source="WATER_MAGIC",intercept=null}={}){
     const tile=tileAt(map,x,y),events=[];
     if(!tile)return events;
-    const leftover=exchangeWaterFire(map,state,tile,volume,events,{source});
+    // One actual water delivery, ordered through its contacted recipient and
+    // then the existing ground-fire / Hydrology authorities. An optional
+    // recipient cannot duplicate water volume at the ground.
+    const delivered=Math.max(0,Number(volume||0));
+    const contacting=typeof intercept==="function"?Math.max(0,Math.min(delivered,Number(intercept(delivered,events))||0)):delivered;
+    const leftover=exchangeWaterFire(map,state,tile,contacting,events,{source});
     if(leftover>0){HydrologyEngine.addWater(tile,leftover,events);HydrologyEngine.redistribute(map,{source,events});}
     return events;
   }
@@ -382,6 +390,9 @@ export const EnvironmentEngine=(()=>{
     if(isRain(state))events.push(...applyRainToTerrain(map,state));
     else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{amount:HydrologyEngine.DRYING_PER_CLEAR_TURN*Number(window.ClimateEngine?.config?.(state)?.extraDrying||1),source:legacyWeatherRaw(state)}));
     if(window.ClimateEngine)events.push(...ClimateEngine.advance(map,state));
+    // A sky weather label does not inject water. Only the completed rain pulse
+    // enables ambient wet exposure for this climate turn.
+    if(isRain(state)&&state.climate)state.climate.lastPrecipitationPulseTurn=state.climate.turn;
     meltSnowByFire(map,state,events);
     resolveStandingWaterFire(map,state,events,{source:"HYDROLOGY_CONTACT"});
     advanceFireDryness(map,state,events);
@@ -960,6 +971,6 @@ export const EnvironmentEngine=(()=>{
     return range;
   }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

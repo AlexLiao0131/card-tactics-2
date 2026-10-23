@@ -106,7 +106,70 @@ function create(ctx){
  }
  function applyBoilingHazard(unit,effects,reason){if(!unit?.alive)return 0;const s=state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!HydrologyEngine.isWater(tile))return 0;const boiling=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BOILING);if(!boiling||!effectContacts(unit,tile,boiling))return 0;const damage=Math.max(0,Number(boiling.damage||EnvironmentEngine.HAZARD?.BOILING_DAMAGE||0));if(damage<=0)return 0;unit.hp=Math.max(0,unit.hp-damage);ctx.pushLog(`${unit.character.name} ${reason}｜沸騰水域 ${damage} 火焰傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被沸騰水域煮倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BOILING",source:"ENVIRONMENT",heat:boiling.heat||1});}return damage;}
  function applyFireHazard(unit,effects,reason){const burning=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING);if(!burning||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,burning))return 0;const damage=Math.max(0,Number(burning.damage||EnvironmentEngine.HAZARD?.BURNING_DAMAGE||0));if(damage<=0)return 0;unit.hp=Math.max(0,unit.hp-damage);ctx.pushLog(`${unit.character.name} ${reason}｜燃燒傷害 ${damage}｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被環境火焰擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BURNING",source:"ENVIRONMENT"});}return damage;}
- function applyEnvironmentHazardToUnit(unit,{reason="環境",waterTrigger="CHANGE",includeElectric=true,includeBoiling=true,includeFire=true}={}){const s=state();if(!unit?.alive)return 0;let total=0;const water=applyWaterInteraction(unit,{trigger:waterTrigger,reason});total+=Number(water?.damage||0);if(!unit.alive||!s.environmentState)return total;const effects=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y);if(includeElectric&&unit.alive)total+=applyElectricHazard(unit,effects,reason);if(includeBoiling&&unit.alive)total+=applyBoilingHazard(unit,effects,reason);if(includeFire&&unit.alive)total+=applyFireHazard(unit,effects,reason);return total;}
+ // Reactions are applied through the same EffectEngine BURN status and the
+ // EnvironmentEngine fire-heat budget, whether the contact came from weather,
+ // true water depth, or a skill. Only the Hydrology layer owns surface water.
+ function applyWaterToBurn(unit,volume,source,events=[],pulseKey=null){
+   if(!unit?.alive||!globalThis.EffectEngine?.hasEffect?.(unit,"BURN"))return 0;
+   const result=EffectEngine.exchangeWaterBurn(unit,volume,{source,pulseKey});
+   if(result.evaporatedWater>0){
+     EnvironmentEngine.addSteam(state().environmentState,unit.x,unit.y,events,{reason:"UNIT_BURN_WATER_EXCHANGE"});
+     events.push({type:"UNIT_BURN_WATER_EXCHANGE",unitId:unit.id,x:unit.x,y:unit.y,source,
+       contactWater:result.incomingWater,evaporatedWater:result.evaporatedWater,
+       remainingWater:result.remainingWater,extinguished:result.extinguished});
+   }
+   if(result.extinguished)ctx.pushLog(`${unit.character?.name||unit.id} 的燃燒狀態因水接觸解除。`,"SYSTEM");
+   return result.evaporatedWater;
+ }
+ function settleUnitWetEvents(events,reason){
+   if(!events?.length)return;
+   const changed=events.some(event=>event.type==="WATER_REDUCED");
+   if(changed)HydrologyEngine.redistribute(state().map,{source:"UNIT_BURN_WATER_EVAPORATION",events});
+   events.forEach(logEnvironmentEvent);
+   // A wet-state change uses the existing battle/environment event authority;
+   // pulse stamps prevent its recheck from consuming a second water parcel.
+   if(changed)resolveEnvironmentEvents(events,{reason});
+ }
+ function wetContactAt(unit){
+   const s=state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y),contact=globalThis.EnvironmentContactEngine;
+   if(!tile||!contact||!unit?.alive)return{rain:false,water:false,tile};
+   const layer=contact.layerOf(unit,tile);
+   const rain=EnvironmentEngine.isRain(s.environmentState)&&
+     s.environmentState.climate?.lastPrecipitationPulseTurn===s.environmentState.climate?.turn&&
+     layer!==contact.LAYER.UNDERGROUND;
+   // WAVE_VOLUME includes grounded feet and wading/swimming bodies, but not
+   // aerial/underground units separated from the actual water surface.
+   const water=HydrologyEngine.isWater(tile)&&contact.contacts(unit,tile,contact.PROFILE.WAVE_VOLUME);
+   return{rain,water,tile};
+ }
+ function resolveWetContact(unit,{reason="環境",events=null}={}){
+   if(!unit?.alive||!globalThis.EffectEngine?.hasEffect?.(unit,"BURN"))return false;
+   const s=state(),{rain,water,tile}=wetContactAt(unit),results=events||[],turn=Number(s.environmentState?.climate?.turn||0);
+   if(rain)applyWaterToBurn(unit,EnvironmentEngine.rainAmount(s.environmentState),"PRECIPITATION",results,turn);
+   let changed=false;
+   if(water&&tile&&globalThis.EffectEngine?.hasEffect?.(unit,"BURN")){
+     const consumed=applyWaterToBurn(unit,HydrologyEngine.waterDepth(tile),"WATER_VOLUME",results,`${turn}:${tile.x},${tile.y}`);
+     if(consumed>0){HydrologyEngine.removeWater(tile,consumed,results);changed=true;}
+   }
+   if(!events)settleUnitWetEvents(results,"燃燒單位遇水造成水位變化");
+   return changed;
+ }
+ function resolveWaterSkillHit(entry){
+   if(!entry?.result?.hit||entry.skill?.waterContact!=="RAIN_EVENT")return;
+   const s=state(),target=entry.target;
+   if(!target||!s.map||!s.environmentState)return;
+   const volume=HydrologyEngine.RAIN_FILL_PER_EVENT;
+   const events=EnvironmentEngine.waterImpact(s.map,s.environmentState,target.x,target.y,{
+     volume,source:entry.skill.id,intercept:(incoming,allEvents)=>{
+       if(!target.alive)return incoming;
+       const evaporated=applyWaterToBurn(target,incoming,entry.skill.id,allEvents);
+       return incoming-evaporated;
+     }
+   });
+   events.forEach(logEnvironmentEvent);
+   resolveEnvironmentEvents(events,{reason:`${entry.skill.name} 水流接觸`});
+ }
+ function applyEnvironmentHazardToUnit(unit,{reason="環境",waterTrigger="CHANGE",includeElectric=true,includeBoiling=true,includeFire=true,waterReactionEvents=null}={}){const s=state();if(!unit?.alive)return 0;let total=0;const water=applyWaterInteraction(unit,{trigger:waterTrigger,reason});total+=Number(water?.damage||0);if(!unit.alive||!s.environmentState)return total;resolveWetContact(unit,{reason,events:waterReactionEvents});const effects=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y);if(includeElectric&&unit.alive)total+=applyElectricHazard(unit,effects,reason);if(includeBoiling&&unit.alive)total+=applyBoilingHazard(unit,effects,reason);if(includeFire&&unit.alive)total+=applyFireHazard(unit,effects,reason);return total;}
  function applyForcedMovement(source,target,distance,{name="強制位移",lift=0,damage=0,damageType="PHYSICAL",resistAxes=null,type="KNOCKBACK"}={}){
   const s=state();if(damage>0&&target?.alive)ctx.damageUnitFlat(target,damage,name);if(!target?.alive)return{applied:false,defeated:true,steps:[],falls:[],fallDamage:0};
   const movementType=String(type||"KNOCKBACK").toUpperCase()==="PULL"?"PULL":"KNOCKBACK",result=PostEngagementEngine.forcedMove({map:s.map,units:s.units,source,target,effect:{type:movementType,distance,lift,force:{horizontal:distance,vertical:lift},...(resistAxes?{resistAxes}:{})},onCollision:resolveCollisionRuntime});
@@ -223,7 +286,11 @@ function create(ctx){
   }
   return count;
  }
- function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];globalThis.EffectEngine?.syncConditionalPassives?.(s.units,s.environmentState);environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK"});for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
+ function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];globalThis.EffectEngine?.syncConditionalPassives?.(s.units,s.environmentState);environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});
+   const wetEvents=[];
+   for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK",waterReactionEvents:wetEvents});
+   settleUnitWetEvents(wetEvents,"角色燃燒與積水交換");
+   for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
   const hasElectric=list.some(event=>event.type==="ELECTRIC_CONDUCTION"),hydrologyChanged=list.some(event=>["ELEVATION_CHANGED","WATER_FLOW","WATER_ACCUMULATED","WATER_REDUCED","BASIN_FILLED","BASIN_DRAINED","HYDROLOGY_REBALANCED","FLOOD_AREA_RESOLVED","WATER_EVAPORATION","WATER_DRAINED_OFF_MAP","SNOWMELT_WATER","ICE_MELT","ICE_THINNED","WATER_FROZEN","CLIMATE_WATER_CHANGED","FREEZE_PULSE","ICE_THAW","WATER_TORNADO_FORMED","TORNADO_WATER_ENTRAINED","TORNADO_WATER_DEPOSITED"].includes(event.type));
@@ -244,7 +311,14 @@ function create(ctx){
   for(const {unit,damage} of steamDamageByUnit.values()){
     if(unit.alive){ctx.damageUnitFlat(unit,damage,"蒸氣爆發");affected++;}
   }
-  if(hydrologyChanged)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水位／冰面／地形變化",waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
+  if(hydrologyChanged){
+    const wetEvents=[];
+    for(const unit of (s.units||[]).filter(unit=>unit?.alive)){
+      const damage=applyEnvironmentHazardToUnit(unit,{reason:"水位／冰面／地形變化",waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false,waterReactionEvents:wetEvents});
+      if(damage>0)affected++;
+    }
+    settleUnitWetEvents(wetEvents,"水位變化引發角色燃燒與水接觸");
+  }
   if(hasElectric)for(const unit of (s.units||[]).filter(unit=>unit?.alive)){const damage=applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHECK",includeElectric:true,includeBoiling:false,includeFire:false});if(damage>0)affected++;}
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
   for(const tornado of list.filter(event=>event.type==="TORNADO_ADVANCED"))affected+=resolveTornadoAdvance(tornado);
@@ -271,6 +345,7 @@ function create(ctx){
  function logEnvironmentEvent(event){
   if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
   else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
+  else if(event.type==="UNIT_BURN_WATER_EXCHANGE")ctx.pushLog(`角色燃燒與水接觸｜${event.unitId}｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量${event.extinguished?"｜燃燒已熄滅":""}。`,"DETAIL");
   else if(event.type==="FIRE_WATER_EXCHANGE")ctx.pushLog(`火水接觸 (${event.x},${event.y})｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量｜殘餘熱量 ${Number(event.thermalAfter||0).toFixed(3)}。`,"DETAIL");
   else if(event.type==="FIRE_WEAKENED")ctx.pushLog(`(${event.x},${event.y}) 的重火降為普通火勢。`,"SYSTEM");
   else if(event.type==="STEAM_BLAST")ctx.pushLog(`♨ 蒸氣爆發 (${event.x},${event.y})｜高溫接觸格 ${event.cells?.length||0}｜瞬間傷害 ${event.damage}。`,"BATTLE");
@@ -317,7 +392,7 @@ function create(ctx){
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
   else if(event.type==="AVALANCHE")ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜衝擊 ${event.damage||0}。`,"SYSTEM");
  }
- return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveRogueWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
+ return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
 window.BattleEnvironmentController=Object.freeze({create});
 })();

@@ -31,6 +31,39 @@ export const EffectEngine=(()=>{
     if(filter.notTrait&&hasTrait(target,filter.notTrait))return false;
     return true;
   }
+  // Exact status removal: water cannot dispel unrelated negative effects.
+  function removeEffectById(target,id,{type=null}={}){
+    if(!target?.effects?.length)return 0;
+    const before=target.effects.length;
+    target.effects=target.effects.filter(effect=>!(effect.id===id&&(type===null||effect.type===type)));
+    const removed=before-target.effects.length;
+    if(removed)syncModifiers(target);
+    return removed;
+  }
+  // BURN remains a normal EffectEngine DOT. The shared EnvironmentEngine
+  // fire-heat budget is authoritative for both unit and terrain fires; no
+  // separate burning temperature or duplicate per-unit heat system.
+  function exchangeWaterBurn(target,volume,{source=null,pulseKey=null}={}){
+    const incoming=Math.max(0,Number(volume||0));
+    if(!target?.alive||incoming<=0)return{incomingWater:incoming,evaporatedWater:0,remainingWater:incoming,extinguished:0};
+    let remaining=incoming,evaporated=0,extinguished=0;
+    for(const effect of [...state(target)]){
+      if(remaining<=0)break;
+      if(effect.id!=="BURN"||effect.type!=="DAMAGE_OVER_TIME")continue;
+      // One ambient water exposure per actual climate pulse and source.
+      // Distinct direct skill hits have no pulse key and remain independently real.
+      if(source&&pulseKey!=null&&effect.wetExposureStamps?.[source]===pulseKey)continue;
+      const heat=globalThis.EnvironmentEngine?.fireHeatReserve?.(effect);
+      if(!Number.isFinite(heat))continue;
+      const vaporized=Math.min(heat,remaining);
+      effect.thermalWaterReserve=Math.max(0,heat-vaporized);
+      if(source&&pulseKey!=null){effect.wetExposureStamps??={};effect.wetExposureStamps[source]=pulseKey;}
+      evaporated+=vaporized;remaining-=vaporized;
+      if(effect.thermalWaterReserve<=(globalThis.HydrologyEngine?.EPSILON??0))
+        extinguished+=removeEffectById(target,effect.id,{type:effect.type});
+    }
+    return{incomingWater:incoming,evaporatedWater:evaporated,remainingWater:remaining,extinguished};
+  }
   function removeNegative(target){
     const before=state(target).length;
     target.effects=target.effects.filter(e=>e.classification!=="NEGATIVE");
@@ -218,6 +251,6 @@ export const EffectEngine=(()=>{
     return discovered;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;
