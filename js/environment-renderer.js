@@ -1214,7 +1214,7 @@ export class EnvironmentRenderer{
   buildSurfaceLayer(type,tiles,byKey){
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
-    const layerKeys=[];
+    const layerKeys=[],heightPatches=new Map();
 
     for(const tile of tiles){
       const localAmount=this.surfaceLayerAmount(type,tile);
@@ -1222,6 +1222,7 @@ export class EnvironmentRenderer{
       layerKeys.push(this.surfaceResolver.keyOf(tile.x,tile.y));
       activeTiles++;
       const patch=this.surfaceHeightPatch(tile,byKey);
+      heightPatches.set(this.surfaceResolver.keyOf(tile.x,tile.y),patch);
       const baseIndex=positions.length/3;
       const alpha=[];
 
@@ -1260,6 +1261,21 @@ export class EnvironmentRenderer{
       kind:"environment-surface-layer",
       effectType:type,
       activeTiles,layerKeys,
+      // These are the actual published buffers, not a second surface mesh.
+      // Each tile owns 16 vertices / 18 triangles in this merged layer.
+      layerInputSignatures:new Map(tiles.map(tile=>[
+        this.surfaceResolver.keyOf(tile.x,tile.y),this.surfaceLayerTileInput(type,tile)
+      ])),
+      layerSlopeDelta:this.surfaceResolver.maxVisualSlopeDelta,
+      layerTerrainHeights:new Map(tiles.map(tile=>[
+        this.surfaceResolver.keyOf(tile.x,tile.y),this.surfaceResolver.elevationOf(tile)
+      ])),
+      layerHeightPatches:heightPatches,
+      layerBuffers:{
+        positions:new Float32Array(positions),
+        normals:new Float32Array(normals),
+        colors:new Float32Array(colors)
+      },
       visualSurfaceResolver:true,
       microRegionsPerTile:9,
       mergedMesh:true,
@@ -1269,24 +1285,129 @@ export class EnvironmentRenderer{
     return mesh;
   }
 
+  // A tile's 16 snow/ice vertices read the tile itself and its eight
+  // neighbours through the existing slope ring and shared-scalar resolver.
+  // Track exactly those inputs on the existing merged layer mesh: a change
+  // dirties the source tile and its immediate neighbours, nothing else.
+  surfaceLayerTileInput(type,tile){
+    return JSON.stringify([
+      this.surfaceResolver.elevationOf(tile),
+      waterDepth(tile),tile.waterSurfaceZ??null,
+      iceThickness(tile),type==="SNOW"?snowDepth(tile):null,
+      tile.fogged===true
+    ]);
+  }
+
   updateSurfaceLayer(type,tiles,byKey,mesh){
-    const positions=[],colors=[];
+    const keys=mesh.metadata?.layerKeys||[];
+    const previous=mesh.metadata?.layerInputSignatures;
+    const terrainHeights=mesh.metadata?.layerTerrainHeights;
+    const heightPatches=mesh.metadata?.layerHeightPatches;
+    const buffers=mesh.metadata?.layerBuffers;
+    if(!(previous instanceof Map)||!(terrainHeights instanceof Map)||
+       !(heightPatches instanceof Map)||!buffers||
+       buffers.positions.length!==mesh.getTotalVertices()*3||
+       buffers.normals.length!==buffers.positions.length||
+       buffers.colors.length!==mesh.getTotalVertices()*4)return false;
+    const indices=mesh.getIndices();
+    if(!indices||indices.length!==keys.length*54)return false;
+    let positionChanged=false,colorChanged=false,resampled=0,normalTiles=0;
+    const positionChanges=[],nextInputs=new Map(),nextTerrainHeights=new Map(),
+      dirty=new Set(),terrainDirty=new Set();
+    const markAffected=(key,target)=>{
+      const [x,y]=key.split(",").map(Number);
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)
+        target.add(this.surfaceResolver.keyOf(x+dx,y+dy));
+    };
     for(const tile of tiles){
-      if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
-      const patch=this.surfaceHeightPatch(tile,byKey);
-      for(let row=0;row<4;row++)for(let col=0;col<4;col++){
-        const sample=patch[row][col],amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
-        positions.push(sample.x,this.layerVertexY(type,tile,sample,amount),sample.z);
-        colors.push(1,1,1,this.vertexLayerAlpha(type,tile,sample,amount));
-      }
+      const key=this.surfaceResolver.keyOf(tile.x,tile.y);
+      const stamp=this.surfaceLayerTileInput(type,tile);
+      nextInputs.set(key,stamp);
+      if(previous.get(key)!==stamp)markAffected(key,dirty);
+      const height=this.surfaceResolver.elevationOf(tile);
+      nextTerrainHeights.set(key,height);
+      if(terrainHeights.get(key)!==height)markAffected(key,terrainDirty);
     }
-    if(positions.length!==mesh.getTotalVertices()*3)return false;
-    const normals=[];BABYLON.VertexData.ComputeNormals(positions,mesh.getIndices(),normals);
-    mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions);
-    mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,normals);
-    mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
-    mesh.refreshBoundingInfo();
-    this.surfaceLayerMetrics.vertexUpdates++;
+    for(const key of previous.keys())if(!nextInputs.has(key))markAffected(key,dirty);
+    for(const key of terrainHeights.keys())if(!nextTerrainHeights.has(key))markAffected(key,terrainDirty);
+    if(mesh.metadata.layerSlopeDelta!==this.surfaceResolver.maxVisualSlopeDelta)
+      for(const key of keys){dirty.add(key);terrainDirty.add(key);}
+    for(let i=0;i<keys.length;i++){
+      if(!dirty.has(keys[i]))continue;
+      const tile=byKey.get(keys[i]);
+      if(!tile)return false;
+      resampled++;
+      let patch=heightPatches.get(keys[i]);
+      if(!patch||terrainDirty.has(keys[i])){
+        patch=this.surfaceHeightPatch(tile,byKey);
+        heightPatches.set(keys[i],patch);
+      }
+      const localPositions=[],localColors=[];
+      for(let row=0;row<4;row++)for(let col=0;col<4;col++){
+        const sample=patch[row][col];
+        const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
+        localPositions.push(sample.x,this.layerVertexY(type,tile,sample,amount),sample.z);
+        localColors.push(1,1,1,this.vertexLayerAlpha(type,tile,sample,amount));
+      }
+      const pOffset=i*16*3,cOffset=i*16*4;
+      let changedPosition=false;
+      for(let j=0;j<localPositions.length;j++){
+        const value=Math.fround(localPositions[j]);
+        if(buffers.positions[pOffset+j]===value)continue;
+        buffers.positions[pOffset+j]=value;
+        changedPosition=true;
+      }
+      for(let j=0;j<localColors.length;j++){
+        const value=Math.fround(localColors[j]);
+        if(buffers.colors[cOffset+j]===value)continue;
+        buffers.colors[cOffset+j]=value;
+        colorChanged=true;
+      }
+      if(!changedPosition)continue;
+      positionChanged=true;
+      positionChanges.push({index:i,positions:localPositions});
+    }
+    if(positionChanged){
+      if(positionChanges.length===keys.length){
+        // All blocks changed (e.g. region-wide snowfall). One existing mesh
+        // normal solve costs less than hundreds of tiny separate calls.
+        const allPositions=[];
+        for(const change of positionChanges)allPositions.push(...change.positions);
+        const allNormals=[];
+        BABYLON.VertexData.ComputeNormals(allPositions,indices,allNormals);
+        buffers.normals.set(allNormals);
+      }else{
+        // Disjoint 16-vertex tile ranges have no shared vertex indices, so
+        // updating their normals cannot affect neighbouring mesh triangles.
+        for(const change of positionChanges){
+          const i=change.index,pOffset=i*16*3;
+          const localIndices=Array.from(indices.slice(i*54,(i+1)*54),vertex=>vertex-i*16);
+          const localNormals=[];
+          BABYLON.VertexData.ComputeNormals(change.positions,localIndices,localNormals);
+          for(let j=0;j<localNormals.length;j++)buffers.normals[pOffset+j]=localNormals[j];
+        }
+      }
+      normalTiles=positionChanges.length;
+    }
+    mesh.metadata.layerInputSignatures=nextInputs;
+    mesh.metadata.layerTerrainHeights=nextTerrainHeights;
+    mesh.metadata.layerSlopeDelta=this.surfaceResolver.maxVisualSlopeDelta;
+    this.surfaceLayerMetrics.resampledTiles=(this.surfaceLayerMetrics.resampledTiles||0)+resampled;
+    this.surfaceLayerMetrics.normalTiles=(this.surfaceLayerMetrics.normalTiles||0)+normalTiles;
+    // Babylon keeps the canonical CPU vertex buffers in sync with GPU uploads.
+    // This also preserves publishedCoverGeometry() and any other vertex readers;
+    // direct GPU-only partial writes would leave their CPU copy stale.
+    if(positionChanged){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,buffers.positions);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,buffers.normals);
+      mesh.refreshBoundingInfo();
+      this.surfaceLayerMetrics.positionUploads=(this.surfaceLayerMetrics.positionUploads||0)+1;
+    }
+    if(colorChanged){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,buffers.colors);
+      this.surfaceLayerMetrics.colorUploads=(this.surfaceLayerMetrics.colorUploads||0)+1;
+    }
+    if(positionChanged||colorChanged)this.surfaceLayerMetrics.vertexUpdates++;
     return true;
   }
 
