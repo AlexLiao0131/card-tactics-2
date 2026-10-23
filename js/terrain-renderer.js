@@ -529,11 +529,14 @@ export class TerrainRenderer{
     for(const tile of tiles){
       currentTileTriangles=[];
       const fog=tile.fogged?.62:1;
-      const visual=this.surfaceResolver.resolveTile(tile,byKey);
-      const samples=visual.patchGrid.flat();
+      // The surface consumes only the canonical 4x4 render patch. Computing
+      // resolveTile() here would also construct nine unused micro-region
+      // snapshots and their neighbourhood colour/height calculations.
+      const patch=this.surfaceResolver.patchGrid(tile,byKey);
+      const samples=patch.flat();
       out.binding={key:keyOf(tile.x,tile.y),samples,vertices:[]};
       this.surfaceColorBindings.push(out.binding);
-      const grid=visual.patchGrid.map((row,rowIndex)=>row.map((sample,colIndex)=>({
+      const grid=patch.map((row,rowIndex)=>row.map((sample,colIndex)=>({
         point:{
           sample:rowIndex*4+colIndex,
           x:sample.x,

@@ -987,13 +987,22 @@ export class VisualSurfaceResolver{
   cliffSurfaceEdgeSamples(tile,dir,byKey){
     const id=this.cliffDirectionId(dir);
     if(!tile||!id)return[];
-    const patch=this.resolveTile(tile,byKey).patchGrid;
-    let samples=[];
-    if(id==="N")samples=patch[0];
-    else if(id==="E")samples=patch.map(row=>row[3]);
-    else if(id==="S")samples=[...patch[3]].reverse();
-    else samples=[...patch].reverse().map(row=>row[0]);
-    return samples.map((sample,index)=>({x:Number(sample.x),z:Number(sample.z),height:Number(sample.height),t:index/Math.max(1,samples.length-1)}));
+    // Cliff lips/feet consume exactly the height samples of the same 4x4
+    // terrain patch. Do not materialize nine unused micro-region snapshots or
+    // sixteen surface-colour evaluations for each side of every cliff.
+    // The shared ring and sampleHeightFromRing() are also used by patchGrid().
+    const ring=this.ringSamples(tile,byKey);
+    const cx=Number(tile.x)*TILE_SIZE,cz=Number(tile.y)*TILE_SIZE;
+    const offsets=id==="N"?PATCH_OFFSETS.map(ox=>[ox,PATCH_OFFSETS[0]])
+      :id==="E"?PATCH_OFFSETS.map(oz=>[PATCH_OFFSETS[3],oz])
+      :id==="S"?[...PATCH_OFFSETS].reverse().map(ox=>[ox,PATCH_OFFSETS[3]])
+      :[...PATCH_OFFSETS].reverse().map(oz=>[PATCH_OFFSETS[0],oz]);
+    const centerHeight=elevationOf(tile);
+    return offsets.map(([ox,oz],index)=>({
+      x:cx+ox*TILE_SIZE,z:cz+oz*TILE_SIZE,
+      height:this.sampleHeightFromRing(centerHeight,ring,ox,oz),
+      t:index/Math.max(1,offsets.length-1)
+    }));
   }
 
   cliffRoughPolyline(tile,dir,{segments=CLIFF_EDGE_SEGMENTS,ruggedness=CLIFF_RUGGEDNESS}={}){
