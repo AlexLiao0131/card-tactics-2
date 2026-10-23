@@ -110,11 +110,6 @@ export class TerrainRenderer{
     this.surfaceColors=null;
     this.cliffColors=null;
     this.cliffWaterData=null;
-    this.cliffLightingPositions=null;
-    this.cliffLightingNormals=null;
-    this.cliffLightingColors=null;
-    this.cliffLightingMesh=null;
-    this.cliffLightingSignature="";
     this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
     this.textureSignature="";
@@ -320,14 +315,9 @@ export class TerrainRenderer{
     material.AddUniform("cliffTileSize","float",TILE_SIZE*1.5);
     material.AddUniform("cliffElevationHeight","float",ELEVATION_HEIGHT);
     material.AddAttribute("cliffWaterContact");
-    material.AddAttribute("cliffLocalRadiance");
-    material.Vertex_Definitions("attribute vec2 cliffWaterContact; varying vec2 vCliffWaterContact; attribute vec3 cliffLocalRadiance; varying vec3 vCliffLocalRadiance;");
-    material.Vertex_MainEnd("vCliffWaterContact=cliffWaterContact; vCliffLocalRadiance=cliffLocalRadiance;");
-    material.Fragment_Definitions("varying vec2 vCliffWaterContact; varying vec3 vCliffLocalRadiance;");
-    // 3D fire illumination is delivered through ONE fixed vertex attribute,
-    // not an expanding array of physical GPU lights. Existing triplanar,
-    // wet-wall and shadow/scene-light calculations remain intact.
-    material.Fragment_Before_Fog("color.rgb += vCliffLocalRadiance;");
+    material.Vertex_Definitions("attribute vec2 cliffWaterContact; varying vec2 vCliffWaterContact;");
+    material.Vertex_MainEnd("vCliffWaterContact=cliffWaterContact;");
+    material.Fragment_Definitions("varying vec2 vCliffWaterContact;");
     material.Fragment_Custom_Diffuse(`
       vec3 cliffNormal=normalize(normalW);
       vec3 cliffWeights=abs(cliffNormal);
@@ -390,11 +380,6 @@ export class TerrainRenderer{
     this.surfaceColors=null;
     this.cliffColors=null;
     this.cliffWaterData=null;
-    this.cliffLightingPositions=null;
-    this.cliffLightingNormals=null;
-    this.cliffLightingColors=null;
-    this.cliffLightingMesh=null;
-    this.cliffLightingSignature="";
     this.textureSignature="";
   }
 
@@ -702,13 +687,11 @@ export class TerrainRenderer{
     this.cliffColorBindings=[];
     this.cliffColors=null;
     this.cliffWaterData=null;
-    this.cliffLightingPositions=null;
-    this.cliffLightingNormals=null;
-    this.cliffLightingColors=null;
-    this.cliffLightingMesh=null;
-    this.cliffLightingSignature="";
     this.updateCounts.cliffBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[],waterContacts:[]};
+    // One region per authored cliff edge. This is geometry metadata for the
+    // existing spatial light allocator, not another mesh or lighting pass.
+    const lightRegions=[];
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-.75;
     const EH=ELEVATION_HEIGHT;
@@ -754,6 +737,7 @@ export class TerrainRenderer{
           wallFoot.push({x:bottom?Number(bottom.x):point.x,y:bottomY,z:bottom?Number(bottom.z):point.z,t});
         }
         const wallSegments=[];
+        const faceStart=out.positions.length;
         for(let i=0;i<rough.length-1;i++){
           const a=wallLip[i],b=wallLip[i+1],af=wallFoot[i],bf=wallFoot[i+1];
           const aTop=a.y,bTop=b.y,aBot=af.y,bBot=bf.y;
@@ -821,6 +805,22 @@ export class TerrainRenderer{
         for(let i=0;i<wallLip.length;i++){
           wallLip[i].normal=pointNormal(i);wallFoot[i].normal=pointNormal(i);
         }
+        // Exact submitted wall bounds, shared with the standard Babylon light
+        // membership allocator. Calculate once when the cliff geometry changes.
+        if(out.positions.length>faceStart){
+          let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+          for(let offset=faceStart;offset<out.positions.length;offset+=3){
+            const x=out.positions[offset],y=out.positions[offset+1],z=out.positions[offset+2];
+            minX=Math.min(minX,x);minY=Math.min(minY,y);minZ=Math.min(minZ,z);
+            maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);maxZ=Math.max(maxZ,z);
+          }
+          const cx=(minX+maxX)/2,cy=(minY+maxY)/2,cz=(minZ+maxZ)/2;
+          lightRegions.push({x:cx,y:cy,z:cz,
+            radius:Math.hypot(maxX-minX,maxY-minY,maxZ-minZ)/2,
+            tileX:Number(tile.x),tileY:Number(tile.y),
+            neighborX:neighbor?Number(neighbor.x):null,neighborY:neighbor?Number(neighbor.y):null,
+            outwardX:dir.dx,outwardZ:dir.dy});
+        }
         this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
           lip:wallLip,foot:wallFoot,segments:wallSegments,outward:{x:dir.dx,z:dir.dy},drop
         });
@@ -839,11 +839,6 @@ export class TerrainRenderer{
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
     this.cliffWaterData=new Float32Array(out.waterContacts);
     mesh.setVerticesData("cliffWaterContact",this.cliffWaterData,true,2);
-    // Cliff normals and XYZ are the existing, exact submitted wall geometry.
-    this.cliffLightingPositions=new Float32Array(out.positions);
-    this.cliffLightingNormals=new Float32Array(out.normals);
-    this.cliffLightingColors=new Float32Array(out.positions.length);
-    mesh.setVerticesData("cliffLocalRadiance",this.cliffLightingColors,true,3);
 
     mesh.material=this.cliffMaterial;
     mesh.useVertexColors=true;
@@ -867,55 +862,10 @@ export class TerrainRenderer{
       cliffHeightStrata:true,
       cliffSlopeTint:true,
       cliffTextureWorldSize:TILE_SIZE*1.5,
-      cliffEdgeSegments:CLIFF_EDGE_SEGMENTS
+      cliffEdgeSegments:CLIFF_EDGE_SEGMENTS,
+      cliffLightRegions:lightRegions
     };
     return mesh;
-  }
-
-  syncCliffLocalLighting(lights){
-    const mesh=this.meshes.get("cliffs");
-    const positions=this.cliffLightingPositions;
-    const normals=this.cliffLightingNormals;
-    const colors=this.cliffLightingColors;
-    if(!mesh||!positions||!normals||!colors)return;
-    const sources=(lights||[]).filter(light=>!light.isDisposed?.()).map(light=>{
-      // Membership can disable a light if it has no *other* physical receiver.
-      // Its source still illuminates rock; do not depend on light.isEnabled().
-      const range=Number(light.metadata?.baseRange??light.range);
-      const intensity=Number(light.metadata?.baseIntensity??light.intensity);
-      const p=light.position,c=light.diffuse;
-      return{x:Number(p.x),y:Number(p.y),z:Number(p.z),range,intensity,
-        r:Number(c.r),g:Number(c.g),b:Number(c.b)};
-    }).filter(src=>src.range>0&&src.intensity>0&&
-      [src.x,src.y,src.z,src.range,src.intensity,src.r,src.g,src.b].every(Number.isFinite));
-    // Geometry is rebuilt only for actual terrain changes. The lighting buffer
-    // is re-uploaded only when the source set or the current cliff mesh changes.
-    const signature=JSON.stringify(sources);
-    if(this.cliffLightingMesh===mesh&&this.cliffLightingSignature===signature)return;
-    colors.fill(0);
-    for(const light of sources){
-      const radiusSquared=light.range*light.range;
-      for(let i=0;i<positions.length;i+=3){
-        const dx=light.x-positions[i],dy=light.y-positions[i+1],dz=light.z-positions[i+2];
-        const distanceSquared=dx*dx+dy*dy+dz*dz;
-        if(distanceSquared>=radiusSquared)continue;
-        const distance=Math.sqrt(distanceSquared);
-        // True XYZ distance and the original wall face normal. The smooth
-        // finite-range falloff has no map-specific or device-specific constants;
-        // its boundary is exactly the source's authored PointLight.range.
-        const attenuation=1-distance/light.range;
-        const normalFacing=distance>0
-          ?Math.abs((normals[i]*dx+normals[i+1]*dy+normals[i+2]*dz)/distance)
-          :1;
-        const energy=light.intensity*attenuation*attenuation*normalFacing;
-        colors[i]+=light.r*energy;
-        colors[i+1]+=light.g*energy;
-        colors[i+2]+=light.b*energy;
-      }
-    }
-    mesh.updateVerticesData("cliffLocalRadiance",colors,false,false);
-    this.cliffLightingMesh=mesh;
-    this.cliffLightingSignature=signature;
   }
 
   sync(state){

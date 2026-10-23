@@ -116,9 +116,8 @@ function lightColor(color,fallback=[1,.5,.25]){
 }
 
 export class EnvironmentRenderer{
-  constructor(scene,surfaceResolver=null,terrain=null){
+  constructor(scene,surfaceResolver=null){
     this.scene=scene;
-    this.terrain=terrain;
     this.surfaceResolver=surfaceResolver||new VisualSurfaceResolver();
     this.nodes=new Map();
     this.animated=new Map();
@@ -610,64 +609,101 @@ export class EnvironmentRenderer{
     }
     this.fireLights=[...this.physicalLightsById.values()];
     this.syncSpatialLightMembership();
-    // The same authored fire/structure/equipment sources also illuminate the
-    // existing vertical rock mesh. This is not a second light simulation: the
-    // terrain renderer only shades geometry from the physical source records.
-    this.terrain?.syncCliffLocalLighting(this.fireLights);
 
   }
 
   // Spatial ownership resolves Babylon's per-mesh light budget without
   // arbitrarily discarding entire capture sites when new lights are added.
   // This is presentation-only: terrain tint is the existing per-cell light field.
+  // One lighting authority for all 3D receivers, including vertical rock.
+  // Keep each material's authored shader capacity; a wildfire may create more
+  // sources, but can never increase shader uniform/UBO declarations.
   syncSpatialLightMembership(){
-    // Evaluate every authored physical light, including ones that had no
-    // receiver in the preceding snapshot; a newly moved/created unit can make
-    // those lights relevant again on this very update.
     const lights=this.fireLights;
-    const meshes=(this.scene.meshes||[]).filter(mesh=>!mesh.isDisposed?.()&&
-      mesh.metadata?.kind!=="environment-light-field"&&
-      mesh.name!=="terrain-surface"&&mesh.name!=="terrain-cliffs");
+    const localSet=new Set(lights);
+    // The scene-wide directional/hemi/lightning sources share Babylon's same
+    // maxSimultaneousLights slots. Count the actual lights, never an assumed
+    // device limit or a fire-count-derived Shader capacity.
+    const sharedLights=this.scene.lights.filter(light=>!localSet.has(light)&&
+      !light.isDisposed?.()&&light.isEnabled?.()!==false);
     const memberships=new Map(lights.map(light=>[light,[]]));
-    for(const mesh of meshes){
-      if(mesh.material?.disableLighting===true)continue;
-      // Bounds are cached in WORLD space. Update them before assigning lights:
-      // a capture marker or newly deployed FIGURE may have changed position
-      // since Babylon's previous render frame.
+    const records={cliffSourcesAvailable:0,cliffSourcesAssigned:0,
+      receivers:0,limitedReceivers:0,sharedLightSlots:sharedLights.length};
+    const footprintHits=(footprint,mesh)=>{
+      if(!footprint)return true;
+      const bb=mesh.getBoundingInfo?.()?.boundingBox;
+      const a=bb?.minimumWorld,b=bb?.maximumWorld;
+      if(!a||!b)return false;
+      const x0=Math.ceil(a.x/TILE_SIZE-.5),x1=Math.floor(b.x/TILE_SIZE+.5);
+      const y0=Math.ceil(a.z/TILE_SIZE-.5),y1=Math.floor(b.z/TILE_SIZE+.5);
+      for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)
+        if(footprint.has(`${x},${y}`))return true;
+      return false;
+    };
+    const impact=(mesh,light,center,radius)=>{
+      const footprint=light.metadata?.footprintCells;
+      const p=light.position,range=Number(light.range||0);
+      if(!(range>0))return 0;
+      const regions=mesh.metadata?.cliffLightRegions;
+      if(Array.isArray(regions)){
+        let best=0;
+        for(const region of regions){
+          // A point behind an outward-facing terrain wall is not a plausible
+          // receiver for that wall, regardless of the giant merged mesh bounds.
+          const front=(p.x-region.x)*region.outwardX+(p.z-region.z)*region.outwardZ;
+          if(front<=0)continue;
+          if(footprint&&!footprint.has(`${region.tileX},${region.tileY}`)&&
+            !footprint.has(`${region.neighborX},${region.neighborY}`))continue;
+          const separation=Math.max(0,Math.hypot(p.x-region.x,p.y-region.y,p.z-region.z)-region.radius);
+          if(separation>=range)continue;
+          best=Math.max(best,1-separation/range);
+        }
+        return best*Number(light.metadata?.baseIntensity??light.intensity??0);
+      }
+      if(!footprintHits(footprint,mesh))return 0;
+      const distance=Math.max(0,Math.hypot(center.x-p.x,center.y-p.y,center.z-p.z)-radius);
+      return distance<range?(1-distance/range)*Number(light.metadata?.baseIntensity??light.intensity??0):0;
+    };
+    for(const mesh of this.scene.meshes||[]){
+      if(mesh.isDisposed?.()||mesh.isEnabled?.()===false||mesh.material?.disableLighting===true||
+        mesh.metadata?.kind==="environment-light-field"||mesh.name==="terrain-surface"||!mesh.material)continue;
       mesh.computeWorldMatrix?.(false);
       const bounds=mesh.getBoundingInfo?.()?.boundingSphere;
       const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
       if(!center)continue;
       const radius=Math.max(0,Number(bounds?.radiusWorld||0));
+      const authoredSlots=Number(mesh.material.maxSimultaneousLights);
+      const capacity=Number.isFinite(authoredSlots)
+        ?Math.max(0,Math.floor(authoredSlots)-sharedLights.length)
+        :Infinity;
+      const ranked=[];
       for(const light of lights){
-        const dx=Number(center.x)-Number(light.position.x),dy=Number(center.y)-Number(light.position.y),dz=Number(center.z)-Number(light.position.z);
-        if(dx*dx+dy*dy+dz*dz>Math.pow(Number(light.range||0)+radius,2))continue;
-        memberships.get(light).push(mesh);
+        const strength=impact(mesh,light,center,radius);
+        if(strength>0)ranked.push({light,strength});
       }
+      if(mesh.name==="terrain-cliffs")records.cliffSourcesAvailable=ranked.length;
+      if(ranked.length>capacity)records.limitedReceivers++;
+      // Sorting only selects local light sources for the *existing* material;
+      // Babylon still evaluates surface normals, built-in shadow and attenuation.
+      ranked.sort((a,b)=>b.strength-a.strength||a.light.name.localeCompare(b.light.name));
+      for(const entry of ranked.slice(0,capacity))memberships.get(entry.light).push(mesh);
+      if(mesh.name==="terrain-cliffs")records.cliffSourcesAssigned=Math.min(capacity,ranked.length);
+      records.receivers++;
     }
     for(const light of lights){
       const receivers=memberships.get(light)||[];
       if(!receivers.length){
-        // A zero-length includedOnlyMeshes list does NOT exclude all meshes
-        // in Babylon. A source with no local 3D receiver has its OWN terrain
-        // illumination in the shared cell-light field, so it needs no GPU
-        // point-light slot until a receiver actually enters its range.
         if(light.isEnabled())light.setEnabled(false);
+        // Babylon treats [] as unrestricted: always disable the light first.
+        if(light.includedOnlyMeshes?.length)light.includedOnlyMeshes=[];
         continue;
       }
-      // Only rebind an inclusion array when actual receivers have changed;
-      // Babylon resynchronizes mesh light sources on each assignment.
       const previous=light.includedOnlyMeshes||[];
       if(previous.length!==receivers.length||previous.some((mesh,i)=>mesh!==receivers[i]))
         light.includedOnlyMeshes=receivers;
       if(!light.isEnabled())light.setEnabled(true);
     }
-    // Shader light capacity is a renderer/material property, not a function of
-    // how many wildfires exist on the map. Increasing maxSimultaneousLights
-    // created Babylon Shader UBO variants that exceeded the device's limits.
-    // Preserve each material's authored shader budget. Large terrain surfaces
-    // receive environmental radiance as bounded vertex/cell data instead.
-
+    this.lightMembershipDiagnostics=records;
   }
 
   makeLightFieldMaterial(){
@@ -1809,7 +1845,7 @@ export class EnvironmentRenderer{
       structureGlows:[...this.fireGlows.values()].filter(mesh=>mesh.metadata?.source==="CORE_LIGHT"||mesh.metadata?.source==="CAPTURE_LIGHT").length,
       fireLights:{physicalLights:this.fireLights.filter(light=>light.isEnabled()).length,
         cellField:{active:!!this.lightFieldMesh,cells:this.lightFieldCells,
-          exposedSurfaceAligned:this.lightFieldMesh?.metadata?.exposedSurfaceAligned===true},globalLightLimit:null,fireClusters:true},
+          exposedSurfaceAligned:this.lightFieldMesh?.metadata?.exposedSurfaceAligned===true},globalLightLimit:null,fireClusters:true,spatialMembership:this.lightMembershipDiagnostics||null},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
     };
