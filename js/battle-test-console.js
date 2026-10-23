@@ -215,7 +215,11 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
       if(marks.length>=160)break;
     }
   };
-  const addTile=tile=>{if(tile&&Number.isInteger(tile.x)&&Number.isInteger(tile.y))selected.set(tileKey(tile),{x:tile.x,y:tile.y})};
+  const addTile=tile=>{
+    if(!tile||!Number.isInteger(tile.x)||!Number.isInteger(tile.y))return;
+    const sample=tile.sample&&Number.isFinite(tile.sample.x)&&Number.isFinite(tile.sample.z)?tile.sample:null;
+    selected.set(tileKey(tile),{x:tile.x,y:tile.y,sample});
+  };
   const nearestPick=(e)=>{
     const v=renderer(),c=coords(e),s=scene();if(!v||!c||!s)return null;
     const localX=c.x*Math.max(1,v.engine.getRenderWidth())/Math.max(1,c.rect.width);
@@ -224,7 +228,12 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
     let hit=s.pick(localX,localY,valid,false,v.camera?.camera);
     if(!hit?.hit)hit=s.pick(c.x,c.y,valid,false,v.camera?.camera);
     const meta=hit?.pickedMesh?.metadata;
-    return hit?.hit&&meta?.kind==="tile-hit"?{x:meta.x,y:meta.y}:null;
+    if(!hit?.hit||meta?.kind!=="tile-hit")return null;
+    const world=hit.pickedPoint||hit.pickedMesh?.getAbsolutePosition?.();
+    return{x:meta.x,y:meta.y,sample:world?{
+      x:Number(world.x),z:Number(world.z),
+      origin:hit.pickedPoint?"ACTUAL_TILE_PICK":"PICKER_MESH_ORIGIN",
+      meshName:hit.pickedMesh?.name||null}:null};
   };
   const stop=e=>{e.preventDefault();e.stopImmediatePropagation();};
   function pointerDown(e){if(!active||e.target!==canvas())return;
@@ -250,7 +259,11 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
     else{
       const left=Math.min(a.x,e.clientX),right=Math.max(a.x,e.clientX),top=Math.min(a.y,e.clientY),bottom=Math.max(a.y,e.clientY);
       for(const mesh of mapTiles()){
-        const p=project(mesh);if(p&&p.x>=left&&p.x<=right&&p.y>=top&&p.y<=bottom)addTile(mesh.metadata);
+        const p=project(mesh);if(p&&p.x>=left&&p.x<=right&&p.y>=top&&p.y<=bottom){
+          const world=mesh.getAbsolutePosition?.();
+          addTile({...mesh.metadata,sample:world?{x:Number(world.x),z:Number(world.z),
+            origin:"BOX_SELECTED_TILE_CENTER",meshName:mesh.name}:null});
+        }
       }
     }
     update();
@@ -315,6 +328,14 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
     const terrainY=(terrain?.triangles||[]).flat().map(p=>Number(p.y)).filter(Number.isFinite);
     const hit=v?.picker?.hitMeshes?.get(key);
     const center=hit?resolver?.publishedSurfacePoint?.(mapTile,hit.position.x,hit.position.z)||null:null;
+    const sampled=tile.sample||null;
+    // Only published D/Q polygons and published terrain triangles are legal
+    // height authorities. This uses the water renderer's existing barycentric
+    // sampler; no guessed slope or independent Q solver is introduced.
+    const surfacePoint=sampled?resolver?.publishedSurfacePoint?.(mapTile,sampled.x,sampled.z)||null:null;
+    const waterPoint=sampled?v?.water?.publishedWaterPointDiagnostics?.(mapTile,sampled.x,sampled.z)||null:null;
+    const yTerrain=surfacePoint?.y??null,yWater=waterPoint?.waterY??null;
+    const actualMesh=sampled?v?.water?.renderedWaterMeshPointDiagnostics?.(sampled.x,sampled.z,yWater):null;
     const summary=values=>values.length?{min:Math.min(...values),max:Math.max(...values)}:null;
     const channels=(records)=> (records||[]).slice(0,8).map(edge=>({id:edge.id,q:Number(edge.q||0),kind:edge.qKind||null,cascade:!!edge.cascade,joinValid:!!edge.geometryJoinValid,join:edge.geometryJoin||null}));
     return{
@@ -322,6 +343,20 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
       waterDepth:Number(mapTile.waterDepth||0),waterSurfaceZ:mapTile.waterSurfaceZ??null,
       river:mapTile.river===true,flowX:Number(mapTile.flowX||0),flowY:Number(mapTile.flowY||0),flowSpeed:Number(mapTile.flowSpeed||0),
       hydrologyEdgeOutflows:mapTile.hydrologyEdgeOutflows??null,effects:(mapTile.effects||[]).slice(0,16),fogged:!!mapTile.fogged,
+      sampledWorldXZ:sampled?{x:sampled.x,z:sampled.z,origin:sampled.origin,meshName:sampled.meshName}:null,
+      samePointComparison:{terrainY:yTerrain,waterY:yWater,
+        separation:yTerrain!=null&&yWater!=null?yWater-yTerrain:null,
+        terrainTriangle:surfacePoint?.triangleIndex??null,
+        waterPolygon:waterPoint?.polygonIndex??null,
+        waterTriangle:waterPoint?.triangleIndex??null,
+        waterOwner:waterPoint?.owner??(publish?publish.stored?"STORED_D":"TRANSPORT_Q":"NONE"),
+        terrainFound:!!surfacePoint,waterFound:!!waterPoint,
+        meshRestY:actualMesh?.restY??null,meshName:actualMesh?.meshName??null,
+        meshTriangle:actualMesh?.triangleIndex??null,
+        meshRestMinusTerrain:yTerrain!=null&&actualMesh?actualMesh.restY-yTerrain:null,
+        meshRestMinusPublished:actualMesh?.deltaFromPublished??null,
+        meshFound:!!actualMesh,waterMeshCandidates:actualMesh?.meshCandidates??[],
+        gpuWaterHeightReadback:false},
       publishedTerrain:{revision:terrain?.revision??null,triangleCount:terrain?.triangles?.length??0,heights:summary(terrainY),center: center?{x:center.x,y:center.y,z:center.z,triangleIndex:center.triangleIndex}:null},
       publishedWater:{owner:publish?(publish.stored?"D_STORED_WITH_Q_HANDOFF":"Q_FILM"):"NONE",model:publish?.model??null,
         polygons:publish?.polygons?.length??0,wetArea:publish?.wetArea??0,maxDepth:publish?.maxDepth??0,
@@ -349,11 +384,15 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
     if(!d?.isEnabled?.()){status("無法寫入：請先在 Settings 開啟診斷紀錄。",false);end();return;}
     const v=renderer(),chosen=[...selected.values()].sort((a,b)=>a.y-b.y||a.x-b.x);
     const detailed=chosen.slice(0,48).map(snapshotTile);
-    const evidence={schema:"TEST_SELECTED_TILES_V1",at:new Date().toISOString(),
+    const evidence={schema:"TEST_SELECTED_TILES_V2",at:new Date().toISOString(),
       round:window.CardTacticsRuntime?.getBattleSnapshot?.()?.round??null,
       weather:window.CardTacticsRuntime?.getBattleSnapshot?.()?.presentation?.environment?.weather??null,
-      annotationType:reason.value,selectedCount:chosen.length,tiles:chosen,detailedTiles:detailed,
-      detailedLimit:48,detailedTruncated:chosen.length>48,
+      annotationType:reason.value,selectedCount:chosen.length,
+      tiles:chosen.map(({x,y,sample})=>({x,y,worldXZ:sample?{x:sample.x,z:sample.z,origin:sample.origin}:null})),
+      detailedTiles:detailed,detailedLimit:48,detailedTruncated:chosen.length>48,
+      presentationRevision:v?.lastState?.revision??null,
+      waterSurfaceSolve:v?.water?.surfaceSolveStats??null,
+      waterRebuild:v?.water?.waterRebuildDiagnostics?.()??null,
       waterSeams:v?.water?.waterSeamDiagnostics?.()||null,
       terrainMeshes:{surface:meshSummary(v?.terrain?.meshes?.get("surface")),cliffs:meshSummary(v?.terrain?.meshes?.get("cliffs"))},
       fireLighting:{activeFireEffects:detailed.filter(t=>t.effects?.includes("BURNING")).length,
@@ -363,9 +402,11 @@ function makeTileAnnotator(panel,status,renderEvidence,onModeChange=()=>{}){
       gpu:{webGLContextLost:v?.engine?._gl?.isContextLost?.()??null,webGLVersion:v?.engine?.webGLVersion??null},
       rendererEvidence:renderEvidence.capture()
     };
-    d.push("TEST_TILE_ANNOTATION",evidence);
-    d.capture("TEST_SELECTED_TILES"); // Existing capture force-persists the annotation event in Settings → TEST → LOG.
-    status(`已標註 ${chosen.length} 格並寫入 Settings → TEST → LOG。`,true);
+    // Dedicated bounded evidence survives the rolling 320-event log AND
+    // auto/manual visual captures, which own separate snapshots.
+    const recorded=d.recordTileAnnotation?.(evidence);
+    if(!recorded){status("標註保存失敗，請檢查 Settings 診斷儲存狀態。",false);return;}
+    status(`已保留 ${chosen.length} 格的座標與幾何證據；複製診斷報告即可匯出。`,true);
     end(false);
   }
   save.onclick=saveAnnotation;cancel.onclick=()=>end(false);undo.onclick=()=>{selected.clear();update()};

@@ -80,6 +80,7 @@ export class WaterRenderer{
     // fingerprint by source-object identity, not by a global revision number.
     this.publishedWaterGeometrySignatures=new WeakMap();
     this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
+    this.surfaceRebuildDetail=null;
     this.surfaceMeshSignatures=new Map();
     this.levelSamples=null;
     this.surfaceMeshUpdate={reused:0,built:0};
@@ -1568,6 +1569,77 @@ export class WaterRenderer{
     return null;
   }
 
+  // Direct read of the already built Babylon surface triangles, at rest
+  // (before GPU wave displacement). The diagnostic never creates geometry.
+  // This separates a Resolver height error from a Mesh construction error.
+  renderedWaterMeshPointDiagnostics(x,z,publishedY=null){
+    if(!Number.isFinite(x)||!Number.isFinite(z))return null;
+    const point={x,z},candidates=[];
+    // Surface components and measured-Q runoff ribbons are different Mesh
+    // owners. Inspect BOTH: slope defects may occur only in the transport
+    // ribbon even when the published D/Q surface is terrain-conforming.
+    const published=[...this.surfaceAnimations.values()].map(entry=>({
+      mesh:entry.mesh,positions:entry.basePositions,kind:"PUBLISHED_DQ_SURFACE",id:entry.id}));
+    const transport=[...this.runoffs.values()].map(mesh=>({
+      mesh,positions:mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind),
+      kind:"RUNOFF_Q_TRANSPORT",id:mesh?.name}));
+    for(const {mesh,positions,kind,id} of [...published,...transport]){
+      if(!mesh||mesh.isDisposed?.()||!positions?.length)continue;
+      const indices=mesh.getIndices?.();if(!indices?.length)continue;
+      let best=null,triangleHits=0;
+      const vertex=i=>({x:positions[i*3],y:positions[i*3+1],z:positions[i*3+2]});
+      for(let i=0;i+2<indices.length;i+=3){
+        const a=vertex(indices[i]),b=vertex(indices[i+1]),c=vertex(indices[i+2]);
+        // 1e-7 is the native pointInTriangleXZ XZ tolerance.
+        if(x<Math.min(a.x,b.x,c.x)-1e-7||x>Math.max(a.x,b.x,c.x)+1e-7||
+           z<Math.min(a.z,b.z,c.z)-1e-7||z>Math.max(a.z,b.z,c.z)+1e-7)continue;
+        const bary=this.pointInTriangleXZ(point,a,b,c);
+        if(!bary)continue;
+        const restY=a.y*bary.u+b.y*bary.w+c.y*bary.v;
+        triangleHits++;
+        const candidate={meshName:mesh.name,meshKind:kind,meshId:id,
+          triangleIndex:i/3,restY,
+          deltaFromPublished:publishedY==null?null:restY-publishedY};
+        if(!best||(publishedY!=null&&Math.abs(candidate.deltaFromPublished)<Math.abs(best.deltaFromPublished)))best=candidate;
+      }
+      if(best)candidates.push({...best,containingMeshTriangles:triangleHits,
+        hydrologyEdgeReason:kind==="RUNOFF_Q_TRANSPORT"?mesh.metadata?.hydrologyEdgeReason??null:null,
+        runoffSegments:kind==="RUNOFF_Q_TRANSPORT"?mesh.metadata?.runoffSegments??null:null});
+    }
+    if(!candidates.length)return null;
+    candidates.sort((a,b)=>publishedY!=null?
+      Math.abs(a.deltaFromPublished)-Math.abs(b.deltaFromPublished):0);
+    return{...candidates[0],meshCandidates:candidates.slice(0,12),
+      gpuWaveReadback:false};
+  }
+
+  // TEST/Diagnostics only: read the same published water polygons used to
+  // build Mesh geometry. A missing polygon is reported as missing; no fallback
+  // plane, guessed tile elevation, or second D/Q height model is permitted.
+  publishedWaterPointDiagnostics(tile,x,z){
+    if(!tile||!Number.isFinite(x)||!Number.isFinite(z))return null;
+    const published=this.surfacePresentation.get(keyOf(tile.x,tile.y));
+    if(!published?.polygons?.length)return null;
+    const point={x,z};
+    for(let polygonIndex=0;polygonIndex<published.polygons.length;polygonIndex++){
+      const polygon=published.polygons[polygonIndex];
+      if(!this.pointInPolygon(point,polygon))continue;
+      for(let i=1;i+1<polygon.length;i++){
+        const a=polygon[0],b=polygon[i],c=polygon[i+1];
+        const bary=this.pointInTriangleXZ(point,a,b,c);
+        if(!bary)continue;
+        const sample=field=>Number(a[field])*bary.u+Number(b[field])*bary.w+Number(c[field])*bary.v;
+        return{owner:published.stored?"STORED_D_WITH_Q_HANDOFF":"TRANSPORT_Q",
+          model:published.model,polygonIndex,triangleIndex:polygon.triangleIndex??null,
+          subTriangleIndex:i-1,waterY:sample("waterY"),terrainY:sample("terrainY"),
+          depth:sample("depth"),level:sample("level"),
+          terrainRevision:published.geometryRevision??null,
+          gpuWaveReadback:false};
+      }
+    }
+    return null;
+  }
+
   // The existing presentation polygons are the ONLY waterline authority.
   // They are spatially partitioned on the same published 3x3 terrain-patch
   // scale. The boundary halo is EXACTLY pointOnPolygonBoundary's tolerance;
@@ -2100,6 +2172,36 @@ export class WaterRenderer{
     return changed;
   }
 
+  // Change categories are derived from the EXACT signatures already used
+  // by the incremental resolver. These counters are observations only, not
+  // extra invalidation rules or a second water-surface calculation.
+  surfaceInputChangeReasons(next){
+    const prior=this.surfaceTileInputSignatures;
+    const reasons={initial:0,addedOrRemoved:0,waterStorage:0,qNetwork:0,
+      publishedTerrain:0,publishedCliffs:0,visibility:0,other:0};
+    if(!this.surfaceSignature){reasons.initial=next.size;return reasons;}
+    const compare=(a,b,indices)=>indices.some(i=>JSON.stringify(a[i])!==JSON.stringify(b[i]));
+    const otherIndices=[0,1,2,9,10,11,12,13,14,15];
+    for(const [key,signature] of next){
+      const previous=prior.get(key);
+      if(previous===undefined){reasons.addedOrRemoved++;continue;}
+      if(previous===signature)continue;
+      const a=JSON.parse(previous),b=JSON.parse(signature);
+      let accounted=false;
+      if(compare(a,b,[3,4])){reasons.waterStorage++;accounted=true;}
+      if(compare(a,b,[5,6,7,8,19])){reasons.qNetwork++;accounted=true;}
+      if(compare(a,b,[17])){reasons.publishedTerrain++;accounted=true;}
+      if(compare(a,b,[18])){reasons.publishedCliffs++;accounted=true;}
+      if(compare(a,b,[16])){reasons.visibility++;accounted=true;}
+      if(compare(a,b,otherIndices)){reasons.other++;accounted=true;}
+      if(!accounted)reasons.other++;
+    }
+    for(const key of prior.keys())if(!next.has(key))reasons.addedOrRemoved++;
+    return reasons;
+  }
+  waterRebuildDiagnostics(){return this.surfaceRebuildDetail?{...this.surfaceRebuildDetail,
+    inputReasons:{...this.surfaceRebuildDetail.inputReasons},meshReasons:{...this.surfaceRebuildDetail.meshReasons}}:null;}
+
   surfaceSignatureFor(components,state){
     const terrain=tilesOf(state).map(tile=>[
       keyOf(tile.x,tile.y),
@@ -2228,6 +2330,7 @@ export class WaterRenderer{
       const tiles=tilesOf(state),allMap=this.allByKey(state);
       const solveStart=performance.now();
       const nextTileInputs=this.surfaceTileInputs(state);
+      const inputReasons=this.surfaceInputChangeReasons(nextTileInputs);
       const previousPresentation=this.surfacePresentation;
       // The cache is valid only inside one continuously tracked presentation.
       // A reset/cleared scene must perform a complete first solve.
@@ -2238,6 +2341,7 @@ export class WaterRenderer{
         {previous:previousPresentation,dirtyKeys,previousNetwork:oldNetwork});
       const resolvedTiles=tiles.filter(tile=>dirtyKeys.has(keyOf(tile.x,tile.y))).length;
       this.surfaceSolveStats={totalTiles:tiles.length,resolvedTiles,reusedTiles:tiles.length-resolvedTiles};
+      const meshReasons={newComponent:0,changedGeometryOrShader:0,reused:0,disposed:0};
       this.surfaceTileInputSignatures=nextTileInputs;
       this.surfacePresentation=presentation;
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceSolve",performance.now()-solveStart);
@@ -2270,7 +2374,14 @@ export class WaterRenderer{
       });
       const retained=new Set(planned.filter(item=>item.mesh).map(item=>item.component.id));
       this.surfaceMeshUpdate={reused:retained.size,built:0};
-      for(const [id,mesh] of previousMeshes)if(!retained.has(id))mesh.dispose();
+      meshReasons.reused=retained.size;
+      for(const item of planned)if(!item.mesh){
+        if(previousMeshes.has(item.component.id))meshReasons.changedGeometryOrShader++;
+        else meshReasons.newComponent++;
+      }
+      for(const [id,mesh] of previousMeshes)if(!retained.has(id)){
+        mesh.dispose();meshReasons.disposed++;
+      }
       this.surfaceMeshes=new Map();
       this.surfaceAnimations=new Map();
       this.surfaceMeshSignatures=new Map();
@@ -2303,6 +2414,11 @@ export class WaterRenderer{
         }
       }
       this.surfaceSignature=surfaceSignature;
+      this.surfaceRebuildDetail={revision:this.seamAuditRevision,at:new Date().toISOString(),
+        totalTiles:tiles.length,dirtyTiles:resolvedTiles,reusedTileResults:tiles.length-resolvedTiles,
+        publishedWaterTiles:presentation.size,inputReasons,meshReasons,
+        surfaceSolveMs:Number((buildStart-solveStart).toFixed(2)),
+        meshBuildMs:Number((performance.now()-buildStart).toFixed(2))};
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceMeshes",performance.now()-buildStart);
     }else this.sheetFlowNetwork=oldNetwork;
     this.syncRogueWaveEvents(presentationEvents,state);
@@ -2375,6 +2491,7 @@ export class WaterRenderer{
       this.surfaceSignature=this.runoffSignature=this.sourceSignature="";
       this.surfaceTileInputSignatures.clear();
       this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
+      this.surfaceRebuildDetail=null;
       this.cascadeMeshSignatures.clear();
       this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
       this.surfaceMeshSignatures.clear();
@@ -2812,6 +2929,7 @@ export class WaterRenderer{
       surfaceMeshes:this.surfaceMeshes.size,
       surfaceMeshUpdate:this.surfaceMeshUpdate,
       surfaceSolveStats:this.surfaceSolveStats,
+      surfaceRebuildDetail:this.waterRebuildDiagnostics(),
       meshCacheScope:"LOCAL_PUBLISHED_DQ_POLYGONS_CLIFF_SEAMS_TILE_FLOW",
       waterLevelMemoizedPerSync:true,
       sideMeshes:0,
