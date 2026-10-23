@@ -116,8 +116,9 @@ function lightColor(color,fallback=[1,.5,.25]){
 }
 
 export class EnvironmentRenderer{
-  constructor(scene,surfaceResolver=null){
+  constructor(scene,surfaceResolver=null,terrain=null){
     this.scene=scene;
+    this.terrain=terrain;
     this.surfaceResolver=surfaceResolver||new VisualSurfaceResolver();
     this.nodes=new Map();
     this.animated=new Map();
@@ -609,6 +610,10 @@ export class EnvironmentRenderer{
     }
     this.fireLights=[...this.physicalLightsById.values()];
     this.syncSpatialLightMembership();
+    // The same authored fire/structure/equipment sources also illuminate the
+    // existing vertical rock mesh. This is not a second light simulation: the
+    // terrain renderer only shades geometry from the physical source records.
+    this.terrain?.syncCliffLocalLighting(this.fireLights);
 
   }
 
@@ -621,9 +626,9 @@ export class EnvironmentRenderer{
     // those lights relevant again on this very update.
     const lights=this.fireLights;
     const meshes=(this.scene.meshes||[]).filter(mesh=>!mesh.isDisposed?.()&&
-      mesh.metadata?.kind!=="environment-light-field"&&mesh.name!=="terrain-surface");
+      mesh.metadata?.kind!=="environment-light-field"&&
+      mesh.name!=="terrain-surface"&&mesh.name!=="terrain-cliffs");
     const memberships=new Map(lights.map(light=>[light,[]]));
-    const activePerMaterial=new Map();
     for(const mesh of meshes){
       if(mesh.material?.disableLighting===true)continue;
       // Bounds are cached in WORLD space. Update them before assigning lights:
@@ -634,13 +639,11 @@ export class EnvironmentRenderer{
       const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
       if(!center)continue;
       const radius=Math.max(0,Number(bounds?.radiusWorld||0));
-      let count=0;
       for(const light of lights){
         const dx=Number(center.x)-Number(light.position.x),dy=Number(center.y)-Number(light.position.y),dz=Number(center.z)-Number(light.position.z);
         if(dx*dx+dy*dy+dz*dz>Math.pow(Number(light.range||0)+radius,2))continue;
-        memberships.get(light).push(mesh);count++;
+        memberships.get(light).push(mesh);
       }
-      if(mesh.material&&count)activePerMaterial.set(mesh.material,Math.max(count,activePerMaterial.get(mesh.material)||0));
     }
     for(const light of lights){
       const receivers=memberships.get(light)||[];
@@ -659,14 +662,12 @@ export class EnvironmentRenderer{
         light.includedOnlyMeshes=receivers;
       if(!light.isEnabled())light.setEnabled(true);
     }
-    // There are three global scene lights (sun, hemi, fill). The default
-    // StandardMaterial cap is per mesh, not per scene. Expand only if an
-    // actual mesh has more overlapping local lights; most keep the mobile 8.
-    for(const [material,count] of activePerMaterial){
-      if(!Number.isFinite(material.maxSimultaneousLights))continue;
-      const required=count+4; // sun + hemi + fill + permanent zero-or-lit lightning
-      if(material.maxSimultaneousLights<required)material.maxSimultaneousLights=required;
-    }
+    // Shader light capacity is a renderer/material property, not a function of
+    // how many wildfires exist on the map. Increasing maxSimultaneousLights
+    // created Babylon Shader UBO variants that exceeded the device's limits.
+    // Preserve each material's authored shader budget. Large terrain surfaces
+    // receive environmental radiance as bounded vertex/cell data instead.
+
   }
 
   makeLightFieldMaterial(){
