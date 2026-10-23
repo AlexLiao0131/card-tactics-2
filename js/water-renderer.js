@@ -75,6 +75,11 @@ export class WaterRenderer{
     this.sheetFlowSurfaces=new Map();
     this.sheetFlowMeshes=new Map();
     this.surfaceSignature="";
+    this.surfaceTileInputSignatures=new Map();
+    // Geometry registries publish immutable buffers; cache their EXACT XYZ
+    // fingerprint by source-object identity, not by a global revision number.
+    this.publishedWaterGeometrySignatures=new WeakMap();
+    this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
     this.surfaceMeshSignatures=new Map();
     this.levelSamples=null;
     this.surfaceMeshUpdate={reused:0,built:0};
@@ -2036,6 +2041,65 @@ export class WaterRenderer{
   }
 
 
+  // Exact input dependency snapshots for the ONE VisualSurfaceResolver solve.
+  // This is a presentation cache, not a copy of Hydrology's D/Q state.
+  // Comparing published XYZ (rather than geometry registry revision alone)
+  // avoids invalidating unrelated ponds when distant terrain is republished.
+  publishedWaterGeometrySignature(geometry,kind){
+    if(!geometry)return null;
+    let signature=this.publishedWaterGeometrySignatures.get(geometry);
+    if(signature===undefined){
+      signature=kind==="CLIFF"
+        ?JSON.stringify([geometry.lip,geometry.foot,geometry.segments,geometry.outward,geometry.drop])
+        :JSON.stringify(geometry.triangles);
+      this.publishedWaterGeometrySignatures.set(geometry,signature);
+    }
+    return signature;
+  }
+
+  surfaceTileInputs(state){
+    const signatures=new Map();
+    for(const tile of tilesOf(state)){
+      const key=keyOf(tile.x,tile.y),node=this.sheetFlowNetwork.get(key);
+      const edges=[...(node?.incoming||[]),...(node?.outgoing||[])]
+        .map(edge=>[edge.id,edge.fromKey,edge.toKey,edge.q,edge.qKind,
+          edge.cascade,edge.geometryJoinValid,edge.geometryJoin,
+          edge.transportVolume,edge.measuredRate,edge.persistentRate])
+        .sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
+      const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
+      // Native registered wall geometry is the only authority for cascade lip
+      // and cliff contact; exclude global revision counters from signatures.
+      const cliffs=DIRS.map(dir=>this.publishedWaterGeometrySignature(
+        this.surfaceResolver.getRenderedCliffGeometry(tile,dir),"CLIFF"));
+      signatures.set(key,JSON.stringify([
+        tile.x,tile.y,tile.elevation,tile.waterDepth,tile.waterSurfaceZ,
+        tile.flowSpeed,tile.flowX,tile.flowY,tile.river,
+        tile.channelBankElevation,tile.hydrologyChannelWidthFraction,
+        tile.hydrologySource,tile.hydrologySourceDisabled,tile.sourceKind,
+        tile.hydrologyDrain,tile.hydrologySourceInflow,tile.fogged,
+        this.publishedWaterGeometrySignature(geometry,"SURFACE"),cliffs,edges
+      ]));
+    }
+    return signatures;
+  }
+
+  // A world-space water sample can consult cardinal neighbours around a
+  // shoreline point; Q/D handoff can sample that neighbour once more.
+  // A two-cell Chebyshev halo therefore conservatively includes every source
+  // input, even across an irregular cliff or wet/dry boundary.
+  changedSurfaceTileKeys(next){
+    const changed=new Set(),previous=this.surfaceTileInputSignatures;
+    const mark=key=>{
+      const [x,y]=key.split(",").map(Number);
+      if(!Number.isFinite(x)||!Number.isFinite(y))return;
+      for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++)
+        changed.add(keyOf(x+dx,y+dy));
+    };
+    for(const [key,signature] of next)if(previous.get(key)!==signature)mark(key);
+    for(const key of previous.keys())if(!next.has(key))mark(key);
+    return changed;
+  }
+
   surfaceSignatureFor(components,state){
     const terrain=tilesOf(state).map(tile=>[
       keyOf(tile.x,tile.y),
@@ -2163,8 +2227,18 @@ export class WaterRenderer{
       this.seamAuditCache=null;
       const tiles=tilesOf(state),allMap=this.allByKey(state);
       const solveStart=performance.now();
+      const nextTileInputs=this.surfaceTileInputs(state);
+      const previousPresentation=this.surfacePresentation;
+      // The cache is valid only inside one continuously tracked presentation.
+      // A reset/cleared scene must perform a complete first solve.
+      const dirtyKeys=this.surfaceSignature
+        ?this.changedSurfaceTileKeys(nextTileInputs):new Set(tiles.map(tile=>keyOf(tile.x,tile.y)));
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
-        (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap));
+        (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap),
+        {previous:previousPresentation,dirtyKeys,previousNetwork:oldNetwork});
+      const resolvedTiles=tiles.filter(tile=>dirtyKeys.has(keyOf(tile.x,tile.y))).length;
+      this.surfaceSolveStats={totalTiles:tiles.length,resolvedTiles,reusedTiles:tiles.length-resolvedTiles};
+      this.surfaceTileInputSignatures=nextTileInputs;
       this.surfacePresentation=presentation;
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceSolve",performance.now()-solveStart);
       const buildStart=performance.now();
@@ -2299,6 +2373,8 @@ export class WaterRenderer{
       this.resetWaterSeamRegistry();
       this.seamAuditRevision++;this.seamAuditCache=null;
       this.surfaceSignature=this.runoffSignature=this.sourceSignature="";
+      this.surfaceTileInputSignatures.clear();
+      this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
       this.cascadeMeshSignatures.clear();
       this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
       this.surfaceMeshSignatures.clear();
@@ -2735,6 +2811,7 @@ export class WaterRenderer{
     return{
       surfaceMeshes:this.surfaceMeshes.size,
       surfaceMeshUpdate:this.surfaceMeshUpdate,
+      surfaceSolveStats:this.surfaceSolveStats,
       meshCacheScope:"LOCAL_PUBLISHED_DQ_POLYGONS_CLIFF_SEAMS_TILE_FLOW",
       waterLevelMemoizedPerSync:true,
       sideMeshes:0,

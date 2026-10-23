@@ -137,7 +137,7 @@ export class BabylonRenderer{
     // Props use the same published terrain geometry as water. No second surface resolver.
     this.mapObjects=new MapObjectRenderer(this.scene,this.terrain);
     this.environment=new EnvironmentRenderer(this.scene,null);
-    this.objectives=new ObjectiveRenderer(this.scene);
+    this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);

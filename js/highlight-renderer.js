@@ -26,22 +26,52 @@ export class HighlightRenderer{
     return material;
   }
 
-  // Overlay geometry follows the ACTUAL published terrain triangles; height
-  // at each vertex also reads the water level and any published snow/ice cover.
-  // Neither renderer guesses visual slopes, ice height or nearest tile vertices.
+  // Use the published snow/ice triangle topology where cover exists. A high
+  // snow ridge between terrain vertices otherwise cuts through a terrain-
+  // triangulated marker even when every marker vertex was elevated correctly.
+  // Ground/water geometry remains unchanged; no extra render pass or mesh.
   indicatorGeometry(tile,clearance,layers){
     const resolver=this.terrain?.surfaceResolver;
     const triangles=resolver?.getRenderedSurfaceGeometry(tile)?.triangles;
     if(!triangles?.length)return null;
     const waterSurface=resolver.waterSurfaceOf(tile);
     const waterY=waterSurface==null?-Infinity:Number(waterSurface)*ELEVATION_HEIGHT;
+    const key=keyOf(tile),cover=(layers||[]).filter(layer=>{
+      const offset=layer.tileOffsets.get(key);
+      if(offset===undefined)return false;
+      for(let v=offset*16;v<(offset+1)*16;v++)
+        if(Number(layer.colors[v*4+3]||0)>0.001)return true;
+      return false;
+    });
     const positions=[],indices=[];
+    if(cover.length){
+      // All published cover grids use the same 16 vertices / 18 triangles per
+      // tile. Prefer snow; fall back to ice when only ice is visible.
+      const reference=cover.find(layer=>layer.type==="SNOW")||cover[0];
+      const offset=reference.tileOffsets.get(key),start=offset*54;
+      for(let i=start;i<start+54;i+=3){
+        const base=positions.length/3;
+        for(let j=0;j<3;j++){
+          const sourceIndex=reference.indices[i+j];
+          const x=reference.positions[sourceIndex*3],z=reference.positions[sourceIndex*3+2];
+          const ground=resolver.publishedSurfacePoint(tile,x,z)?.y??-Infinity;
+          // The renderer's canonical published vertex buffers provide cover
+          // heights. At every 4x4 grid vertex, all cover layers coincide in XZ.
+          let coverY=-Infinity;
+          const vertex=sourceIndex-offset*16;
+          for(const layer of cover){
+            const ownIndex=layer.tileOffsets.get(key)*16+vertex;
+            coverY=Math.max(coverY,Number(layer.positions[ownIndex*3+1]));
+          }
+          positions.push(x,Math.max(ground,waterY,coverY)+clearance,z);
+        }
+        indices.push(base,base+1,base+2);
+      }
+      return{positions,indices};
+    }
     for(const triangle of triangles){
       const base=positions.length/3;
-      for(const point of triangle){
-        const snowIceY=this.environment?.publishedCoverYAt(tile,point.x,point.z,layers)??-Infinity;
-        positions.push(point.x,Math.max(point.y,waterY,snowIceY)+clearance,point.z);
-      }
+      for(const point of triangle)positions.push(point.x,Math.max(point.y,waterY)+clearance,point.z);
       indices.push(base,base+1,base+2);
     }
     return{positions,indices};

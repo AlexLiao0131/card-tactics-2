@@ -303,7 +303,7 @@ export class VisualSurfaceResolver{
   // no fictitious retained water volume is integrated per gameplay square.
   // D/Q boundaries inherit the exact D waterline at the common rock/terrain
   // edge, rather than stitching separately constructed polygons afterwards.
-  presentationWaterSurfaces(tiles,network,storedLevelAtWorld){
+  presentationWaterSurfaces(tiles,network,storedLevelAtWorld,{previous=null,dirtyKeys=null,previousNetwork=null}={}){
     const result=new Map();
     const all=new Map((tiles||[]).map(tile=>[this.keyOf(tile.x,tile.y),tile]));
     const widthFromRate=q=>TILE_SIZE*(.21+.19*clamp01(Math.log1p(q)/Math.log(32)));
@@ -393,9 +393,29 @@ export class VisualSurfaceResolver{
     };
     for(const tile of tiles||[]){
       if(!tile)continue;
-      const key=this.keyOf(tile.x,tile.y),geometry=this.getRenderedSurfaceGeometry(tile);
+      const key=this.keyOf(tile.x,tile.y),node=network?.get(key);
+      // The caller compares exact published inputs, with a conservative
+      // two-tile dependency halo for world-space D/Q shoreline sampling.
+      // Reuse already clipped polygons ONLY when none of their inputs changed.
+      // This remains the sole D/Q surface solver and terrain intersection.
+      if(previous&&dirtyKeys&&!dirtyKeys.has(key)){
+        // The original solver also writes per-tile Q diagnostics for dry
+        // geometry. Preserve these even when a tile publishes no polygon.
+        const oldNode=previousNetwork?.get(key);
+        if(node&&oldNode){
+          if(oldNode.sheetStatus!==undefined)node.sheetStatus=oldNode.sheetStatus;
+          if(oldNode.sheetAcceptedEdges!==undefined)node.sheetAcceptedEdges=[...oldNode.sheetAcceptedEdges];
+          if(oldNode.sheetRejectedEdges!==undefined)node.sheetRejectedEdges=[...oldNode.sheetRejectedEdges];
+        }
+        const retained=previous.get(key);
+        if(retained)result.set(key,{...retained,tile,
+          geometryRevision:this.getRenderedSurfaceGeometry(tile)?.revision,
+          boundaryEdges:[...(node?.incoming||[]),...(node?.outgoing||[])]});
+        continue;
+      }
+      const geometry=this.getRenderedSurfaceGeometry(tile);
       if(!geometry?.triangles?.length)continue;
-      const stored=hasStoredWaterDepth(tile),node=network?.get(key);
+      const stored=hasStoredWaterDepth(tile);
       const records=[...(node?.incoming||[]),...(node?.outgoing||[])];
       const ports=records.filter(record=>record.geometryJoinValid||record.cascade)
         .map(record=>exposedEdge(tile,record)).filter(Boolean);

@@ -8,8 +8,8 @@ const MARKER_SEGMENTS=32;
 const MARKER_HEIGHT=.09;
 
 export class ObjectiveRenderer{
-  constructor(scene){
-    this.scene=scene;this.cores=new Map();this.points=new Map();this.signatureValue=null;
+  constructor(scene,{environment=null}={}){
+    this.scene=scene;this.environment=environment;this.coverGeometry=[];this.cores=new Map();this.points=new Map();this.signatureValue=null;
     this.latestState=null;this.terrainMesh=null;this.terrainDataCache=null;
     this.materials={
       PLAYER:this.mat("objective-player",new BABYLON.Color3(.20,.55,.95)),
@@ -47,6 +47,35 @@ export class ObjectiveRenderer{
       m.specularPower=36;
     }
     return m;
+  }
+  // Reuse the same published cover mesh triangles as tactical highlights.
+  // Never infer a new snow surface from tile.snowDepth or grid elevations.
+  coverYAt(tile,x,z){
+    if(!tile||!this.environment)return -Infinity;
+    return this.environment.publishedCoverYAt(tile,x,z,this.coverGeometry)??-Infinity;
+  }
+  coverHighest(tile,cx,cz){
+    if(!tile||!this.coverGeometry.length)return -Infinity;
+    let highest=this.coverYAt(tile,cx,cz);
+    for(let i=0;i<MARKER_SEGMENTS;i++){
+      const angle=i*2*Math.PI/MARKER_SEGMENTS,cos=Math.cos(angle),sin=Math.sin(angle);
+      for(const radius of [MARKER_RADIUS*.5,MARKER_RADIUS])
+        highest=Math.max(highest,this.coverYAt(tile,cx+cos*radius,cz+sin*radius));
+    }
+    // Capture the peak of any visible published snow/ice vertex inside the
+    // marker's circle, even when the edge samples missed that vertex.
+    const key=tileKey(tile.x,tile.y),r2=MARKER_RADIUS*MARKER_RADIUS+1e-8;
+    for(const layer of this.coverGeometry){
+      const offset=layer.tileOffsets.get(key);
+      if(offset===undefined)continue;
+      for(let v=offset*16;v<(offset+1)*16;v++){
+        if(Number(layer.colors[v*4+3]||0)<=.001)continue;
+        const x=layer.positions[v*3],z=layer.positions[v*3+2];
+        if((x-cx)**2+(z-cz)**2<=r2)
+          highest=Math.max(highest,Number(layer.positions[v*3+1]));
+      }
+    }
+    return highest;
   }
   surfaceY(tile){return surfaceZ(tile)*ELEVATION_HEIGHT;}
   waterY(tile){
@@ -156,9 +185,9 @@ export class ObjectiveRenderer{
     const waterY=this.waterY(tile);
     const groundAt=(x,z)=>{
       const sampled=footprint?.sample(x,z);
-      return Math.max(Number.isFinite(sampled)?sampled:fallback,waterY);
+      return Math.max(Number.isFinite(sampled)?sampled:fallback,waterY,this.coverYAt(tile,x,z));
     };
-    const supportY=Math.max(footprint?.highest??fallback,waterY);
+    const supportY=Math.max(footprint?.highest??fallback,waterY,this.coverHighest(tile,cx,cz));
     const centreY=supportY+MARKER_CLEARANCE+MARKER_HEIGHT*.5;
     const original=mesh.metadata.originalPositions;
     const positions=Float32Array.from(original),normals=[];
@@ -195,7 +224,9 @@ export class ObjectiveRenderer{
       const tile=point.captureTiles[0];
       return["P",point.id,ownerKey(point.owner),tile.x,tile.y,surfaceZ(byKey.get(tileKey(tile.x,tile.y))).toFixed(3)].join(":");
     });
-    return [...cores,...points].sort().join(";");
+    // Snow/ice geometry is published before ObjectiveRenderer.sync(). Any
+    // change in the cover vertices must refresh core and capture support.
+    return `${this.environment?.publishedCoverRevision||0}|${[...cores,...points].sort().join(";")}`;
   }
   sync(state){
     this.latestState=state;
@@ -207,6 +238,7 @@ export class ObjectiveRenderer{
     if(signature===this.signatureValue)return;
     this.signatureValue=signature;
     const terrain=this.terrainData();
+    this.coverGeometry=this.environment?.publishedCoverGeometry?.()||[];
 
     const coreAlive=new Set();
     for(const core of state?.cores||[]){
@@ -215,7 +247,8 @@ export class ObjectiveRenderer{
       const tile=byKey.get(tileKey(core.x,core.y)),cx=core.x*TILE_SIZE,cz=core.y*TILE_SIZE;
       const publishedY=this.pointHeight(terrain,cx,cz);
       mesh.material=this.coreMaterials[ownerKey(core.owner)];
-      const supportY=Math.max(publishedY??Number(tile?.elevation||0)*ELEVATION_HEIGHT,this.waterY(tile));
+      const supportY=Math.max(publishedY??Number(tile?.elevation||0)*ELEVATION_HEIGHT,
+        this.waterY(tile),this.coverYAt(tile,cx,cz));
       mesh.position.set(cx,supportY+.825,cz);
       mesh.visibility=core.hp>0?1:.2;
     }
