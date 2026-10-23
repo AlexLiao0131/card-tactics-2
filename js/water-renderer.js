@@ -91,7 +91,8 @@ export class WaterRenderer{
     // no second water state, no stale tile ownership or geometry copies.
     this.waterPolygonSpatialIndex=new WeakMap();
     this.cascadeGeometrySignatures=new WeakMap();
-    this.runoffSignature="";
+    this.runoffMeshSignatures=new Map();
+    this.runoffMeshUpdate={reused:0,built:0,disposed:0};
     this.sourceSignature="";
     this.waveTime=0;
     this.waveAccumulator=0;
@@ -1546,19 +1547,6 @@ export class WaterRenderer{
     return mesh;
   }
 
-  runoffSignatureFor(edges){
-    const segmentKey=edge=>(edge.runoffSegments||[]).map(segment=>`${segment.kind}:${Number(segment.start).toFixed(4)}-${Number(segment.end).toFixed(4)}:${segment.startKind||""}:${segment.endKind||""}`).join(",");
-    // A flat measured-only edge may be in the shared Q graph without a legacy
-    // runoff mesh. The sheet cache must still invalidate when that real flow
-    // changes, not only when the subset of printable runoff/cascade edges does.
-    const networkKey=[...this.sheetFlowNetwork.values()].flatMap(node=>node.outgoing||[])
-      .map(edge=>`${edge.id}:${Number(edge.q||0).toFixed(4)}:${Number(edge.transportVolume||0).toFixed(4)}:${edge.cascade?1:0}:${edge.geometryJoin||""}:${edge.geometryJoinValid?1:0}`)
-      .sort().join("|");
-    // The wet contour may move when waterDepth changes even if Q and pooled
-    // flags remain unchanged; refresh the runoff with its owning water surface.
-    return`${Number(this.surfaceResolver.renderedSurfaceGeometryRevision||0)}:${Number(this.surfaceResolver.renderedCliffGeometryRevision||0)}:${this.surfaceSignature||""}#`+edges.map(edge=>`${edge.id}:${edge.rate.toFixed(4)}:${edge.edgeDischarge.toFixed(4)}:${edge.surfaceDrop.toFixed(4)}:${edge.transportVolume.toFixed(4)}:${edge.fromPooled?1:0}:${edge.toPooled?1:0}:${edge.cascade?1:0}:${segmentKey(edge)}:${Number(edge.flowPathStart||0).toFixed(3)}`).sort().join("|")+`#ALL_Q:${networkKey}`;
-  }
-
   polygonSurfaceLevelAtPoint(point,polygon){
     if(!point||!polygon?.length)return null;
     for(let i=1;i<polygon.length-1;i++){
@@ -2288,7 +2276,6 @@ export class WaterRenderer{
       edge.top,edge.bottom,edge.drop,edge.speed,edge.flowVolume,
       edge.transportVolume,edge.edgeDischarge,edge.hydraulicPower,
       edge.hydrologyEdgeReason,edge.storedWaterOvertopping,edge.receiverWet,
-      edge.tile.fogged?1:0,
       hasAnyWater(edge.receiver)?visualSurface(edge.receiver):null
     ]);
     // Raw exact JSON fragments maintain the original null/array/object
@@ -2307,6 +2294,37 @@ export class WaterRenderer{
     return parts.map(part=>`${part.length}:${part}`).join("");
   }
 
+
+  // A runoff strip is built from one directed Hydrology edge, its exact
+  // published D/Q end surfaces and its registered rock-face geometry. A distant
+  // Q edge or water body is NOT an input to buildRunoff(). This conservative,
+  // exact content signature allows unaffected runoff Meshes to survive regional
+  // weather/hydrology updates. No independent water geometry is calculated.
+  runoffMeshSignatureFor(edge){
+    const fromKey=keyOf(edge.from.x,edge.from.y),toKey=keyOf(edge.to.x,edge.to.y);
+    const dir={dx:Math.sign(edge.to.x-edge.from.x),dy:Math.sign(edge.to.y-edge.from.y)};
+    const wall=edge.cascade?this.surfaceResolver.getRenderedCliffGeometry(edge.from,dir):null;
+    const fromNode=this.sheetFlowNetwork.get(fromKey),toNode=this.sheetFlowNetwork.get(toKey);
+    return JSON.stringify([
+      edge.id,edge.rate,edge.persistentRate,edge.edgeDischarge,
+      edge.transportVolume,edge.surfaceDrop,edge.flowPathStart,edge.flowPathRepeat,
+      edge.reason,edge.cascade,edge.fromPooled,edge.toPooled,
+      edge.fromStored,edge.toStored,edge.runoffSegments,
+      this.surfaceTileInputSignatures.get(fromKey)??null,
+      this.surfaceTileInputSignatures.get(toKey)??null,
+      this.cascadeGeometrySignature(this.surfacePresentation.get(fromKey)?.polygons??null),
+      this.cascadeGeometrySignature(this.surfacePresentation.get(fromKey)?.cascadeLipSpans?.[edge.id]??null),
+      this.cascadeGeometrySignature(this.surfacePresentation.get(toKey)?.polygons??null),
+      wall?[
+        this.publishedWaterGeometrySignature(wall,"CLIFF"),
+        wall.revision??null
+      ]:null,
+      fromNode?.qIn,fromNode?.qOut,fromNode?.sourceRate,
+      toNode?.qIn,toNode?.qOut,
+      // buildRunoff() samples local fog and keeps these visibilities per Mesh.
+      edge.from.fogged,edge.to.fogged
+    ]);
+  }
 
   sync(state,presentationEvents=[]){
     // A sync consumes one BattlePresentation snapshot. Never carry cached water
@@ -2455,6 +2473,12 @@ export class WaterRenderer{
       const retained=retainedCascades.has(edge.id)?previousCascades.get(edge.id):null;
       if(!retained)continue;
       this.cascades.set(edge.id,retained);
+      // Visibility changes are presentation-only: they do not alter waterfall
+      // triangles, foam topology or wave input. Preserve the Babylon buffers.
+      const visibility=edge.tile.fogged?.16:1;
+      retained.baseVisibility=visibility;
+      retained.mesh.visibility=visibility;
+      for(const group of retained.impacts||[])group.foam.visibility=visibility;
       if(surfaceChanged){
         const positions=retained.mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
         for(let i=0;i<positions.length;i+=3)
@@ -2472,11 +2496,34 @@ export class WaterRenderer{
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascadeMeshes",performance.now()-cascadeBuildStart);
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascades",performance.now()-cascadeStart);
     const runoffStart=performance.now();
-    const runoffSignature=this.runoffSignatureFor(runoffs);
-    if(runoffSignature!==this.runoffSignature){
-      this.disposeMap(this.runoffs);
-      for(const edge of runoffs){const built=this.buildRunoff(edge,state);if(built)this.runoffs.set(edge.id,built);}
-      this.runoffSignature=runoffSignature;
+    const priorRunoffs=this.runoffs,priorRunoffSignatures=this.runoffMeshSignatures;
+    // Q-only sheets already belong to the shared surface Mesh. Only cliff
+    // junctions with actual runoff segments can own dedicated geometry.
+    const runoffPlans=runoffs.filter(edge=>(edge.runoffSegments||[])
+      .some(segment=>Number(segment.end)-Number(segment.start)>EPSILON))
+      .map(edge=>({edge,signature:this.runoffMeshSignatureFor(edge)}));
+    const runoffIds=new Set(runoffPlans.map(plan=>plan.edge.id));
+    this.runoffs=new Map();
+    this.runoffMeshSignatures=new Map();
+    this.runoffMeshUpdate={reused:0,built:0,disposed:0};
+    for(const {edge,signature} of runoffPlans){
+      this.runoffMeshSignatures.set(edge.id,signature);
+      const old=priorRunoffs.get(edge.id);
+      if(priorRunoffSignatures.get(edge.id)===signature&&(!old||!old.isDisposed?.())){
+        if(old){
+          this.runoffs.set(edge.id,old);
+          this.runoffMeshUpdate.reused++;
+        }
+        // A dry/zero-area junction with unchanged inputs remains without a
+        // drawable Mesh; do not repeat its geometry clipping every sync.
+        continue;
+      }
+      if(old){old.dispose();this.runoffMeshUpdate.disposed++;}
+      const built=this.buildRunoff(edge,state);
+      if(built){this.runoffs.set(edge.id,built);this.runoffMeshUpdate.built++;}
+    }
+    for(const [id,mesh] of priorRunoffs)if(!runoffIds.has(id)){
+      mesh.dispose();this.runoffMeshUpdate.disposed++;
     }
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.runoffs",performance.now()-runoffStart);
     if(this.sourceFootprints.size)this.disposeMap(this.sourceFootprints);
@@ -2488,7 +2535,9 @@ export class WaterRenderer{
       this.surfacePresentation.clear();
       this.resetWaterSeamRegistry();
       this.seamAuditRevision++;this.seamAuditCache=null;
-      this.surfaceSignature=this.runoffSignature=this.sourceSignature="";
+      this.surfaceSignature=this.sourceSignature="";
+      this.runoffMeshSignatures.clear();
+      this.runoffMeshUpdate={reused:0,built:0,disposed:0};
       this.surfaceTileInputSignatures.clear();
       this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
       this.surfaceRebuildDetail=null;
@@ -2938,6 +2987,8 @@ export class WaterRenderer{
       waterfallGeometryLookup:"PUBLISHED_DQ_POLYGON_SPATIAL_INDEX",
       cascadeSignatureScope:"EXACT_LOCAL_PUBLISHED_GEOMETRY_MEMOIZED",
       surfaceRunoffs:this.runoffs.size,
+      runoffMeshUpdate:this.runoffMeshUpdate,
+      runoffCacheScope:"PER_DIRECTED_HYDROLOGY_EDGE_PUBLISHED_DQ_CLIFF",
       activeSourceFootprints:this.sourceFootprints.size,
       separatedWaterLevels:false,
       hydrologyContinuousSurface:true,
