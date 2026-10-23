@@ -1154,47 +1154,78 @@ export class WaterRenderer{
     return{sourcePolygons,splitEdges,insertedEdgeVertices};
   }
 
-  // Rugged cliff shoulders are published as real terrain triangles OUTSIDE
-  // their tile's nominal bounds. When both sides belong to the same submerged
-  // D water body, the lower tile's published bed already owns that XZ area.
-  // Drawing water over the upper shoulder as well makes two coplanar alpha
-  // surfaces and non-manifold seam edges. The exposed lip, dry shore and
-  // waterfall remain untouched: those are NOT submerged connected water.
-  isDuplicateSubmergedWaterShoulder(tile,polygon,componentTiles){
-    const centerX=Number(tile.x)*TILE_SIZE,centerZ=Number(tile.y)*TILE_SIZE;
-    const midpointX=polygon.reduce((sum,p)=>sum+Number(p.x),0)/polygon.length;
-    const midpointZ=polygon.reduce((sum,p)=>sum+Number(p.z),0)/polygon.length;
-    const half=TILE_SIZE*.5;
-    const dx=midpointX>centerX+half?1:midpointX<centerX-half?-1:0;
-    const dz=midpointZ>centerZ+half?1:midpointZ<centerZ-half?-1:0;
-    if(Math.abs(dx)+Math.abs(dz)!==1)return false;
-    const neighbor=componentTiles.get(keyOf(Number(tile.x)+dx,Number(tile.y)+dz));
-    if(!neighbor||!hasAnyWater(tile)||!hasAnyWater(neighbor))return false;
-    if(!this.surfaceResolver.getRenderedCliffGeometry(tile,{dx,dy:dz}))return false;
-    return !!this.surfaceResolver.submergedStoredWaterCliff(tile,neighbor)
-      &&this.continuousWaterEdge(tile,neighbor);
+  // The published rugged cliff shoulder extends outside its owning tile.
+  // Where that cliff is submerged AND both stored-water tiles are one
+  // continuous water body, the neighbour owns the shared horizontal footprint.
+  // Clip ONLY the portion outside the source tile: dropping a whole wet
+  // polygon by its centroid leaves half-overlaps or tears out valid water.
+  // The cut follows the grid's authored tile boundary, not a visual offset.
+  clipSubmergedShoulderToTile(polygon,limits){
+    let points=polygon;
+    for(const {axis,bound,keepLess} of limits){
+      if(points.length<3)break;
+      if(points.every(point=>keepLess?Number(point[axis])<=bound:Number(point[axis])>=bound))continue;
+      const next=[];
+      for(let i=0;i<points.length;i++){
+        const a=points[i],b=points[(i+1)%points.length];
+        const inA=keepLess?Number(a[axis])<=bound:Number(a[axis])>=bound;
+        const inB=keepLess?Number(b[axis])<=bound:Number(b[axis])>=bound;
+        if(inA)next.push(a);
+        if(inA!==inB){
+          const t=(bound-Number(a[axis]))/(Number(b[axis])-Number(a[axis]));
+          const point={...a};
+          for(const key of Object.keys(a)){
+            if(typeof a[key]==="number"&&typeof b[key]==="number")
+              point[key]=a[key]+(b[key]-a[key])*t;
+          }
+          point[axis]=bound;
+          // A tile-ownership cut is not a newly generated wet/dry shoreline.
+          point.clipped=Boolean(a.clipped&&b.clipped);
+          next.push(point);
+        }
+      }
+      points=next.filter((point,i)=>
+        !(i>0&&point.x===next[i-1].x&&point.z===next[i-1].z&&point.level===next[i-1].level));
+      if(points.length>1){
+        const first=points[0],last=points.at(-1);
+        if(first.x===last.x&&first.z===last.z&&first.level===last.level)points.pop();
+      }
+    }
+    if(points.length<3)return[];
+    if(points!==polygon)points.triangleIndex=polygon.triangleIndex;
+    return points;
   }
 
-  // Resolve local water-surface ownership ONCE per connected region. This is
-  // the same published D/Q polygon set consumed by the surface Mesh and its
-  // cache signature: changing a cliff shoulder's owner cannot leave an old
-  // Mesh alive merely because the original unfiltered polygons are identical.
+  // Resolve ownership with the EXISTING submerged-cliff/continuous-water
+  // contract. No separate water-body test, water level, or render overlay.
+  // Other cliffs (exposed rock, dry banks, waterfalls) are left untouched.
   componentSurfacePolygons(component,presentation){
     const members=new Map(component.tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
-    let excludedSubmergedShoulders=0;
+    let excludedSubmergedShoulders=0,clippedSubmergedShoulders=0;
     const tiles=component.tiles.map(tile=>{
       const key=keyOf(tile.x,tile.y),polygons=[];
-      for(const polygon of presentation.get(key)?.polygons||[]){
-        if(this.isDuplicateSubmergedWaterShoulder(tile,polygon,members)){
-          excludedSubmergedShoulders++;
-        }else polygons.push(polygon);
+      const limits=[];
+      if(hasAnyWater(tile))for(const dir of DIRS){
+        const neighbor=members.get(keyOf(Number(tile.x)+dir.dx,Number(tile.y)+dir.dy));
+        if(!neighbor||!hasAnyWater(neighbor))continue;
+        if(!this.surfaceResolver.getRenderedCliffGeometry(tile,dir))continue;
+        if(!this.surfaceResolver.submergedStoredWaterCliff(tile,neighbor))continue;
+        if(!this.continuousWaterEdge(tile,neighbor))continue;
+        limits.push(dir.dx!==0
+          ?{axis:"x",bound:(Number(tile.x)+dir.dx*.5)*TILE_SIZE,keepLess:dir.dx>0}
+          :{axis:"z",bound:(Number(tile.y)+dir.dy*.5)*TILE_SIZE,keepLess:dir.dy>0});
       }
-      // The flow inventory belongs to a hydrology TILE, not each rendered
-      // triangle vertex. Resolve once and share the exact input with both
-      // the cache signature and every vertex that consumes this tile.
+      for(const polygon of presentation.get(key)?.polygons||[]){
+        if(!limits.length){polygons.push(polygon);continue;}
+        const owned=this.clipSubmergedShoulderToTile(polygon,limits);
+        if(owned.length<3){excludedSubmergedShoulders++;continue;}
+        if(owned!==polygon)clippedSubmergedShoulders++;
+        polygons.push(owned);
+      }
+      // Flow is defined per hydrology tile, not per surface vertex.
       return{tile,key,polygons,motion:this.tileMotion(tile)};
     });
-    return{tiles,excludedSubmergedShoulders};
+    return{tiles,excludedSubmergedShoulders,clippedSubmergedShoulders};
   }
 
   // GPU wave pinning reads actual local cliff lips and adjacent uphill feet.
@@ -1216,6 +1247,7 @@ export class WaterRenderer{
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
     const resolved=resolvedSurface||this.componentSurfacePolygons(component,presentation);
     const exclusiveSubmergedShoulders=resolved.excludedSubmergedShoulders;
+    const clippedSubmergedShoulders=resolved.clippedSubmergedShoulders;
     const wetPolygons=[];
     for(const {tile,polygons,motion} of resolved.tiles){
       const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
@@ -1234,7 +1266,7 @@ export class WaterRenderer{
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
       qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
-      exclusiveSubmergedShoulders};
+      exclusiveSubmergedShoulders,clippedSubmergedShoulders};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
     if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);mesh.setVerticesData("waterSource",waterSource,false,2);}
@@ -1972,7 +2004,7 @@ export class WaterRenderer{
     const tiles=resolved.tiles.map(({tile,key,polygons,motion})=>
       [key,hasAnyWater(tile),this.turbidity(tile),motion.x,motion.z,motion.speed,polygons]);
     return JSON.stringify([
-      component.id,component.group,tiles,resolved.excludedSubmergedShoulders,
+      component.id,component.group,tiles,resolved.excludedSubmergedShoulders,resolved.clippedSubmergedShoulders,
       this.componentCliffSeams(component,byKey),
       sources.map(source=>[source.x,source.z,source.rate])
     ]);
@@ -2393,7 +2425,7 @@ export class WaterRenderer{
       coincidentCrossMeshVertices:0,crossMeshVertexMotionMismatch:0,
       coincidentSameMeshVertices:0,sameMeshWaveInputMismatch:0,
       conformingSplitEdges:0,conformingInsertedEdgeVertices:0,
-      excludedSubmergedShoulderPolygons:0,
+      excludedSubmergedShoulderPolygons:0,clippedSubmergedShoulderPolygons:0,
       sameMeshColorMismatch:0,sameMeshNormalMismatch:0,
       crossMeshColorMismatch:0,crossMeshNormalMismatch:0,
       missingSurfaceAnimation:0,
@@ -2423,11 +2455,13 @@ export class WaterRenderer{
         conformingSplitEdges:mesh?.metadata?.conformingTriangulation?.splitEdges??0,
         conformingInsertedEdgeVertices:mesh?.metadata?.conformingTriangulation?.insertedEdgeVertices??0,
         excludedSubmergedShoulderPolygons:mesh?.metadata?.exclusiveSubmergedShoulders??0,
+        clippedSubmergedShoulderPolygons:mesh?.metadata?.clippedSubmergedShoulders??0,
         invalidTriangles:0,degenerateTriangles:0,openBoundaryEdges:0};
       regions.push(region);counters.vertices+=vertexCount;
       counters.conformingSplitEdges+=region.conformingSplitEdges;
       counters.conformingInsertedEdgeVertices+=region.conformingInsertedEdgeVertices;
       counters.excludedSubmergedShoulderPolygons+=region.excludedSubmergedShoulderPolygons;
+      counters.clippedSubmergedShoulderPolygons+=region.clippedSubmergedShoulderPolygons;
       if(!animation)counters.missingSurfaceAnimation++;
       meshAttributes.set(id,{positions,animation,colors,mesh});
       const keys=new Array(vertexCount);
