@@ -80,6 +80,11 @@ export class WaterRenderer{
     this.surfaceMeshUpdate={reused:0,built:0};
     this.cascadeMeshSignatures=new Map();
     this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
+    // Read-only accelerators for the ONE published D/Q presentation and
+    // immutable terrain-cliff registry. Weak keys follow their source buffers:
+    // no second water state, no stale tile ownership or geometry copies.
+    this.waterPolygonSpatialIndex=new WeakMap();
+    this.cascadeGeometrySignatures=new WeakMap();
     this.runoffSignature="";
     this.sourceSignature="";
     this.waveTime=0;
@@ -1546,8 +1551,52 @@ export class WaterRenderer{
     return null;
   }
 
+  // The existing presentation polygons are the ONLY waterline authority.
+  // They are spatially partitioned on the same published 3x3 terrain-patch
+  // scale. The boundary halo is EXACTLY pointOnPolygonBoundary's tolerance;
+  // a point that the original query accepts can never be lost at a cell edge.
+  // Array-order insertion preserves the original "first containing polygon"
+  // selection, including overlapping shoreline fragments.
+  indexedWaterPolygonsAt(point,polygons){
+    if(!Array.isArray(polygons)||!point)return polygons||[];
+    const cellSize=TILE_SIZE/3,boundary=TILE_SIZE*.00025;
+    const x=Number(point.x),z=Number(point.z);
+    if(!Number.isFinite(x)||!Number.isFinite(z))return polygons;
+    let lookup=this.waterPolygonSpatialIndex.get(polygons);
+    if(!this.waterPolygonSpatialIndex.has(polygons)){
+      const buckets=new Map();
+      let allFinite=true;
+      for(const polygon of polygons){
+        if(!polygon?.length)continue;
+        let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
+        for(const p of polygon){
+          const x=Number(p.x),z=Number(p.z);
+          if(!Number.isFinite(x)||!Number.isFinite(z)){
+            allFinite=false;break;
+          }
+          minX=Math.min(minX,x);maxX=Math.max(maxX,x);
+          minZ=Math.min(minZ,z);maxZ=Math.max(maxZ,z);
+        }
+        if(!allFinite)break;
+        const x0=Math.floor((minX-boundary)/cellSize);
+        const x1=Math.floor((maxX+boundary)/cellSize);
+        const z0=Math.floor((minZ-boundary)/cellSize);
+        const z1=Math.floor((maxZ+boundary)/cellSize);
+        for(let ix=x0;ix<=x1;ix++)for(let iz=z0;iz<=z1;iz++){
+          const key=`${ix}:${iz}`,bucket=buckets.get(key)||[];
+          bucket.push(polygon);buckets.set(key,bucket);
+        }
+      }
+      // Preserve the original linear contract for malformed source geometry.
+      lookup=allFinite?buckets:null;
+      this.waterPolygonSpatialIndex.set(polygons,lookup);
+    }
+    return lookup?.get(`${Math.floor(x/cellSize)}:${Math.floor(z/cellSize)}`)||
+      (lookup?[]:polygons);
+  }
+
   waterSurfaceLevelAtPoint(point,polygons,fallback=null){
-    for(const polygon of polygons||[]){
+    for(const polygon of this.indexedWaterPolygonsAt(point,polygons)){
       if(!this.pointInPolygon(point,polygon))continue;
       const level=this.polygonSurfaceLevelAtPoint(point,polygon);
       if(level!=null&&Number.isFinite(level))return level;
@@ -1729,9 +1778,6 @@ export class WaterRenderer{
   }
 
   cascadeSpillIntervals(edge,state,wall,polygons=null){
-    const allMap=this.allByKey(state);
-    const waterPolygons=polygons??this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
-      ??this.waterSurfacePolygons(edge.tile,allMap);
     const metrics=this.wallPathMetrics(wall);
     if(!metrics)return[];
     const edgeId=`${edge.tile.x},${edge.tile.y}->${edge.receiver.x},${edge.receiver.y}`;
@@ -1741,6 +1787,8 @@ export class WaterRenderer{
     // replace an independently projected tile-centre/straight-edge fallback.
     if(solved?.cascadeLipSpans&&Object.hasOwn(solved.cascadeLipSpans,edgeId))
       return this.exposedCascadeIntervals(edge,metrics,solved.cascadeLipSpans[edgeId]);
+    const waterPolygons=polygons??this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
+      ??this.waterSurfacePolygons(edge.tile,this.allByKey(state));
     const spans=[];
     for(let i=0;i<metrics.count-1;i++){
       const a=metrics.lip[i],b=metrics.lip[i+1],segmentStart=metrics.cumulative[i],length=metrics.cumulative[i+1]-segmentStart;
@@ -1829,11 +1877,15 @@ export class WaterRenderer{
     const dir=this.cascadeDirection(edge);if(!dir)return null;
     const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,dir);
     const metrics=this.wallPathMetrics(wall);if(!metrics)return null;
-    const allMap=this.allByKey(state),upstreamPolygons=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
-      ??this.waterSurfacePolygons(edge.tile,allMap);
+    // Use the already published surface polygons. A tile-index fallback is
+    // only needed when the renderer is invoked before that presentation exists.
+    let fallbackTiles=null;
+    const fallbackMap=()=>fallbackTiles??=this.allByKey(state);
+    const upstreamPolygons=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y))?.polygons
+      ??this.waterSurfacePolygons(edge.tile,fallbackMap());
     const spans=this.cascadeSpillIntervals(edge,state,wall,upstreamPolygons);if(!spans.length)return null;
     const downstreamPolygons=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y))?.polygons
-      ??(edge.receiverWet?this.waterSurfacePolygons(edge.receiver,allMap):[]);
+      ??(edge.receiverWet?this.waterSurfacePolygons(edge.receiver,fallbackMap()):[]);
     // A rock-face foot can lie outside the clipped receiver polygon in XZ.
     // Never interpret that missing sample as a dry rock floor when the receiver
     // actually stores D. Use the real waterline as a minimum stop height.
@@ -2010,25 +2062,50 @@ export class WaterRenderer{
     ]);
   }
 
+  // Exact, lossless signatures of immutable published geometry. The resolver
+  // issues new polygon arrays when D/Q water changes; TerrainRenderer issues
+  // new cliff geometry when its rock triangles change. Identity is a safe
+  // reuse key for serializing an unchanged object, never the actual comparison
+  // key: the resulting content string still determines the cache hit.
+  cascadeGeometrySignature(value){
+    if(value===null||value===undefined)return "null";
+    if(typeof value!=="object")return JSON.stringify(value);
+    let signature=this.cascadeGeometrySignatures.get(value);
+    if(signature===undefined){
+      signature=JSON.stringify(value);
+      this.cascadeGeometrySignatures.set(value,signature);
+    }
+    return signature;
+  }
+
   cascadeSignatureFor(edge){
-    // A cascade is owned by its actual cliff and its two D/Q shorelines, not
-    // every water tile on the map. Compare the exact inputs buildCascade uses;
-    // changing an unrelated lake must not destroy this cliff's foam and mesh.
+    // The only dependencies are this cascade's actual hydraulic values,
+    // registered rock face and the two published D/Q shorelines. Serialize
+    // each immutable source once, even when many falls touch the same pool.
     const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,this.cascadeDirection(edge));
     const upstream=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y));
     const downstream=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y));
-    return JSON.stringify([
+    const physical=JSON.stringify([
       edge.top,edge.bottom,edge.drop,edge.speed,edge.flowVolume,
       edge.transportVolume,edge.edgeDischarge,edge.hydraulicPower,
       edge.hydrologyEdgeReason,edge.storedWaterOvertopping,edge.receiverWet,
       edge.tile.fogged?1:0,
-      hasAnyWater(edge.receiver)?visualSurface(edge.receiver):null,
-      // The original buildCascade also handles dry Q-only approaches, which
-      // legitimately have no resolved horizontal water polygons.
-      upstream?.polygons??null,upstream?.cascadeLipSpans?.[edge.id]??null,
-      downstream?.polygons??null,
-      wall?.lip??null,wall?.foot??null,wall?.segments??null,wall?.outward??null
+      hasAnyWater(edge.receiver)?visualSurface(edge.receiver):null
     ]);
+    // Raw exact JSON fragments maintain the original null/array/object
+    // comparison semantics, including the Q-only waterfall approach.
+    const parts=[physical,
+      this.cascadeGeometrySignature(upstream?.polygons??null),
+      this.cascadeGeometrySignature(upstream?.cascadeLipSpans?.[edge.id]??null),
+      this.cascadeGeometrySignature(downstream?.polygons??null),
+      this.cascadeGeometrySignature(wall?.lip??null),
+      this.cascadeGeometrySignature(wall?.foot??null),
+      this.cascadeGeometrySignature(wall?.segments??null),
+      this.cascadeGeometrySignature(wall?.outward??null)
+    ];
+    // Length-prefix keeps the complete comparison unambiguous even when
+    // labels or future geometry fields contain punctuation.
+    return parts.map(part=>`${part.length}:${part}`).join("");
   }
 
 
@@ -2130,7 +2207,9 @@ export class WaterRenderer{
 
     const cascadeStart=performance.now();
     const previousCascades=this.cascades,previousCascadeSignatures=this.cascadeMeshSignatures;
+    const cascadeSignatureStart=performance.now();
     const cascadePlans=cascades.map(edge=>({edge,signature:this.cascadeSignatureFor(edge)}));
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascadeSignatures",performance.now()-cascadeSignatureStart);
     const unchangedCascades=new Set(cascadePlans
       .filter(({edge,signature})=>previousCascadeSignatures.get(edge.id)===signature)
       .map(({edge})=>edge.id));
@@ -2158,6 +2237,7 @@ export class WaterRenderer{
           this.canonicalWaterPoint({x:positions[i],y:positions[i+1],z:positions[i+2]});
       }
     }
+    const cascadeBuildStart=performance.now();
     for(const {edge} of cascadePlans){
       // Unchanged edges without a mesh were already determined to have no
       // exposed wet rock face. Retry them when their local geometry changes.
@@ -2165,6 +2245,7 @@ export class WaterRenderer{
       const built=this.buildCascade(edge,state);
       if(built){this.cascades.set(edge.id,built);this.cascadeMeshUpdate.built++;}
     }
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascadeMeshes",performance.now()-cascadeBuildStart);
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.cascades",performance.now()-cascadeStart);
     const runoffStart=performance.now();
     const runoffSignature=this.runoffSignatureFor(runoffs);
@@ -2625,6 +2706,8 @@ export class WaterRenderer{
       sideMeshes:0,
       cascades:this.cascades.size,
       cascadeMeshUpdate:this.cascadeMeshUpdate,
+      waterfallGeometryLookup:"PUBLISHED_DQ_POLYGON_SPATIAL_INDEX",
+      cascadeSignatureScope:"EXACT_LOCAL_PUBLISHED_GEOMETRY_MEMOIZED",
       surfaceRunoffs:this.runoffs.size,
       activeSourceFootprints:this.sourceFootprints.size,
       separatedWaterLevels:false,
