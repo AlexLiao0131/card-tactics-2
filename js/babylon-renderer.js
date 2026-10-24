@@ -127,6 +127,18 @@ export class BabylonRenderer{
       this.shadowGenerator.usePoissonSampling=true;
     }
 
+    // Read-only shadow target submission timer. This measures CPU time spent
+    // issuing the shadow-map render, NOT asynchronous GPU time. Combined with
+    // the surface-pass triangle audit it distinguishes persistent render cost
+    // from environment-sync spikes without altering lighting or shadows.
+    this.shadowPassStart=0;
+    this.shadowPassCpuMs=0;
+    const shadowTarget=this.shadowGenerator.getShadowMap();
+    shadowTarget?.onBeforeBindObservable?.add(()=>{this.shadowPassStart=performance.now();});
+    shadowTarget?.onAfterUnbindObservable?.add(()=>{
+      if(this.shadowPassStart){this.shadowPassCpuMs+=performance.now()-this.shadowPassStart;this.shadowPassStart=0;}
+    });
+
     this.syncLighting(state);
 
     this.camera=new BattleCamera(this.scene,canvas,state);
@@ -149,7 +161,8 @@ export class BabylonRenderer{
     this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
-    this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,renderTotal:0,renderPeak:0};
+    this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,
+      renderTotal:0,renderPeak:0,shadowTotal:0,shadowPeak:0};
     this.lastDrawCallsCounter=null;
     this.engine.runRenderLoop(()=>{
       const frameStart=performance.now();
@@ -157,14 +170,21 @@ export class BabylonRenderer{
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
       const renderStart=performance.now();
+      this.shadowPassCpuMs=0;
       this.scene.render();
       const renderMs=performance.now()-renderStart;
       this.performanceStats.renderMs=Math.round(renderMs*100)/100;
+      this.performanceStats.shadowPassCpuMs=Math.round(this.shadowPassCpuMs*100)/100;
+      // Residual includes transparent AND opaque scene submissions and driver
+      // waiting; do not mistake it for an isolated GPU transparency query.
+      this.performanceStats.nonShadowCpuMs=Math.round(Math.max(0,renderMs-this.shadowPassCpuMs)*100)/100;
       this.unitHud.updateFrame();
       const frameMs=performance.now()-frameStart;
       this.performanceStats.frameMs=Math.round(frameMs*100)/100;
       const sample=this.frameSample;
       sample.count++;sample.frameTotal+=frameMs;sample.renderTotal+=renderMs;
+      sample.shadowTotal+=this.shadowPassCpuMs;
+      sample.shadowPeak=Math.max(sample.shadowPeak,this.shadowPassCpuMs);
       sample.framePeak=Math.max(sample.framePeak,frameMs);
       sample.renderPeak=Math.max(sample.renderPeak,renderMs);
       if(performance.now()-sample.start>=5000){
@@ -173,6 +193,8 @@ export class BabylonRenderer{
         this.performanceStats.framePeakMs=rounded(sample.framePeak);
         this.performanceStats.renderMeanMs=rounded(sample.renderTotal/sample.count);
         this.performanceStats.renderPeakMs=rounded(sample.renderPeak);
+        this.performanceStats.shadowPassCpuMeanMs=rounded(sample.shadowTotal/sample.count);
+        this.performanceStats.shadowPassCpuPeakMs=rounded(sample.shadowPeak);
         // Diagnostic counters only, sampled once per 5-second window. These
         // distinguish scene overdraw/draw calls from one-off sync spikes.
         // Babylon's engine draw-call counter accumulates across frames.
@@ -193,8 +215,10 @@ export class BabylonRenderer{
         this.performanceStats.activeMeshesReliable=this.performanceStats.activeMeshes!==null;
         globalThis.CardTacticsDiagnostics?.recordPerf?.("frame.cpuElapsed",this.performanceStats.framePeakMs);
         globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.renderElapsed",this.performanceStats.renderPeakMs);
+        globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.shadowPassSubmit",this.performanceStats.shadowPassCpuPeakMs);
         sample.start=performance.now();sample.count=0;
         sample.frameTotal=0;sample.framePeak=0;sample.renderTotal=0;sample.renderPeak=0;
+        sample.shadowTotal=0;sample.shadowPeak=0;
       }
     });
 

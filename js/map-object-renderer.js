@@ -52,6 +52,7 @@ export class MapObjectRenderer{
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
     this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
+    this.windBatchMetrics={positionUploads:0,boundsResolves:0,animatedGroups:0};
     // Stage 12J: keep a direct registry of the few meshes that actually sway.
     // The old loop walked every map object and rebuilt an inverse world matrix
     // for every tree/bush at 30 Hz even though those transforms only change on sync.
@@ -174,6 +175,34 @@ export class MapObjectRenderer{
     sway.localWindBasis={xx:m[0],xz:m[8],zx:m[2],zz:m[10]};
   }
 
+  ensureWindBatchBounds(batch,strength){
+    if(batch.windBoundsStrength===strength&&!batch.windBoundsDirty)return;
+    // Every leaf's 2D local displacement has magnitude bounded by its own
+    // amplitude * wind strength * vertex weight. The trig envelope of the
+    // existing bend expression is <= 1.0. Since the mesh positions may
+    // already include a displacement, twice that radius bounds both the
+    // existing pose and every future phase/direction at this wind strength.
+    let dx=0,dy=0,dz=0;
+    for(const member of batch.members){
+      const sway=member.mesh.metadata?.leafSway,m=member.worldMatrix;
+      if(!sway||!m)continue;
+      let weight=0;
+      for(const value of sway.weights)weight=Math.max(weight,Math.abs(Number(value)||0));
+      const radius=strength*Math.abs(Number(sway.amplitude)||0)*weight*2;
+      dx=Math.max(dx,radius*Math.hypot(m[0],m[8]));
+      dy=Math.max(dy,radius*Math.hypot(m[1],m[9]));
+      dz=Math.max(dz,radius*Math.hypot(m[2],m[10]));
+    }
+    batch.mesh.refreshBoundingInfo();
+    const bounds=batch.mesh.getBoundingInfo().boundingBox;
+    batch.mesh.setBoundingInfo(new BABYLON.BoundingInfo(
+      new BABYLON.Vector3(bounds.minimum.x-dx,bounds.minimum.y-dy,bounds.minimum.z-dz),
+      new BABYLON.Vector3(bounds.maximum.x+dx,bounds.maximum.y+dy,bounds.maximum.z+dz)
+    ));
+    batch.windBoundsStrength=strength;batch.windBoundsDirty=false;
+    this.windBatchMetrics.boundsResolves++;
+  }
+
   updateVegetationWind(dt){
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
@@ -182,6 +211,8 @@ export class MapObjectRenderer{
     this.vegetationWasCalm=strength===0;
     let wx=Number(wind.x||0),wz=Number(wind.y||0),length=Math.hypot(wx,wz);
     if(length>0){wx/=length;wz/=length;}else{wx=0;wz=0;}
+    const measured=globalThis.CardTacticsDiagnostics?.isEnabled?.()===true;
+    const start=measured?performance.now():0;
     const changedSwayBatches=new Set();
     for(const mesh of this.vegetationSways){
       if(mesh.isDisposed?.()||mesh.isEnabled?.()===false||Number(mesh.visibility??1)<=.001)continue;
@@ -209,8 +240,11 @@ export class MapObjectRenderer{
       // must not be fetched or rewritten on each animation tick.
       for(const member of batch.members)this.writeBatchMemberPositions(batch,member);
       batch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,batch.positions,false,false);
-      batch.mesh.refreshBoundingInfo();
+      this.ensureWindBatchBounds(batch,strength);
+      this.windBatchMetrics.positionUploads++;
     }
+    this.windBatchMetrics.animatedGroups=changedSwayBatches.size;
+    if(measured)globalThis.CardTacticsDiagnostics?.recordPerf?.("mapWind.frameUpdate",performance.now()-start);
   }
 
   createBoulder(object){
@@ -627,7 +661,8 @@ export class MapObjectRenderer{
       }
       if(positionChanged){
         prior.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,prior.positions,false,false);
-        prior.mesh.refreshBoundingInfo();
+        prior.windBoundsDirty=true;
+        if(!group.windSway)prior.mesh.refreshBoundingInfo();
       }
       if(normalChanged)prior.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,prior.normals,false,false);
       if(colorChanged)prior.mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,prior.colors,false,false);
@@ -720,6 +755,6 @@ export class MapObjectRenderer{
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
     return{total:this.nodes.size,byType,lastSyncUpdates:this.lastSyncUpdates,
-      staticBatch:{...this.staticBatchStats},sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
+      staticBatch:{...this.staticBatchStats},windBatch:{...this.windBatchMetrics},sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
   }
 }

@@ -12,6 +12,34 @@ const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
 const isSolidIce=tile=>waterDepth(tile)>0&&iceThickness(tile)>=.45;
 const SURFACE_TYPES=new Set(["SNOW","ICE","CURRENT"]);
 const SURFACE_EPSILON=.001;
+// Render-pass ownership stays with the ONE published snow / ice / LOS mesh.
+// Discard triangles whose interpolated coverage is identically zero; they
+// contribute no colour, depth or visibility. Only entirely covered snow
+// triangles qualify for opaque rendering. Partial snow remains alpha-blended.
+function coverageClasses(colors,{opaque=false}={}){
+  const classes=new Uint8Array(colors.length/4);
+  for(let i=0;i<classes.length;i++){
+    const alpha=colors[i*4+3];
+    classes[i]=alpha<=0?0:opaque&&alpha>=1?2:1;
+  }
+  return classes;
+}
+function sameCoverageClasses(before,after){
+  if(!before||before.length!==after.length)return false;
+  for(let i=0;i<after.length;i++)if(before[i]!==after[i])return false;
+  return true;
+}
+function surfaceCoverageIndices(indices,colors,{opaque=false}={}){
+  const solid=[],blended=[];
+  for(let i=0;i<indices.length;i+=3){
+    const a=colors[indices[i]*4+3],b=colors[indices[i+1]*4+3],c=colors[indices[i+2]*4+3];
+    if(a<=0&&b<=0&&c<=0)continue;
+    const target=opaque&&a>=1&&b>=1&&c>=1?solid:blended;
+    target.push(indices[i],indices[i+1],indices[i+2]);
+  }
+  return{indices:solid.concat(blended),solidCount:solid.length,blendedCount:blended.length,
+    skippedTriangles:(indices.length-solid.length-blended.length)/3};
+}
 const RAIN_PARTICLE_CAPACITY=760;
 const SNOW_PARTICLE_CAPACITY=920;
 const MIST_PARTICLE_CAPACITY=120;
@@ -181,6 +209,16 @@ export class EnvironmentRenderer{
       shockwave:this.mat("meteor-shockwave",new BABYLON.Color3(1,.72,.34),.62,new BABYLON.Color3(.72,.32,.05)),
       meteorDust:this.mat("meteor-dust",new BABYLON.Color3(.31,.25,.20),.72)
     };
+    // Fully covered snow writes depth normally. Only its fractional boundary
+    // retains the original translucent blend; both use the SAME snow vertices.
+    this.solidSnowMaterial=this.materials.snow.clone("env-snow-solid");
+    this.solidSnowMaterial.alpha=1;
+    this.solidSnowMaterial.transparencyMode=BABYLON.Material.MATERIAL_OPAQUE;
+    this.snowPassMaterial=new BABYLON.MultiMaterial("env-snow-coverage-passes",this.scene);
+    this.snowPassMaterial.subMaterials=[this.solidSnowMaterial,this.materials.snow];
+    this.surfaceLayerMetrics.opaqueSnowTriangles=0;
+    this.surfaceLayerMetrics.blendedSnowTriangles=0;
+    this.surfaceLayerMetrics.transparentTrianglesSkipped=0;
     // Ice is composited after its EXACT supporting water triangles; sharing
     // world XYZ must not compete for writing the same depth buffer.
     this.materials.ice.disableDepthWrite=true;
@@ -1273,6 +1311,37 @@ export class EnvironmentRenderer{
     })));
   }
 
+  updateSnowCoverage(mesh){
+    const base=mesh.metadata?.layerBaseIndices,colors=mesh.metadata?.layerBuffers?.colors;
+    if(!base||!colors)return;
+    const classes=coverageClasses(colors,{opaque:true});
+    if(sameCoverageClasses(mesh.metadata.coverageClasses,classes))return;
+    mesh.metadata.coverageClasses=classes;
+    const coverage=surfaceCoverageIndices(base,colors,{opaque:true});
+    // Each SubMesh draws one contiguous range, so opaque fragments participate
+    // in depth rejection before fractional snow is transparently composed.
+    mesh.setIndices(coverage.indices,null,true);
+    mesh.subMeshes.length=0;
+    const vertices=mesh.getTotalVertices();
+    if(coverage.solidCount)new BABYLON.SubMesh(0,0,vertices,0,coverage.solidCount,mesh);
+    if(coverage.blendedCount)new BABYLON.SubMesh(1,0,vertices,coverage.solidCount,coverage.blendedCount,mesh);
+    this.surfaceLayerMetrics.opaqueSnowTriangles=coverage.solidCount/3;
+    this.surfaceLayerMetrics.blendedSnowTriangles=coverage.blendedCount/3;
+    this.surfaceLayerMetrics.snowHiddenTriangles=coverage.skippedTriangles;
+  }
+
+  updateIceCoverage(mesh){
+    const base=mesh.metadata?.layerBaseIndices,colors=mesh.metadata?.layerBuffers?.colors;
+    if(!base||!colors)return;
+    const classes=coverageClasses(colors);
+    if(sameCoverageClasses(mesh.metadata.coverageClasses,classes))return;
+    mesh.metadata.coverageClasses=classes;
+    const coverage=surfaceCoverageIndices(base,colors);
+    mesh.setIndices(coverage.indices,null,true);
+    this.surfaceLayerMetrics.iceVisibleTriangles=coverage.blendedCount/3;
+    this.surfaceLayerMetrics.iceHiddenTriangles=coverage.skippedTriangles;
+  }
+
   buildSurfaceLayer(type,tiles,byKey){
     // ICE owns no independent patch grid. Only the published water triangles
     // can supply frozen-water geometry through buildWaterIceLayer().
@@ -1317,8 +1386,8 @@ export class EnvironmentRenderer{
     const data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.normals=normals;data.colors=colors;data.uvs=uvs;
     data.applyToMesh(mesh,true);
-    mesh.material=this.materials[type.toLowerCase()];
-    if(type==="SNOW")mesh.alphaIndex=SURFACE_RENDER_ORDER.FOAM+2;
+    mesh.material=this.snowPassMaterial;
+    mesh.alphaIndex=SURFACE_RENDER_ORDER.FOAM+2;
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
@@ -1337,6 +1406,7 @@ export class EnvironmentRenderer{
         this.surfaceResolver.keyOf(tile.x,tile.y),this.surfaceResolver.elevationOf(tile)
       ])),
       layerHeightPatches:heightPatches,
+      layerBaseIndices:indices.slice(),
       layerBuffers:{
         positions:new Float32Array(positions),
         normals:new Float32Array(normals),
@@ -1348,6 +1418,7 @@ export class EnvironmentRenderer{
       perTilePlate:false,
       meshRebuildPerFrame:false
     };
+    this.updateSnowCoverage(mesh);
     return mesh;
   }
 
@@ -1400,7 +1471,9 @@ export class EnvironmentRenderer{
     mesh.metadata={kind:"environment-surface-layer",effectType:"ICE",
       source:"EXACT_RENDERED_WATER_DQ_TRIANGLES",mergedMesh:true,activeTiles:keys.length,
       layerKeys:keys,tileRanges:ranges,waterSources:sources,
+      layerBaseIndices:indices.slice(),
       layerBuffers:{colors:new Float32Array(colors)},iceConformsToWater:true};
+    this.updateIceCoverage(mesh);
     return mesh;
   }
 
@@ -1430,6 +1503,7 @@ export class EnvironmentRenderer{
     }
     if(updated){
       mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,buffer);
+      this.updateIceCoverage(mesh);
       this.surfaceLayerMetrics.colorUploads=(this.surfaceLayerMetrics.colorUploads||0)+1;
       this.surfaceLayerMetrics.vertexUpdates++;
     }
@@ -1463,7 +1537,7 @@ export class EnvironmentRenderer{
        buffers.positions.length!==mesh.getTotalVertices()*3||
        buffers.normals.length!==buffers.positions.length||
        buffers.colors.length!==mesh.getTotalVertices()*4)return false;
-    const indices=mesh.getIndices();
+    const indices=mesh.metadata?.layerBaseIndices;
     if(!indices||indices.length!==keys.length*54)return false;
     let positionChanged=false,colorChanged=false,resampled=0,normalTiles=0;
     const positionChanges=[],nextInputs=new Map(),nextTerrainHeights=new Map(),
@@ -1559,6 +1633,7 @@ export class EnvironmentRenderer{
     }
     if(colorChanged){
       mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,buffers.colors);
+      this.updateSnowCoverage(mesh);
       this.surfaceLayerMetrics.colorUploads=(this.surfaceLayerMetrics.colorUploads||0)+1;
     }
     if(positionChanged||colorChanged)this.surfaceLayerMetrics.vertexUpdates++;
@@ -1637,14 +1712,17 @@ export class EnvironmentRenderer{
       if(!keys.length)continue;
       const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
       const colors=mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
-      const indices=mesh.getIndices();
+      // The render index buffer is reordered by coverage and may omit
+      // transparent triangles. Geometric queries must consume the ORIGINAL
+      // tile-contiguous published triangles, never display-pass indices.
+      const indices=mesh.metadata?.layerBaseIndices||mesh.getIndices();
       if(!positions||!colors||!indices)continue;
       const tileRanges=mesh.metadata?.tileRanges instanceof Map
         ?mesh.metadata.tileRanges
         :new Map(keys.map((key,i)=>[key,{startVertex:i*16,vertexCount:16,
           startIndex:i*54,indexCount:54}]));
       result.push({type,positions,colors,indices,tileRanges,
-        opacity:Number(mesh.material?.alpha??1),
+        opacity:Number((type==="SNOW"?this.materials.snow:mesh.material)?.alpha??1),
         tileOffsets:new Map(keys.map((key,i)=>[key,i]))});
     }
     return result;
@@ -1800,19 +1878,31 @@ export class EnvironmentRenderer{
     // Geometry indices never change while the published tile layout is stable.
     // Snow accumulation only changes already-published vertex positions, not
     // the mesh identity, shader/material, triangles or draw-call count.
+    const classes=coverageClasses(colors);
     const canReuse=reusable&&!reusable.isDisposed?.()&&
       reusable.getTotalVertices()===positions.length/3&&
-      reusable.getIndices()?.length===indices.length;
+      reusable.metadata?.fullIndexCount===indices.length;
     const mesh=canReuse?reusable:new BABYLON.Mesh("weather-visibility-haze",this.scene);
+    let visibleTriangles=canReuse?reusable.metadata.visibleTriangles:0;
+    let skippedTriangles=canReuse?reusable.metadata.skippedTriangles:0;
     if(canReuse){
       mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions);
       mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
+      if(!sameCoverageClasses(reusable.metadata.coverageClasses,classes)){
+        const coverage=surfaceCoverageIndices(indices,colors);
+        mesh.setIndices(coverage.indices,null,true);
+        visibleTriangles=coverage.blendedCount/3;
+        skippedTriangles=coverage.skippedTriangles;
+      }
       mesh.refreshBoundingInfo();
       this.visibilityHazeMetrics.geometryUpdates++;
     }else{
+      const coverage=surfaceCoverageIndices(indices,colors);
       const data=new BABYLON.VertexData();
-      data.positions=positions;data.indices=indices;data.colors=colors;
+      data.positions=positions;data.indices=coverage.indices;data.colors=colors;
       data.applyToMesh(mesh,true);
+      visibleTriangles=coverage.blendedCount/3;
+      skippedTriangles=coverage.skippedTriangles;
       this.visibilityHazeMetrics.meshBuilds++;
     }
     this.visibilityHazeSamples=samples;
@@ -1823,6 +1913,8 @@ export class EnvironmentRenderer{
       kind:"weather-visibility-haze",activeTiles,
       weatherDriven:true,mergedMesh:true,continuousAcrossTiles:true,
       sharedWorldVertices:true,uniqueVertices:positions.length/3,
+      fullIndexCount:indices.length,fullIndices:indices.slice(),
+      coverageClasses:classes,visibleTriangles,skippedTriangles,
       reusedBoundaryVertices:reusedVertices,
       candidateBoundaryHeightConflicts:heightConflicts,
       maxBoundaryHeightConflict:maxHeightConflict,
@@ -1855,6 +1947,14 @@ export class EnvironmentRenderer{
       for(let channel=0;channel<4;channel++)colors[i*4+channel]=sampleColor[channel];
     }
     this.visibilityHazeMesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors);
+    const classes=coverageClasses(colors);
+    if(!sameCoverageClasses(this.visibilityHazeMesh.metadata.coverageClasses,classes)){
+      const coverage=surfaceCoverageIndices(this.visibilityHazeMesh.metadata.fullIndices,colors);
+      this.visibilityHazeMesh.setIndices(coverage.indices,null,true);
+      this.visibilityHazeMesh.metadata.visibleTriangles=coverage.blendedCount/3;
+      this.visibilityHazeMesh.metadata.skippedTriangles=coverage.skippedTriangles;
+      this.visibilityHazeMesh.metadata.coverageClasses=classes;
+    }
     this.visibilityHazeSightSignature=sightSignature;
   }
 
@@ -1966,7 +2066,7 @@ export class EnvironmentRenderer{
       mudIntegratedIntoTerrain:true,
       weatherParticles:this.weatherPresentation||{rainActive:false,rainEmitRate:0,mistActive:false,mistEmitRate:0,globalSceneFog:false},
       atmosphere:this.atmosphereState||{globalSceneFog:false,visibilityOwner:"FOV"},
-      visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),softBoundary:true,sharedWorldVertices:this.visibilityHazeMesh.metadata?.sharedWorldVertices===true,uniqueVertices:this.visibilityHazeMesh.metadata?.uniqueVertices,reusedBoundaryVertices:this.visibilityHazeMesh.metadata?.reusedBoundaryVertices,candidateBoundaryHeightConflicts:this.visibilityHazeMesh.metadata?.candidateBoundaryHeightConflicts,maxBoundaryHeightConflict:this.visibilityHazeMesh.metadata?.maxBoundaryHeightConflict}:{active:false,tiles:0,softBoundary:true},
+      visibilityHaze:this.visibilityHazeMesh?{active:true,tiles:Number(this.visibilityHazeMesh.metadata?.activeTiles||0),visibleTriangles:this.visibilityHazeMesh.metadata?.visibleTriangles,skippedTriangles:this.visibilityHazeMesh.metadata?.skippedTriangles,softBoundary:true,sharedWorldVertices:this.visibilityHazeMesh.metadata?.sharedWorldVertices===true,uniqueVertices:this.visibilityHazeMesh.metadata?.uniqueVertices,reusedBoundaryVertices:this.visibilityHazeMesh.metadata?.reusedBoundaryVertices,candidateBoundaryHeightConflicts:this.visibilityHazeMesh.metadata?.candidateBoundaryHeightConflicts,maxBoundaryHeightConflict:this.visibilityHazeMesh.metadata?.maxBoundaryHeightConflict}:{active:false,tiles:0,softBoundary:true},
       smokeDensityFromEffectDetails:true,
       smokePresentation:{clusters:this.smokeClusters.size,risingParticles:true,mergedHaze:true,visionOwner:"EnvironmentEngine.visionModifier"},
       firePresentation:{radianceFields:this.fireFields.size,flickeringFlames:true,adjacentHeatGlow:true},
