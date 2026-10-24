@@ -72,6 +72,9 @@ export class WaterRenderer{
     // The exact shared water polygons already used by buildSurface. Cascades
     // must inspect this SAME D/Q wet shape, not the old D-only shoreline.
     this.surfacePresentation=new Map();
+    // Exact per-tile, cliff-clipped polygons consumed by buildSurface(). Ice
+    // may borrow these published polygons, never derive a second waterline.
+    this.publishedWaterTileTriangles=new Map();
     this.sheetFlowSurfaces=new Map();
     this.sheetFlowMeshes=new Map();
     this.surfaceSignature="";
@@ -1069,7 +1072,7 @@ export class WaterRenderer{
   // despite having the same water level. Use the actual float32 render-space
   // coordinates and split the original polygon edges BEFORE triangulating;
   // there is no second water surface, patch mesh, or visual shoreline offset.
-  triangulateSurfacePolygons(out,polygons){
+  triangulateSurfacePolygons(out,polygons,polygonOwners=null){
     const vertexCount=out.positions.length/3;
     const positions=out.positions;
     const renderPoints=new Array(vertexCount);
@@ -1135,9 +1138,12 @@ export class WaterRenderer{
       return a<b?ids:[...ids].reverse();
     };
     let sourcePolygons=0;
-    for(const face of polygons){
+    const tileIndexRanges=new Map();
+    for(let polygonIndex=0;polygonIndex<polygons.length;polygonIndex++){
+      const face=polygons[polygonIndex];
       if(face.length<3)continue;
       sourcePolygons++;
+      const indexStart=out.indices.length;
       const boundary=[];
       for(let i=0;i<face.length;i++){
         const chain=edgeVertices(face[i],face[(i+1)%face.length]);
@@ -1173,8 +1179,14 @@ export class WaterRenderer{
         }
         if(boundary.length===3)this.pushTriangle(out,boundary[0],boundary[1],boundary[2]);
       }
+      const owner=polygonOwners?.[polygonIndex];
+      if(owner&&out.indices.length>indexStart){
+        const prior=tileIndexRanges.get(owner);
+        if(prior)prior.indexCount+=out.indices.length-indexStart;
+        else tileIndexRanges.set(owner,{startIndex:indexStart,indexCount:out.indices.length-indexStart});
+      }
     }
-    return{sourcePolygons,splitEdges,insertedEdgeVertices};
+    return{sourcePolygons,splitEdges,insertedEdgeVertices,tileIndexRanges};
   }
 
   // The published rugged cliff shoulder extends outside its owning tile.
@@ -1272,7 +1284,7 @@ export class WaterRenderer{
     const resolved=resolvedSurface||this.componentSurfacePolygons(component,presentation);
     const exclusiveSubmergedShoulders=resolved.excludedSubmergedShoulders;
     const clippedSubmergedShoulders=resolved.clippedSubmergedShoulders;
-    const wetPolygons=[];
+    const wetPolygons=[],polygonOwners=[];
     for(const {tile,polygons,motion} of resolved.tiles){
       const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
       terrainTriangles+=geometry?.triangles?.length||0;
@@ -1280,9 +1292,10 @@ export class WaterRenderer{
         waterPolygons++;clippedPoints+=polygon.filter(point=>point.clipped).length;
         const vertices=polygon.map(point=>this.addVertex(out,cache,point,tileMap,componentTurbidity,tile,sources,motion,localCliffSeams));
         wetPolygons.push(vertices);
+        polygonOwners.push(keyOf(tile.x,tile.y));
       }
     }
-    const triangulation=this.triangulateSurfacePolygons(out,wetPolygons);
+    const triangulation=this.triangulateSurfacePolygons(out,wetPolygons,polygonOwners);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
@@ -1293,9 +1306,53 @@ export class WaterRenderer{
       exclusiveSubmergedShoulders,clippedSubmergedShoulders};
     const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
     for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
-    if(this.gpuSurfaceWaves){mesh.setVerticesData("waterAnim",waterAnim,false,4);mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);mesh.setVerticesData("waterSource",waterSource,false,2);}
-    this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.filter(hasAnyWater).map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),specialActive:false});
+    if(this.gpuSurfaceWaves){
+      // Only freeze/unfreeze modifies the existing per-vertex wave attributes;
+      // the mesh positions, wet footprint and triangulation never rebuild.
+      mesh.setVerticesData("waterAnim",waterAnim,true,4);
+      mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);
+      mesh.setVerticesData("waterSource",waterSource,true,2);
+    }
+    this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.filter(hasAnyWater).map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),authoredWaveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),authoredSourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),frozenWaveSignature:"",specialActive:false});
+    mesh.metadata.tileIndexRanges=triangulation.tileIndexRanges;
     mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSourceUpwelling=sources.length>0;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;mesh.freezeWorldMatrix();return mesh;
+  }
+
+  // A visible frozen surface is the SAME water mesh in a solid state.
+  // Stop its waves by changing only the existing wave/source vertex attributes;
+  // the authored D/Q mesh and the water-level solver are left untouched.
+  // Frozen/lightly frozen tiles are selected from ClimateEngine's actual
+  // iceThickness state, not a height/drop/distance tuning threshold.
+  syncFrozenSurfaceWaves(state){
+    const frozen=new Set(tilesOf(state).filter(tile=>
+      waterDepth(tile)>0&&Number(tile.iceThickness||0)>0)
+      .map(tile=>keyOf(tile.x,tile.y)));
+    for(const entry of this.surfaceAnimations.values()){
+      const ranges=entry.mesh?.metadata?.tileIndexRanges;
+      if(!(ranges instanceof Map))continue;
+      const keys=[...ranges.keys()].filter(key=>frozen.has(key));
+      const signature=keys.join("|");
+      if(entry.frozenWaveSignature===signature)continue;
+      entry.frozenWaveSignature=signature;
+      const indices=entry.mesh.getIndices(),masked=new Set();
+      for(const key of keys){
+        const range=ranges.get(key);
+        for(let i=range.startIndex;i<range.startIndex+range.indexCount;i++)masked.add(indices[i]);
+      }
+      const count=entry.basePositions.length/3,animation=[],sources=[];
+      for(let i=0;i<count;i++){
+        const weight=masked.has(i)?0:entry.authoredWaveWeights[i];
+        const source=masked.has(i)?0:entry.authoredSourceWeights[i];
+        entry.waveWeights[i]=weight;entry.sourceWeights[i]=source;
+        animation.push(entry.flowX[i],entry.flowZ[i],entry.flowSpeeds[i],weight);
+        sources.push(source,entry.sourcePhases[i]);
+      }
+      if(this.gpuSurfaceWaves){
+        entry.mesh.updateVerticesData("waterAnim",animation,false,false);
+        entry.mesh.updateVerticesData("waterSource",sources,false,false);
+      }
+      entry.mesh.metadata.frozenWaveTiles=keys.length;
+    }
   }
 
   cascadeDirection(edge){
@@ -2431,6 +2488,18 @@ export class WaterRenderer{
           if(this.sheetFlowSurfaces.has(key))this.sheetFlowMeshes.set(key,mesh);
         }
       }
+      // Share the exact, *final* Babylon mesh triangles (including water
+      // canonical seam welding and conforming edge subdivisions). A frozen
+      // surface cannot invent a second triangulation or shoreline.
+      const iceSources=new Map();
+      for(const [id,mesh] of this.surfaceMeshes){
+        const positions=this.surfaceAnimations.get(id)?.basePositions;
+        const indices=mesh.getIndices?.();
+        if(!positions||!indices)continue;
+        for(const [key,range] of mesh.metadata?.tileIndexRanges||[])
+          iceSources.set(key,{positions,indices,range});
+      }
+      this.publishedWaterTileTriangles=iceSources;
       this.surfaceSignature=surfaceSignature;
       this.surfaceRebuildDetail={revision:this.seamAuditRevision,at:new Date().toISOString(),
         totalTiles:tiles.length,dirtyTiles:resolvedTiles,reusedTileResults:tiles.length-resolvedTiles,
@@ -2439,6 +2508,9 @@ export class WaterRenderer{
         meshBuildMs:Number((performance.now()-buildStart).toFixed(2))};
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceMeshes",performance.now()-buildStart);
     }else this.sheetFlowNetwork=oldNetwork;
+    // WaterRenderer owns wave motion for liquid AND frozen water. Climate
+    // changes must not leave animated liquid vertices protruding through ice.
+    this.syncFrozenSurfaceWaves(state);
     this.syncRogueWaveEvents(presentationEvents,state);
     this.syncWhirlpools(state);
     for(const entry of this.surfaceAnimations.values()){
@@ -2533,6 +2605,7 @@ export class WaterRenderer{
       this.disposeMap(this.cascades);this.disposeMap(this.runoffs);
       this.sheetFlowSurfaces.clear();this.sheetFlowMeshes.clear();
       this.surfacePresentation.clear();
+      this.publishedWaterTileTriangles.clear();
       this.resetWaterSeamRegistry();
       this.seamAuditRevision++;this.seamAuditCache=null;
       this.surfaceSignature=this.sourceSignature="";

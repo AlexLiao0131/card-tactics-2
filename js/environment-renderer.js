@@ -181,6 +181,9 @@ export class EnvironmentRenderer{
       shockwave:this.mat("meteor-shockwave",new BABYLON.Color3(1,.72,.34),.62,new BABYLON.Color3(.72,.32,.05)),
       meteorDust:this.mat("meteor-dust",new BABYLON.Color3(.31,.25,.20),.72)
     };
+    // Ice is composited after its EXACT supporting water triangles; sharing
+    // world XYZ must not compete for writing the same depth buffer.
+    this.materials.ice.disableDepthWrite=true;
     this.materials.lightningBolt.disableLighting=true;
     this.materials.lightningBolt.fogEnabled=false;
     this.visibilityHazeMaterial=this.makeVisibilityHazeMaterial();
@@ -764,7 +767,7 @@ export class EnvironmentRenderer{
     let top=y;
     const water=this.surfaceResolver.waterSurfaceOf(tile);
     if(water!=null)top=Math.max(top,Number(water)*ELEVATION_HEIGHT);
-    for(const type of ["ICE","SNOW"]){
+    for(const type of ["SNOW"]){
       if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
       const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
       if(amount>SURFACE_EPSILON&&this.vertexLayerAlpha(type,tile,sample,amount)>0)
@@ -1185,14 +1188,7 @@ export class EnvironmentRenderer{
   }
 
   layerConnect(type,a,b){
-    if(!a||!b)return false;
-    if(type==="SNOW")return this.surfaceResolver.canSlope(a,b);
-    if(type==="ICE"){
-      if(waterDepth(a)<=0||waterDepth(b)<=0)return false;
-      const sa=this.surfaceResolver.waterSurfaceOf(a),sb=this.surfaceResolver.waterSurfaceOf(b);
-      return sa!=null&&sb!=null&&Math.abs(sa-sb)<=.18;
-    }
-    return false;
+    return type==="SNOW"&&!!a&&!!b&&this.surfaceResolver.canSlope(a,b);
   }
 
   layerAmountAt(type,tile,byKey,ox,oz){
@@ -1219,16 +1215,28 @@ export class EnvironmentRenderer{
     return 0;
   }
 
-  layerVertexY(type,tile,sample,amount){
-    if(type==="SNOW"){
-      const base=isSolidIce(tile)
-        ?Number(this.surfaceResolver.waterSurfaceOf(tile))*ELEVATION_HEIGHT
-        :Number(sample.height||0)*ELEVATION_HEIGHT;
-      return base+Math.max(.006,amount*ELEVATION_HEIGHT);
+  // This is an observation of WaterRenderer's published polygons, not a
+  // sampled surrogate riverbed or a new D/Q water-surface resolver.
+  publishedWaterYAt(tile,x,z){
+    const source=this.water?.publishedWaterTileTriangles?.get(this.surfaceResolver.keyOf(tile.x,tile.y));
+    if(!source)return null;
+    const {positions:p,indices,range}=source;
+    const vertex=i=>({x:p[i*3],y:p[i*3+1],z:p[i*3+2]});
+    for(let i=range.startIndex;i<range.startIndex+range.indexCount;i+=3){
+      const a=vertex(indices[i]),b=vertex(indices[i+1]),c=vertex(indices[i+2]);
+      const weights=this.water?.pointInTriangleXZ?.({x,z},a,b,c);
+      if(weights)return a.y*weights.u+b.y*weights.w+c.y*weights.v;
     }
-    const waterSurface=this.surfaceResolver.waterSurfaceOf(tile);
-    if(type==="ICE")return Number(waterSurface??sample.height)*ELEVATION_HEIGHT+.034;
-    return Number(sample.height||0)*ELEVATION_HEIGHT+.006;
+    return null;
+  }
+
+  layerVertexY(type,tile,sample,amount){
+    const terrainY=Number(sample.height||0)*ELEVATION_HEIGHT;
+    if(type==="SNOW"){
+      const iceY=isSolidIce(tile)?this.publishedWaterYAt(tile,sample.x,sample.z):null;
+      return (iceY??terrainY)+Math.max(.006,amount*ELEVATION_HEIGHT);
+    }
+    return terrainY+.006;
   }
 
   // The published VisualSurfaceResolver remains the ONLY terrain-height authority.
@@ -1249,6 +1257,9 @@ export class EnvironmentRenderer{
   }
 
   buildSurfaceLayer(type,tiles,byKey){
+    // ICE owns no independent patch grid. Only the published water triangles
+    // can supply frozen-water geometry through buildWaterIceLayer().
+    if(type!=="SNOW")return null;
     const positions=[],indices=[],normals=[],colors=[],uvs=[];
     let activeTiles=0;
     const layerKeys=[],heightPatches=new Map();
@@ -1290,6 +1301,7 @@ export class EnvironmentRenderer{
     data.positions=positions;data.indices=indices;data.normals=normals;data.colors=colors;data.uvs=uvs;
     data.applyToMesh(mesh,true);
     mesh.material=this.materials[type.toLowerCase()];
+    if(type==="SNOW")mesh.alphaIndex=SURFACE_RENDER_ORDER.FOAM+2;
     mesh.useVertexColors=true;
     mesh.hasVertexAlpha=true;
     mesh.isPickable=false;
@@ -1322,8 +1334,93 @@ export class EnvironmentRenderer{
     return mesh;
   }
 
-  // A tile's 16 snow/ice vertices read the tile itself and its eight
-  // neighbours through the existing slope ring and shared-scalar resolver.
+  // A frozen water surface has precisely the same wet shoreline, Q channel,
+  // slope and submerged-cliff ownership as the already-built WaterRenderer.
+  // The ice mesh reuses its FINAL indexed triangles and float32 XYZ verbatim;
+  // it computes no surface intersection, triangulation or artificial seam.
+  buildWaterIceLayer(tiles){
+    const published=this.water?.publishedWaterTileTriangles;
+    if(!(published instanceof Map))return null;
+    const positions=[],indices=[],colors=[],uvs=[],ranges=new Map(),keys=[],sources=new Map();
+    for(const tile of tiles){
+      if(this.surfaceLayerAmount("ICE",tile)<=SURFACE_EPSILON)continue;
+      const key=this.surfaceResolver.keyOf(tile.x,tile.y),source=published.get(key);
+      if(!source)continue;
+      const {positions:waterPositions,indices:waterIndices,range}=source;
+      const startIndex=indices.length,startVertex=positions.length/3;
+      const copied=new Map(),alpha=tile.fogged?0:clamp(iceThickness(tile)/.45,0,1);
+      // Copy INDEXED triangles straight from the final Babylon water Mesh.
+      // Coordinates and edge-split triangulation remain byte-for-byte equal.
+      for(let i=range.startIndex;i<range.startIndex+range.indexCount;i++){
+        const sourceIndex=waterIndices[i];
+        let index=copied.get(sourceIndex);
+        if(index===undefined){
+          index=positions.length/3;copied.set(sourceIndex,index);
+          const x=waterPositions[sourceIndex*3],y=waterPositions[sourceIndex*3+1],z=waterPositions[sourceIndex*3+2];
+          positions.push(x,y,z);colors.push(1,1,1,alpha);
+          uvs.push(x/TILE_SIZE,z/TILE_SIZE);
+        }
+        indices.push(index);
+      }
+      if(indices.length>startIndex){
+        keys.push(key);
+        ranges.set(key,{startIndex,indexCount:indices.length-startIndex,
+          startVertex,vertexCount:positions.length/3-startVertex});
+        sources.set(key,source);
+      }
+    }
+    if(!indices.length)return null;
+    const normals=[];
+    BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+    const mesh=new BABYLON.Mesh("environment-surface-ice",this.scene);
+    const data=new BABYLON.VertexData();
+    data.positions=positions;data.indices=indices;data.normals=normals;
+    data.colors=colors;data.uvs=uvs;data.applyToMesh(mesh,true);
+    mesh.material=this.materials.ice;
+    mesh.alphaIndex=SURFACE_RENDER_ORDER.FOAM+1;
+    mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+    mesh.isPickable=false;mesh.receiveShadows=true;
+    mesh.metadata={kind:"environment-surface-layer",effectType:"ICE",
+      source:"EXACT_RENDERED_WATER_DQ_TRIANGLES",mergedMesh:true,activeTiles:keys.length,
+      layerKeys:keys,tileRanges:ranges,waterSources:sources,
+      layerBuffers:{colors:new Float32Array(colors)},iceConformsToWater:true};
+    return mesh;
+  }
+
+  updateWaterIceLayer(tiles,mesh){
+    const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
+    const ranges=mesh.metadata?.tileRanges,sources=mesh.metadata?.waterSources,
+      buffer=mesh.metadata?.layerBuffers?.colors;
+    if(!(ranges instanceof Map)||!(sources instanceof Map)||!buffer)return false;
+    const active=tiles.filter(tile=>this.surfaceLayerAmount("ICE",tile)>SURFACE_EPSILON&&
+      this.water?.publishedWaterTileTriangles?.has(this.surfaceResolver.keyOf(tile.x,tile.y)));
+    if(active.length!==ranges.size)return false;
+    for(const tile of active){
+      const key=this.surfaceResolver.keyOf(tile.x,tile.y);
+      const old=sources.get(key),current=this.water.publishedWaterTileTriangles.get(key);
+      if(!ranges.has(key)||!old||!current||
+         old.positions!==current.positions||old.indices!==current.indices||
+         old.range.startIndex!==current.range.startIndex||
+         old.range.indexCount!==current.range.indexCount)return false;
+    }
+    let updated=false;
+    for(const [key,range] of ranges){
+      const tile=byKey.get(key),alpha=tile?.fogged?0:clamp(iceThickness(tile)/.45,0,1);
+      for(let i=range.startVertex;i<range.startVertex+range.vertexCount;i++){
+        if(buffer[i*4+3]===Math.fround(alpha))continue;
+        buffer[i*4+3]=alpha;updated=true;
+      }
+    }
+    if(updated){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,buffer);
+      this.surfaceLayerMetrics.colorUploads=(this.surfaceLayerMetrics.colorUploads||0)+1;
+      this.surfaceLayerMetrics.vertexUpdates++;
+    }
+    return true;
+  }
+
+  // Snow's 16 patch vertices read the tile itself and its eight neighbours
+  // through the existing slope ring and shared-scalar resolver.
   // Track exactly those inputs on the existing merged layer mesh: a change
   // dirties the source tile and its immediate neighbours, nothing else.
   surfaceLayerTileInput(type,tile){
@@ -1331,11 +1428,14 @@ export class EnvironmentRenderer{
       this.surfaceResolver.elevationOf(tile),
       waterDepth(tile),tile.waterSurfaceZ??null,
       iceThickness(tile),type==="SNOW"?snowDepth(tile):null,
-      tile.fogged===true
+      tile.fogged===true,
+      type==="SNOW"&&isSolidIce(tile)&&snowDepth(tile)>SURFACE_EPSILON
+        ?this.water?.seamAuditRevision??null:null
     ]);
   }
 
   updateSurfaceLayer(type,tiles,byKey,mesh){
+    if(type!=="SNOW")return false;
     const keys=mesh.metadata?.layerKeys||[];
     const previous=mesh.metadata?.layerInputSignatures;
     const terrainHeights=mesh.metadata?.layerTerrainHeights;
@@ -1478,18 +1578,29 @@ export class EnvironmentRenderer{
 
   syncSurfaceLayers(state){
     const tiles=state?.map?.tiles||[];
-    const signature=this.surfaceLayerSignature(tiles);
+    const signature=this.surfaceLayerSignature(tiles)+"|W:"+
+      (this.water?.seamAuditRevision??"unpublished");
     if(signature===this.surfaceSignature)return;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
     let changed=false;
     for(const type of ["SNOW","ICE"]){
-      const ownSignature=this.surfaceLayerTypeSignature(type,tiles);
+      const needsPublishedWater=type==="ICE"||
+        (type==="SNOW"&&tiles.some(tile=>isSolidIce(tile)&&snowDepth(tile)>SURFACE_EPSILON));
+      const ownSignature=this.surfaceLayerTypeSignature(type,tiles)+
+        (needsPublishedWater?"|W:"+(this.water?.seamAuditRevision??"unpublished"):"");
       if(this.surfaceLayerTypeSignatures.get(type)===ownSignature)continue;
       this.surfaceLayerTypeSignatures.set(type,ownSignature);
       changed=true;
       const layerTiles=tiles.filter(tile=>this.surfaceLayerAmount(type,tile)>SURFACE_EPSILON);
       const layerKeys=layerTiles.map(tile=>this.surfaceResolver.keyOf(tile.x,tile.y));
       const prior=this.surfaceMeshes.get(type);
+      if(type==="ICE"){
+        if(prior&&this.updateWaterIceLayer(tiles,prior))continue;
+        if(prior){prior.dispose();this.surfaceMeshes.delete(type);}
+        const ice=this.buildWaterIceLayer(tiles);
+        if(ice){this.surfaceMeshes.set(type,ice);this.surfaceLayerMetrics.rebuilds++;}
+        continue;
+      }
       const stable=prior&&prior.metadata?.layerKeys?.length===layerKeys.length&&layerKeys.every((key,i)=>key===prior.metadata.layerKeys[i]);
       if(stable&&this.updateSurfaceLayer(type,tiles,byKey,prior))continue;
       if(prior){prior.dispose();this.surfaceMeshes.delete(type);}
@@ -1511,7 +1622,12 @@ export class EnvironmentRenderer{
       const colors=mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
       const indices=mesh.getIndices();
       if(!positions||!colors||!indices)continue;
-      result.push({type,positions,colors,indices,
+      const tileRanges=mesh.metadata?.tileRanges instanceof Map
+        ?mesh.metadata.tileRanges
+        :new Map(keys.map((key,i)=>[key,{startVertex:i*16,vertexCount:16,
+          startIndex:i*54,indexCount:54}]));
+      result.push({type,positions,colors,indices,tileRanges,
+        opacity:Number(mesh.material?.alpha??1),
         tileOffsets:new Map(keys.map((key,i)=>[key,i]))});
     }
     return result;
@@ -1521,12 +1637,12 @@ export class EnvironmentRenderer{
     const key=this.surfaceResolver.keyOf(tile.x,tile.y);
     let highest=-Infinity;
     for(const layer of layers||[]){
-      const index=layer.tileOffsets.get(key);
-      if(index===undefined)continue;
+      const range=layer.tileRanges?.get(key);
+      if(!range)continue;
       const {positions:p,colors:c,indices:ids}=layer;
-      // Each published layer tile has 18 triangles (54 indices), identical to
-      // buildSurfaceLayer(). Test the ACTUAL triangle coordinates and opacity.
-      for(let i=index*54;i<index*54+54;i+=3){
+      // Snow follows the original published 4x4 triangulation; ice follows
+      // WaterRenderer's exact wet polygons with variable triangle counts.
+      for(let i=range.startIndex;i<range.startIndex+range.indexCount;i+=3){
         const ai=ids[i],bi=ids[i+1],ci=ids[i+2],a=ai*3,b=bi*3,d=ci*3;
         const ax=p[b]-p[a],az=p[b+2]-p[a+2],bx=p[d]-p[a],bz=p[d+2]-p[a+2];
         const det=ax*bz-az*bx;
@@ -1625,7 +1741,7 @@ export class EnvironmentRenderer{
       for(let row=0;row<4;row++)for(let col=0;col<4;col++){
         const sample=patch[row][col],sampleHeight=Number(sample.height||0);
         let visualY=Math.max(sampleHeight,waterSurface==null?sampleHeight:Number(waterSurface))*ELEVATION_HEIGHT;
-        for(const type of ["ICE","SNOW"]){
+        for(const type of ["SNOW"]){
           if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
           const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
           if(amount>SURFACE_EPSILON&&this.vertexLayerAlpha(type,tile,sample,amount)>0)

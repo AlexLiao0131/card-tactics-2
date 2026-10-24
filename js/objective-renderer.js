@@ -66,9 +66,9 @@ export class ObjectiveRenderer{
     // marker's circle, even when the edge samples missed that vertex.
     const key=tileKey(tile.x,tile.y),r2=MARKER_RADIUS*MARKER_RADIUS+1e-8;
     for(const layer of this.coverGeometry){
-      const offset=layer.tileOffsets.get(key);
-      if(offset===undefined)continue;
-      for(let v=offset*16;v<(offset+1)*16;v++){
+      const range=layer.tileRanges?.get(key);
+      if(!range)continue;
+      for(let v=range.startVertex;v<range.startVertex+range.vertexCount;v++){
         if(Number(layer.colors[v*4+3]||0)<=.001)continue;
         const x=layer.positions[v*3],z=layer.positions[v*3+2];
         if((x-cx)**2+(z-cz)**2<=r2)

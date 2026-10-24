@@ -137,6 +137,9 @@ export class BabylonRenderer{
     // Props use the same published terrain geometry as water. No second surface resolver.
     this.mapObjects=new MapObjectRenderer(this.scene,this.terrain);
     this.environment=new EnvironmentRenderer(this.scene,null);
+    // Water publishes D/Q wet polygons before EnvironmentRenderer.sync().
+    // Ice is a visual state of that surface, not an independent terrain grid.
+    this.environment.water=this.water;
     this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
