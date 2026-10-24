@@ -1489,6 +1489,7 @@ export class EnvironmentRenderer{
       const key=this.surfaceResolver.keyOf(tile.x,tile.y);
       const old=sources.get(key),current=this.water.publishedWaterTileTriangles.get(key);
       if(!ranges.has(key)||!old||!current||
+         old.geometryVersion!==current.geometryVersion||
          old.positions!==current.positions||old.indices!==current.indices||
          old.range.startIndex!==current.range.startIndex||
          old.range.indexCount!==current.range.indexCount)return false;
@@ -1521,7 +1522,7 @@ export class EnvironmentRenderer{
       iceThickness(tile),type==="SNOW"?snowDepth(tile):null,
       tile.fogged===true,
       type==="SNOW"&&isSolidIce(tile)&&snowDepth(tile)>SURFACE_EPSILON
-        ?this.water?.seamAuditRevision??null:null
+        ?this.water?.publishedWaterGeometryRevision??null:null
     ]);
   }
 
@@ -1671,7 +1672,7 @@ export class EnvironmentRenderer{
   syncSurfaceLayers(state){
     const tiles=state?.map?.tiles||[];
     const signature=this.surfaceLayerSignature(tiles)+"|W:"+
-      (this.water?.seamAuditRevision??"unpublished");
+      (this.water?.publishedWaterGeometryRevision??"unpublished");
     if(signature===this.surfaceSignature)return;
     const byKey=new Map(tiles.map(tile=>[this.surfaceResolver.keyOf(tile.x,tile.y),tile]));
     let changed=false;
@@ -1679,7 +1680,7 @@ export class EnvironmentRenderer{
       const needsPublishedWater=type==="ICE"||
         (type==="SNOW"&&tiles.some(tile=>isSolidIce(tile)&&snowDepth(tile)>SURFACE_EPSILON));
       const ownSignature=this.surfaceLayerTypeSignature(type,tiles)+
-        (needsPublishedWater?"|W:"+(this.water?.seamAuditRevision??"unpublished"):"");
+        (needsPublishedWater?"|W:"+(this.water?.publishedWaterGeometryRevision??"unpublished"):"");
       if(this.surfaceLayerTypeSignatures.get(type)===ownSignature)continue;
       this.surfaceLayerTypeSignatures.set(type,ownSignature);
       changed=true;

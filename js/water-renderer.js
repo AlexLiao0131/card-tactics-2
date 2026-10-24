@@ -85,12 +85,17 @@ export class WaterRenderer{
     this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
     this.surfaceRebuildDetail=null;
     this.surfaceMeshSignatures=new Map();
+    // Separate actual indexed geometry ownership from flow/colour/wave inputs.
+    // An attribute-only change must not dispose a conforming water mesh.
+    this.surfaceGeometrySignatures=new Map();
+    this.publishedWaterGeometryRevision=0;
     this.levelSamples=null;
     // Snapshot-scoped memo for the SAME authored D/Q cliff connectivity.
     // No cached result survives a new BattlePresentation or terrain publication.
     this.waterEdgeContinuity=null;
     this.waterEdgeContinuityStats={hits:0,misses:0};
-    this.surfaceMeshUpdate={reused:0,built:0};
+    this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,built:0,
+      disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
     this.cascadeMeshSignatures=new Map();
     this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
     // Read-only accelerators for the ONE published D/Q presentation and
@@ -419,6 +424,7 @@ export class WaterRenderer{
     this.disposeMap(this.surfaceMeshes);
     this.surfaceAnimations.clear();
     this.surfaceMeshSignatures.clear();
+    this.surfaceGeometrySignatures.clear();
   }
 
   setWind(value){
@@ -1289,7 +1295,86 @@ export class WaterRenderer{
     }));
   }
 
-  buildSurface(component,state,presentation,resolvedSurface=null,allMap=null){
+  // Geometry-only identity. Polygon order and XYZ are part of the exact
+  // conforming triangulation input; flow/colour/depth/sources are deliberately
+  // excluded. Any changed footprint, height, polygon split or owner goes through
+  // the original conforming builder, never an approximate dirty threshold.
+  surfaceGeometrySignatureFor(component,resolved){
+    const geometry=resolved.tiles.map(({key,polygons})=>[key,polygons.map(polygon=>
+      polygon.map(point=>[point.x,point.z,point.level]))]);
+    return JSON.stringify([component.group,geometry]);
+  }
+
+  // Derive the exact shader and CPU-animation inputs from the existing canonical
+  // vertex accumulator. The builder and attribute refresh share this one path.
+  surfaceMotionAttributes(out){
+    const vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[];
+    const waterAnim=[],waterBaseXZ=[],waterSource=[];
+    for(let i=0;i<out.positions.length/3;i++){
+      const count=Math.max(1,Number(out.flowSampleCount[i]||0));
+      let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;
+      const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);
+      if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}
+      vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);
+      waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));
+      waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));
+      waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));
+    }
+    return{vertexFlowX,vertexFlowZ,vertexFlowSpeeds,waterAnim,waterBaseXZ,waterSource};
+  }
+
+  // No triangulation, index edits, dispose or new Babylon Mesh. Re-evaluate the
+  // attributes from the SAME owned wet polygons using addVertex's D/Q authority
+  // and canonical sharing rules. If any GPU-representable vertex differs, the
+  // caller must use the complete conforming geometry path instead.
+  refreshSurfaceAttributes(component,resolved,state,mesh,entry,allMap){
+    if(!mesh||!entry||!this.gpuSurfaceWaves)return false;
+    const out={positions:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],
+      sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const cache=new Map(),cliffSeams=new Map();
+    const sources=component.sources??this.activeHydrologySources(state);
+    const baseTiles=component.tiles.some(hasAnyWater)
+      ?component.tiles.filter(hasAnyWater):component.tiles;
+    const turbidity=average(baseTiles.map(tile=>this.turbidity(tile)));
+    for(const {tile,polygons,motion} of resolved.tiles){
+      for(const polygon of polygons)for(const point of polygon)
+        this.addVertex(out,cache,point,allMap,turbidity,tile,sources,motion,cliffSeams);
+    }
+    const rest=entry.basePositions;
+    if(out.positions.length!==rest.length)return false;
+    for(let i=0;i<out.positions.length;i++)
+      if(Math.fround(out.positions[i])!==rest[i])return false;
+    const attrs=this.surfaceMotionAttributes(out);
+    // Update colours only if GPU vertex colours actually changed.
+    const prior=mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind)||[];
+    if(prior.length!==out.colors.length)return false;
+    let colorChanged=false;
+    for(let i=0;i<prior.length;i++)if(prior[i]!==Math.fround(out.colors[i])){
+      colorChanged=true;break;
+    }
+    if(colorChanged){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,out.colors,false,false);
+      this.surfaceMeshUpdate.colorUploads++;
+      this.surfaceMeshUpdate.estimatedUploadBytes+=out.colors.length*4;
+    }
+    entry.authoredWaveWeights.set(out.waveWeights);
+    entry.authoredSourceWeights.set(out.sourceWeights);
+    entry.sourcePhases.set(out.sourcePhases);
+    entry.flowX.set(attrs.vertexFlowX);
+    entry.flowZ.set(attrs.vertexFlowZ);
+    entry.flowSpeeds.set(attrs.vertexFlowSpeeds);
+    // The authoritative frozen mask is reapplied by syncFrozenSurfaceWaves(),
+    // using the EXISTING indices and ranges; it also updates GPU wave inputs.
+    entry.frozenWaveSignature=null;
+    const flow=this.componentFlow(component);
+    mesh.metadata.componentTurbidity=turbidity;
+    mesh.metadata.waterSourceUpwelling=sources.length>0;
+    mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;
+    mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;
+    return true;
+  }
+
+  buildSurface(component,state,presentation,resolvedSurface=null,allMap=null,previousMesh=null){
     const out={positions:[],indices:[],normals:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
     const cache=new Map(),localCliffSeams=new Map(),tileMap=allMap||this.allByKey(state),
       sources=component.sources??this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
@@ -1312,24 +1397,60 @@ export class WaterRenderer{
     const triangulation=this.triangulateSurfacePolygons(out,wetPolygons,polygonOwners);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
-    const mesh=new BABYLON.Mesh(`water-surface-${component.id}`,this.scene),data=new BABYLON.VertexData();data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;data.applyToMesh(mesh,true);
+    // Reuse the actual Babylon vertex/index buffers when exact conforming
+    // triangulation has the same indexed layout. A change in vertex count or
+    // index order remains a real topology replacement, never a blind upload.
+    const oldIndices=previousMesh?.getIndices?.()||[];
+    const sameIndexLayout=!!previousMesh&&!previousMesh.isDisposed?.()&&
+      previousMesh.getTotalVertices?.()===out.positions.length/3&&
+      oldIndices.length===out.indices.length&&
+      out.indices.every((index,i)=>oldIndices[i]===index);
+    if(!sameIndexLayout)previousMesh?.dispose?.();
+    const mesh=sameIndexLayout?previousMesh:new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
+    if(sameIndexLayout){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,out.positions,true,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,out.normals,false,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.UVKind,out.uvs,false,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,out.colors,false,false);
+    }else{
+      const data=new BABYLON.VertexData();
+      data.positions=out.positions;data.indices=out.indices;
+      data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
+      data.applyToMesh(mesh,true);
+    }
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.STORED_WATER;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
       qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
       exclusiveSubmergedShoulders,clippedSubmergedShoulders};
-    const flow=this.componentFlow(component),vertexFlowX=[],vertexFlowZ=[],vertexFlowSpeeds=[],waterAnim=[],waterBaseXZ=[],waterSource=[];
-    for(let i=0;i<out.positions.length/3;i++){const count=Math.max(1,Number(out.flowSampleCount[i]||0));let vx=Number(out.flowXSum[i]||0)/count,vz=Number(out.flowZSum[i]||0)/count;const speed=Number(out.flowSpeedSum[i]||0)/count,length=Math.hypot(vx,vz);if(length>EPSILON){vx/=length;vz/=length;}else{vx=0;vz=0;}vertexFlowX.push(vx);vertexFlowZ.push(vz);vertexFlowSpeeds.push(speed);waterAnim.push(vx,vz,speed,Number(out.waveWeights[i]||0));waterBaseXZ.push(Number(out.positions[i*3]||0),Number(out.positions[i*3+2]||0));waterSource.push(Number(out.sourceWeights[i]||0),Number(out.sourcePhases[i]||0));}
+    const flow=this.componentFlow(component);
+    const {vertexFlowX,vertexFlowZ,vertexFlowSpeeds,waterAnim,waterBaseXZ,waterSource}=
+      this.surfaceMotionAttributes(out);
     if(this.gpuSurfaceWaves){
       // Only freeze/unfreeze modifies the existing per-vertex wave attributes;
       // the mesh positions, wet footprint and triangulation never rebuild.
-      mesh.setVerticesData("waterAnim",waterAnim,true,4);
-      mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);
-      mesh.setVerticesData("waterSource",waterSource,true,2);
+      if(sameIndexLayout){
+        mesh.updateVerticesData("waterAnim",waterAnim,false,false);
+        // The XY-coordinate basis can move on an unchanged indexed footprint.
+        // This static attribute is replaced without replacing the whole Mesh.
+        mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);
+        mesh.updateVerticesData("waterSource",waterSource,false,false);
+      }else{
+        mesh.setVerticesData("waterAnim",waterAnim,true,4);
+        mesh.setVerticesData("waterBaseXZ",waterBaseXZ,false,2);
+        mesh.setVerticesData("waterSource",waterSource,true,2);
+      }
     }
+    // Upload count is an estimate from client-side float/element arrays; the
+    // underlying browser driver may allocate additional backing storage.
+    this.surfaceMeshUpdate.estimatedUploadBytes+=4*(out.positions.length+
+      out.normals.length+out.uvs.length+out.colors.length+
+      (this.gpuSurfaceWaves?waterAnim.length+waterBaseXZ.length+waterSource.length:0))+
+      (sameIndexLayout?0:out.indices.length*(out.positions.length/3>65535?4:2));
     this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.filter(hasAnyWater).map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),authoredWaveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),authoredSourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),frozenWaveSignature:"",specialActive:false});
     mesh.metadata.tileIndexRanges=triangulation.tileIndexRanges;
-    mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSourceUpwelling=sources.length>0;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;mesh.freezeWorldMatrix();return mesh;
+    mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSourceUpwelling=sources.length>0;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;
+    mesh.metadata.incrementalVertexUpdate=sameIndexLayout;mesh.freezeWorldMatrix();return mesh;
   }
 
   // A visible frozen surface is the SAME water mesh in a solid state.
@@ -1364,6 +1485,8 @@ export class WaterRenderer{
       if(this.gpuSurfaceWaves){
         entry.mesh.updateVerticesData("waterAnim",animation,false,false);
         entry.mesh.updateVerticesData("waterSource",sources,false,false);
+        this.surfaceMeshUpdate.attributeUploads+=2;
+        this.surfaceMeshUpdate.estimatedUploadBytes+=animation.length*4+sources.length*4;
       }
       entry.mesh.metadata.frozenWaveTiles=keys.length;
     }
@@ -2465,6 +2588,7 @@ export class WaterRenderer{
       const previousMeshes=this.surfaceMeshes;
       const previousAnimations=this.surfaceAnimations;
       const previousSignatures=this.surfaceMeshSignatures;
+      const previousGeometrySignatures=this.surfaceGeometrySignatures;
       // Compare the resolved, exact D/Q polygons before touching any GPU mesh.
       // Free all obsolete buffers before allocating replacements, so heavy
       // floods do not temporarily double WebGL memory during an update.
@@ -2473,52 +2597,74 @@ export class WaterRenderer{
         const resolved=this.componentSurfacePolygons(component,presentation);
         const localSources=this.componentHydrologySources(resolved,sources);
         const signature=this.surfaceMeshSignatureFor(component,presentation,localSources,allMap,resolved);
+        const geometrySignature=this.surfaceGeometrySignatureFor(component,resolved);
         const mesh=previousMeshes.get(component.id);
-        const reuse=!!mesh&&!mesh.isDisposed?.()&&previousSignatures.get(component.id)===signature;
-        return{component:{...component,sources:localSources},resolved,signature,mesh:reuse?mesh:null};
+        const valid=!!mesh&&!mesh.isDisposed?.();
+        const reuse=valid&&previousSignatures.get(component.id)===signature;
+        return{component:{...component,sources:localSources},resolved,signature,geometrySignature,
+          mesh:valid?mesh:null,reuse};
       });
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.componentSignatures",performance.now()-signatureStart);
-      const retained=new Set(planned.filter(item=>item.mesh).map(item=>item.component.id));
-      this.surfaceMeshUpdate={reused:retained.size,built:0};
+      const retained=new Set(planned.filter(item=>item.reuse).map(item=>item.component.id));
+      this.surfaceMeshUpdate={reused:retained.size,attributesUpdated:0,verticesUpdated:0,
+        built:0,disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
       meshReasons.reused=retained.size;
-      for(const item of planned)if(!item.mesh){
-        if(previousMeshes.has(item.component.id))meshReasons.changedGeometryOrShader++;
-        else meshReasons.newComponent++;
-      }
-      for(const [id,mesh] of previousMeshes)if(!retained.has(id)){
-        mesh.dispose();meshReasons.disposed++;
-      }
       this.surfaceMeshes=new Map();
       this.surfaceAnimations=new Map();
       this.surfaceMeshSignatures=new Map();
+      this.surfaceGeometrySignatures=new Map();
       this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
-      // Shared D/Q seams must also recognize retained meshes. Register their
-      // original resting vertices before new components are built; otherwise a
-      // neighbouring replacement might miss the exact seam of a reused mesh.
-      for(const {component,mesh} of planned){
-        if(!mesh)continue;
+      // Register unchanged canonical resting vertices before rebuilding any
+      // neighbouring component, preserving the existing cross-component seams.
+      for(const {component,mesh,geometrySignature} of planned){
+        // Never register obsolete vertices from a changed shoreline/height;
+        // only actual same-geometry regions may author retained seam points.
+        if(!mesh||previousGeometrySignatures.get(component.id)!==geometrySignature)continue;
         const positions=previousAnimations.get(component.id)?.basePositions;
         if(!positions)continue;
-        for(let i=0;i<positions.length;i+=3){
+        for(let i=0;i<positions.length;i+=3)
           this.canonicalWaterPoint({x:positions[i],y:positions[i+1],z:positions[i+2]});
-        }
       }
-      for(const {component,resolved,signature,mesh:retainedMesh} of planned){
-        const mesh=retainedMesh||this.buildSurface(component,state,presentation,resolved,allMap);
+      let geometryChanged=false;
+      for(const item of planned){
+        const {component,resolved,signature,geometrySignature}=item;
+        const previous=item.mesh,animation=previousAnimations.get(component.id);
+        const matchingGeometry=previous&&animation&&
+          previousGeometrySignatures.get(component.id)===geometrySignature;
+        let mesh=null,keepPreviousAnimation=false;
+        if(item.reuse){mesh=previous;keepPreviousAnimation=true;}
+        else if(matchingGeometry&&this.refreshSurfaceAttributes(component,resolved,state,previous,animation,allMap)){
+          mesh=previous;keepPreviousAnimation=true;
+          this.surfaceMeshUpdate.attributesUpdated++;
+          meshReasons.reused++;
+        }else{
+          mesh=this.buildSurface(component,state,presentation,resolved,allMap,previous);
+          geometryChanged=true;
+          if(mesh===previous&&previous){
+            this.surfaceMeshUpdate.verticesUpdated++;
+          }else{
+            if(mesh)this.surfaceMeshUpdate.built++;
+            if(previous){meshReasons.disposed++;this.surfaceMeshUpdate.disposed++;}
+          }
+          if(previous)meshReasons.changedGeometryOrShader++;
+          else meshReasons.newComponent++;
+        }
         if(!mesh)continue;
-        if(!retainedMesh)this.surfaceMeshUpdate.built++;
         this.surfaceMeshes.set(component.id,mesh);
         this.surfaceMeshSignatures.set(component.id,signature);
-        if(retainedMesh){
-          const animation=previousAnimations.get(component.id);
-          if(animation)this.surfaceAnimations.set(component.id,animation);
-        }
+        this.surfaceGeometrySignatures.set(component.id,geometrySignature);
+        if(keepPreviousAnimation&&animation)this.surfaceAnimations.set(component.id,animation);
         for(const tile of component.tiles){
           const key=keyOf(tile.x,tile.y);
           if(this.sheetFlowSurfaces.has(key))this.sheetFlowMeshes.set(key,mesh);
         }
       }
+      for(const [id,mesh] of previousMeshes)if(!this.surfaceMeshes.has(id)){
+        mesh.dispose();meshReasons.disposed++;this.surfaceMeshUpdate.disposed++;
+        geometryChanged=true;
+      }
+      if(geometryChanged)this.publishedWaterGeometryRevision++;
       // Share the exact, *final* Babylon mesh triangles (including water
       // canonical seam welding and conforming edge subdivisions). A frozen
       // surface cannot invent a second triangulation or shoreline.
@@ -2528,7 +2674,8 @@ export class WaterRenderer{
         const indices=mesh.getIndices?.();
         if(!positions||!indices)continue;
         for(const [key,range] of mesh.metadata?.tileIndexRanges||[])
-          iceSources.set(key,{positions,indices,range});
+          iceSources.set(key,{positions,indices,range,
+            geometryVersion:this.publishedWaterGeometryRevision});
       }
       this.publishedWaterTileTriangles=iceSources;
       this.surfaceSignature=surfaceSignature;
@@ -2647,8 +2794,11 @@ export class WaterRenderer{
       this.surfaceRebuildDetail=null;
       this.cascadeMeshSignatures.clear();
       this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
-      this.surfaceMeshSignatures.clear();
-      this.surfaceMeshUpdate={reused:0,built:0};
+        this.surfaceMeshSignatures.clear();
+        this.surfaceGeometrySignatures.clear();
+        this.publishedWaterGeometryRevision++;
+        this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,
+          built:0,disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
     }
     this.levelSamples=null;
   }
@@ -3081,6 +3231,7 @@ export class WaterRenderer{
     return{
       surfaceMeshes:this.surfaceMeshes.size,
       surfaceMeshUpdate:this.surfaceMeshUpdate,
+      publishedWaterGeometryRevision:this.publishedWaterGeometryRevision,
       surfaceSolveStats:this.surfaceSolveStats,
       surfaceRebuildDetail:this.waterRebuildDiagnostics(),
       meshCacheScope:"LOCAL_PUBLISHED_DQ_POLYGONS_CLIFF_SEAMS_TILE_FLOW",
