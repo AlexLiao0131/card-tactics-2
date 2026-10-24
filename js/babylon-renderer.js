@@ -404,34 +404,57 @@ export class BabylonRenderer{
 
   collectShadowCasters(){
     const casters=[],seen=new Set();
-    const add=mesh=>{
+    // Ownership is already explicit in the Renderer: observe its actual
+    // submitted geometry rather than estimating caster cost from all scene meshes.
+    // This audit is gated because the battlefield does not need extra per-mesh
+    // diagnostic traversal when logging is disabled.
+    const auditEnabled=globalThis.CardTacticsDiagnostics?.isEnabled?.()===true;
+    const bySource=Object.create(null),byUnit=new Map();
+    let totalTriangles=0,totalVertices=0;
+    const add=(mesh,source,unitId=null)=>{
       if(mesh?.metadata?.castShadow===false||!this.shadowMeshVisible(mesh)||seen.has(mesh.uniqueId))return;
       seen.add(mesh.uniqueId);
       casters.push(mesh);
+      if(!auditEnabled)return;
+      // A swaying leaf remains independently deformable; do not mistake it
+      // for one of the rigid map-object batches in the shadow budget.
+      const owner=source==="MAP_OBJECT"&&mesh.metadata?.leafSway?"MAP_SWAY":source;
+      const triangles=Math.floor(Number(mesh.getTotalIndices?.()||0)/3);
+      const vertices=Number(mesh.getTotalVertices?.()||0);
+      const bucket=bySource[owner]||(bySource[owner]={casters:0,triangles:0,vertices:0});
+      bucket.casters++;bucket.triangles+=triangles;bucket.vertices+=vertices;
+      totalTriangles+=triangles;totalVertices+=vertices;
+      if(unitId!=null){
+        const id=String(unitId),record=byUnit.get(id)||{id,kind:source,casters:0,triangles:0,parts:{}};
+        const part=String(mesh.metadata?.figurePart||"UNCLASSIFIED");
+        record.casters++;record.triangles+=triangles;
+        record.parts[part]=(record.parts[part]||0)+1;
+        byUnit.set(id,record);
+      }
     };
 
-    // Interactive environment props are real 3D geometry and should anchor
-    // themselves to the terrain through shadows.
+    // Count each visible, true shadow-casting Babylon Mesh exactly once,
+    // including the dynamically moving tree leaves and unit figure parts.
     for(const entry of this.mapObjects?.nodes?.values?.()||[]){
       const node=entry?.node||entry;
-      for(const mesh of node?.getChildMeshes?.(false)||[])add(mesh);
+      for(const mesh of node?.getChildMeshes?.(false)||[])add(mesh,"MAP_OBJECT");
     }
-
-    // MapObjectRenderer submits identical static materials as a small set of
-    // spatially transformed world meshes. These replace the hidden original
-    // trunk/rock/contact faces in both the scene and its sun shadow map.
-    for(const batch of this.mapObjects?.staticBatches?.values?.()||[])add(batch.mesh);
-
-    // Cores are large battlefield structures. Capture-point floor markers stay out
-    // of the shadow map because they are UI-like ground indicators.
-    for(const mesh of this.objectives?.cores?.values?.()||[])add(mesh);
-
-    // Real 3D unit geometry casts. Billboard characters intentionally do not: a
-    // transparent character plane would otherwise cast a rectangular card shadow.
-    for(const entry of this.units?.entries?.values?.()||[]){
-      if(String(entry?.kind||"").toUpperCase()==="BILLBOARD")continue;
-      for(const mesh of entry?.meshes||[])add(mesh);
+    for(const batch of this.mapObjects?.staticBatches?.values?.()||[])
+      add(batch.mesh,batch.mesh?.metadata?.windSwayBatch?"MAP_SWAY_BATCH":"MAP_STATIC_BATCH");
+    for(const mesh of this.objectives?.cores?.values?.()||[])add(mesh,"CORE");
+    // Billboard characters intentionally do not submit their flat art plane
+    // as a hard rectangular shadow. Genuine FIGURE meshes keep casting.
+    for(const [unitId,entry] of this.units?.entries?.entries?.()||[]){
+      const kind=String(entry?.kind||"UNKNOWN").toUpperCase();
+      if(kind==="BILLBOARD")continue;
+      for(const mesh of entry?.meshes||[])add(mesh,`UNIT_${kind}`,unitId);
     }
+    this.shadowCasterAudit=auditEnabled?{
+      sourceBreakdown:bySource,totalCasters:casters.length,totalTriangles,totalVertices,
+      // Bound saved evidence. Full source counts are retained, not thousands
+      // of individual Mesh names or per-frame snapshots.
+      heaviestUnits:[...byUnit.values()].sort((a,b)=>b.casters-a.casters).slice(0,12)
+    }:null;
     return casters;
   }
 
@@ -441,6 +464,19 @@ export class BabylonRenderer{
 
     const casters=this.collectShadowCasters();
     const renderList=shadowMap.renderList||(shadowMap.renderList=[]);
+    // A growing renderList alone cannot prove a leak. For diagnostics, compare
+    // actual Babylon mesh identities between consecutive ownership snapshots.
+    // This is observational: it never retains mesh objects or changes casting.
+    let casterLifecycle=null;
+    if(this.shadowCasterAudit){
+      const next=new Set(casters.map(mesh=>mesh.uniqueId));
+      const prior=this.previousShadowCasterIds||new Set();
+      let added=0,removed=0;
+      for(const id of next)if(!prior.has(id))added++;
+      for(const id of prior)if(!next.has(id))removed++;
+      casterLifecycle={previous:prior.size,current:next.size,added,removed};
+      this.previousShadowCasterIds=next;
+    }else this.previousShadowCasterIds=null;
     // The same Babylon Mesh references remain valid while vegetation, units
     // and light positions animate. Do not rewrite a thousand-element renderList
     // on every BattlePresentation sync unless membership/order changed.
@@ -458,6 +494,11 @@ export class BabylonRenderer{
       mapSize:Number(shadowMap.getSize?.().width||1024),
       casters:casters.length,
       receivers,
+      // Report by TRUE shadow owner: UnitRenderer parts, wind-driven foliage,
+      // map static batches and core structures. This is measured geometry,
+      // not a claim about iPhone FPS or the number of GPU draw calls.
+      casterAudit:this.shadowCasterAudit,
+      casterLifecycle,
       filtering:this.engine.webGLVersion>=2?"PCF_LOW":"POISSON",
       darkness:Number(this.lightingState?.shadowDarkness||0),
       lightBalanceProfile:this.lightingState?.lightBalanceProfile||null,
@@ -508,7 +549,7 @@ export class BabylonRenderer{
     this.syncSubsystem("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
       // before batching. Keep that same exact membership on merged meshes.
-      this.mapObjects.syncStaticBatches(this.mapObjects.pendingBatchDirty||new Set(),
+      this.mapObjects.syncStaticBatches(this.mapObjects.pendingBatchDirty||new Map(),
         this.environment.staticSourceLightBindings);
       if(this.mapObjects.staticBatchStats.rebuilds||this.mapObjects.staticBatchStats.removed)
         this.environment.syncSpatialLightMembership();
