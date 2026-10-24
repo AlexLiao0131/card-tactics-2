@@ -94,8 +94,9 @@ export class WaterRenderer{
     // No cached result survives a new BattlePresentation or terrain publication.
     this.waterEdgeContinuity=null;
     this.waterEdgeContinuityStats={hits:0,misses:0};
-    this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,built:0,
-      disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
+    this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,
+      topologyIndicesUpdated:0,topologyBuffersReallocated:0,built:0,
+      disposed:0,colorUploads:0,attributeUploads:0,indexUploads:0,estimatedUploadBytes:0};
     this.cascadeMeshSignatures=new Map();
     this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
     // Read-only accelerators for the ONE published D/Q presentation and
@@ -1397,27 +1398,44 @@ export class WaterRenderer{
     const triangulation=this.triangulateSurfacePolygons(out,wetPolygons,polygonOwners);
     if(!out.positions.length||!out.indices.length)return null;
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
-    // Reuse the actual Babylon vertex/index buffers when exact conforming
-    // triangulation has the same indexed layout. A change in vertex count or
-    // index order remains a real topology replacement, never a blind upload.
-    const oldIndices=previousMesh?.getIndices?.()||[];
-    const sameIndexLayout=!!previousMesh&&!previousMesh.isDisposed?.()&&
-      previousMesh.getTotalVertices?.()===out.positions.length/3&&
-      oldIndices.length===out.indices.length&&
+    // The indexed D/Q triangulation is authoritative even when the shoreline
+    // changes. Mesh *identity* is independent of the vertex/index layout:
+    // preserve the existing Babylon owner and update or replace its own buffers
+    // rather than disposing/recreating a Component mesh on every topology edit.
+    // This is not a second water surface or a relaxed seam algorithm.
+    const existing=previousMesh&&!previousMesh.isDisposed?.()?previousMesh:null;
+    const sameVertexCount=!!existing&&existing.getTotalVertices?.()===out.positions.length/3;
+    const oldIndices=existing?.getIndices?.()||[];
+    const sameIndexLayout=sameVertexCount&&oldIndices.length===out.indices.length&&
       out.indices.every((index,i)=>oldIndices[i]===index);
-    if(!sameIndexLayout)previousMesh?.dispose?.();
-    const mesh=sameIndexLayout?previousMesh:new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
-    if(sameIndexLayout){
+    const mesh=existing||new BABYLON.Mesh(`water-surface-${component.id}`,this.scene);
+    if(sameVertexCount){
       mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,out.positions,true,false);
       mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,out.normals,false,false);
       mesh.updateVerticesData(BABYLON.VertexBuffer.UVKind,out.uvs,false,false);
       mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,out.colors,false,false);
+      if(!sameIndexLayout){
+        // Index order/count can change with exact conforming splits. The old
+        // index buffer is replaced, but material, Mesh identity, scene ownership
+        // and animated pivots remain stable. Ice observes a new geometry version.
+        mesh.setIndices(out.indices,null,true);
+        this.surfaceMeshUpdate.topologyIndicesUpdated++;
+        this.surfaceMeshUpdate.indexUploads++;
+      }
     }else{
+      // A true vertex-count change requires replacement of Babylon's vertex
+      // buffers. VertexData.applyToMesh on the existing Mesh owns this change;
+      // it does not allocate a competing Mesh or a second renderer.
       const data=new BABYLON.VertexData();
       data.positions=out.positions;data.indices=out.indices;
       data.normals=out.normals;data.uvs=out.uvs;data.colors=out.colors;
       data.applyToMesh(mesh,true);
+      if(existing){
+        this.surfaceMeshUpdate.topologyBuffersReallocated++;
+        this.surfaceMeshUpdate.indexUploads++;
+      }
     }
+    if(existing)mesh.refreshBoundingInfo?.();
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.STORED_WATER;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
@@ -1429,7 +1447,7 @@ export class WaterRenderer{
     if(this.gpuSurfaceWaves){
       // Only freeze/unfreeze modifies the existing per-vertex wave attributes;
       // the mesh positions, wet footprint and triangulation never rebuild.
-      if(sameIndexLayout){
+      if(sameVertexCount){
         mesh.updateVerticesData("waterAnim",waterAnim,false,false);
         // The XY-coordinate basis can move on an unchanged indexed footprint.
         // This static attribute is replaced without replacing the whole Mesh.
@@ -1450,7 +1468,9 @@ export class WaterRenderer{
     this.surfaceAnimations.set(component.id,{id:component.id,tileKeys:new Set(component.tiles.filter(hasAnyWater).map(tile=>keyOf(tile.x,tile.y))),mesh,basePositions:Float32Array.from(out.positions),baseNormals:Float32Array.from(out.normals),positions:Float32Array.from(out.positions),normals:Float32Array.from(out.normals),waveWeights:Float32Array.from(out.waveWeights),authoredWaveWeights:Float32Array.from(out.waveWeights),sourceWeights:Float32Array.from(out.sourceWeights),authoredSourceWeights:Float32Array.from(out.sourceWeights),sourcePhases:Float32Array.from(out.sourcePhases),flowX:Float32Array.from(vertexFlowX),flowZ:Float32Array.from(vertexFlowZ),flowSpeeds:Float32Array.from(vertexFlowSpeeds),frozenWaveSignature:"",specialActive:false});
     mesh.metadata.tileIndexRanges=triangulation.tileIndexRanges;
     mesh.metadata.waterSurfaceWave=true;mesh.metadata.waterSourceUpwelling=sources.length>0;mesh.metadata.waterSpecialActive=false;mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;mesh.metadata.localFlowSpeedWaves=true;
-    mesh.metadata.incrementalVertexUpdate=sameIndexLayout;mesh.freezeWorldMatrix();return mesh;
+    mesh.metadata.incrementalVertexUpdate=sameIndexLayout&&!!existing;
+    mesh.metadata.incrementalTopologyUpdate=!!existing&&!sameIndexLayout;
+    mesh.freezeWorldMatrix();return mesh;
   }
 
   // A visible frozen surface is the SAME water mesh in a solid state.
@@ -2607,7 +2627,8 @@ export class WaterRenderer{
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.componentSignatures",performance.now()-signatureStart);
       const retained=new Set(planned.filter(item=>item.reuse).map(item=>item.component.id));
       this.surfaceMeshUpdate={reused:retained.size,attributesUpdated:0,verticesUpdated:0,
-        built:0,disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
+        topologyIndicesUpdated:0,topologyBuffersReallocated:0,built:0,disposed:0,
+        colorUploads:0,attributeUploads:0,indexUploads:0,estimatedUploadBytes:0};
       meshReasons.reused=retained.size;
       this.surfaceMeshes=new Map();
       this.surfaceAnimations=new Map();
@@ -2642,7 +2663,8 @@ export class WaterRenderer{
           mesh=this.buildSurface(component,state,presentation,resolved,allMap,previous);
           geometryChanged=true;
           if(mesh===previous&&previous){
-            this.surfaceMeshUpdate.verticesUpdated++;
+            if(mesh.metadata?.incrementalVertexUpdate)
+              this.surfaceMeshUpdate.verticesUpdated++;
           }else{
             if(mesh)this.surfaceMeshUpdate.built++;
             if(previous){meshReasons.disposed++;this.surfaceMeshUpdate.disposed++;}
@@ -2798,7 +2820,8 @@ export class WaterRenderer{
         this.surfaceGeometrySignatures.clear();
         this.publishedWaterGeometryRevision++;
         this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,
-          built:0,disposed:0,colorUploads:0,attributeUploads:0,estimatedUploadBytes:0};
+          topologyIndicesUpdated:0,topologyBuffersReallocated:0,built:0,disposed:0,
+          colorUploads:0,attributeUploads:0,indexUploads:0,estimatedUploadBytes:0};
     }
     this.levelSamples=null;
   }
