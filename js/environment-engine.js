@@ -713,55 +713,70 @@ export const EnvironmentEngine=(()=>{
   function advanceEnvironmentTurn(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);
     const waterBefore=HydrologyEngine.waterInventory(map);
-    const environmentTurn=Math.max(0,Number(state.climate?.turn||0))+1;
-    advanceNaturalCycles(map,state,environmentTurn,events);
-    // Expiration is disabled during a card override: the fixed card duration
-    // below is its authoritative timer (ordinary natural channel timers still
-    // expire normally when no card is active).
-    if(!state.cardClimateOverride)expireClimate(state,events);
-    if(window.HydrologyEngine?.updateSourceYields)HydrologyEngine.updateSourceYields(map,{
-      environmentTurn,weather:legacyWeatherRaw(state),precipitation:precipitationAt(state).type,
-      heat:Number(state.climate?.heat?.intensity||0),events
-    });
-    // A hydrology source is a real volume source, not only a discharge label.
-    // Inject it once per environment turn, then let the canonical Hydrology flow
-    // decide where that water settles, overflows and drains.
-    if(window.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
-    weatherPulse(map,state,events);
-    if(state.cardClimateOverride){
-      state.cardClimateOverride.remaining=Math.max(0,state.cardClimateOverride.remaining-1);
-    }else decrementClimate(state);
-    if(window.HydrologyEngine?.sourceRecessionActive?.(map)&&!events.some(event=>event?.type==="HYDROLOGY_REBALANCED")){
-      HydrologyEngine.advanceSourceRecession(map,{events,source:"SPRING_SOURCE_RECESSION"});
+    const wasReceding=HydrologyEngine.sourceRecessionActive(map);
+    // Only this existing environment-clock entry point advances actual D/Q
+    // transport. All intermediate weather effects modify their canonical
+    // tile stores, and HydrologyEngine settles the completed step once.
+    HydrologyEngine.beginEnvironmentTurn(map);
+    try{
+      const environmentTurn=Math.max(0,Number(state.climate?.turn||0))+1;
+      advanceNaturalCycles(map,state,environmentTurn,events);
+      // Expiration is disabled during a card override: the fixed card duration
+      // below is its authoritative timer (ordinary natural channel timers still
+      // expire normally when no card is active).
+      if(!state.cardClimateOverride)expireClimate(state,events);
+      if(window.HydrologyEngine?.updateSourceYields)HydrologyEngine.updateSourceYields(map,{
+        environmentTurn,weather:legacyWeatherRaw(state),precipitation:precipitationAt(state).type,
+        heat:Number(state.climate?.heat?.intensity||0),events
+      });
+      // A hydrology source is a real volume source, not only a discharge label.
+      // Inject it once per environment turn, then let the canonical Hydrology flow
+      // decide where that water settles, overflows and drains.
+      if(window.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
+      weatherPulse(map,state,events);
+      if(state.cardClimateOverride){
+        state.cardClimateOverride.remaining=Math.max(0,state.cardClimateOverride.remaining-1);
+      }else decrementClimate(state);
+      advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);
+      resolveStandingWaterFire(map,state,events,{source:"TORNADO_AND_FLOW_CONTACT"});
+      events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);
+      HydrologyEngine.endEnvironmentTurn(map,{events,source:"ENVIRONMENT_TURN"});
+      const physicalStep=events[events.length-1];
+      if(wasReceding&&!HydrologyEngine.sourceRecessionActive(map))
+        events.push({type:"RIVER_SOURCE_RECESSION_ENDED",source:"SPRING_SOURCE_RECESSION"});
+      // One accounting record at the END of the physical environment step.
+      // The actual inventory is authoritative; event sums are diagnostic inputs,
+      // and any unexplained difference is exposed, never 'balanced' artificially.
+      const after=HydrologyEngine.waterInventory(map),sum=(kind,field)=>events
+        .filter(event=>event?.type===kind).reduce((total,event)=>total+Number(event?.[field]||0),0);
+      const precipitation=sum("RAIN_PRECIPITATION_WATER_INPUT","volume")+
+        sum("SNOW_PRECIPITATION_WATER_INPUT","volume");
+      const sourceInflow=sum("HYDROLOGY_SOURCES_ADVANCED","injectedVolume");
+      const offMapDrain=sum("RIVER_FLOOD_WATER_DRAINED","amount")+
+        sum("RIVER_THROUGHFLOW_DRAINED","amount")+sum("WATER_DRAINED_OFF_MAP","amount");
+      const evaporation=sum("SURFACE_WATER_EVAPORATED","amount")+
+        sum("WATER_EVAPORATION","amount")+
+        events.filter(event=>event?.type==="FIRE_WATER_EXCHANGE"&&!event.precipitation)
+          .reduce((total,event)=>total+Number(event.evaporatedWater||0),0);
+      const soilDrying=events.filter(event=>event?.type==="SOIL_MOISTURE_CHANGED"&&Number(event?.from)>Number(event?.to))
+        .reduce((total,event)=>total+Number(event.from)-Number(event.to),0);
+      const inventoryDelta=after.total-waterBefore.total;
+      const explainedDelta=precipitation+sourceInflow-offMapDrain-evaporation-soilDrying;
+      const balance={type:"HYDROLOGY_CYCLE_BALANCE",environmentTurn,weather:legacyWeatherRaw(state),
+        before:waterBefore,after,precipitation,sourceInflow,offMapDrain,evaporation,soilDrying,
+        inventoryDelta,explainedDelta,unattributedDelta:inventoryDelta-explainedDelta,
+        transportSteps:physicalStep.transportSteps,
+        deferredRedistributions:physicalStep.deferredRedistributions,
+        requestedTransportSources:physicalStep.requestedSources,
+        accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL"};
+      events.push(balance);
+      globalThis.CardTacticsDiagnostics?.recordHydrologyBalance?.(balance);
+      return events;
+    }finally{
+      // Never leave an active transport scope after an exception. This does
+      // not revert the canonical map data or create another runtime.
+      HydrologyEngine.abortEnvironmentTurn(map);
     }
-    advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);
-    resolveStandingWaterFire(map,state,events,{source:"TORNADO_AND_FLOW_CONTACT"});
-    events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);
-    // One accounting record at the END of the physical environment step.
-    // The actual inventory is authoritative; event sums are diagnostic inputs,
-    // and any unexplained difference is exposed, never 'balanced' artificially.
-    const after=HydrologyEngine.waterInventory(map),sum=(kind,field)=>events
-      .filter(event=>event?.type===kind).reduce((total,event)=>total+Number(event?.[field]||0),0);
-    const precipitation=sum("RAIN_PRECIPITATION_WATER_INPUT","volume")+
-      sum("SNOW_PRECIPITATION_WATER_INPUT","volume");
-    const sourceInflow=sum("HYDROLOGY_SOURCES_ADVANCED","injectedVolume");
-    const offMapDrain=sum("RIVER_FLOOD_WATER_DRAINED","amount")+
-      sum("RIVER_THROUGHFLOW_DRAINED","amount")+sum("WATER_DRAINED_OFF_MAP","amount");
-    const evaporation=sum("SURFACE_WATER_EVAPORATED","amount")+
-      sum("WATER_EVAPORATION","amount")+
-      events.filter(event=>event?.type==="FIRE_WATER_EXCHANGE"&&!event.precipitation)
-        .reduce((total,event)=>total+Number(event.evaporatedWater||0),0);
-    const soilDrying=events.filter(event=>event?.type==="SOIL_MOISTURE_CHANGED"&&Number(event?.from)>Number(event?.to))
-      .reduce((total,event)=>total+Number(event.from)-Number(event.to),0);
-    const inventoryDelta=after.total-waterBefore.total;
-    const explainedDelta=precipitation+sourceInflow-offMapDrain-evaporation-soilDrying;
-    const balance={type:"HYDROLOGY_CYCLE_BALANCE",environmentTurn,weather:legacyWeatherRaw(state),
-      before:waterBefore,after,precipitation,sourceInflow,offMapDrain,evaporation,soilDrying,
-      inventoryDelta,explainedDelta,unattributedDelta:inventoryDelta-explainedDelta,
-      accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL"};
-    events.push(balance);
-    globalThis.CardTacticsDiagnostics?.recordHydrologyBalance?.(balance);
-    return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true,source="MANUAL"}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];

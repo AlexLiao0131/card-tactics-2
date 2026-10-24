@@ -1876,8 +1876,39 @@ export const HydrologyEngine=(()=>{
     return drained;
   }
 
+  // A physical environment turn owns exactly ONE transport, infiltration and
+  // outlet budget. Earlier, each rainfall / source / thaw / evaporation call
+  // advanced a full river reach separately, while a snow-only turn could
+  // advance none. This is a transient scope within the existing HydrologyEngine:
+  // never a second water store, clock, engine or long-lived terrain state.
+  const environmentSteps=new WeakMap();
+  function beginEnvironmentTurn(map){
+    if(!map||environmentSteps.has(map))throw new Error("HYDROLOGY_ENVIRONMENT_TURN_ALREADY_ACTIVE");
+    environmentSteps.set(map,{requestedSources:new Set(),riverPulse:false,requestedCalls:0});
+  }
+  function abortEnvironmentTurn(map){environmentSteps.delete(map);}
+  function endEnvironmentTurn(map,{events=[],source="ENVIRONMENT_TURN"}={}){
+    const step=environmentSteps.get(map);
+    if(!step)throw new Error("HYDROLOGY_ENVIRONMENT_TURN_NOT_ACTIVE");
+    environmentSteps.delete(map);
+    // Advance even if no water was injected this turn: flood recession does
+    // not stop merely because snowfall, not rain, is the active weather.
+    redistribute(map,{source,events,riverPulse:step.riverPulse});
+    events.push({type:"HYDROLOGY_PHYSICAL_STEP",source,
+      transportSteps:1,deferredRedistributions:step.requestedCalls,
+      requestedSources:[...step.requestedSources]});
+    return events;
+  }
+
   function redistribute(map,{source="FLOW",events=[],riverPulse=false,volumeScale=DISCHARGE_VOLUME_PER_TURN}={}){
     if(!map?.tiles?.length)return events;
+    const pending=environmentSteps.get(map);
+    if(pending){
+      pending.requestedCalls++;
+      pending.requestedSources.add(source);
+      pending.riverPulse ||= riverPulse;
+      return events;
+    }
 
     // Outlet accounting belongs to this one physical flow step.
     if(map?.hydrology?.generatedRiverProfile===true){
@@ -2079,6 +2110,7 @@ export const HydrologyEngine=(()=>{
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
     initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
+    beginEnvironmentTurn,endEnvironmentTurn,abortEnvironmentTurn,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();

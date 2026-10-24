@@ -112,7 +112,10 @@ function recordHydrologyBalance(balance){
   push("HYDROLOGY_CYCLE_BALANCE",{environmentTurn:balance.environmentTurn,
     inventoryDelta:numeric(balance.inventoryDelta),explainedDelta:numeric(balance.explainedDelta),
     unattributedDelta:numeric(balance.unattributedDelta),offMapDrain:numeric(balance.offMapDrain),
-    precipitation:numeric(balance.precipitation),sourceInflow:numeric(balance.sourceInflow)});
+    precipitation:numeric(balance.precipitation),sourceInflow:numeric(balance.sourceInflow),
+    transportSteps:balance.transportSteps,
+    deferredRedistributions:balance.deferredRedistributions,
+    requestedTransportSources:balance.requestedTransportSources});
   store(true);
 }
 function recordTileAnnotation(annotation){
