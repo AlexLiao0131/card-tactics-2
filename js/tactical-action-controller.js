@@ -59,26 +59,100 @@
     function finishFreeUtility(attacker){
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setCommandPanelCollapsed?.(false);ctx.setMode("command");ctx.render();ctx.emitState?.();return true;
     }
+    const CARRY_DIRECTIONS=Object.freeze([[1,0],[-1,0],[0,1],[0,-1]]);
+    const transportKey=tile=>`${tile.x},${tile.y}`;
+    // Plan-only until release is confirmed: cancelling selection never moves a
+    // unit, consumes mana, or leaves a passenger hidden on the battlefield.
     function restorePendingTransport({silent=false}={}){
       if(!pendingTransport)return false;
-      const {carrier,passenger,origin,carrierVertical}=pendingTransport;
-      if(passenger){passenger.x=origin.x;passenger.y=origin.y;passenger.z=origin.z;passenger.verticalState=origin.verticalState;delete passenger.carriedByUnitId;delete passenger.transportHidden;}
-      if(carrier){delete carrier.carryingUnitId;const tile=TacticalEngine.tile(state().map,carrier.x,carrier.y);if(tile&&carrierVertical?.mode&&globalThis.VerticalMobilityEngine?.setMode)VerticalMobilityEngine.setMode(carrier,tile,carrierVertical.mode,{altitude:carrierVertical.altitude,depth:carrierVertical.depth});}
-      if(!silent)ctx.pushLog(`${passenger?.character?.name||"友軍"} 的空運取消，返回原位置。`,"SYSTEM");
+      const {carrier,passenger,origin,carrierVertical,committed}=pendingTransport;
+      if(committed){
+        if(passenger){passenger.x=origin.x;passenger.y=origin.y;passenger.z=origin.z;passenger.verticalState=origin.verticalState;delete passenger.carriedByUnitId;delete passenger.transportHidden;}
+        if(carrier){delete carrier.carryingUnitId;const tile=TacticalEngine.tile(state().map,carrier.x,carrier.y);if(tile&&carrierVertical?.mode&&globalThis.VerticalMobilityEngine?.setMode)VerticalMobilityEngine.setMode(carrier,tile,carrierVertical.mode,{altitude:carrierVertical.altitude,depth:carrierVertical.depth});}
+      }
+      if(!silent)ctx.pushLog(`已取消空運 ${passenger?.character?.name||"友軍"}，位置與技能資源保持不變。`,"SYSTEM");
       pendingTransport=null;return true;
     }
-    function transportReleasePlan(attacker,destination){
-      const {map,units}=state(),pending=pendingTransport;if(!pending||pending.carrier?.id!==attacker?.id||!destination)return null;
-      const passenger=pending.passenger;if(!passenger?.alive||ctx.unitAt(destination.x,destination.y)||TERRAINS[destination.terrain]?.passable===false||TacticalEngine.isBlockedByObject(map,destination.x,destination.y,passenger)||!TacticalEngine.canOccupyTerrain(passenger,destination))return null;
-      const dirs=[[1,0],[-1,0],[0,1],[0,-1]],plans=[],originalFacing=attacker.facing;
-      for(const[dx,dy]of dirs){
-        const anchor=TacticalEngine.tile(map,destination.x+dx,destination.y+dy);if(!anchor||!TacticalEngine.canOccupyTerrain(attacker,anchor)||TacticalEngine.isBlockedByObject(map,anchor.x,anchor.y,attacker))continue;
-        const occupant=ctx.unitAt(anchor.x,anchor.y);if(occupant&&occupant.id!==attacker.id)continue;
-        let path=[];if(anchor.x!==attacker.x||anchor.y!==attacker.y){path=TacticalEngine.pathTo(map,units,attacker,anchor.x,anchor.y);attacker.facing=originalFacing;if(!path.length)continue;}
-        const anchorZ=globalThis.VerticalMobilityEngine?.surfaceZ?.(anchor)??Number(anchor.elevation||0),destinationZ=globalThis.VerticalMobilityEngine?.surfaceZ?.(destination)??Number(destination.elevation||0);
-        plans.push({anchor,path,heightGap:Math.abs(Number(anchorZ)-Number(destinationZ))});
+    function canPickupFrom(carrier,passenger,origin,environmentState){
+      if(!carrier?.alive||carrier.acted||!passenger?.alive||carrier.team!==passenger.team||carrier.id===passenger.id||!canLiftTarget(carrier,passenger))return false;
+      if(Math.abs(origin.x-passenger.x)+Math.abs(origin.y-passenger.y)!==1)return false;
+      // Flight pickup is a controlled descent/ascent beside the passenger,
+      // not a ground melee attack. Ground height must not gate this utility.
+      const {map}=state();
+      return !!TacticalEngine.tile(map,origin.x,origin.y)&&
+        TacticalEngine.canSee(map,{...carrier,x:origin.x,y:origin.y},passenger,environmentState);
+    }
+    function pickupPlan(carrier,passenger,skill,origins=null){
+      const {map,units,environmentState}=state();
+      if(!carrier?.alive||carrier.acted||!ctx.canUseSkill(carrier,skill)||!canLiftTarget(carrier,passenger))return null;
+      const candidates=(origins||attackOrigins(carrier)).filter(origin=>canPickupFrom(carrier,passenger,origin,environmentState));
+      if(!candidates.length)return null;
+      candidates.sort((a,b)=>a.cost-b.cost||a.y-b.y||a.x-b.x);
+      const anchor=candidates[0];
+      return{anchor,cost:anchor.cost};
+    }
+    // One authoritative reachability search from the planned pickup anchor.
+    // Evaluate landing-adjacent cells in O(reachable * 4), never pathTo() per
+    // candidate landing cell and never scan all 704 XLARGE cells to plan paths.
+    function transportReleasePlans(attacker,{fresh=false}={}){
+      const {map,units}=state(),pending=pendingTransport;
+      if(!pending||pending.carrier?.id!==attacker?.id||!pending.passenger?.alive)return new Map();
+      if(!fresh&&pending.releasePlans)return pending.releasePlans;
+      const passenger=pending.passenger,pickup=pending.pickup.anchor;
+      const flyingUnit={...attacker,x:pickup.x,y:pickup.y};
+      const withoutPassenger=units.filter(unit=>unit.id!==passenger.id);
+      // This is the carrier's *real* movement domain: character movement,
+      // effects, weather, terrain, height and occupancy all remain owned by
+      // TacticalEngine. The landing tile must itself be in that domain,
+      // rather than extending reach by another cell beyond a flight anchor.
+      const reachable=TacticalEngine.reachable(map,withoutPassenger,flyingUnit);
+      const flightDomain=new Map([[transportKey(pickup),0],...reachable]);
+      const anchors=new Map([...flightDomain].map(([key,cost])=>{
+        const [x,y]=key.split(",").map(Number);return[key,{x,y,cost}];
+      }));
+      const best=new Map();
+      for(const anchor of anchors.values()){
+        const anchorTile=TacticalEngine.tile(map,anchor.x,anchor.y);
+        if(!anchorTile||!TacticalEngine.canOccupyTerrain(attacker,anchorTile)||
+          TacticalEngine.isBlockedByObject(map,anchor.x,anchor.y,attacker))continue;
+        for(const [dx,dy] of CARRY_DIRECTIONS){
+          const destination=TacticalEngine.tile(map,anchor.x+dx,anchor.y+dy);
+          if(!destination||TERRAINS[destination.terrain]?.passable===false||
+            !TacticalEngine.canOccupyTerrain(passenger,destination)||
+            TacticalEngine.isBlockedByObject(map,destination.x,destination.y,passenger))continue;
+          if(units.some(unit=>unit.alive&&unit.occupiesTile!==false&&
+            unit.id!==passenger.id&&unit.x===destination.x&&unit.y===destination.y))continue;
+          // A passenger's destination has the same flight domain as the
+          // carrier; an extra adjacent drop never extends the movement range.
+          const key=transportKey(destination);
+          if(!flightDomain.has(key))continue;
+          const existing=best.get(key);
+          if(!existing||anchor.cost<existing.cost||
+            (anchor.cost===existing.cost&&(anchor.y<existing.anchor.y||anchor.y===existing.anchor.y&&anchor.x<existing.anchor.x)))
+            best.set(key,{destination,anchor,cost:anchor.cost});
+        }
       }
-      attacker.facing=originalFacing;plans.sort((a,b)=>a.heightGap-b.heightGap||a.path.length-b.path.length||a.anchor.y-b.anchor.y||a.anchor.x-b.anchor.x);return plans[0]||null;
+      pending.releasePlans=best;
+      return best;
+    }
+    function transportReleasePlan(attacker,destination){
+      const {map,units,environmentState}=state(),pending=pendingTransport;
+      if(!pending||!destination)return null;
+      // Re-evaluate against the live units/terrain, rather than trusting a UI
+      // snapshot whose collision or environmental state could have changed.
+      const latest=pickupPlan(attacker,pending.passenger,pending.pickupSkill);
+      if(!latest)return null;
+      pending.pickup=latest;
+      const planned=transportReleasePlans(attacker,{fresh:true}).get(transportKey(destination));
+      if(!planned||!TacticalEngine.teamCanSee(map,units,attacker.team,planned.destination,environmentState))return null;
+      const pickupPath=planned?((latest.anchor.x===attacker.x&&latest.anchor.y===attacker.y)?[]:
+        TacticalEngine.pathTo(map,units,attacker,latest.anchor.x,latest.anchor.y)):[];
+      if((latest.anchor.x!==attacker.x||latest.anchor.y!==attacker.y)&&!pickupPath.length)return null;
+      const flightUnit={...attacker,x:latest.anchor.x,y:latest.anchor.y};
+      const route=planned.anchor.x===flightUnit.x&&planned.anchor.y===flightUnit.y?[]:
+        TacticalEngine.pathTo(map,units.filter(unit=>unit.id!==pending.passenger.id),flightUnit,planned.anchor.x,planned.anchor.y);
+      if((planned.anchor.x!==flightUnit.x||planned.anchor.y!==flightUnit.y)&&!route.length)return null;
+      return{...planned,pickupPath,flightPath:route};
     }
 
     function attackOrigins(unit){
@@ -100,7 +174,7 @@
     function attackPlanForTarget(unit,target,skill){
       const {map,units,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
-      if(skill.utilityAction?.type==="CARRY_ALLY")return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
+      if(skill.utilityAction?.type==="CARRY_ALLY")return pickupPlan(unit,target,skill);
       if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
 
       const legal=attackOrigins(unit).filter(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
@@ -117,7 +191,7 @@
 
     function targetableEntities(unit,skill){
       const {map,environmentState}=state();
-      const fixedOrigin=skill?.utilityAction?.type==="CARRY_ALLY"||skill?.approach;
+      const fixedOrigin=!!skill?.approach;
       const origins=fixedOrigin?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       return ctx.combatTargets(unit).filter(target=>{
         // A future movement origin must not grant clairvoyance about a core or
@@ -125,7 +199,7 @@
         if(target.team!==unit.team&&skill?.ignoreFogOfWar!==true&&
            !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
-        if(skill?.utilityAction?.type==="CARRY_ALLY"&&(target?.id===unit?.id||!canLiftTarget(unit,target)))return false;
+        if(skill?.utilityAction?.type==="CARRY_ALLY")return !!pickupPlan(unit,target,skill,origins);
         if(skill?.utilityAction?.type==="LIFT_DROP"&&!canLiftTarget(unit,target))return false;
         return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       });
@@ -206,6 +280,8 @@
     function approachTargetForAttack(unit,target,skill){
       const plan=attackPlanForTarget(unit,target,skill);
       if(!plan)return skillFailure(unit,skill,"NO_ATTACK_PATH",target);
+      // Air transport plans its approach and placement as one confirmation.
+      if(skill?.utilityAction?.type==="CARRY_ALLY")return true;
       if(!plan.path.length)return true;
       if(!pendingMove||pendingMove.unitId!==unit.id)beginPendingMove(unit);
       const result=ctx.traverseUnitPath(unit,plan.path,{kind:"UNIT"});
@@ -255,7 +331,8 @@
       const range=TacticalEngine.range(skill);
       const known=tile=>skill?.ignoreFogOfWar===true||skill?.requiresVision===false||
         TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState);
-      if(skill?.utilityAction?.type==="RELEASE_CARRIED")return map.tiles.filter(tile=>known(tile)&&!!transportReleasePlan(attacker,tile));
+      if(skill?.utilityAction?.type==="RELEASE_CARRIED")return [...transportReleasePlans(attacker).values()]
+        .map(entry=>entry.destination).filter(known);
       if(MAP_TRANSIT_ACTIONS.has(skill?.utilityAction?.type))return map.tiles.filter(tile=>{
         if(!known(tile))return false;
         const d=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);if(d<range.min||d>range.max)return false;
@@ -325,20 +402,24 @@
         return finishActiveSkill(attacker);
       }
       if(action.type==="CARRY_ALLY"){
-        if(!target?.character||target.id===attacker.id||target.team!==attacker.team||!canLiftTarget(attacker,target)){ctx.pushLog(`${skill.name} 只能搬運比搬運能力更輕的友軍。`,"SYSTEM");ctx.render();return false;}
         if(pendingTransport)return false;
-        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
-        pendingTransport={carrier:attacker,passenger:target,origin:{x:target.x,y:target.y,z:target.z,verticalState:target.verticalState?JSON.parse(JSON.stringify(target.verticalState)):null},carrierVertical:attacker.verticalState?JSON.parse(JSON.stringify(attacker.verticalState)):null};
-        attacker.carryingUnitId=target.id;target.carriedByUnitId=attacker.id;target.transportHidden=true;target.x=-9999;target.y=-9999;target.z=attacker.z;
-        const carrierTile=TacticalEngine.tile(map,attacker.x,attacker.y);if(attacker.verticalState?.mode==="FLYING"&&carrierTile)VerticalMobilityEngine.setMode(attacker,carrierTile,"FLYING",{altitude:1});
-        const releaseSkill=SkillDatabase.get(action.releaseSkillId);ctx.setSelectedSkill(releaseSkill);ctx.setSelectedSkillVariant(null);ctx.setMode("map-target");ctx.pushLog(`${attacker.character.name} 抓起 ${target.character.name}｜請選擇放下位置。`,"SYSTEM");ctx.render();return true;
+        const pickup=pickupPlan(attacker,target,skill);
+        if(!pickup){ctx.pushLog(`${skill.name}：友軍不在可接近的抓取位置，或重量超過搬運能力。`,"SYSTEM");ctx.render();return false;}
+        const releaseSkill=SkillDatabase.get(action.releaseSkillId);
+        if(!releaseSkill)return skillFailure(attacker,skill,"RELEASE_SKILL_MISSING",target);
+        pendingTransport={carrier:attacker,passenger:target,pickup,pickupSkill:skill,
+          origin:{x:target.x,y:target.y,z:target.z,verticalState:target.verticalState?JSON.parse(JSON.stringify(target.verticalState)):null},
+          carrierVertical:attacker.verticalState?JSON.parse(JSON.stringify(attacker.verticalState)):null,
+          releasePlans:null,committed:false};
+        ctx.setSelectedSkill(releaseSkill);ctx.setSelectedSkillVariant(null);ctx.setMode("map-target");
+        ctx.pushLog(`${attacker.character.name} 準備空運 ${target.character.name}｜選擇落地位置後才正式抓取與移動。`,"SYSTEM");ctx.render();return true;
       }
       return false;
     }
 
     function executeMapUtility(attacker,center,skill){
       const action=skill?.utilityAction,{map}=state();if(!action)return skillFailure(attacker,skill,"NO_MAP_UTILITY",center);
-      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+      if(action.type!=="RELEASE_CARRIED"&&!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       if(MAP_TRANSIT_ACTIONS.has(action.type)){
         const destination=TacticalEngine.tile(map,center.x,center.y);
         if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(attacker,destination)||TacticalEngine.isBlockedByObject(map,center.x,center.y,attacker)){ctx.pushLog(`${skill.name}：終點不是合法站立位置。`,"SYSTEM");ctx.render();return false;}
@@ -349,14 +430,41 @@
         return finishActiveSkill(attacker);
       }
       if(action.type!=="RELEASE_CARRIED"||!pendingTransport||pendingTransport.carrier?.id!==attacker?.id)return false;
-      const plan=transportReleasePlan(attacker,center);if(!plan){ctx.pushLog(`${skill.name}：沒有合法的空運放置路徑。`,"SYSTEM");ctx.render();return false;}
-      if(plan.path.length){const moved=ctx.traverseUnitPath(attacker,plan.path,{kind:"UNIT"});if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運途中受到環境影響而中斷。`,"SYSTEM");return finishActiveSkill(attacker);}}
-      attacker.moved=true;const pending=pendingTransport,passenger=pending.passenger,destination=TacticalEngine.tile(map,center.x,center.y),fromZ=Number(globalThis.VerticalMobilityEngine?.describe?.(attacker,TacticalEngine.tile(map,attacker.x,attacker.y))?.physicalZ??attacker.z??0);
-      ctx.consumeSkill(attacker,skill);passenger.x=destination.x;passenger.y=destination.y;passenger.z=fromZ;delete passenger.carriedByUnitId;delete passenger.transportHidden;delete attacker.carryingUnitId;
-      const landing=FallEngine.resolveLanding({map,target:passenger,fromZ,applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,skill.name)});
+      const pending=pendingTransport,passenger=pending.passenger;
+      if(!ctx.canUseSkill(attacker,pending.pickupSkill))return skillFailure(attacker,pending.pickupSkill,"RESOURCE_OR_REQUIREMENT",passenger);
+      const plan=transportReleasePlan(attacker,center);
+      if(!plan){ctx.pushLog(`${skill.name}：落地位置或路線已失效，請重新選擇。`,"SYSTEM");ctx.render();return false;}
+      if(plan.pickupPath.length){
+        const moved=ctx.traverseUnitPath(attacker,plan.pickupPath,{kind:"UNIT"});attacker.moved=true;
+        if(!moved.completed){pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode(attacker.alive?"command":"inspect");ctx.pushLog(`${attacker.character.name} 接近隊友途中被環境阻斷，未消耗空運技能。`,"SYSTEM");ctx.render();return false;}
+      }
+      // Commit one skill action only after arrival beside a still-valid ally.
+      if(!canPickupFrom(attacker,passenger,attacker,state().environmentState)||!ctx.canUseSkill(attacker,pending.pickupSkill)){
+        pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("command");ctx.pushLog(`${attacker.character.name} 無法在目前位置抓起友軍。`,"SYSTEM");ctx.render();return false;
+      }
+      globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+      ctx.consumeSkill(attacker,pending.pickupSkill);pending.committed=true;
+      attacker.carryingUnitId=passenger.id;passenger.carriedByUnitId=attacker.id;
+      passenger.transportHidden=true;passenger.x=-9999;passenger.y=-9999;passenger.z=attacker.z;
+      if(plan.flightPath.length){
+        const moved=ctx.traverseUnitPath(attacker,plan.flightPath,{kind:"UNIT"});
+        if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 空運途中受環境影響中斷，友軍返回出發位置。`,"SYSTEM");return finishActiveSkill(attacker);}
+      }
+      const destination=TacticalEngine.tile(map,center.x,center.y);
+      if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(passenger,destination)||
+        TacticalEngine.isBlockedByObject(map,center.x,center.y,passenger)){
+        restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運落點失效，友軍返回出發位置。`,"SYSTEM");return finishActiveSkill(attacker);
+      }
+      ctx.consumeSkill(attacker,skill);
+      passenger.x=destination.x;passenger.y=destination.y;
+      delete passenger.carriedByUnitId;delete passenger.transportHidden;delete attacker.carryingUnitId;
+      // Safe placement, unlike the offensive LIFT_DROP. VerticalMobilityEngine
+      // owns the correct water/ice/ground resting layer; no artificial fall.
+      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(passenger,destination);
+      else passenger.z=Number(destination.elevation||0);
       if(passenger.alive)ctx.enterTile(passenger);
-      const previous=pending.carrierVertical;if(previous?.mode&&globalThis.VerticalMobilityEngine?.setMode){const carrierTile=TacticalEngine.tile(map,attacker.x,attacker.y);VerticalMobilityEngine.setMode(attacker,carrierTile,previous.mode,{altitude:previous.altitude,depth:previous.depth});}
-      pendingTransport=null;ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 放到 (${destination.x},${destination.y})｜Z${fromZ}→H${landing.toZ}｜墜落傷害 ${landing.damage}。`,landing.damage>0?"BATTLE":"SYSTEM");
+      pendingTransport=null;
+      ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 安全空運至 (${destination.x},${destination.y})｜無墜落傷害。`,"BATTLE");
       return finishActiveSkill(attacker);
     }
 

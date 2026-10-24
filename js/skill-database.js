@@ -58,8 +58,8 @@ export const SKILLS={
   angel_holy_shot:{id:"angel_holy_shot",name:"神聖附魔射擊",category:"MAGIC",weapon:"bow",power:1.15,manaCost:14,range:{min:2,max:5},attackType:"SHOT",attackClass:"RANGED",element:"HOLY",speed:5,target:"ENEMY",support:false,affixes:["HOLY_ENCHANT"]},
   angel_heal:{id:"angel_heal",name:"治療魔法",category:"MAGIC",power:0,manaCost:20,range:{min:1,max:4},target:"ALLY",support:false,effects:[{type:"HEAL",amount:80}]},
   angel_lift_drop:{id:"angel_lift_drop",name:"升空摔落",category:"SPECIAL",power:0,manaCost:20,range:{min:1,max:1},target:"ENEMY",support:false,utilityAction:{type:"LIFT_DROP",consumeTurn:true,minDrop:3}},
-  angel_carry_ally:{id:"angel_carry_ally",name:"空運友軍",category:"SPECIAL",power:0,range:{min:1,max:1},target:"ALLY",support:false,requirements:{notCarrying:true,notMoved:true},utilityAction:{type:"CARRY_ALLY",releaseSkillId:"angel_release_ally",consumeTurn:false}},
-  angel_release_ally:{id:"angel_release_ally",name:"放下友軍",category:"SPECIAL",power:0,range:{min:1,max:5},target:"TILE",targetType:"AOE",radius:0,support:false,requirements:{carrying:true},utilityAction:{type:"RELEASE_CARRIED",consumeTurn:true}},
+  angel_carry_ally:{id:"angel_carry_ally",name:"空運友軍",category:"SPECIAL",power:0,range:{min:1,max:1},displayRangeLabel:"可移動接近／空運依天使移動範圍",target:"ALLY",support:false,requirements:{notCarrying:true},utilityAction:{type:"CARRY_ALLY",releaseSkillId:"angel_release_ally",consumeTurn:false}},
+  angel_release_ally:{id:"angel_release_ally",name:"放下友軍",category:"SPECIAL",power:0,range:{min:0,max:0},displayRangeLabel:"依天使當前可移動範圍",target:"TILE",targetType:"AOE",radius:0,support:false,requirements:{carrying:true},utilityAction:{type:"RELEASE_CARRIED",consumeTurn:true}},
   angel_wing_control:{id:"angel_wing_control",name:"翼行控制",category:"SPECIAL",power:0,range:{min:0,max:0},target:"SELF",support:false,variants:[
     {id:"ANGEL_LAND",name:"降落",utilityAction:{type:"SET_VERTICAL_MODE",mode:"GROUND",consumeTurn:false}},
     {id:"ANGEL_TAKEOFF",name:"起飛",utilityAction:{type:"SET_VERTICAL_MODE",mode:"FLYING",consumeTurn:false}}
