@@ -308,6 +308,71 @@ export const HydrologyEngine=(()=>{
     return tile.x===0||tile.y===0||tile.x===Number(map.width||0)-1||tile.y===Number(map.height||0)-1;
   }
 
+  // A hydrologyDrain marker can terminate the *routing graph* without opening
+  // an off-map hole. Only an authored drain or a real map-edge mouth can
+  // remove stored water. Internal river termini are legitimate closed basins.
+  function isPhysicalOutlet(map,tile){
+    if(!tile)return false;
+    if(tile.drain===true)return true;
+    if(tile.river===true)return tile.hydrologyDrain===true&&isBoundaryTile(map,tile);
+    return (map?.hydrology?.openBoundary===true||map?.generated===true)&&isBoundaryTile(map,tile);
+  }
+
+  // Terrain-grade access to the existing physical outlets; this does not
+  // invent channel capacity, lower a rim or bypass the river solver. Minimax
+  // spill height gives each tile the lowest terrain saddle on any outlet path.
+  function outletSpillAudit(map){
+    const tiles=(map?.tiles||[]).filter(canHoldWater);
+    const by=new Map(tiles.map(tile=>[key(tile.x,tile.y),tile]));
+    const saddle=new Map(),frontier=[];
+    const push=entry=>{let i=frontier.length;frontier.push(entry);
+      while(i>0){const parent=(i-1)>>1;
+        if(frontier[parent].level<=entry.level)break;
+        frontier[i]=frontier[parent];i=parent;
+      }frontier[i]=entry;};
+    const pop=()=>{const head=frontier[0],tail=frontier.pop();
+      if(frontier.length){let i=0;
+        while(i*2+1<frontier.length){let j=i*2+1;
+          if(j+1<frontier.length&&frontier[j+1].level<frontier[j].level)j++;
+          if(frontier[j].level>=tail.level)break;
+          frontier[i]=frontier[j];i=j;
+        }frontier[i]=tail;
+      }return head;};
+    const outlets=tiles.filter(tile=>isPhysicalOutlet(map,tile));
+    for(const tile of outlets){const k=key(tile.x,tile.y),level=elevation(tile);
+      saddle.set(k,level);push({tile,level});}
+    // One environment-turn audit, not a per-frame renderer or a new flow solver.
+    // A heap retains exact minimax Dijkstra ordering without resorting the
+    // full frontier on every square of an XLARGE battlefield.
+    while(frontier.length){
+      const {tile,level}=pop(),k=key(tile.x,tile.y);
+      if(level!==saddle.get(k))continue;
+      for(const [dx,dy] of DIRS){
+        const neighbor=by.get(key(tile.x+dx,tile.y+dy));if(!neighbor)continue;
+        const nk=key(neighbor.x,neighbor.y),next=Math.max(level,elevation(neighbor));
+        if(next>=Number(saddle.get(nk)??Infinity))continue;
+        saddle.set(nk,next);push({tile:neighbor,level:next});
+      }
+    }
+    let wetTiles=0,terrainAccessibleWetTiles=0,belowSillWetTiles=0,
+      closedBasinWetTiles=0,liquidAccessible=0,liquidBelowSill=0,liquidNoRoute=0;
+    for(const tile of tiles){
+      const liquid=liquidDepth(tile);if(liquid<=EPSILON)continue;
+      wetTiles++;
+      const level=saddle.get(key(tile.x,tile.y));
+      if(level===undefined){closedBasinWetTiles++;liquidNoRoute+=liquid;continue;}
+      if(waterSurfaceZ(tile)+EPSILON>=level){terrainAccessibleWetTiles++;liquidAccessible+=liquid;}
+      else{belowSillWetTiles++;liquidBelowSill+=liquid;}
+    }
+    return{physicalOutlets:outlets.length,
+      interiorTerminalNodes:tiles.filter(tile=>tile.river===true&&tile.hydrologyDrain===true&&!isPhysicalOutlet(map,tile)).length,
+      wetTiles,terrainAccessibleWetTiles,belowSillWetTiles,closedBasinWetTiles,
+      liquidAccessible:clean(liquidAccessible),liquidBelowSill:clean(liquidBelowSill),liquidNoRoute:clean(liquidNoRoute),
+      // The static saddle is necessary, NOT sufficient: river bank openings,
+      // channel capacity, remaining flow head and ice still constrain drainage.
+      scope:"TERRAIN_SADDLE_POTENTIAL_NOT_INSTANT_FLOW"};
+  }
+
   function outletProfile(map,tile,by=null){
     if(!map||!tile)return null;
     const tiles=map.tiles||[];
@@ -424,7 +489,7 @@ export const HydrologyEngine=(()=>{
     const budgets=new Map(),by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
     const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
     for(const tile of map?.tiles||[]){
-      if(tile?.river===true&&tile?.hydrologyDrain===true){
+      if(tile?.river===true&&tile?.hydrologyDrain===true&&isPhysicalOutlet(map,tile)){
         // Rated outlet capacity is a MAXIMUM, never proof that that much
         // water actually arrived. At low stage a partly dry outlet passes
         // less water; rising water restores the full authored capacity.
@@ -437,7 +502,7 @@ export const HydrologyEngine=(()=>{
         budgets.set(key(tile.x,tile.y),clean(throughRate*Math.max(0,Number(volumeScale||0))));
         continue;
       }
-      const eligible=tile?.drain===true||(openBoundary&&tile?.river!==true&&isBoundaryTile(map,tile));
+      const eligible=isPhysicalOutlet(map,tile);
       if(!eligible||waterDepth(tile)<=EPSILON)continue;
       budgets.set(key(tile.x,tile.y),boundaryDrainBudget(map,tile,fed,by,volumeScale));
     }
@@ -1745,7 +1810,8 @@ export const HydrologyEngine=(()=>{
         const routeCapacity=tile.hydrologyDrain===true
           ?Number(tile.outletEffectiveCapacity??tile.channelCapacity??0)
           :Number(tile.channelCapacity||0);
-        const spareRate=Math.max(0,routeCapacity-Number(tile.hydrologyOutflowRate||0));
+        const spareRate=tile.hydrologyDrain===true&&!isPhysicalOutlet(map,tile)
+          ?0:Math.max(0,routeCapacity-Number(tile.hydrologyOutflowRate||0));
         const spareVolume=clean(spareRate*Math.max(0,Number(volumeScale||0)));
         const pass=Math.min(available,spareVolume);
         const retained=Math.max(0,available-pass);
@@ -1827,14 +1893,11 @@ export const HydrologyEngine=(()=>{
 
   function applyOutlets(map,events=[],source="DRAINAGE",fed=sourceFedWaterKeys(map),outletBudgets=null,volumeScale=DISCHARGE_VOLUME_PER_TURN){
     let drained=0;
-    const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
     const by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
     const budgets=outletBudgets||new Map();
 
     for(const tile of map?.tiles||[]){
-      const explicitDrain=tile.hydrologyDrain===true||tile.drain===true;
-      const boundaryDrain=tile.river!==true&&openBoundary&&isBoundaryTile(map,tile);
-      const outlet=explicitDrain||boundaryDrain;
+      const outlet=isPhysicalOutlet(map,tile);
       if(!outlet||waterDepth(tile)<=EPSILON)continue;
 
       const floor=protectedDepth(tile,fed);
@@ -1894,6 +1957,9 @@ export const HydrologyEngine=(()=>{
     // Advance even if no water was injected this turn: flood recession does
     // not stop merely because snowfall, not rain, is the active weather.
     redistribute(map,{source,events,riverPulse:step.riverPulse});
+    const drainage=outletSpillAudit(map);
+    map.hydrologyDrainageAudit=drainage;
+    events.push({type:"HYDROLOGY_OUTLET_CONNECTIVITY",source,...drainage});
     events.push({type:"HYDROLOGY_PHYSICAL_STEP",source,
       transportSteps:1,deferredRedistributions:step.requestedCalls,
       requestedSources:[...step.requestedSources]});
@@ -2108,7 +2174,7 @@ export const HydrologyEngine=(()=>{
     SOIL_SATURATION_CAPACITY,SAND_SOIL_CAPACITY,DRYING_PER_CLEAR_TURN,SAND_DRYING_PER_CLEAR_TURN,EVAPORATION_PER_CLEAR_TURN,
     PLAIN_INFILTRATION_PER_TURN,FOREST_INFILTRATION_PER_TURN,MUD_INFILTRATION_PER_TURN,SAND_INFILTRATION_PER_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
-    initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
+    initializeMap,normalizeRiverNetwork,isPhysicalOutlet,outletSpillAudit,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
     beginEnvironmentTurn,endEnvironmentTurn,abortEnvironmentTurn,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil

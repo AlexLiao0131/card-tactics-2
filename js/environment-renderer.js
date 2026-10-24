@@ -630,6 +630,9 @@ export class EnvironmentRenderer{
     const sharedLights=this.scene.lights.filter(light=>!localSet.has(light)&&
       !light.isDisposed?.()&&light.isEnabled?.()!==false);
     const memberships=new Map(lights.map(light=>[light,[]]));
+    // These bindings are selected by the ONE physical-light authority and
+    // are consumed by MapObjectRenderer when grouping static source faces.
+    const staticSourceLightBindings=new Map();
     const records={cliffSourcesAvailable:0,cliffSourcesAssigned:0,
       receivers:0,limitedReceivers:0,sharedLightSlots:sharedLights.length};
     const footprintHits=(footprint,mesh)=>{
@@ -668,8 +671,16 @@ export class EnvironmentRenderer{
       return distance<range?(1-distance/range)*Number(light.metadata?.baseIntensity??light.intensity??0):0;
     };
     for(const mesh of this.scene.meshes||[]){
-      if(mesh.isDisposed?.()||mesh.isEnabled?.()===false||mesh.material?.disableLighting===true||
+      const staticSource=mesh.metadata?.staticBatchSource===true;
+      if(mesh.isDisposed?.()||(!staticSource&&mesh.isVisible===false)||mesh.isEnabled?.()===false||mesh.material?.disableLighting===true||
         mesh.metadata?.kind==="environment-light-field"||mesh.name==="terrain-surface"||!mesh.material)continue;
+      if(mesh.metadata?.kind==="map-object-static-batch"){
+        // All members were grouped using this same light selection. Never
+        // re-rank by the huge merged bounding box and silently lose sources.
+        const ids=new Set(mesh.metadata.localLightNames||[]);
+        for(const light of lights)if(ids.has(light.name))memberships.get(light).push(mesh);
+        records.receivers++;continue;
+      }
       mesh.computeWorldMatrix?.(false);
       const bounds=mesh.getBoundingInfo?.()?.boundingSphere;
       const center=bounds?.centerWorld||mesh.getAbsolutePosition?.()||mesh.position;
@@ -689,7 +700,12 @@ export class EnvironmentRenderer{
       // Sorting only selects local light sources for the *existing* material;
       // Babylon still evaluates surface normals, built-in shadow and attenuation.
       ranked.sort((a,b)=>b.strength-a.strength||a.light.name.localeCompare(b.light.name));
-      for(const entry of ranked.slice(0,capacity))memberships.get(entry.light).push(mesh);
+      const selected=ranked.slice(0,capacity);
+      if(staticSource){
+        staticSourceLightBindings.set(mesh.uniqueId,selected.map(entry=>entry.light.name).sort());
+        if(mesh.isVisible===false)continue;
+      }
+      for(const entry of selected)memberships.get(entry.light).push(mesh);
       if(mesh.name==="terrain-cliffs")records.cliffSourcesAssigned=Math.min(capacity,ranked.length);
       records.receivers++;
     }
@@ -706,6 +722,7 @@ export class EnvironmentRenderer{
         light.includedOnlyMeshes=receivers;
       if(!light.isEnabled())light.setEnabled(true);
     }
+    this.staticSourceLightBindings=staticSourceLightBindings;
     this.lightMembershipDiagnostics=records;
   }
 

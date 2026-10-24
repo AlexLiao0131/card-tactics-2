@@ -768,6 +768,7 @@ export const EnvironmentEngine=(()=>{
         transportSteps:physicalStep.transportSteps,
         deferredRedistributions:physicalStep.deferredRedistributions,
         requestedTransportSources:physicalStep.requestedSources,
+        outletConnectivity:map.hydrologyDrainageAudit||null,
         accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL"};
       events.push(balance);
       globalThis.CardTacticsDiagnostics?.recordHydrologyBalance?.(balance);

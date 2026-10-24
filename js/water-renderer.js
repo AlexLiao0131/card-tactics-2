@@ -2297,12 +2297,24 @@ export class WaterRenderer{
     // rebuild elsewhere does not change these polygons or local cliff seams.
     // Use the same filtered polygons that buildSurface() actually triangulates.
     const resolved=resolvedSurface||this.componentSurfacePolygons(component,presentation);
-    const tiles=resolved.tiles.map(({tile,key,polygons,motion})=>
-      [key,hasAnyWater(tile),this.turbidity(tile),motion.x,motion.z,motion.speed,polygons]);
-    return JSON.stringify([
-      component.id,component.group,tiles,resolved.excludedSubmergedShoulders,resolved.clippedSubmergedShoulders,
-      this.componentCliffSeams(component,byKey),
-      sources.map(source=>[source.x,source.z,source.rate])
+    // The previous whole-component JSON.stringify recursively serialized
+    // every D/Q polygon and cliff lip on every weather sync, even when the
+    // resolver reused their immutable arrays. Cache only the serialized form
+    // of the EXISTING published polygons by identity. Length-prefixed fields
+    // preserve exact content-based comparison without an alias-prone hash.
+    const pack=parts=>parts.map(part=>`${part.length}:${part}`).join("");
+    const tiles=resolved.tiles.map(({tile,key,polygons,motion})=>pack([
+      JSON.stringify([key,hasAnyWater(tile),this.turbidity(tile),motion.x,motion.z,motion.speed]),
+      pack(polygons.map(polygon=>this.cascadeGeometrySignature(polygon)))
+    ]));
+    const cliffs=this.componentCliffSeams(component,byKey).map(directions=>
+      pack(directions.map(([lip,foot])=>pack([
+        this.cascadeGeometrySignature(lip),this.cascadeGeometrySignature(foot)
+      ]))));
+    return pack([
+      JSON.stringify([component.id,component.group,resolved.excludedSubmergedShoulders,
+        resolved.clippedSubmergedShoulders,sources.map(source=>[source.x,source.z,source.rate])]),
+      pack(tiles),pack(cliffs)
     ]);
   }
 
@@ -2439,6 +2451,7 @@ export class WaterRenderer{
       // Compare the resolved, exact D/Q polygons before touching any GPU mesh.
       // Free all obsolete buffers before allocating replacements, so heavy
       // floods do not temporarily double WebGL memory during an update.
+      const signatureStart=performance.now();
       const planned=components.map(component=>{
         const resolved=this.componentSurfacePolygons(component,presentation);
         const localSources=this.componentHydrologySources(resolved,sources);
@@ -2447,6 +2460,7 @@ export class WaterRenderer{
         const reuse=!!mesh&&!mesh.isDisposed?.()&&previousSignatures.get(component.id)===signature;
         return{component:{...component,sources:localSources},resolved,signature,mesh:reuse?mesh:null};
       });
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.componentSignatures",performance.now()-signatureStart);
       const retained=new Set(planned.filter(item=>item.mesh).map(item=>item.component.id));
       this.surfaceMeshUpdate={reused:retained.size,built:0};
       meshReasons.reused=retained.size;

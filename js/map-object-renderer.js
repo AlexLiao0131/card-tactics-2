@@ -21,6 +21,11 @@ export class MapObjectRenderer{
   constructor(scene,terrainRenderer=null){
     this.scene=scene;
     this.nodes=new Map();
+    // The original per-object meshes remain editable geometry sources for
+    // terrain, snow tint, damage and wind; static faces render as shared
+    // world-space batches rather than one draw call per original mesh.
+    this.staticBatches=new Map();
+    this.staticBatchStats={groups:0,sourceMeshes:0,drawCallsAvoided:0,rebuilds:0,refreshed:0};
     // Consume the terrain renderer's published geometry, matching WaterRenderer.
     // Standalone previews may still use a private resolver as a fallback.
     this.surfaceResolver=terrainRenderer?.surfaceResolver||new VisualSurfaceResolver();
@@ -251,7 +256,8 @@ export class MapObjectRenderer{
     const swayMeshes=[];
     for(const mesh of model.getChildMeshes()){
       const baseColor=mesh.material?.diffuseColor?.asArray?.()||this.materials.generic.diffuseColor.asArray();
-      mesh.metadata={...(mesh.metadata||{}),baseColor,visualMaterialRole:mesh.metadata?.visualMaterialRole||this.fallbackMaterialRole(type)};
+      mesh.metadata={...(mesh.metadata||{}),baseColor,visualMaterialRole:mesh.metadata?.visualMaterialRole||this.fallbackMaterialRole(type),
+        staticBatchSource:!mesh.metadata?.leafSway};
       mesh.material=this.surfaceMaterial;mesh.useVertexColors=true;mesh.receiveShadows=true;
       if(mesh.metadata?.leafSway){swayMeshes.push(mesh);this.vegetationSways.add(mesh);}
     }
@@ -401,7 +407,7 @@ export class MapObjectRenderer{
     entry.detail?.dispose();
     const mesh=new BABYLON.Mesh(`ground-contact-${object.id}`,this.scene),data=new BABYLON.VertexData();
     Object.assign(data,{positions,indices,colors,normals});data.applyToMesh(mesh,true);this.mesh(entry.node,mesh,this.surfaceMaterial);
-    mesh.useVertexColors=true;mesh.metadata={castShadow:false};entry.detail=mesh;
+    mesh.useVertexColors=true;mesh.metadata={castShadow:false,staticBatchSource:true};entry.detail=mesh;
   }
 
   place(entry,object,tile,profile){
@@ -458,6 +464,121 @@ export class MapObjectRenderer{
     return neighborhood.join("|");
   }
 
+  staticBatchMembers(lightBindings=null){
+    const groups=new Map();
+    for(const [owner,entry] of this.nodes){
+      // Swaying leaves must retain their own deformable vertex buffers. All
+      // stationary parts, including contact geometry, already use the one
+      // shared vertex-colour material and can share one Babylon draw mesh.
+      const sourceMeshes=[...(entry.model?.getChildMeshes?.()||[]),entry.detail].filter(Boolean);
+      for(const mesh of sourceMeshes){
+        if(mesh.isDisposed?.()||mesh.metadata?.leafSway||mesh.material!==this.surfaceMaterial)continue;
+        const indices=mesh.getIndices?.(),count=mesh.getTotalVertices?.()||0;
+        if(!count||!indices?.length)continue;
+        const casts=mesh.metadata?.castShadow!==false;
+        // Babylon visibility is a mesh-level alpha. Keep fogged and visible
+        // objects in separate batches; never bake a guessed per-vertex alpha
+        // or silently force a semi-transparent prop to cast a hard shadow.
+        const opacity=Number(entry.visibility??1);
+        // Reuse the exact local-light membership SELECTED by EnvironmentRenderer
+        // for the source mesh. Mixing props with distinct light sets into one
+        // Babylon mesh would exhaust maxSimultaneousLights and change firelight.
+        const lightNames=lightBindings?.get(mesh.uniqueId)||[];
+        const lightKey=JSON.stringify(lightNames);
+        // One existing tactical-grid ROW is the spatial batch boundary.
+        // Unlike one scene-wide giant mesh, unused rows can still be culled
+        // by Babylon. No invented cell radius, shadow cutoff or chunk size.
+        const name=`ROW:${entry.gridRow??0}:${casts?'CAST':'CONTACT'}:${opacity}:${lightKey}`;
+        if(!groups.has(name))groups.set(name,{casts,opacity,lightNames,members:[]});
+        groups.get(name).members.push({owner,mesh,count,indices});
+      }
+    }
+    return groups;
+  }
+
+  writeStaticMember(batch,member){
+    const {mesh,count}=member,positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[],
+      normals=mesh.getVerticesData(BABYLON.VertexBuffer.NormalKind)||[],
+      colors=mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind)||[];
+    const matrix=mesh.computeWorldMatrix(true).m;
+    const off=member.offset;
+    for(let i=0;i<count;i++){
+      const p=i*3,c=i*4,x=positions[p]||0,y=positions[p+1]||0,z=positions[p+2]||0;
+      const d=(off+i)*3,e=(off+i)*4;
+      batch.positions[d]=matrix[0]*x+matrix[4]*y+matrix[8]*z+matrix[12];
+      batch.positions[d+1]=matrix[1]*x+matrix[5]*y+matrix[9]*z+matrix[13];
+      batch.positions[d+2]=matrix[2]*x+matrix[6]*y+matrix[10]*z+matrix[14];
+      const nx=normals[p]||0,ny=normals[p+1]||0,nz=normals[p+2]||0;
+      const wx=matrix[0]*nx+matrix[4]*ny+matrix[8]*nz,
+        wy=matrix[1]*nx+matrix[5]*ny+matrix[9]*nz,
+        wz=matrix[2]*nx+matrix[6]*ny+matrix[10]*nz,
+        length=Math.hypot(wx,wy,wz)||1;
+      batch.normals[d]=wx/length;batch.normals[d+1]=wy/length;batch.normals[d+2]=wz/length;
+      batch.colors[e]=colors[c]??1;batch.colors[e+1]=colors[c+1]??1;
+      batch.colors[e+2]=colors[c+2]??1;batch.colors[e+3]=colors[c+3]??1;
+    }
+  }
+
+  createStaticBatch(name,group){
+    const members=group.members,vertexCount=members.reduce((n,m)=>n+m.count,0),
+      indexCount=members.reduce((n,m)=>n+m.indices.length,0);
+    const batch={members,positions:new Float32Array(vertexCount*3),
+      normals:new Float32Array(vertexCount*3),colors:new Float32Array(vertexCount*4),
+      indices:new (vertexCount>65535?Uint32Array:Uint16Array)(indexCount)};
+    let vertex=0,index=0;
+    for(const member of members){
+      member.offset=vertex;
+      this.writeStaticMember(batch,member);
+      for(const local of member.indices)batch.indices[index++]=vertex+local;
+      vertex+=member.count;
+    }
+    const mesh=new BABYLON.Mesh(`map-objects-batch-${name}`,this.scene),data=new BABYLON.VertexData();
+    data.positions=batch.positions;data.normals=batch.normals;
+    data.colors=batch.colors;data.indices=batch.indices;data.applyToMesh(mesh,true);
+    mesh.material=this.surfaceMaterial;mesh.isPickable=false;mesh.useVertexColors=true;
+    mesh.hasVertexAlpha=false;mesh.receiveShadows=true;mesh.visibility=group.opacity;
+    mesh.metadata={kind:"map-object-static-batch",castShadow:group.casts,
+      localLightNames:group.lightNames,sourceMeshes:members.length};
+    batch.mesh=mesh;
+    // Source meshes are never destroyed: weather, ground placement and
+    // individual object interactions continue to modify the original buffers.
+    for(const member of members)member.mesh.isVisible=false;
+    return batch;
+  }
+
+  syncStaticBatches(dirty,lightBindings=null){
+    const groups=this.staticBatchMembers(lightBindings),allNames=new Set([...groups.keys(),...this.staticBatches.keys()]);
+    let refreshed=0,rebuilds=0,removed=0,sourceMeshes=0;
+    for(const name of allNames){
+      const group=groups.get(name),prior=this.staticBatches.get(name);
+      if(!group?.members.length){if(prior){prior.mesh?.dispose();this.staticBatches.delete(name);removed++;}continue;}
+      sourceMeshes+=group.members.length;
+      const same=prior&&prior.members.length===group.members.length&&
+        prior.members.every((member,i)=>member.mesh===group.members[i].mesh);
+      if(!same){
+        prior?.mesh?.dispose();
+        this.staticBatches.set(name,this.createStaticBatch(name,group));
+        rebuilds++;continue;
+      }
+      let touched=false;
+      for(const member of prior.members){
+        if(!dirty.has(member.owner))continue;
+        this.writeStaticMember(prior,member);touched=true;
+      }
+      if(touched){
+        prior.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,prior.positions,false,false);
+        prior.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,prior.normals,false,false);
+        prior.mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,prior.colors,false,false);
+        prior.mesh.refreshBoundingInfo();refreshed++;
+      }
+      // An eligible mesh created since the preceding sync becomes hidden
+      // after a structural rebuild; stable entries remain invisible here.
+      for(const member of prior.members)member.mesh.isVisible=false;
+    }
+    this.staticBatchStats={groups:this.staticBatches.size,sourceMeshes,
+      drawCallsAvoided:sourceMeshes-this.staticBatches.size,rebuilds,removed,refreshed};
+  }
+
   sync(state){
     this.vegetationWind=state?.presentation?.environment?.wind||null;
     const tiles=state?.map?.tiles||[],byKey=new Map(tiles.map(tile=>[tileKey(tile.x,tile.y),tile]));
@@ -466,13 +587,16 @@ export class MapObjectRenderer{
       objects.push({id:`visual-debris:${tile.x},${tile.y}`,type:"RUBBLE",x:tile.x,y:tile.y});
     const alive=new Set();
     const updates={placed:0,tinted:0,contact:0,visibility:0};
+    const dirtyBatches=new Set();
     for(const object of objects){
       const key=`OBJECT:${object.id}`,signature=this.signature(object);alive.add(key);
       let entry=this.nodes.get(key);
       if(!entry||entry.signature!==signature){
         this.disposeEntry(entry);entry=this.createEntry(object);this.nodes.set(key,entry);
+        dirtyBatches.add(key);
       }
       const tile=byKey.get(tileKey(object.x,object.y));
+      entry.gridRow=object.y;
       const placement=this.placementSignature(object,tile);
       const tint=this.tintProfileSignature(object,tile,byKey);
       const detail=this.detailSurfaceSignature(object,byKey);
@@ -481,6 +605,7 @@ export class MapObjectRenderer{
       const detailChanged=positionChanged||entry.detailSignature!==detail;
       let detailMeshReplaced=false;
       if(positionChanged||tintChanged||detailChanged){
+        dirtyBatches.add(key);
         // Soil/shore colour changes do not change the published terrain
         // triangle normals. Reuse the same geometric placement sample until
         // that actual terrain or the object's own position changes.
@@ -509,14 +634,17 @@ export class MapObjectRenderer{
       // An in-place colour/position update does not require rewalking all meshes.
       if(entry.visibility!==visibility||detailMeshReplaced){
         this.setNodeVisibility(entry.node,visibility);entry.visibility=visibility;updates.visibility++;
+        dirtyBatches.add(key);
       }
     }
     for(const[key,entry]of this.nodes){if(alive.has(key))continue;this.disposeEntry(entry);this.nodes.delete(key);}
+    this.pendingBatchDirty=dirtyBatches;
     this.lastSyncUpdates=updates;
   }
 
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
-    return{total:this.nodes.size,byType,lastSyncUpdates:this.lastSyncUpdates,sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
+    return{total:this.nodes.size,byType,lastSyncUpdates:this.lastSyncUpdates,
+      staticBatch:{...this.staticBatchStats},sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
   }
 }

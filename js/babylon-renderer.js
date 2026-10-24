@@ -397,6 +397,7 @@ export class BabylonRenderer{
   shadowMeshVisible(mesh){
     if(!mesh)return false;
     if(mesh.isDisposed?.())return false;
+    if(mesh.isVisible===false)return false;
     if(mesh.isEnabled?.()===false)return false;
     return Number(mesh.visibility??1)>.5;
   }
@@ -415,6 +416,11 @@ export class BabylonRenderer{
       const node=entry?.node||entry;
       for(const mesh of node?.getChildMeshes?.(false)||[])add(mesh);
     }
+
+    // MapObjectRenderer submits identical static materials as a small set of
+    // spatially transformed world meshes. These replace the hidden original
+    // trunk/rock/contact faces in both the scene and its sun shadow map.
+    for(const batch of this.mapObjects?.staticBatches?.values?.()||[])add(batch.mesh);
 
     // Cores are large battlefield structures. Capture-point floor markers stay out
     // of the shadow map because they are UI-like ground indicators.
@@ -499,6 +505,14 @@ export class BabylonRenderer{
     this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
     this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
     this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
+    this.syncSubsystem("mapObjectBatches",()=>{
+      // Physical light selection happens once on original prop geometry,
+      // before batching. Keep that same exact membership on merged meshes.
+      this.mapObjects.syncStaticBatches(this.mapObjects.pendingBatchDirty||new Set(),
+        this.environment.staticSourceLightBindings);
+      if(this.mapObjects.staticBatchStats.rebuilds||this.mapObjects.staticBatchStats.removed)
+        this.environment.syncSpatialLightMembership();
+    });
     this.syncSubsystem("objectives",()=>this.objectives.sync(state));
     this.syncSubsystem("highlights",()=>this.highlights.sync(state));
     this.syncSubsystem("shadows",()=>this.syncShadows());

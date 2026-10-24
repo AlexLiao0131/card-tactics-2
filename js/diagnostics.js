@@ -115,7 +115,8 @@ function recordHydrologyBalance(balance){
     precipitation:numeric(balance.precipitation),sourceInflow:numeric(balance.sourceInflow),
     transportSteps:balance.transportSteps,
     deferredRedistributions:balance.deferredRedistributions,
-    requestedTransportSources:balance.requestedTransportSources});
+    requestedTransportSources:balance.requestedTransportSources,
+    outletConnectivity:balance.outletConnectivity||null});
   store(true);
 }
 function recordTileAnnotation(annotation){
