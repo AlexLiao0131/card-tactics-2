@@ -128,14 +128,26 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
   }
   function evolveSnow(map,flow,{events=[],source="AVALANCHE"}={}){
     const tiles=flow.path.map(p=>tileAt(map,p.x,p.y)).filter(Boolean),length=tiles.length;if(length<2)return{changed:false,snowChanges:0};
-    let carried=Math.min(snow(tiles[0]),flow.initialMass),snowChanges=0;
+    let carried=Math.min(snow(tiles[0]),flow.initialMass),snowChanges=0,carriedWater=0;
     const before=new Map(tiles.map(tile=>[key(tile.x,tile.y),snow(tile)]));
-    tiles[0].snowDepth=clean(snow(tiles[0])-carried);
+    const waterOf=tile=>Math.max(0,Number(tile.snowWaterEquivalent??tile.snowDepth??0));
+    const takeSnow=(tile,amount)=>{
+      const depth=snow(tile),swe=waterOf(tile),removed=Math.min(depth,Math.max(0,amount));
+      const residual=depth>0?swe*(depth-removed)/depth:0;
+      tile.snowDepth=clean(depth-removed);
+      tile.snowWaterEquivalent=tile.snowDepth>0?residual:0;
+      carriedWater+=swe-tile.snowWaterEquivalent;
+      return removed;
+    };
+    takeSnow(tiles[0],carried);
     for(let i=1;i<tiles.length;i++){
-      const take=Math.min(snow(tiles[i]),Number(flow.path[i]?.pickup||0));tiles[i].snowDepth=clean(snow(tiles[i])-take);carried+=take;
+      const take=takeSnow(tiles[i],Number(flow.path[i]?.pickup||0));carried+=take;
     }
     const weights=normalizedWeights(length,(i,n)=>{const t=n<=1?1:i/(n-1);return t>=.55?Math.pow(t,2.2):0;});
-    for(let i=0;i<length;i++)if(weights[i]>0)tiles[i].snowDepth=clean(snow(tiles[i])+carried*weights[i]);
+    for(let i=0;i<length;i++)if(weights[i]>0){
+      tiles[i].snowDepth=clean(snow(tiles[i])+carried*weights[i]);
+      tiles[i].snowWaterEquivalent=waterOf(tiles[i])+carriedWater*weights[i];
+    }
     for(const tile of tiles){const from=Number(before.get(key(tile.x,tile.y))||0),to=snow(tile);if(Math.abs(to-from)>.0005){snowChanges++;events.push({type:"SNOW_DEPTH_CHANGED",x:tile.x,y:tile.y,from,to,source,material:MATERIAL.SNOW});}}
     flow.mass=clean(carried);
     events.push({type:"MASS_FLOW_SNOW_REDISTRIBUTED",material:MATERIAL.SNOW,source,tiles:length,snowChanges,mass:flow.mass,path:flow.path.map(p=>({...p}))});

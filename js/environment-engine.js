@@ -305,7 +305,7 @@ export const EnvironmentEngine=(()=>{
     const heavyContact=precipitation?precipitationAt(state).type===PRECIPITATION.HEAVY_RAIN
       :incoming>=HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT;
     events.push({type:"FIRE_WATER_EXCHANGE",x:tile.x,y:tile.y,source,contactWater:incoming,
-      evaporatedWater:vaporized,remainingWater:incoming-vaporized,thermalBefore:reserve,thermalAfter:remainingHeat});
+      evaporatedWater:vaporized,remainingWater:incoming-vaporized,thermalBefore:reserve,thermalAfter:remainingHeat,precipitation});
     addSteam(state,tile.x,tile.y,events,{duration:2,reason:"FIRE_WATER_EXCHANGE"});
     // Sudden large-volume contact with a HEAVY fire causes an actual one-shot
     // event. The damage scale is the existing boiling hazard and vapor volume;
@@ -338,7 +338,7 @@ export const EnvironmentEngine=(()=>{
     const byKey=new Map((map.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
     for(const [k,active] of [...state.effects.entries()]){
       if(!active.some(e=>e.type===EFFECT.BURNING||e.type===EFFECT.FIRE_TORNADO))continue;
-      const tile=byKey.get(k),volume=waterDepth(tile);
+      const tile=byKey.get(k),volume=HydrologyEngine.liquidDepth(tile);
       if(volume<=0)continue;
       const remaining=exchangeWaterFire(map,state,tile,volume,events,{source,clusterKeys});
       const consumed=volume-remaining;
@@ -370,10 +370,10 @@ export const EnvironmentEngine=(()=>{
       const {x,y}=tile;
       // Reuse ClimateEngine.applyHeat's authored melt-per-contact amounts.
       const melted=Math.min(Number(tile.snowDepth),fire.type===EFFECT.FIRE_TORNADO||fire.fireIntensity==="HEAVY"?2:1);
-      tile.snowDepth=Math.max(0,Number(tile.snowDepth)-melted);
-      const liquid=exchangeWaterFire(map,state,tile,melted,events,{source:"FIRE_SNOWMELT",clusterKeys});
-      if(liquid>0){HydrologyEngine.addWater(tile,liquid,events);waterChanged=true;}
-      events.push({type:"SNOW_MELT",x,y,amount:melted,source:"FIRE_CONTACT"});
+      const thaw=ClimateEngine.meltSnow(tile,melted);
+      const liquid=exchangeWaterFire(map,state,tile,thaw.water,events,{source:"FIRE_SNOWMELT",clusterKeys});
+      if(liquid>0)waterChanged=HydrologyEngine.addWater(tile,liquid,events)>HydrologyEngine.EPSILON||waterChanged;
+      events.push({type:"SNOW_MELT",x,y,amount:melted,waterEquivalent:thaw.water,source:"FIRE_CONTACT"});
       globalThis.ClimateEngine?.syncTileVisuals?.(state,tile);
     }
     if(waterChanged)HydrologyEngine.redistribute(map,{source:"FIRE_SNOWMELT",events});
@@ -592,9 +592,9 @@ export const EnvironmentEngine=(()=>{
   // visual effect. The vortex borrows exactly the water stored in a source tile,
   // and returns the unused quantity to real terrain on expiration.
   function entrainTornadoWater(tile,events=[]){
-    const amount=waterDepth(tile);
+    const amount=HydrologyEngine.liquidDepth(tile);
     if(amount<=HydrologyEngine.EPSILON)return 0;
-    HydrologyEngine.setWaterDepth(tile,0,events,"TORNADO_ENTRAINMENT");
+    HydrologyEngine.removeWater(tile,amount,events);
     events.push({type:"TORNADO_WATER_ENTRAINED",x:tile.x,y:tile.y,volume:amount});
     return amount;
   }
@@ -712,6 +712,7 @@ export const EnvironmentEngine=(()=>{
   }
   function advanceEnvironmentTurn(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);
+    const waterBefore=HydrologyEngine.waterInventory(map);
     const environmentTurn=Math.max(0,Number(state.climate?.turn||0))+1;
     advanceNaturalCycles(map,state,environmentTurn,events);
     // Expiration is disabled during a card override: the fixed card duration
@@ -735,7 +736,32 @@ export const EnvironmentEngine=(()=>{
     }
     advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);
     resolveStandingWaterFire(map,state,events,{source:"TORNADO_AND_FLOW_CONTACT"});
-    events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);return events;
+    events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);
+    // One accounting record at the END of the physical environment step.
+    // The actual inventory is authoritative; event sums are diagnostic inputs,
+    // and any unexplained difference is exposed, never 'balanced' artificially.
+    const after=HydrologyEngine.waterInventory(map),sum=(kind,field)=>events
+      .filter(event=>event?.type===kind).reduce((total,event)=>total+Number(event?.[field]||0),0);
+    const precipitation=sum("RAIN_PRECIPITATION_WATER_INPUT","volume")+
+      sum("SNOW_PRECIPITATION_WATER_INPUT","volume");
+    const sourceInflow=sum("HYDROLOGY_SOURCES_ADVANCED","injectedVolume");
+    const offMapDrain=sum("RIVER_FLOOD_WATER_DRAINED","amount")+
+      sum("RIVER_THROUGHFLOW_DRAINED","amount")+sum("WATER_DRAINED_OFF_MAP","amount");
+    const evaporation=sum("SURFACE_WATER_EVAPORATED","amount")+
+      sum("WATER_EVAPORATION","amount")+
+      events.filter(event=>event?.type==="FIRE_WATER_EXCHANGE"&&!event.precipitation)
+        .reduce((total,event)=>total+Number(event.evaporatedWater||0),0);
+    const soilDrying=events.filter(event=>event?.type==="SOIL_MOISTURE_CHANGED"&&Number(event?.from)>Number(event?.to))
+      .reduce((total,event)=>total+Number(event.from)-Number(event.to),0);
+    const inventoryDelta=after.total-waterBefore.total;
+    const explainedDelta=precipitation+sourceInflow-offMapDrain-evaporation-soilDrying;
+    const balance={type:"HYDROLOGY_CYCLE_BALANCE",environmentTurn,weather:legacyWeatherRaw(state),
+      before:waterBefore,after,precipitation,sourceInflow,offMapDrain,evaporation,soilDrying,
+      inventoryDelta,explainedDelta,unattributedDelta:inventoryDelta-explainedDelta,
+      accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL"};
+    events.push(balance);
+    globalThis.CardTacticsDiagnostics?.recordHydrologyBalance?.(balance);
+    return events;
   }
   function setWeather(state,weather,map=null,{duration=null,applyPulse=true,source="MANUAL"}={}){
     if(!state)return[];const resolved=WEATHER[weather]?weather:WEATHER.CLEAR,touched=applyClimatePreset(state,resolved,{duration}),events=[];

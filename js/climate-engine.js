@@ -23,6 +23,21 @@ export const ClimateEngine=(()=>{
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
   const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const iceThickness=tile=>Math.max(0,Number(tile?.iceThickness||0));
+  // Snow depth is geometric cover, not liquid water. SWE is a conserved water-volume
+  // store; legacy maps without it retain their historical 1:1 snow-depth volume.
+  const snowWaterEquivalent=tile=>Math.max(0,Number(tile?.snowWaterEquivalent??tile?.snowDepth??0));
+  const volumeRound=n=>Math.max(0,Math.round(Number(n||0)*1e6)/1e6);
+  // Consume exactly the water-equivalent share of the snow removed, whether
+  // thawed by weather or fire. Never use the removed visual thickness as water.
+  function meltSnow(tile,removedDepth){
+    const before=snowDepth(tile),stored=snowWaterEquivalent(tile);
+    const removed=Math.min(before,Math.max(0,Number(removedDepth||0)));
+    if(removed<=0)return{depth:0,water:0};
+    const remaining=volumeRound(stored*(before-removed)/before);
+    tile.snowDepth=clean(before-removed);
+    tile.snowWaterEquivalent=tile.snowDepth>0?remaining:0;
+    return{depth:removed,water:volumeRound(stored-tile.snowWaterEquivalent)};
+  }
   // The climate's HEAT channel describes a sustained hot-weather condition,
   // not a lamp that remains above the battlefield after sunset. Radiation is
   // derived from the ONE existing day/night clock; it owns no separate timer.
@@ -117,7 +132,7 @@ export const ClimateEngine=(()=>{
     visualEffect(state,tile,"ICE",isFrozen(tile),{thickness:iceThickness(tile)});
     visualEffect(state,tile,"CURRENT",!!tile?.river&&hasActualCurrent(tile)&&Number(tile.flowSpeed||0)>=.85&&!isSolidIce(tile),{speed:Number(tile.flowSpeed||0),flowX:Number(tile.flowX||0),flowY:Number(tile.flowY||0)});
   }
-  function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(tile.iceThickness);if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=riverDischarge(tile);}syncTileVisuals(state,tile);}return map;}
+  function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowWaterEquivalent=volumeRound(snowWaterEquivalent(tile));tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(Math.min(iceThickness(tile),Math.max(0,Number(tile.waterDepth||0))));if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=riverDischarge(tile);}syncTileVisuals(state,tile);}return map;}
 
   function legacyWeather(state){return window.EnvironmentEngine?.legacyWeather?.(state)||state?.weather||"CLEAR";}
   function updateRiverFlow(map,state,events=[]){
@@ -132,27 +147,54 @@ export const ClimateEngine=(()=>{
   }
 
   function addMeltWater(map,tile,amount,events,source){
-    if(amount<=0)return;window.HydrologyEngine?.addWater?.(tile,amount,events);events.push({type:"SNOWMELT_WATER",x:tile.x,y:tile.y,amount,source});
+    if(amount<=0)return 0;
+    const retainedD=HydrologyEngine.addWater(tile,amount,events);
+    events.push({type:"SNOWMELT_WATER",x:tile.x,y:tile.y,amount,source});
+    return retainedD;
   }
 
   function advance(map,state){
     const events=[];if(!map||!state)return events;ensureState(state);state.climate.turn=Number(state.climate.turn||0)+1;const cfg=config(state),blizzard=isBlizzard(state);
     updateRiverFlow(map,state,events);
-    let changedWater=false,snowChanged=0,iceChanged=0,totalMelt=0,maxSnow=0,maxIce=0;const hydroEvents=[];
+    let changedWater=false,snowChanged=0,iceChanged=0,totalMelt=0,snowfallWater=0,maxSnow=0,maxIce=0;const hydroEvents=[];
     for(const tile of map.tiles||[]){
       const temp=temperatureAt(state,tile),beforeSnow=snowDepth(tile),beforeIce=iceThickness(tile);
       if(isSnowWeather(state)){
         const altitudeBonus=Math.max(0,Number(tile.elevation||0))*.035;
-        if(Number(tile.waterDepth||0)>0&&temp<=0)tile.iceThickness=clean(beforeIce+(blizzard ? .42 : .22));
-        const canSettle=Number(tile.waterDepth||0)<=0||isSolidIce(tile);if(canSettle)tile.snowDepth=clean(beforeSnow+cfg.snowRate+altitudeBonus);
+        if(Number(tile.waterDepth||0)>0&&temp<=0)
+          tile.iceThickness=clean(Math.min(Number(tile.waterDepth),beforeIce+(blizzard ? .42 : .22)));
+        const canSettle=Number(tile.waterDepth||0)<=0||isSolidIce(tile);
+        if(canSettle){
+          const added=cfg.snowRate+altitudeBonus;
+          tile.snowDepth=clean(beforeSnow+added);
+          // Shared existing rain-volume unit is the water reference. The
+          // authored snowRate controls visual accumulation only; its ratio
+          // to ordinary snowfall carries storm and altitude intensification.
+          const water=volumeRound(Number(HydrologyEngine.RAIN_FILL_PER_EVENT)*(added/CFG.SNOW.snowRate));
+          tile.snowWaterEquivalent=volumeRound(snowWaterEquivalent(tile)+water);
+          snowfallWater+=water;
+        }
       }else if(temp>0){
-        if(beforeSnow>0){const melt=Math.min(beforeSnow,cfg.melt+Math.max(0,temp)*.015);tile.snowDepth=clean(beforeSnow-melt);if(melt>0){window.HydrologyEngine?.addWater?.(tile,melt,hydroEvents);changedWater=true;totalMelt+=melt;}}
-        if(beforeIce>0){const meltIce=Math.min(beforeIce,cfg.melt*.55+Math.max(0,temp)*.01);tile.iceThickness=clean(beforeIce-meltIce);}
+        if(beforeSnow>0){
+          const melted=meltSnow(tile,Math.min(beforeSnow,cfg.melt+Math.max(0,temp)*.015));
+          if(melted.water>0){
+            const retainedD=HydrologyEngine.addWater(tile,melted.water,hydroEvents);
+            changedWater=changedWater||retainedD>HydrologyEngine.EPSILON;
+            totalMelt+=melted.water;
+          }
+        }
+        if(beforeIce>0){
+          const meltIce=Math.min(beforeIce,cfg.melt*.55+Math.max(0,temp)*.01);
+          // waterDepth is the TOTAL column (ice is an immobile subset), so
+          // thaw frees mobile water without adding any new water volume.
+          tile.iceThickness=clean(beforeIce-meltIce);
+        }
       }
       if(Math.abs(snowDepth(tile)-beforeSnow)>.0001)snowChanged++;
       if(Math.abs(iceThickness(tile)-beforeIce)>.0001)iceChanged++;
       maxSnow=Math.max(maxSnow,snowDepth(tile));maxIce=Math.max(maxIce,iceThickness(tile));syncTileVisuals(state,tile);
     }
+    if(snowfallWater>0)events.push({type:"SNOW_PRECIPITATION_WATER_INPUT",volume:volumeRound(snowfallWater),source:"SNOW",weather:legacyWeather(state)});
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
 
     if(precipitationType(state)==="NONE"&&window.HydrologyEngine?.evaporateUnfedWater){
@@ -175,6 +217,7 @@ export const ClimateEngine=(()=>{
     if(!unit||!tile||!isFrozen(tile))return{frozen:false,supported:false,broke:false};
     const threshold=iceThreshold(unit),thickness=iceThickness(tile),supported=thickness>=threshold;
     if(supported)return{frozen:true,supported:true,broke:false,thickness,threshold,weight:weightClass(unit)};
+    // Fracture releases this frozen fraction to the same water column.
     tile.iceThickness=0;return{frozen:true,supported:false,broke:true,thickness,threshold,weight:weightClass(unit)};
   }
 
@@ -186,7 +229,11 @@ export const ClimateEngine=(()=>{
 
   function applyHeat(map,state,x,y,{heavy=false}={}){
     const events=[],tile=tileAt(map,x,y);if(!tile)return events;const snow=snowDepth(tile),ice=iceThickness(tile);let changedWater=false;
-    const snowMelt=Math.min(snow,heavy?2:1);if(snowMelt>0){tile.snowDepth=clean(snow-snowMelt);addMeltWater(map,tile,snowMelt,events,heavy?"HEAVY_FIRE":"FIRE");changedWater=true;events.push({type:"SNOW_MELT",x,y,from:snow,to:tile.snowDepth,heat:heavy?2:1});}
+    const snowMelt=Math.min(snow,heavy?2:1);if(snowMelt>0){
+      const melted=meltSnow(tile,snowMelt);
+      changedWater=addMeltWater(map,tile,melted.water,events,heavy?"HEAVY_FIRE":"FIRE")>HydrologyEngine.EPSILON;
+      events.push({type:"SNOW_MELT",x,y,from:snow,to:tile.snowDepth,waterEquivalent:melted.water,heat:heavy?2:1});
+    }
     const iceMelt=Math.min(ice,heavy?1.2:.55);if(iceMelt>0){tile.iceThickness=clean(ice-iceMelt);events.push({type:"ICE_MELT",x,y,amount:iceMelt,remaining:tile.iceThickness,heat:heavy?2:1});}
     if(changedWater)HydrologyEngine.redistribute(map,{source:"HEAT_MELT",events});syncTileVisuals(state,tile);return events;
   }
@@ -207,6 +254,6 @@ export const ClimateEngine=(()=>{
     return events;
   }
 
-  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,solarExposure,solarHeat,evaporationExposure,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
+  return Object.freeze({WEATHER,SAFE_ICE,CFG,config,solarExposure,solarHeat,evaporationExposure,initializeMap,advance,temperatureAt,isSnowWeather,isBlizzard,snowDepth,snowWaterEquivalent,meltSnow,iceThickness,isFrozen,isSolidIce,iceThreshold,iceSupports,resolveIceStep,currentForce,applyHeat,triggerAvalanche,syncTileVisuals});
 })();
 globalThis.ClimateEngine=ClimateEngine;

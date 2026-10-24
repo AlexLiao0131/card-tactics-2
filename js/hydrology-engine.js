@@ -24,6 +24,10 @@ export const HydrologyEngine=(()=>{
 
   const elevation=t=>Number(t?.elevation||0);
   const waterDepth=t=>Math.max(0,Number(t?.waterDepth||0));
+  // iceThickness is the immobile part of the SAME existing water column.
+  // Unlike visual snowDepth, it is not an additional independent water source.
+  const frozenDepth=t=>Math.min(waterDepth(t),Math.max(0,Number(t?.iceThickness||0)));
+  const liquidDepth=t=>Math.max(0,waterDepth(t)-frozenDepth(t));
   const waterSurfaceZ=t=>waterDepth(t)>EPSILON?elevation(t)+waterDepth(t):null;
   const isWater=t=>!!t&&waterDepth(t)>EPSILON;
   const canHoldWater=t=>!!t&&t.terrain!=="WALL";
@@ -58,6 +62,15 @@ export const HydrologyEngine=(()=>{
   function surfaceWaterVolume(map){return(map?.tiles||[]).reduce((sum,t)=>sum+waterDepth(t),0)}
   function soilWaterVolume(map){return(map?.tiles||[]).reduce((sum,t)=>sum+(hasSoil(t)?soilMoisture(t):0),0)}
   function totalWater(map){return surfaceWaterVolume(map)+soilWaterVolume(map)}
+  function waterInventory(map){
+    const tiles=map?.tiles||[];
+    let surface=0,soil=0,snow=0,iceLocked=0;
+    for(const tile of tiles){surface+=waterDepth(tile);if(hasSoil(tile))soil+=soilMoisture(tile);
+      snow+=Math.max(0,Number(tile.snowWaterEquivalent??tile.snowDepth??0));iceLocked+=frozenDepth(tile);}
+    return{surface,soil,snowWaterEquivalent:snow,iceLocked,total:surface+soil+snow,
+      // Liquid water is surface minus frozen, not surface PLUS ice.
+      surfaceLiquid:surface-iceLocked};
+  }
 
   function sourceFedWaterKeys(map){
     const tiles=map?.tiles||[],by=new Map(tiles.map(t=>[key(t.x,t.y),t])),seen=new Set(),q=[];
@@ -749,7 +762,10 @@ export const HydrologyEngine=(()=>{
         ?clean(waterDepth(tile)):0;
     return fed;
   }
-  function protectedDepth(tile,fed){return fed?.has(key(tile.x,tile.y))?Math.min(waterDepth(tile),baselineDepth(tile)):0}
+  function protectedDepth(tile,fed){
+    const perennial=fed?.has(key(tile.x,tile.y))?Math.min(waterDepth(tile),baselineDepth(tile)):0;
+    return Math.max(perennial,frozenDepth(tile));
+  }
 
   function activeSourceTiles(map){
     return(map?.tiles||[]).filter(tile=>tile?.hydrologySource===true&&tile?.hydrologySourceDisabled!==true&&canHoldWater(tile));
@@ -914,7 +930,7 @@ export const HydrologyEngine=(()=>{
   }
 
   function setWaterDepth(tile,nextDepth,events=[],source="HYDROLOGY"){
-    if(!tile)return 0;const before=waterDepth(tile),next=clean(nextDepth);tile.waterDepth=next;
+    if(!tile)return 0;const before=waterDepth(tile),next=clean(Math.max(frozenDepth(tile),Number(nextDepth||0)));tile.waterDepth=next;
     if(Math.abs(next-before)>EPSILON)events.push({type:next>before?"WATER_ACCUMULATED":"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:next,waterSurfaceZ:next>0?elevation(tile)+next:null,source});
     sync(tile,events);return next-before;
   }
@@ -970,7 +986,7 @@ export const HydrologyEngine=(()=>{
   // hydrology store or a persistent cache of changing map geometry.
   function flowTopology(map,by,fed){
     const tiles=map.tiles,index=new Map(tiles.map((tile,i)=>[tile,i]));
-    const floors=tiles.map(tile=>fed.has(key(tile.x,tile.y))?baselineDepth(tile):0);
+    const floors=tiles.map(tile=>protectedDepth(tile,fed));
     const edges=[];
     const authoredRiver=map.hydrology?.generatedRiverProfile===true;
     for(let i=0;i<tiles.length;i++){
@@ -1570,7 +1586,7 @@ export const HydrologyEngine=(()=>{
     };
     for(const tile of rivers)tile.hydrologyMeasuredOutflowRate=0;
     for(const tile of rivers){
-      const available=Math.max(0,waterDepth(tile)-baselineDepth(tile));
+      const available=Math.max(0,waterDepth(tile)-Math.max(baselineDepth(tile),frozenDepth(tile)));
       const speed=Math.max(.05,Number(tile.flowSpeed||tile.baseFlowSpeed||.62));
       const mobile=clamp(1-Math.exp(-speed*1.6*elapsed),0,.85);
       const mainBudget=available*mobile;
@@ -1615,7 +1631,7 @@ export const HydrologyEngine=(()=>{
         // lake cell. This width exists in the map-generator's geometry data.
         const inletWidth=clamp(Number(tile.hydrologyChannelWidthFraction??.4),.15,.85);
         const crossRate=inletWidth*Math.sqrt(2*9.81*fromHead)*.45;
-        const bankBudget=Math.max(0,Number(snap.get(key(from.x,from.y))||0)-baselineDepth(from));
+        const bankBudget=Math.max(0,Number(snap.get(key(from.x,from.y))||0)-Math.max(baselineDepth(from),frozenDepth(from)));
         const bankSpeed=Math.max(.05,Number(from.flowSpeed||from.baseFlowSpeed||.62));
         const bankMobile=clamp(1-Math.exp(-bankSpeed*1.6*elapsed),0,.85);
         offer(from,to,Math.min(bankBudget*bankMobile,crossRate*stepVolume),"LAKE_INLET");
@@ -1625,7 +1641,7 @@ export const HydrologyEngine=(()=>{
     for(const transfer of requests){
       const {from,to,kind}=transfer;
       const fk=key(from.x,from.y),tk=key(to.x,to.y);
-      const floor=baselineDepth(from);
+      const floor=Math.max(baselineDepth(from),frozenDepth(from));
       const available=Math.max(0,Number(snap.get(fk)||0)-floor);
       const want=Math.max(EPSILON,Number(requested.get(fk)||0));
       // A single physical travel interval bounds the TOTAL mobilized D,
@@ -1720,7 +1736,7 @@ export const HydrologyEngine=(()=>{
         const incoming=Math.max(0,Number(carried.get(k)||0));
         // Only the genuine authored non-generated baseline is protected;
         // a hypothetical Q residence depth must not become a D floor.
-        const floor=baselineDepth(tile);
+        const floor=Math.max(baselineDepth(tile),frozenDepth(tile));
         const localExtra=Math.max(0,waterDepth(tile)-floor);
         const available=incoming+localExtra;
 
@@ -2009,7 +2025,7 @@ export const HydrologyEngine=(()=>{
   }
 
   function addWater(tile,amount,events=[]){if(!tile)return 0;const incoming=Math.max(0,Number(amount||0)),excess=saturateSoil(tile,incoming,events,"ACCUMULATION"),before=waterDepth(tile),next=before+excess;return Math.max(0,setWaterDepth(tile,next,events,"ACCUMULATION"));}
-  function removeWater(tile,amount,events=[]){if(!tile)return 0;const before=waterDepth(tile),next=Math.max(0,before-Math.max(0,Number(amount||0)));setWaterDepth(tile,next,events,"DRAINAGE");return before-next;}
+  function removeWater(tile,amount,events=[]){if(!tile)return 0;const before=waterDepth(tile),next=Math.max(frozenDepth(tile),before-Math.max(0,Number(amount||0)));setWaterDepth(tile,next,events,"DRAINAGE");return before-next;}
 
   function floodArea(map,tiles,{surfaceRise=1,source="FLOOD",intercept=null}={}){
     const events=[],area=(tiles||[]).filter(tile=>tile&&canHoldWater(tile));if(!area.length)return events;
@@ -2033,16 +2049,19 @@ export const HydrologyEngine=(()=>{
 
   function applyRain(map,{heavy=false,amount=null,source=null,intercept=null}={}){
     const resolvedAmount=Math.max(0,Number(amount??(heavy?HEAVY_RAIN_FILL_PER_EVENT:RAIN_FILL_PER_EVENT))),events=[];amount=resolvedAmount;const rainSource=source||(heavy?"HEAVY_RAIN":"RAIN");
+    let inputWater=0;
     for(const tile of map?.tiles||[]){
       if(!canHoldWater(tile))continue;
       // Climate precipitation is real volume. Fire can vaporize some before it
       // enters soil, runoff or standing water. Hydrology owns the remainder.
       const received=typeof intercept==="function"?Math.max(0,Math.min(amount,Number(intercept(tile,amount,events)))):amount;
       if(received<=EPSILON)continue;
+      inputWater+=received;
       if(isWater(tile)){const before=waterDepth(tile);tile.waterDepth=before+received;events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
       const excess=hasSoil(tile)?saturateSoil(tile,received,events,rainSource):received;
       if(excess>EPSILON){const before=waterDepth(tile);tile.waterDepth=before+excess;events.push({type:"SURFACE_RUNOFF",x:tile.x,y:tile.y,amount:excess,source:rainSource});}
     }
+    events.push({type:"RAIN_PRECIPITATION_WATER_INPUT",source:rainSource,volume:clean(inputWater)});
     redistribute(map,{source:rainSource,events,riverPulse:true});return events;
   }
 
@@ -2059,7 +2078,7 @@ export const HydrologyEngine=(()=>{
     PLAIN_INFILTRATION_PER_TURN,FOREST_INFILTRATION_PER_TURN,MUD_INFILTRATION_PER_TURN,SAND_INFILTRATION_PER_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
     initializeMap,normalizeRiverNetwork,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
-    soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,
+    soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
     setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();
