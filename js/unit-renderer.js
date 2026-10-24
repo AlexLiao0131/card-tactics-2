@@ -2487,8 +2487,17 @@ export class UnitRenderer{
       // Stealth affects the figure, while the friendly facing/locator marker
       // remains readable. Render opacity does not grant detection to enemies.
       const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.50:1;
-      const actionOpacity=unit.finished?(unit.friendlyToViewer?.88:.62):1;
       const verticalOpacity=submerged?.48:1;
+      // Finished is a turn-command state, not physical transparency. Real 3D
+      // figures/birds/capsules already have the finished-state scale above.
+      // Sending every independently hinged material batch through Babylon's
+      // alpha-blend sorter makes opaque head/hair/clothing overlap incorrectly,
+      // especially after animations settle to IDLE. Retain the historical
+      // finished-state translucency only on billboards, whose single image
+      // plane already belongs to the transparent pipeline. Stealth and diving
+      // continue to own optical opacity for all visual kinds.
+      const actionOpacity=unit.finished&&entry.kind==="BILLBOARD"
+        ?(unit.friendlyToViewer?.88:.62):1;
       this.setVisibility(entry,actionOpacity*stealthOpacity*verticalOpacity);
       if(unit.friendlyToViewer&&unit.stealthed)
         for(const marker of entry.facingMarker?.meshes||[])marker.visibility=Math.max(.85,verticalOpacity);
