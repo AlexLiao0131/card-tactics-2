@@ -108,12 +108,22 @@ export class VisualSurfaceResolver{
     this.renderedSurfaceGeometryRevision=0;
     this.renderedCliffGeometry=new Map();
     this.renderedCliffGeometryRevision=0;
+    // Exact world-XZ samples are reused ONLY within the current presentation.
+    // The registered terrain triangles remain the single height authority.
+    this.publishedSurfaceSamples=new WeakMap();
+    this.publishedSurfaceSampleStats={hits:0,misses:0};
+  }
+
+  beginPublishedSurfaceSampling(){
+    this.publishedSurfaceSamples=new WeakMap();
+    this.publishedSurfaceSampleStats={hits:0,misses:0};
   }
 
 
   clearRenderedSurfaceGeometry(){
     this.renderedSurfaceGeometry.clear();
     this.renderedSurfaceGeometryRevision++;
+    this.beginPublishedSurfaceSampling();
   }
 
   registerRenderedSurfaceGeometry(tile,geometry){
@@ -125,6 +135,7 @@ export class VisualSurfaceResolver{
       .map(triangle=>triangle.map(clonePoint));
     const stored={key,revision:this.renderedSurfaceGeometryRevision,triangles};
     this.renderedSurfaceGeometry.set(key,stored);
+    // A replaced immutable geometry object receives a fresh weak cache key.
     return stored;
   }
 
@@ -138,6 +149,17 @@ export class VisualSurfaceResolver{
   publishedSurfacePoint(tile,x,z){
     const geometry=this.getRenderedSurfaceGeometry(tile);
     if(!geometry?.triangles?.length)return null;
+    const lookup=this.publishedSurfaceSamples;
+    let values=lookup.get(geometry);
+    if(!values){values=new Map();lookup.set(geometry,values);}
+    // No coordinate rounding: a near-shore sample is not interchangeable
+    // with an adjacent point on a different rendered terrain triangle.
+    const sampleKey=`${Number(x)}:${Number(z)}`;
+    if(values.has(sampleKey)){
+      this.publishedSurfaceSampleStats.hits++;
+      return values.get(sampleKey);
+    }
+    this.publishedSurfaceSampleStats.misses++;
     for(let triangleIndex=0;triangleIndex<geometry.triangles.length;triangleIndex++){
       const [a,b,c]=geometry.triangles[triangleIndex];
       const ax=b.x-a.x,az=b.z-a.z,bx=c.x-a.x,bz=c.z-a.z;
@@ -146,9 +168,12 @@ export class VisualSurfaceResolver{
       const px=Number(x)-a.x,pz=Number(z)-a.z;
       const u=(px*bz-pz*bx)/determinant,v=(ax*pz-az*px)/determinant,w=1-u-v;
       if(u < -EPSILON||v < -EPSILON||w < -EPSILON)continue;
-      return{x:Number(x),y:a.y+u*(b.y-a.y)+v*(c.y-a.y),z:Number(z),
+      const result={x:Number(x),y:a.y+u*(b.y-a.y)+v*(c.y-a.y),z:Number(z),
         triangleIndex,barycentric:{a:w,b:u,c:v},tileKey:geometry.key,terrainRevision:geometry.revision};
+      values.set(sampleKey,result);
+      return result;
     }
+    values.set(sampleKey,null);
     return null;
   }
 

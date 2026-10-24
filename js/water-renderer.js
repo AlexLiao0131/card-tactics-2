@@ -86,6 +86,10 @@ export class WaterRenderer{
     this.surfaceRebuildDetail=null;
     this.surfaceMeshSignatures=new Map();
     this.levelSamples=null;
+    // Snapshot-scoped memo for the SAME authored D/Q cliff connectivity.
+    // No cached result survives a new BattlePresentation or terrain publication.
+    this.waterEdgeContinuity=null;
+    this.waterEdgeContinuityStats={hits:0,misses:0};
     this.surfaceMeshUpdate={reused:0,built:0};
     this.cascadeMeshSignatures=new Map();
     this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
@@ -713,14 +717,24 @@ export class WaterRenderer{
 
   continuousWaterEdge(a,b){
     if(!a||!b||!this.isRenderableWater(a)||!this.isRenderableWater(b))return false;
+    const lookup=this.waterEdgeContinuity;
+    // Preserve direction-sensitive HydrologyEngine.edgeFlowState semantics.
+    // The key must not assume that querying A→B is equivalent to B→A.
+    const key=lookup?`${keyOf(a.x,a.y)}>${keyOf(b.x,b.y)}`:null;
+    if(lookup?.has(key)){
+      this.waterEdgeContinuityStats.hits++;
+      return lookup.get(key);
+    }
     const dx=Number(b.x)-Number(a.x),dy=Number(b.y)-Number(a.y);
     // Both D and measured Q use the SAME shared published-rock seam rule.
     // A submerged cliff is the bed of one water body, not a second water mesh.
     const wall=this.surfaceResolver.getRenderedCliffGeometry(a,{dx,dy})||
-       this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy});
-    if(wall)return !!this.surfaceResolver.submergedStoredWaterCliff(a,b)&&
-      !this.isCascadeBoundary(a,b);
-    return this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
+      this.surfaceResolver.getRenderedCliffGeometry(b,{dx:-dx,dy:-dy});
+    const continuous=wall
+      ?!!this.surfaceResolver.submergedStoredWaterCliff(a,b)&&!this.isCascadeBoundary(a,b)
+      :this.surfaceResolver.canSlope(a,b)&&!this.isCascadeBoundary(a,b);
+    if(lookup){lookup.set(key,continuous);this.waterEdgeContinuityStats.misses++;}
+    return continuous;
   }
 
   // All D and Q tiles use one surface connectivity and one horizontal Mesh
@@ -2399,6 +2413,9 @@ export class WaterRenderer{
     // A sync consumes one BattlePresentation snapshot. Never carry cached water
     // heights into the next snapshot, even if a tile retains the same ID.
     this.levelSamples=new Map();
+    this.waterEdgeContinuity=new Map();
+    this.waterEdgeContinuityStats={hits:0,misses:0};
+    this.surfaceResolver.beginPublishedSurfaceSampling();
     const flowStart=performance.now();
     this.setWind(state?.presentation?.environment?.wind||state?.environment?.wind||state?.wind||null);
     const waterTiles=this.waterTiles(state);
@@ -3068,6 +3085,9 @@ export class WaterRenderer{
       surfaceRebuildDetail:this.waterRebuildDiagnostics(),
       meshCacheScope:"LOCAL_PUBLISHED_DQ_POLYGONS_CLIFF_SEAMS_TILE_FLOW",
       waterLevelMemoizedPerSync:true,
+      edgeConnectivityMemoizedPerSync:true,
+      edgeConnectivitySamples:{...this.waterEdgeContinuityStats},
+      publishedTerrainSamples:{...this.surfaceResolver.publishedSurfaceSampleStats},
       sideMeshes:0,
       cascades:this.cascades.size,
       cascadeMeshUpdate:this.cascadeMeshUpdate,
