@@ -28,6 +28,12 @@ export class UnitRenderer{
     this.activeAnimations=new Map();
     this.animationDebug=true;
     this.figureMaterials=new Map();
+    // Own the immutable per-appearance mesh layouts in the existing renderer.
+    // Each unit keeps its own animated pivots and GPU meshes; identical figures
+    // reuse prepared LOCAL-space geometry instead of rebuilding hundreds of primitives.
+    this.figureTemplates=new Map();
+    this.figureBuildStats={templatesBuilt:0,templatesReused:0,originalMeshes:0,batchedMeshes:0,
+      buildMs:0,cloneMs:0,entriesCreated:0,entriesDisposed:0,entryBuildMs:0};
     this.materials={
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -197,7 +203,123 @@ export class UnitRenderer{
     return material;
   }
 
-  createFigure(unit,definition){
+  // FIGURE geometry belongs to UnitRenderer. This is a material/hinge-level
+  // assembly, NOT world-space MergeMeshes: Babylon animated parent transforms
+  // must never be baked into the final vertex coordinates.
+  figurePartGeometry(mesh,pivot){
+    const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices=mesh.getIndices();
+    const normals=mesh.getVerticesData(BABYLON.VertexBuffer.NormalKind);
+    const uvs=mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
+    if(!positions?.length||!indices?.length||indices.length%3!==0||!normals?.length)
+      throw new Error(`FIGURE geometry requires triangles and normals: ${mesh.name}`);
+    // Babylon uses local * parent for its matrices. Cancel the real pivot's
+    // world matrix, including any sturdy-build scaling or nested hand pivot.
+    const toPivot=mesh.computeWorldMatrix(true).multiply(pivot.computeWorldMatrix(true).clone().invert());
+    const normalTransform=toPivot.clone().invert().transpose();
+    const localPositions=[],localNormals=[];
+    for(let i=0;i<positions.length;i+=3){
+      const v=BABYLON.Vector3.TransformCoordinates(
+        new BABYLON.Vector3(positions[i],positions[i+1],positions[i+2]),toPivot);
+      localPositions.push(v.x,v.y,v.z);
+      const n=BABYLON.Vector3.TransformNormal(
+        new BABYLON.Vector3(normals[i],normals[i+1],normals[i+2]),normalTransform).normalize();
+      localNormals.push(n.x,n.y,n.z);
+    }
+    return{positions:localPositions,normals:localNormals,
+      uvs:uvs?.length===positions.length/3*2?Array.from(uvs):Array(positions.length/3*2).fill(0),
+      indices:Array.from(indices),mirrored:toPivot.determinant()<0};
+  }
+
+  figureLineLayout(mesh,pivot){
+    const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
+    const toPivot=mesh.computeWorldMatrix(true).multiply(pivot.computeWorldMatrix(true).clone().invert());
+    const points=[];
+    for(let i=0;i<positions.length;i+=3){
+      const p=BABYLON.Vector3.TransformCoordinates(
+        new BABYLON.Vector3(positions[i],positions[i+1],positions[i+2]),toPivot);
+      points.push([p.x,p.y,p.z]);
+    }
+    return{part:mesh.metadata.figurePart,points,
+      color:[mesh.color?.r??1,mesh.color?.g??1,mesh.color?.b??1]};
+  }
+
+  instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition){
+    const meshes=[];
+    for(let i=0;i<template.surfaces.length;i++){
+      const group=template.surfaces[i],pivot=figureParts[group.part]||root;
+      const mesh=new BABYLON.Mesh(`figure-batch-${group.part}-${i}-${unit.id}`,this.scene);
+      const data=new BABYLON.VertexData();
+      data.positions=group.positions;data.normals=group.normals;
+      data.uvs=group.uvs;data.indices=group.indices;
+      data.applyToMesh(mesh);
+      mesh.parent=pivot;mesh.material=materials[group.materialKey];
+      mesh.receiveShadows=group.receiveShadows;mesh.isPickable=false;
+      mesh.metadata={kind:"unit-part",unitId:unit.id,figurePart:group.part,
+        castShadow:group.castShadow,sourceMeshCount:group.sources};
+      meshes.push(mesh);
+    }
+    for(let i=0;i<template.lines.length;i++){
+      const item=template.lines[i];
+      const mesh=BABYLON.MeshBuilder.CreateLines(`figure-line-${i}-${unit.id}`,{
+        points:item.points.map(v=>new BABYLON.Vector3(v[0],v[1],v[2]))
+      },this.scene);
+      mesh.parent=figureParts[item.part]||root;
+      mesh.color=new BABYLON.Color3(...item.color);
+      mesh.isPickable=false;
+      mesh.metadata={kind:"unit-part",unitId:unit.id,figurePart:item.part,
+        castShadow:false,lineOnly:true};
+      meshes.push(mesh);
+    }
+    return{root,meshes,figureParts,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+  }
+
+  batchFigureParts(unit,signature,root,figureParts,meshes,materials,height,definition){
+    // Stable order comes from createFigure()'s own formal primitive builders.
+    // A batch shares a SINGLE animated pivot, material, and shadow policy.
+    // The original meshes are disposed only after the complete local geometry
+    // has been captured. Animated pivots and decorative line meshes survive.
+    const materialKeys=new Map(Object.entries(materials).map(([k,v])=>[v,k]));
+    const groups=[],byKey=new Map(),lines=[];
+    for(const mesh of meshes){
+      const part=mesh.metadata?.figurePart||"",pivot=figureParts[part]||root;
+      if(mesh.metadata?.lineOnly){lines.push(this.figureLineLayout(mesh,pivot));continue;}
+      const materialKey=materialKeys.get(mesh.material);
+      if(!materialKey)throw new Error(`FIGURE material not registered: ${mesh.name}`);
+      const geometry=this.figurePartGeometry(mesh,pivot);
+      const castShadow=mesh.metadata?.castShadow!==false,receiveShadows=mesh.receiveShadows!==false;
+      const key=JSON.stringify([part,materialKey,castShadow,receiveShadows]);
+      let group=byKey.get(key);
+      // Keep indices 16-bit safe on WebGL1 as well as WebGL2. Group split is
+      // determined by actual vertex count, not an arbitrary map/hero rule.
+      if(!group||group.positions.length/3+geometry.positions.length>65535){
+        group={part,materialKey,castShadow,receiveShadows,
+          positions:[],normals:[],uvs:[],indices:[],sources:0};
+        groups.push(group);byKey.set(key,group);
+      }
+      const base=group.positions.length/3;
+      group.positions.push(...geometry.positions);
+      group.normals.push(...geometry.normals);
+      group.uvs.push(...geometry.uvs);
+      if(geometry.mirrored){
+        for(let i=0;i<geometry.indices.length;i+=3)
+          group.indices.push(base+geometry.indices[i],base+geometry.indices[i+2],base+geometry.indices[i+1]);
+      }else for(const index of geometry.indices)group.indices.push(base+index);
+      group.sources++;
+    }
+    const template={surfaces:groups,lines};
+    // The first instance also uses the same creation contract as every later
+    // instance, so batching has no separate visual or animation implementation.
+    const entry=this.instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition);
+    for(const mesh of meshes)mesh.dispose(false,false);
+    this.figureTemplates.set(signature,template);
+    this.figureBuildStats.templatesBuilt++;
+    this.figureBuildStats.originalMeshes+=meshes.length;
+    this.figureBuildStats.batchedMeshes+=entry.meshes.length;
+    return entry;
+  }
+
+  createFigure(unit,definition,signature=this.visualSignature(unit,definition)){
     const figure=definition?.figure||{},colors=figure.colors||{};
     const height=Math.max(.8,Number(definition?.height||figure.height||UNIT_VISUAL_HEIGHT));
     const scale=height/1.74;
@@ -360,6 +482,15 @@ export class UnitRenderer{
     material.holy.emissiveColor=this.figureColor(colors.holyEmissive||colors.holy||"#ffd86a").scale(.92);
     material.holy.specularColor=this.figureColor(colors.holy||"#ffd86a");
 
+    const template=this.figureTemplates.get(signature);
+    if(template){
+      const start=performance.now();
+      const entry=this.instantiateFigureTemplate(unit,template,figureParts,root,material,height,definition);
+      this.figureBuildStats.templatesReused++;
+      this.figureBuildStats.cloneMs+=performance.now()-start;
+      return entry;
+    }
+    const geometryBuildStart=performance.now();
     const finish=(mesh,mat,pos=null,rotation=null,scaling=null,{castShadow=true,part=null}={})=>{
       const parent=part?figureParts[part]||root:root;
       const pivot=parent===root?[0,0,0]:parent.metadata?.figurePivot||[0,0,0];
@@ -1485,11 +1616,9 @@ export class UnitRenderer{
         [.280+i*.028,.690+i*.008,.122],[0,0,-.12],"rightArm");
     }
 
-    // Keep FIGURE parts under the character root. Merging child meshes that already
-    // inherit the root transform can bake parent/world transforms differently across
-    // WebGL implementations and make the whole figure disappear after re-parenting.
-    // The visual prototype stays unmerged until a parent-safe batching path is added.
-    return{root,meshes,figureParts,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+    const entry=this.batchFigureParts(unit,signature,root,figureParts,meshes,material,height,definition);
+    this.figureBuildStats.buildMs+=performance.now()-geometryBuildStart;
+    return entry;
   }
 
   createBird(unit,definition){
@@ -1641,11 +1770,12 @@ export class UnitRenderer{
   }
 
   createEntry(unit,definition,signature){
+    const entryStart=performance.now();
     const kind=String(definition?.kind||"CAPSULE").toUpperCase();
     const visual=kind==="BILLBOARD"
       ?this.createBillboard(unit,definition)
       :kind==="FIGURE"
-        ?this.createFigure(unit,definition)
+        ?this.createFigure(unit,definition,signature)
         :kind==="BIRD"
           ?this.createBird(unit,definition)
           :this.createCapsule(unit);
@@ -1658,6 +1788,8 @@ export class UnitRenderer{
     };
     this.entries.set(unit.id,entry);
     this.meshes.set(unit.id,entry.root);
+    this.figureBuildStats.entriesCreated++;
+    this.figureBuildStats.entryBuildMs+=performance.now()-entryStart;
     return entry;
   }
 
@@ -1670,6 +1802,7 @@ export class UnitRenderer{
     entry.facingMarker?.root?.dispose?.();
     entry.root?.dispose?.();
     this.entries.delete(id);
+    this.figureBuildStats.entriesDisposed++;
     this.meshes.delete(id);
     this.animationQueues.delete(id);
     this.activeAnimations.delete(id);
@@ -2393,6 +2526,9 @@ export class UnitRenderer{
       activeAnimations:this.activeAnimations.size,
       queuedAnimations:[...this.animationQueues.values()].reduce((n,q)=>n+q.length,0),
       animationDebug:this.animationDebug,
+      figureGeometry:{...this.figureBuildStats,cachedAppearances:this.figureTemplates.size,
+        averageEntryBuildMs:this.figureBuildStats.entriesCreated
+          ?this.figureBuildStats.entryBuildMs/this.figureBuildStats.entriesCreated:0},
       states
     };
   }
