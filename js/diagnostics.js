@@ -58,7 +58,7 @@ function store(force=false){
   lastStoredAt=ms;
   const record={schema:2,sessionId,startedAt:new Date(Date.now()-(performance.now()-started)).toISOString(),
     updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX),
-    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory};
+    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,gpu:gpuSnapshot()};
   return writeStorage(STORE_KEY,JSON.stringify(record));
 }
 function recordPerf(name,elapsed){
@@ -94,6 +94,122 @@ function recordPerf(name,elapsed){
   if(stat.samples>120){stat.samples=1;stat.totalMs=ms;stat.maxMs=stat.lastMs;}
 }
 function perfSnapshot(){return Object.fromEntries(Object.entries(perfCounters).map(([name,x])=>[name,{lastMs:x.lastMs,maxMs:x.maxMs,meanMs:Math.round(x.totalMs/Math.max(1,x.samples)*100)/100,samples:x.samples}]));}
+
+// Measure actual GPU command elapsed time when the WebGL timer-query extension
+// is exposed. Query submission is bounded to one sampled scene frame / 2 seconds;
+// readback is ASYNCHRONOUS. Never use gl.finish, readPixels, or CPU render time
+// as a GPU-time substitute. An unsupported iPhone reports UNSUPPORTED explicitly.
+class GpuTimeProbe{
+  constructor(scene,gl,version){
+    this.scene=scene;this.gl=gl;this.webglVersion=version;
+    this.extension=version>=2?"EXT_disjoint_timer_query_webgl2":"EXT_disjoint_timer_query";
+    this.ext=gl.getExtension(this.extension);
+    this.status=this.ext?"WAITING_FOR_SAMPLE":"UNSUPPORTED";
+    this.reason=this.ext?null:"TIMER_QUERY_EXTENSION_UNAVAILABLE";
+    this.samples=0;this.lastMs=null;this.maxMs=null;this.sumMs=0;
+    this.disjointCount=0;this.failureCount=0;this.timeoutCount=0;
+    this.nextSampleAt=0;this.current=null;
+    this.beginObserver=this.ext?scene.onBeforeRenderObservable.add(()=>this.begin()):null;
+    this.endObserver=this.ext?scene.onAfterRenderObservable.add(()=>this.end()):null;
+  }
+  makeQuery(){return this.webglVersion>=2?this.gl.createQuery():this.ext.createQueryEXT();}
+  deleteQuery(query){
+    if(!query)return;
+    if(this.gl.isContextLost?.())return;
+    if(this.webglVersion>=2)this.gl.deleteQuery(query);
+    else this.ext.deleteQueryEXT(query);
+  }
+  fail(error){
+    this.failureCount++;
+    this.reason=shorten(error?.message||error?.name||error,120);
+    this.status="ERROR";
+    if(this.current){try{this.deleteQuery(this.current.query);}catch(_){}this.current=null;}
+    // A broken or privacy-restricted timer extension should never burden frames.
+    if(this.failureCount>=3)this.detach();
+  }
+  begin(){
+    if(!enabled||document.visibilityState==="hidden"||this.current||performance.now()<this.nextSampleAt)return;
+    if(this.gl.isContextLost?.()){this.status="CONTEXT_LOST";return;}
+    const {gl,ext}=this;
+    try{
+      // Babylon or another module may already own a GPU timing query.
+      const active=this.webglVersion>=2?gl.getQuery(ext.TIME_ELAPSED_EXT,gl.CURRENT_QUERY):
+        ext.getQueryEXT(ext.TIME_ELAPSED_EXT,ext.CURRENT_QUERY_EXT);
+      if(active)return;
+      const query=this.makeQuery();if(!query)throw new Error("GPU_TIMER_QUERY_ALLOCATION_FAILED");
+      if(this.webglVersion>=2)gl.beginQuery(ext.TIME_ELAPSED_EXT,query);
+      else ext.beginQueryEXT(ext.TIME_ELAPSED_EXT,query);
+      this.current={query,ended:false,startedAt:performance.now()};
+      this.nextSampleAt=performance.now()+2000;
+    }catch(error){this.fail(error);}
+  }
+  end(){
+    const pending=this.current;if(!pending||pending.ended)return;
+    try{
+      if(this.webglVersion>=2)this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);
+      else this.ext.endQueryEXT(this.ext.TIME_ELAPSED_EXT);
+      pending.ended=true;
+    }catch(error){this.fail(error);}
+  }
+  poll(){
+    const p=this.current;if(!p||!p.ended)return;
+    if(this.gl.isContextLost?.()){this.current=null;this.status="CONTEXT_LOST";return;}
+    if(performance.now()-p.startedAt>10000){
+      this.timeoutCount++;this.status="TIMEOUT";
+      try{this.deleteQuery(p.query);}catch(_){}this.current=null;return;
+    }
+    try{
+      const gl=this.gl,ext=this.ext;
+      const ready=this.webglVersion>=2?gl.getQueryParameter(p.query,gl.QUERY_RESULT_AVAILABLE):
+        ext.getQueryObjectEXT(p.query,ext.QUERY_RESULT_AVAILABLE_EXT);
+      if(!ready)return;
+      const disjoint=!!gl.getParameter(ext.GPU_DISJOINT_EXT);
+      const nanoseconds=disjoint?null:(this.webglVersion>=2?gl.getQueryParameter(p.query,gl.QUERY_RESULT):
+        ext.getQueryObjectEXT(p.query,ext.QUERY_RESULT_EXT));
+      this.deleteQuery(p.query);this.current=null;
+      if(disjoint){this.disjointCount++;this.status="DISJOINT";return;}
+      const ms=Number(nanoseconds)/1e6;
+      if(!Number.isFinite(ms)||ms<0){this.fail("INVALID_GPU_TIME_RESULT");return;}
+      this.samples++;this.lastMs=Math.round(ms*100)/100;
+      this.maxMs=Math.max(this.maxMs??0,this.lastMs);this.sumMs+=ms;
+      this.status="AVAILABLE";this.reason=null;
+      recordPerf("scene.gpuElapsed",ms);
+    }catch(error){this.fail(error);}
+  }
+  snapshot(){return{
+    status:this.status,extension:this.extension,webglVersion:this.webglVersion,
+    reason:this.reason,scope:"SCENE_RENDER_COMMANDS",sampleIntervalMs:2000,
+    samples:this.samples,lastMs:this.lastMs,maxMs:this.maxMs,
+    meanMs:this.samples?Math.round(this.sumMs/this.samples*100)/100:null,
+    disjointCount:this.disjointCount,timeoutCount:this.timeoutCount,failureCount:this.failureCount,
+    gpuUtilizationPercent:null,gpuTemperatureC:null,gpuPowerWatts:null
+  };}
+  detach(){
+    if(this.beginObserver){this.scene.onBeforeRenderObservable.remove(this.beginObserver);this.beginObserver=null;}
+    if(this.endObserver){this.scene.onAfterRenderObservable.remove(this.endObserver);this.endObserver=null;}
+  }
+  dispose(){this.detach();if(this.current){try{this.deleteQuery(this.current.query);}catch(_){}this.current=null;}}
+}
+let gpuProbe=null,gpuSetupFailure=null;
+function ensureGpuProbe(){
+  const r=window.CardTacticsRenderer,scene=r?.scene,gl=r?.engine?._gl;
+  if(!scene||!gl)return;
+  if(gpuProbe?.scene===scene&&gpuProbe.gl===gl)return;
+  if(gpuSetupFailure?.scene===scene&&gpuSetupFailure.gl===gl)return;
+  gpuProbe?.dispose();gpuProbe=null;gpuSetupFailure=null;
+  try{
+    gpuProbe=new GpuTimeProbe(scene,gl,Number(r.engine.webGLVersion)||1);
+    push("GPU_TIMING_CAPABILITY",{status:gpuProbe.status,extension:gpuProbe.extension,
+      webglVersion:gpuProbe.webglVersion,reason:gpuProbe.reason});
+  }catch(error){
+    gpuSetupFailure={scene,gl,reason:shorten(error?.message||error,120)};
+    push("GPU_TIMING_SETUP_FAILED",errorData(error));
+  }
+}
+function gpuSnapshot(){return gpuProbe?.snapshot()||{
+  status:gpuSetupFailure?"ERROR":enabled?"NOT_INITIALIZED":"DISABLED",
+  reason:gpuSetupFailure?.reason||"RENDERER_NOT_READY",
+  gpuUtilizationPercent:null,gpuTemperatureC:null,gpuPowerWatts:null};}
 function push(type,data={}){
   if(!enabled&&type!=="ERROR"&&type!=="REJECTION")return;
   // Every entry stays compact so keeping the prior session is safe on iPhone.
@@ -163,7 +279,10 @@ function gameAction(type,data={}){
 window.addEventListener("error",e=>push("ERROR",{message:shorten(e.message,800),file:shorten(e.filename,260),line:e.lineno,column:e.colno,...errorData(e.error)}));
 window.addEventListener("unhandledrejection",e=>push("REJECTION",errorData(e.reason)));
 document.addEventListener("webglcontextlost",e=>{push("WEBGL_CONTEXT_LOST",{canvas:e.target?.id||null});store(true);},true);
-document.addEventListener("webglcontextrestored",e=>push("WEBGL_CONTEXT_RESTORED",{canvas:e.target?.id||null}),true);
+document.addEventListener("webglcontextrestored",e=>{
+  gpuProbe?.dispose();gpuProbe=null;gpuSetupFailure=null;
+  push("WEBGL_CONTEXT_RESTORED",{canvas:e.target?.id||null});
+},true);
 window.addEventListener("cardtactics:log",e=>gameLog(e.detail));
 window.addEventListener("cardtactics:state",()=>checkPhase());
 window.addEventListener("cardtactics:battle-render",()=>checkPhase());
@@ -171,6 +290,10 @@ window.addEventListener("cardtactics:battle-render",()=>checkPhase());
 function frame(t){
   frames++;
   if(t-lastFpsAt>=1000){fps=Math.round(frames*1000/(t-lastFpsAt));frames=0;lastFpsAt=t;}
+  if(enabled&&document.visibilityState!=="hidden"){
+    ensureGpuProbe();
+    gpuProbe?.poll();
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -235,6 +358,7 @@ function checkpoint(){
     // Cached geometry audit: O(1) between actual surface rebuilds. Its
     // "open boundary" count includes legitimate shorelines, not just cracks.
     waterSeams:visual?.water?.waterSeamDiagnostics?.()??null,
+    gpu:gpuSnapshot(),
     lighting:{sourceTypes:lightTypes,physicalLights:visual?.environment?.physicalLightsById?.size??null,sourceIds:lightSources.filter(source=>source?.source==="CORE_LIGHT"||source?.source==="CAPTURE_LIGHT").slice(0,12).map(source=>`${source.source}:${source.sourceId??"unknown"}`)},
     scene:scene?{meshes:scene.meshes?.length??null,materials:scene.materials?.length??null,textures:scene.textures?.length??null,lights:scene.lights?.length??null,activeMeshes:scene.getActiveMeshes?.()?.length??null}:null,
      performance:perfSnapshot(),
@@ -350,7 +474,7 @@ function sample(){
         }
       }
     }
-    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,waterSeams:sample.waterSeams,lighting:sample.lighting,scene:sample.scene,performance:sample.performance,heap:sample.heap});}
+    if(Date.now()-lastSampleAt>=12000){lastSampleAt=Date.now();push("CHECKPOINT",{round:sample.round,environmentSteps:sample.environmentSteps,weather:sample.weather,timeOfDay:sample.timeOfDay,fps:sample.fps,hydrology:sample.hydrology,waterSeams:sample.waterSeams,lighting:sample.lighting,scene:sample.scene,gpu:sample.gpu,performance:sample.performance,heap:sample.heap});}
     store();
   }catch(err){push("DIAGNOSTICS_SAMPLE_FAILED",errorData(err));}
 }
@@ -371,7 +495,7 @@ setInterval(()=>{sample();store();},5000);
 function report(){
   const data={generatedAt:now(),userAgent:navigator.userAgent,enabled,sessionId,
     uptimeSeconds:Math.round((performance.now()-started)/1000),fps,
-    runtime:runtime(),renderer:renderer(),memory:memory(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
+    runtime:runtime(),renderer:renderer(),memory:memory(),gpu:gpuSnapshot(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
     roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,
     battleLog:{count:window.CardTacticsRuntime?.getBattleLog?.()?.entries?.length??null,max:window.BattleLog?.MAX_ENTRIES??null},
     presentation:audit(),storageWarning:storageWarning||null,
@@ -391,6 +515,7 @@ function clear(){events.length=0;roundHistory.length=0;tileAnnotations.length=0;
   for(const key of Object.keys(spikeNotifiedAt))delete spikeNotifiedAt[key];
   lastEvidence=null;lastWaterSeamWarningKey="";lastWaterSeamCaptureAt=0;previousSession=null;previousStatus="";recoveredIncident=null;
   lastCheckpoint=null;lastWater=null;lastClimateKey="";lastSampleAt=0;lastSavedWaterLog=0;
+  if(gpuProbe){gpuProbe.samples=0;gpuProbe.lastMs=null;gpuProbe.maxMs=null;gpuProbe.sumMs=0;gpuProbe.disjointCount=0;gpuProbe.timeoutCount=0;gpuProbe.failureCount=0;}
   removeStorage(STORE_KEY);removeStorage(INCIDENT_KEY);if(enabled)store(true);}
 function mount(){
   const panel=document.querySelector("#settingsScreen .settings-panel");
@@ -403,26 +528,10 @@ function mount(){
     <details><summary>查看最近事件與上次紀錄</summary><pre id="diagnosticsTimeline" style="max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
     <div class="diagnostics-actions"><button id="diagnosticsCapture" type="button">擷取當下渲染現場（不截圖）</button><button id="diagnosticsCopy" type="button">複製診斷報告（含上次紀錄）</button><button id="diagnosticsClear" type="button">清除紀錄</button></div>`;
   panel.appendChild(box);
-  // Keep the capture action accessible WHILE the damaged battlefield is on
-  // screen; navigating to Settings would destroy the evidence on some flows.
-  const battleRail=document.querySelector("#battleScreen .battle-right-rail");
-  let battleCapture=document.getElementById("diagnosticsCaptureBattle");
-  if(battleRail&&!battleCapture){
-    battleCapture=document.createElement("button");
-    battleCapture.id="diagnosticsCaptureBattle";
-    battleCapture.type="button";
-    battleCapture.textContent="LOG";
-    battleCapture.title="擷取當下畫面診斷（不截圖、不重建場景）";
-    battleCapture.hidden=!enabled;
-    battleCapture.onclick=()=>{
-      const evidence=capture("BATTLE_VISUAL");
-      battleCapture.title=evidence?"現場已保留，請至設定複製診斷報告":"擷取失敗，請確認診斷已啟用";
-    };
-    battleRail.insertBefore(battleCapture,battleRail.querySelector("#endTurn")||null);
-  }
+  // BattleUI owns the single LOG button; Diagnostics capture stays in Settings.
   const toggle=box.querySelector("#diagnosticsToggle"),summary=box.querySelector("#diagnosticsSummary"),timeline=box.querySelector("#diagnosticsTimeline"),copyBtn=box.querySelector("#diagnosticsCopy");
   toggle.checked=enabled;
-  toggle.onchange=()=>{enabled=toggle.checked;writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);if(battleCapture)battleCapture.hidden=!enabled;refresh();};
+  toggle.onchange=()=>{enabled=toggle.checked;writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);refresh();};
   box.querySelector("#diagnosticsClear").onclick=()=>{clear();refresh();};
   box.querySelector("#diagnosticsCapture").onclick=()=>{
     const evidence=capture("SETTINGS_VISUAL");
@@ -440,6 +549,7 @@ function mount(){
       c?`水文 D ${c.hydrology.storedD}｜濕格 ${c.hydrology.wetTiles}｜最大深度 ${c.hydrology.maxDepth}｜雪 ${c.hydrology.snow}`:"",
       c?.scene?`Babylon meshes ${c.scene.meshes}｜materials ${c.scene.materials}｜textures ${c.scene.textures}｜lights ${c.scene.lights}｜physical ${c.lighting?.physicalLights??"-"}`:"",
       v?.performance?`最近每幀 Draw Calls ≈ ${v.performance.drawCallsPerFrame??"無可靠資料"}｜渲染 ${v.performance.renderMeanMs??"-"} ms` :"",
+      `GPU 計時 ${gpuSnapshot().status}｜${gpuSnapshot().lastMs??"—"} ms（每 2 秒採樣；不可讀取使用率／溫度／功率）`,
       `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類｜問題格取證 ${tileAnnotations.length} 組`,
       c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜疑似缺水邊 ${c.waterSeams.internalBoundaries?.internalMissingSurfaceEdges??"-"}｜幾何警訊 ${c.waterSeams.warningCount}`:"",
       lastEvidence?`視覺現場：${lastEvidence.at}（${lastEvidence.label}）`:"尚未手動擷取視覺現場",

@@ -44,7 +44,16 @@ export class BattleInputController{
   }
 
   install(){
+    // The canvas owns tactical gestures. Safari's text-selection/callout
+    // recognizers must not steal a stationary touch from the existing HUD hold.
+    // Scope this only to the battlefield surface; collection, deck and log text
+    // elsewhere remains normally selectable.
     this.canvas.style.touchAction="none";
+    this.canvas.style.webkitTouchCallout="none";
+    this.canvas.style.webkitUserSelect="none";
+    this.canvas.style.userSelect="none";
+    this.onNativeContextMenu=event=>event.preventDefault();
+    this.onNativeSelectStart=event=>event.preventDefault();
     this.onPointerDown=event=>{
       const touch=event.pointerType==="touch";
       const panPointer=touch||event.button===0;
@@ -146,6 +155,8 @@ export class BattleInputController{
     this.canvas.addEventListener("pointercancel",this.onPointerCancel);
     this.canvas.addEventListener("lostpointercapture",this.onLostPointerCapture);
     this.canvas.addEventListener("wheel",this.onWheel,{passive:false});
+    this.canvas.addEventListener("contextmenu",this.onNativeContextMenu);
+    this.canvas.addEventListener("selectstart",this.onNativeSelectStart);
     window.addEventListener("pointerup",this.onOutsidePointerUp);
     window.addEventListener("pointercancel",this.onPointerCancel);
     window.addEventListener("blur",this.onInterrupted);
@@ -165,6 +176,8 @@ export class BattleInputController{
     this.canvas.removeEventListener("pointercancel",this.onPointerCancel);
     this.canvas.removeEventListener("lostpointercapture",this.onLostPointerCapture);
     this.canvas.removeEventListener("wheel",this.onWheel);
+    this.canvas.removeEventListener("contextmenu",this.onNativeContextMenu);
+    this.canvas.removeEventListener("selectstart",this.onNativeSelectStart);
     window.removeEventListener("pointerup",this.onOutsidePointerUp);
     window.removeEventListener("pointercancel",this.onPointerCancel);
     window.removeEventListener("blur",this.onInterrupted);
