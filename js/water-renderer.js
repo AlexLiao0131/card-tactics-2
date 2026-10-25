@@ -109,7 +109,7 @@ export class WaterRenderer{
     // contract: the exact published polygons, conservative Dirty halo, local
     // source field, and component-wide turbidity. Shared vertex interning is
     // still performed by addVertex in its original stable order.
-    this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,elapsedMs:0};
+    this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,topologyVerifiedFacesReused:0,elapsedMs:0};
     this.publishedSurfaceSourcesSignature=null;
     this.publishedWaterGeometryRevision=0;
     this.levelSamples=null;
@@ -1155,22 +1155,26 @@ export class WaterRenderer{
     // T-junction necessarily changes one of those cells, invalidating this face.
     // We store coordinate identities, not old indices: preceding tiles are free
     // to add/remove vertices without invalidating an otherwise exact face.
-    const positionKeys=renderPoints.map(p=>`${p.x}:${p.y}:${p.z}`);
-    const indicesByPosition=new Map();
-    for(let i=0;i<positionKeys.length;i++){
-      const k=positionKeys[i];
-      if(indicesByPosition.has(k))indicesByPosition.set(k,null);
-      else indicesByPosition.set(k,i);
+    // The wet footprint and the conforming triangle connection are horizontal
+    // topology. Water heights are vertex positions, NOT triangle identity.
+    // Keep exact float32 X/Z (no rounding) and refuse ambiguous X/Z aliases;
+    // different-height layers must use the full 3D conforming builder.
+    const footprintKeys=renderPoints.map(p=>`${p.x}:${p.z}`);
+    const indexByFootprint=new Map();
+    for(let i=0;i<footprintKeys.length;i++){
+      const key=footprintKeys[i];
+      if(indexByFootprint.has(key))indexByFootprint.set(key,null);
+      else indexByFootprint.set(key,i);
     }
     const cellSignatures=new Map();
     for(const [id,ids] of buckets)
-      cellSignatures.set(id,JSON.stringify(ids.map(i=>positionKeys[i]).sort()));
+      cellSignatures.set(id,JSON.stringify(ids.map(i=>footprintKeys[i]).sort()));
     const nextFaces=new Map(),ownerOrdinals=new Map();
-    let reusedFaces=0,recomputedFaces=0;
+    let reusedFaces=0,recomputedFaces=0,topologyVerifiedFacesReused=0;
     const triangulationStart=performance.now();
     const faceSignature=face=>{
       const points=face.map(index=>renderPoints[index]);
-      const maxCoordinate=Math.max(1,...points.flatMap(p=>[Math.abs(p.x),Math.abs(p.y),Math.abs(p.z)]));
+      const maxCoordinate=Math.max(1,...points.flatMap(p=>[Math.abs(p.x),Math.abs(p.z)]));
       const tolerance=Math.max(.00001,2*Math.pow(2,-23)*maxCoordinate);
       const minX=Math.floor((Math.min(...points.map(p=>p.x))-tolerance)/cellSize);
       const maxX=Math.floor((Math.max(...points.map(p=>p.x))+tolerance)/cellSize);
@@ -1183,44 +1187,57 @@ export class WaterRenderer{
         const k=`${x}:${z}`,signature=cellSignatures.get(k);
         if(signature!==undefined)cells.push([k,signature]);
       }
-      return JSON.stringify([face.map(i=>positionKeys[i]),cells]);
+      return JSON.stringify([face.map(i=>footprintKeys[i]),cells]);
     };
     // The spacing is governed by the float32 render buffer and the existing
     // five-decimal canonical water-coordinate registry, not an artistic tuning
     // parameter. Any vertices with genuinely different Y stay separate.
     const renderTolerance=(...values)=>Math.max(0.00001,
       2*Math.pow(2,-23)*Math.max(1,...values.map(v=>Math.abs(v))));
-    const edgeVertices=(a,b)=>{
+    const edgeVertices=(a,b,priorCandidates=null)=>{
       const id=a<b?`${a}:${b}`:`${b}:${a}`;
       const cached=edgeSplits.get(id);
-      if(cached)return a<b?cached:[...cached].reverse();
+      if(cached)return a<b?cached:{ids:[...cached.ids].reverse(),candidates:cached.candidates};
       const u=a<b?a:b,v=a<b?b:a;
       const A=renderPoints[u],B=renderPoints[v],dx=B.x-A.x,dz=B.z-A.z;
       const len2=dx*dx+dz*dz;
-      const result=[{index:u,t:0},{index:v,t:1}];
+      const result=[{index:u,t:0},{index:v,t:1}],candidates=[];
       if(len2>0){
         const spatial=renderTolerance(A.x,A.z,B.x,B.z),vertical=renderTolerance(A.y,B.y);
-        const minX=Math.floor((Math.min(A.x,B.x)-spatial)/cellSize);
-        const maxX=Math.floor((Math.max(A.x,B.x)+spatial)/cellSize);
-        const minZ=Math.floor((Math.min(A.z,B.z)-spatial)/cellSize);
-        const maxZ=Math.floor((Math.max(A.z,B.z)+spatial)/cellSize);
-        const seen=new Set([u,v]);
-        for(let ix=minX;ix<=maxX;ix++)for(let iz=minZ;iz<=maxZ;iz++){
-          for(const candidate of buckets.get(`${ix}:${iz}`)||[]){
-            if(seen.has(candidate))continue;
-            seen.add(candidate);
-            const P=renderPoints[candidate],px=P.x-A.x,pz=P.z-A.z;
-            const t=(px*dx+pz*dz)/len2;
-            if(t<=0||t>=1)continue;
-            if(Math.hypot(px-dx*t,pz-dz*t)>spatial)continue;
-            if(Math.abs(P.y-(A.y+(B.y-A.y)*t))>vertical)continue;
-            result.push({index:candidate,t});
+        const qualifies=index=>{
+          if(index===u||index===v)return;
+          const P=renderPoints[index],px=P.x-A.x,pz=P.z-A.z;
+          const t=(px*dx+pz*dz)/len2;
+          if(t<=0||t>=1||Math.hypot(px-dx*t,pz-dz*t)>spatial)return;
+          // All X/Z candidates are saved, not just those currently coplanar.
+          // A future change in water height can create or remove a T-junction.
+          candidates.push(footprintKeys[index]);
+          if(Math.abs(P.y-(A.y+(B.y-A.y)*t))<=vertical)
+            result.push({index,t});
+        };
+        // Unchanged exact X/Z surroundings have the SAME candidates. Recheck
+        // their CURRENT Y collinearity without repeating the tile-bucket scan.
+        // If any horizontal key is ambiguous, fall through to the full solver.
+        const validPrior=Array.isArray(priorCandidates)&&
+          priorCandidates.every(key=>indexByFootprint.get(key)!=null);
+        if(validPrior){
+          for(const key of priorCandidates)qualifies(indexByFootprint.get(key));
+        }else{
+          const minX=Math.floor((Math.min(A.x,B.x)-spatial)/cellSize);
+          const maxX=Math.floor((Math.max(A.x,B.x)+spatial)/cellSize);
+          const minZ=Math.floor((Math.min(A.z,B.z)-spatial)/cellSize);
+          const maxZ=Math.floor((Math.max(A.z,B.z)+spatial)/cellSize);
+          const seen=new Set([u,v]);
+          for(let ix=minX;ix<=maxX;ix++)for(let iz=minZ;iz<=maxZ;iz++){
+            for(const index of buckets.get(`${ix}:${iz}`)||[]){
+              if(seen.has(index))continue;
+              seen.add(index);
+              qualifies(index);
+            }
           }
         }
       }
       result.sort((a,b)=>a.t-b.t||a.index-b.index);
-      // A canonical vertex can have aliases at a shared edge. Retain only
-      // one representative of each float32-renderable XYZ position.
       const unique=[];
       for(const item of result){
         const previous=unique.at(-1),P=renderPoints[item.index];
@@ -1232,8 +1249,9 @@ export class WaterRenderer{
       }
       const ids=unique.map(v=>v.index);
       if(ids.length>2){splitEdges++;insertedEdgeVertices+=ids.length-2;}
-      edgeSplits.set(id,ids);
-      return a<b?ids:[...ids].reverse();
+      const record={ids,candidates};
+      edgeSplits.set(id,record);
+      return a<b?record:{ids:[...ids].reverse(),candidates};
     };
     let sourcePolygons=0;
     const tileIndexRanges=new Map();
@@ -1248,30 +1266,36 @@ export class WaterRenderer{
       const faceId=JSON.stringify([owner,ordinal]);
       const signature=faceSignature(face);
       const old=priorFaces?.get(faceId);
-      // Duplicate float32 XYZ vertices may carry different D/Q ownership and
-      // attributes. Avoid remapping them through a non-unique coordinate key.
-      const stable=keys=>keys.every(k=>indicesByPosition.get(k)!=null);
-      const reuse=old?.signature===signature&&stable(old.vertices);
+      // The edge solver is still authoritative: recompute the CURRENT exact
+      // float32 3D collinearity for every edge. A new/removed T-junction or
+      // changed vertical contact invalidates the cached triangles even if
+      // their X/Z footprints are identical. No guessed water-level tolerance.
+      const mayReuseCandidates=old?.footprintTopology===true&&old.signature===signature;
+      const edges=face.map((index,i)=>
+        edgeVertices(index,face[(i+1)%face.length],
+          mayReuseCandidates?old.edges?.[i]?.candidates:null));
+      const edgeChains=edges.map((edge,i)=>({edge:i,
+        vertices:edge.ids.map(id=>footprintKeys[id]),candidates:edge.candidates}));
+      // A pair of surfaces at the same X/Z but different Y is ambiguous.
+      // Reuse only when all cached triangle AND edge vertices map uniquely.
+      const stable=keys=>keys.every(key=>indexByFootprint.get(key)!=null);
+      const sameEdges=old?.edges?.length===edgeChains.length&&
+        old.edges.every((prior,i)=>prior.vertices.length===edgeChains[i].vertices.length&&
+          prior.vertices.every((key,j)=>key===edgeChains[i].vertices[j]));
+      const reuse=old?.footprintTopology===true&&old.signature===signature&&
+        stable(old.vertices)&&sameEdges;
       if(reuse){
-        for(const chain of old.edges){
-          const a=face[chain.edge],b=face[(chain.edge+1)%face.length];
-          const id=a<b?`${a}:${b}`:`${b}:${a}`;
-          if(edgeSplits.has(id))continue;
-          const ids=chain.vertices.map(k=>indicesByPosition.get(k));
-          const canonical=a<b?ids:[...ids].reverse();
-          edgeSplits.set(id,canonical);
-          if(ids.length>2){splitEdges++;insertedEdgeVertices+=ids.length-2;}
-        }
-        for(const position of old.triangles)
-          out.indices.push(indicesByPosition.get(position));
+        for(const point of old.triangles)
+          out.indices.push(indexByFootprint.get(point));
         nextFaces.set(faceId,old);
         reusedFaces++;
+        // An elevation-only edit is a valid topology cache hit. The original
+        // Babylon vertex/normal uploader below still submits the NEW heights.
+        topologyVerifiedFacesReused++;
       }else{
         const boundary=[];
-        const edgeChains=[];
-        for(let i=0;i<face.length;i++){
-          const chain=edgeVertices(face[i],face[(i+1)%face.length]);
-          edgeChains.push({edge:i,vertices:chain.map(id=>positionKeys[id])});
+        for(let i=0;i<edges.length;i++){
+          const chain=edges[i].ids;
           for(let j=0;j<chain.length-1;j++){
             if(boundary.at(-1)!==chain[j])boundary.push(chain[j]);
           }
@@ -1304,8 +1328,8 @@ export class WaterRenderer{
           }
           if(boundary.length===3)this.pushTriangle(out,boundary[0],boundary[1],boundary[2]);
         }
-        const triangleKeys=out.indices.slice(indexStart).map(id=>positionKeys[id]);
-        nextFaces.set(faceId,{signature,edges:edgeChains,triangles:triangleKeys,
+        const triangleKeys=out.indices.slice(indexStart).map(id=>footprintKeys[id]);
+        nextFaces.set(faceId,{footprintTopology:true,signature,edges:edgeChains,triangles:triangleKeys,
           vertices:[...new Set([...triangleKeys,...edgeChains.flatMap(e=>e.vertices)])]});
         recomputedFaces++;
       }
@@ -1317,11 +1341,12 @@ export class WaterRenderer{
     }
     if(this.surfaceTriangulationStats){
       this.surfaceTriangulationStats.reusedFaces+=reusedFaces;
+      this.surfaceTriangulationStats.topologyVerifiedFacesReused+=topologyVerifiedFacesReused;
       this.surfaceTriangulationStats.recomputedFaces+=recomputedFaces;
       this.surfaceTriangulationStats.elapsedMs+=performance.now()-triangulationStart;
     }
     return{sourcePolygons,splitEdges,insertedEdgeVertices,tileIndexRanges,
-      reusedFaces,recomputedFaces,faceCache:nextFaces};
+      reusedFaces,recomputedFaces,topologyVerifiedFacesReused,faceCache:nextFaces};
   }
 
   // The published rugged cliff shoulder extends outside its owning tile.
@@ -2575,15 +2600,31 @@ export class WaterRenderer{
   // shoreline point; Q/D handoff can sample that neighbour once more.
   // A two-cell Chebyshev halo therefore conservatively includes every source
   // input, even across an irregular cliff or wet/dry boundary.
-  changedSurfaceTileKeys(next){
+  changedSurfaceTileKeys(next,{geometryOnly=false}={}){
     const changed=new Set(),previous=this.surfaceTileInputSignatures;
+    // One exact snapshot dependency contract feeds two distinct consumers:
+    // polygon clipping needs physical height/Q/terrain, while mesh attributes
+    // also need flow direction, colour turbidity and visibility. Do not turn a
+    // pure shader/visibility edit into a 25-tile waterline re-clipping job.
+    // These are the indices in surfaceTileInputs(), NOT rounded simulations.
+    const attributesOnly=new Set([6,7,16,20]);
+    const affectsGeometry=(before,after)=>{
+      if(before===after)return false;
+      if(!geometryOnly||before===undefined)return true;
+      const old=JSON.parse(before),current=JSON.parse(after);
+      return old.some((value,i)=>!attributesOnly.has(i)&&
+        JSON.stringify(value)!==JSON.stringify(current[i]));
+    };
     const mark=key=>{
       const [x,y]=key.split(",").map(Number);
       if(!Number.isFinite(x)||!Number.isFinite(y))return;
+      // Waterline sampling really depends on neighbours up to two cells out.
+      // Keep that physical dependency, but only for true polygon inputs.
       for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++)
         changed.add(keyOf(x+dx,y+dy));
     };
-    for(const [key,signature] of next)if(previous.get(key)!==signature)mark(key);
+    for(const [key,signature] of next)
+      if(affectsGeometry(previous.get(key),signature))mark(key);
     for(const key of previous.keys())if(!next.has(key))mark(key);
     return changed;
   }
@@ -2836,11 +2877,18 @@ export class WaterRenderer{
       // A reset/cleared scene must perform a complete first solve.
       const dirtyKeys=this.surfaceSignature
         ?this.changedSurfaceTileKeys(nextTileInputs):new Set(tiles.map(tile=>keyOf(tile.x,tile.y)));
+      // The resolver only re-clips a polygon when real wet-footprint inputs
+      // changed; flow directions, fog and turbidity update the existing mesh.
+      const polygonDirtyKeys=this.surfaceSignature
+        ?this.changedSurfaceTileKeys(nextTileInputs,{geometryOnly:true}):dirtyKeys;
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
         (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap),
-        {previous:previousPresentation,dirtyKeys,previousNetwork:oldNetwork});
+        {previous:previousPresentation,dirtyKeys:polygonDirtyKeys,previousNetwork:oldNetwork});
       const resolvedTiles=tiles.filter(tile=>dirtyKeys.has(keyOf(tile.x,tile.y))).length;
-      this.surfaceSolveStats={totalTiles:tiles.length,resolvedTiles,reusedTiles:tiles.length-resolvedTiles};
+      const polygonResolvedTiles=tiles.filter(tile=>polygonDirtyKeys.has(keyOf(tile.x,tile.y))).length;
+      this.surfaceSolveStats={totalTiles:tiles.length,resolvedTiles,
+        polygonResolvedTiles,reusedTiles:tiles.length-resolvedTiles,
+        polygonReusedTiles:tiles.length-polygonResolvedTiles};
       const meshReasons={newComponent:0,changedGeometryOrShader:0,reused:0,disposed:0};
       this.surfaceTileInputSignatures=nextTileInputs;
       this.surfacePresentation=presentation;
@@ -2862,7 +2910,7 @@ export class WaterRenderer{
       const previousComponentGeometryVersions=this.surfaceComponentGeometryVersions;
       const previousPolygonTriangulations=this.surfacePolygonTriangulations;
       const sourcesChanged=this.publishedSurfaceSourcesSignature!==activeSourceSignature;
-      const clipReuse={dirtyKeys,previous:this.surfaceTileOwnedPolygons,next:new Map(),
+      const clipReuse={dirtyKeys:polygonDirtyKeys,previous:this.surfaceTileOwnedPolygons,next:new Map(),
         metrics:{tilesClippingReused:0,tilesClippingRecomputed:0}};
       // Tile clipping and vertex samples share one immutable owner record and
       // one invalidation lifecycle: no layered or competing tile caches.
@@ -2930,7 +2978,7 @@ export class WaterRenderer{
       this.surfaceComponentSourceSignatures=new Map();
       this.surfaceComponentGeometryVersions=new Map();
       this.surfacePolygonTriangulations=new Map();
-      this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,elapsedMs:0};
+      this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,topologyVerifiedFacesReused:0,elapsedMs:0};
       this.surfaceTileOwnedPolygons=clipReuse.next;
       this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
@@ -3017,6 +3065,7 @@ export class WaterRenderer{
       this.publishedSurfaceSourcesSignature=activeSourceSignature;
       this.surfaceRebuildDetail={revision:this.seamAuditRevision,at:new Date().toISOString(),
         totalTiles:tiles.length,dirtyTiles:resolvedTiles,reusedTileResults:tiles.length-resolvedTiles,
+        polygonDirtyTiles:polygonResolvedTiles,polygonReusedTiles:tiles.length-polygonResolvedTiles,
         publishedWaterTiles:presentation.size,inputReasons,meshReasons,
         unchangedComponentsSkipped,componentsInspected:components.length-unchangedComponentsSkipped,
         unrelatedSourceUpdatesSkipped,
@@ -3027,6 +3076,7 @@ export class WaterRenderer{
         vertexSamplesEvaluated:vertexReuse.metrics.verticesEvaluated,
         vertexSampleCacheMs:Number(vertexReuse.metrics.elapsedMs.toFixed(2)),
         triangulationFacesReused:this.surfaceTriangulationStats.reusedFaces,
+        topologyVerifiedFacesReused:this.surfaceTriangulationStats.topologyVerifiedFacesReused,
         triangulationFacesRecomputed:this.surfaceTriangulationStats.recomputedFaces,
         triangulationMs:Number(this.surfaceTriangulationStats.elapsedMs.toFixed(2)),
         surfaceSolveMs:Number((buildStart-solveStart).toFixed(2)),
