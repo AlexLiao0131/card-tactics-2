@@ -69,13 +69,10 @@ try{
   loadingStep="battle-test-console.js";
   await load("./battle-test-console.js");
 
-  // Runtime currently emits both battle-render and generic state notifications for
-  // many actions. Observe every snapshot so animation deltas are not lost, but
-  // collapse the expensive Babylon/UI synchronization to one pass per browser frame.
-  const requestFrame=window.requestAnimationFrame
-    ?window.requestAnimationFrame.bind(window)
-    :callback=>setTimeout(callback,16);
-  let pendingFrame=0,pendingSnapshot=null,pendingAnimationEvents=[],lastObservedSnapshot=renderer.lastState;
+  // Battle state and Babylon presentation have ONE render frame owner. Collect
+  // every animation delta on the existing runtime events, then commit the latest
+  // snapshot immediately before Babylon draws that frame. No second RAF path.
+  let pendingSnapshot=null,pendingAnimationEvents=[],lastObservedSnapshot=renderer.lastState;
 
   function observeSnapshot(){
     const snap=runtime.getBattleSnapshot(),prev=lastObservedSnapshot;
@@ -89,17 +86,18 @@ try{
   }
 
   function flushSync(){
-    pendingFrame=0;
-    const snap=pendingSnapshot||runtime.getBattleSnapshot(),events=pendingAnimationEvents;
+    if(!pendingSnapshot){renderer.presentationFrameSync=null;return;}
+    const snap=pendingSnapshot,events=pendingAnimationEvents;
     pendingSnapshot=null;pendingAnimationEvents=[];
-    renderer.sync(snap,events);
-    battleUI.render();
+    // Release the on-demand callback only if no new snapshot arrived during
+    // publication. That preserves reentrant runtime events without another RAF.
+    try{renderer.sync(snap,events);battleUI.render();}
+    finally{if(!pendingSnapshot)renderer.presentationFrameSync=null;}
   }
 
   function scheduleSync(){
     observeSnapshot();
-    if(pendingFrame)return;
-    pendingFrame=requestFrame(flushSync);
+    renderer.presentationFrameSync=flushSync;
   }
 
   window.addEventListener("cardtactics:battle-render",scheduleSync);
@@ -107,6 +105,8 @@ try{
   window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();scheduleSync()});
   observeSnapshot();
   flushSync();
+  // Future snapshots are consumed by the scene-render loop before its shadow
+  // and colour passes, using the same DOM and geometry publication event.
 }catch(error){
   const name=error?.name||"Error",message=error?.message||String(error);
   if(bootStatus){

@@ -169,6 +169,11 @@ export class BabylonRenderer{
     this.lastDrawCallsCounter=null;
     this.engine.runRenderLoop(()=>{
       const frameStart=performance.now();
+      // The one Babylon render clock also owns snapshot -> scene publication.
+      // This prevents a separate UI requestAnimationFrame from drawing stale
+      // terrain, water or character versions on the previous/next GPU frame.
+      if(this.presentationFrameSync)
+        this.syncSubsystem("presentationFrameSync",()=>this.presentationFrameSync());
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
@@ -567,25 +572,32 @@ export class BabylonRenderer{
       cliffGeometryVersion:this.terrain.surfaceResolver.renderedCliffGeometryRevision
     });
     const before=owners();
+    const failedStages=[];
+    // One ordered synchronous publication cycle; only a completely successful
+    // cycle may advance the committed revision. Consumers keep the existing
+    // terrain -> water -> environment geometry authority.
+    const publish=(name,action)=>{
+      if(!this.syncSubsystem(name,action))failedStages.push(name);
+    };
     this.lastState=state;
     this.syncVisualTimeTarget(state);
-    this.syncSubsystem("sky",()=>this.syncSky(state));
-    this.syncSubsystem("lighting",()=>this.syncLighting(state));
+    publish("sky",()=>this.syncSky(state));
+    publish("lighting",()=>this.syncLighting(state));
 
     // Interaction picking is independent of the visual surface, so it remains
     // available even if an optional material or effect fails to update.
-    this.syncSubsystem("camera",()=>this.camera.sync(state));
-    this.syncSubsystem("picker",()=>this.picker.sync(state));
+    publish("camera",()=>this.camera.sync(state));
+    publish("picker",()=>this.picker.sync(state));
 
     // Publish visual geometry before consumers. The terrain triangles are the
     // height authority for water, environment covers, objectives and tactical
     // indicators; a before-render retry would duplicate an update path.
-    this.syncSubsystem("terrain",()=>this.terrain.sync(state));
-    this.syncSubsystem("water",()=>this.water.sync(state,presentationEvents));
-    this.syncSubsystem("mapObjects",()=>this.mapObjects.sync(state));
-    this.syncSubsystem("units",()=>this.units.sync(state,presentationEvents));
-    this.syncSubsystem("environment",()=>this.environment.sync(state,presentationEvents));
-    this.syncSubsystem("mapObjectBatches",()=>{
+    publish("terrain",()=>this.terrain.sync(state));
+    publish("water",()=>this.water.sync(state,presentationEvents));
+    publish("mapObjects",()=>this.mapObjects.sync(state));
+    publish("units",()=>this.units.sync(state,presentationEvents));
+    publish("environment",()=>this.environment.sync(state,presentationEvents));
+    publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
       // before batching. Keep that same exact membership on merged meshes.
       this.mapObjects.syncStaticBatches(this.mapObjects.pendingBatchDirty||new Map(),
@@ -593,16 +605,20 @@ export class BabylonRenderer{
       if(this.mapObjects.staticBatchStats.rebuilds||this.mapObjects.staticBatchStats.removed)
         this.environment.syncSpatialLightMembership();
     });
-    this.syncSubsystem("objectives",()=>this.objectives.sync(state));
-    this.syncSubsystem("highlights",()=>this.highlights.sync(state));
-    this.syncSubsystem("shadows",()=>this.syncShadows());
-    this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
+    publish("objectives",()=>this.objectives.sync(state));
+    publish("highlights",()=>this.highlights.sync(state));
+    publish("shadows",()=>this.syncShadows());
+    publish("unitHud",()=>this.unitHud.sync(state));
 
-    this.syncSubsystem("actionAnchor",()=>this.syncActionAnchor(state));
+    publish("actionAnchor",()=>this.syncActionAnchor(state));
     const after=owners();
     const changes=Object.keys(after).filter(key=>before[key]!==after[key]);
+    const complete=failedStages.length===0;
+    if(complete)this.lastCompletedPresentationRevision=state?.revision??null;
     const commit={revision:state?.revision??null,round:state?.round??null,
       elapsedMs:Math.round((performance.now()-commitStarted)*100)/100,
+      complete,failedStages,
+      lastCompletedRevision:this.lastCompletedPresentationRevision??null,
       changes,owners:after,lights:this.environment.fireLights.length,
       syncMs:{...this.performanceStats.syncSubsystemMs},
       errors:[...this.subsystemErrors.keys()]};

@@ -32,8 +32,12 @@ export class UnitRenderer{
     // Each unit keeps its own animated pivots and GPU meshes; identical figures
     // reuse prepared LOCAL-space geometry instead of rebuilding hundreds of primitives.
     this.figureTemplates=new Map();
+    // Ordinary opaque FIGURE paints use one vertex-tint material per sidedness.
+    // Articulated pivots are still the animation and shadow owners.
+    this.figureTintMaterials=new Map();
     this.figureBuildStats={templatesBuilt:0,templatesReused:0,originalMeshes:0,batchedMeshes:0,
-      buildMs:0,cloneMs:0,entriesCreated:0,entriesDisposed:0,entryBuildMs:0};
+      buildMs:0,cloneMs:0,entriesCreated:0,entriesDisposed:0,entryBuildMs:0,
+      tintableSourceMeshes:0,tintedDrawMeshes:0,articulatedBatchesSaved:0};
     this.materials={
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -203,6 +207,36 @@ export class UnitRenderer{
     return material;
   }
 
+  // One StandardMaterial lighting contract for every *ordinary opaque* paint.
+  // Different diffuse colours are stored in immutable per-vertex RGBA instead of
+  // requiring a separate Babylon submission for every palette colour. Special
+  // luminous/translucent materials keep their exact independent material.
+  figureTintMaterial(twoSided){
+    const key=twoSided?"double":"front";
+    if(this.figureTintMaterials.has(key))return this.figureTintMaterials.get(key);
+    const mat=this.figureMaterial(`vertex-tint-${key}`,"#ffffff");
+    mat.backFaceCulling=!twoSided;
+    this.figureTintMaterials.set(key,mat);
+    return mat;
+  }
+
+  // Material compatibility is a rendering contract, not a figure-specific
+  // hardcoded paint list. Preserve emission, alpha, light response and textures
+  // where they cannot be factored safely into the vertex diffuse colour.
+  figureTintClass(material,materialKey){
+    if(materialKey==="holy"||materialKey==="arcane"||
+       Number(material?.alpha??1)!==1||material?.disableLighting===true||
+       material?.diffuseTexture||material?.opacityTexture||material?.emissiveTexture||
+       material?.ambientTexture||material?.bumpTexture||material?.reflectionTexture||
+       material?.refractionTexture||material?.lightmapTexture||material?.specularTexture||
+       material?.useEmissiveAsIllumination===true||material?.linkEmissiveWithDiffuse===true||
+       material?.specularPower!==12||material?.maxSimultaneousLights!==8)return null;
+    const spec=material?.specularColor;
+    if(!spec||Math.abs(spec.r-.08)>1e-8||Math.abs(spec.g-.07)>1e-8||
+       Math.abs(spec.b-.06)>1e-8)return null;
+    return material.backFaceCulling===false?"double":"front";
+  }
+
   // FIGURE geometry belongs to UnitRenderer. This is a material/hinge-level
   // assembly, NOT world-space MergeMeshes: Babylon animated parent transforms
   // must never be baked into the final vertex coordinates.
@@ -252,11 +286,17 @@ export class UnitRenderer{
       const data=new BABYLON.VertexData();
       data.positions=group.positions;data.normals=group.normals;
       data.uvs=group.uvs;data.indices=group.indices;
+      if(group.tintClass)data.colors=group.colors;
       data.applyToMesh(mesh);
-      mesh.parent=pivot;mesh.material=materials[group.materialKey];
+      mesh.parent=pivot;
+      mesh.material=group.tintClass?this.figureTintMaterial(group.tintClass==="double")
+        :materials[group.materialKey];
+      mesh.useVertexColors=!!group.tintClass;
+      mesh.useVertexAlpha=false;
       mesh.receiveShadows=group.receiveShadows;mesh.isPickable=false;
       mesh.metadata={kind:"unit-part",unitId:unit.id,figurePart:group.part,
-        castShadow:group.castShadow,sourceMeshCount:group.sources};
+        castShadow:group.castShadow,sourceMeshCount:group.sources,
+        vertexTintBatch:!!group.tintClass,tintClass:group.tintClass||null};
       meshes.push(mesh);
     }
     for(let i=0;i<template.lines.length;i++){
@@ -288,19 +328,28 @@ export class UnitRenderer{
       if(!materialKey)throw new Error(`FIGURE material not registered: ${mesh.name}`);
       const geometry=this.figurePartGeometry(mesh,pivot);
       const castShadow=mesh.metadata?.castShadow!==false,receiveShadows=mesh.receiveShadows!==false;
-      const key=JSON.stringify([part,materialKey,castShadow,receiveShadows]);
+      const tintClass=this.figureTintClass(mesh.material,materialKey);
+      // Never merge across independent animated pivots or shadow policies.
+      const key=JSON.stringify([part,tintClass?`vertex:${tintClass}`:materialKey,
+        castShadow,receiveShadows]);
       let group=byKey.get(key);
       // Keep indices 16-bit safe on WebGL1 as well as WebGL2. Group split is
       // determined by actual vertex count, not an arbitrary map/hero rule.
       if(!group||group.positions.length/3+geometry.positions.length>65535){
-        group={part,materialKey,castShadow,receiveShadows,
-          positions:[],normals:[],uvs:[],indices:[],sources:0};
+        group={part,materialKey:tintClass?null:materialKey,tintClass,
+          castShadow,receiveShadows,
+          positions:[],normals:[],uvs:[],colors:[],indices:[],sources:0};
         groups.push(group);byKey.set(key,group);
       }
       const base=group.positions.length/3;
       group.positions.push(...geometry.positions);
       group.normals.push(...geometry.normals);
       group.uvs.push(...geometry.uvs);
+      if(tintClass){
+        const diffuse=mesh.material.diffuseColor;
+        for(let i=0,n=geometry.positions.length/3;i<n;i++)
+          group.colors.push(diffuse.r,diffuse.g,diffuse.b,1);
+      }
       if(geometry.mirrored){
         for(let i=0;i<geometry.indices.length;i+=3)
           group.indices.push(base+geometry.indices[i],base+geometry.indices[i+2],base+geometry.indices[i+1]);
@@ -311,11 +360,22 @@ export class UnitRenderer{
     // The first instance also uses the same creation contract as every later
     // instance, so batching has no separate visual or animation implementation.
     const entry=this.instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition);
-    for(const mesh of meshes)mesh.dispose(false,false);
     this.figureTemplates.set(signature,template);
     this.figureBuildStats.templatesBuilt++;
     this.figureBuildStats.originalMeshes+=meshes.length;
     this.figureBuildStats.batchedMeshes+=entry.meshes.length;
+    this.figureBuildStats.tintableSourceMeshes+=groups.reduce((n,g)=>n+(g.tintClass?g.sources:0),0);
+    this.figureBuildStats.tintedDrawMeshes+=groups.filter(g=>g.tintClass).length;
+    // Relative to existing part/material batching, not raw unbatched primitives.
+    const legacyGroups=new Set();
+    for(const mesh of meshes){
+      if(mesh.metadata?.lineOnly)continue;
+      const originalKey=materialKeys.get(mesh.material);
+      legacyGroups.add(JSON.stringify([mesh.metadata?.figurePart||"",originalKey,
+        mesh.metadata?.castShadow!==false,mesh.receiveShadows!==false]));
+    }
+    this.figureBuildStats.articulatedBatchesSaved+=Math.max(0,legacyGroups.size-groups.length);
+    for(const mesh of meshes)mesh.dispose(false,false);
     return entry;
   }
 
@@ -2455,7 +2515,9 @@ export class UnitRenderer{
     const night=env.timeOfDay==="NIGHT",moon=String(env.moonlight||"PARTIAL").toUpperCase();
     const reflection=night?(moon==="FULL"?.13:moon==="NONE"?.23:.18):.02;
     for(const material of this.figureMaterials.values()){
-      // Existing genuinely luminous magic stays authoritative.
+      // Existing genuinely luminous magic stays authoritative. The shared
+      // white material's emissive term is multiplied by each vertex's paint
+      // colour in StandardMaterial, preserving the old night tint per part.
       if(String(material.name).includes("figure-holy-")||String(material.name).includes("figure-arcane-"))continue;
       material.emissiveColor.copyFrom(material.diffuseColor.scale(reflection));
     }
