@@ -110,7 +110,8 @@ export class TerrainRenderer{
     this.surfaceColors=null;
     this.cliffColors=null;
     this.cliffWaterData=null;
-    this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0};
+    this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0,
+      surfaceMeshReuses:0,cliffMeshReuses:0,grassMeshReuses:0,grassBufferUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
     this.textureSignature="";
     this.textureBounds=null;
@@ -175,8 +176,11 @@ export class TerrainRenderer{
     const signature=tiles.map(t=>[t.x,t.y,t.terrain,t.dryTerrain,t.material,t.elevation,t.waterDepth,t.waterSurfaceZ,t.snowDepth,t.iceThickness,t.soilMoisture,t.debrisMass,t.fogged,!!t.core,!!t.capturePoint,(t.effects||[]).join(",")].join(":")).join("|");
     if(signature===this.grassSignature)return;
     this.grassSignature=signature;
-    this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];
-    if(!tiles.length)return;
+    this.grassBlades=[];
+    if(!tiles.length){
+      this.grassMesh?.setEnabled(false);
+      return;
+    }
     const byKey=new Map(tiles.map(t=>[keyOf(t.x,t.y),t])),candidates=[];
     for(const tile of tiles){
       const terrain=this.surfaceResolver.baseTerrainOf(tile);
@@ -237,11 +241,27 @@ export class TerrainRenderer{
         this.grassBlades.push({base:base*3,height,phase:rank*Math.PI*2+blade*.7});
       }
     }
-    if(!positions.length)return;
-    const mesh=new BABYLON.Mesh("terrain-grass",this.scene),data=new BABYLON.VertexData();
+    if(!positions.length){
+      this.grassMesh?.setEnabled(false);
+      return;
+    }
+    // One mesh owns the grass buffers for its entire lifetime. Seasonal and
+    // flooding changes replace buffers on that mesh, not the scene object.
+    const mesh=this.grassMesh||new BABYLON.Mesh("terrain-grass",this.scene);
+    const data=new BABYLON.VertexData();
     data.positions=positions;data.indices=indices;data.colors=colors;
     data.normals=[];BABYLON.VertexData.ComputeNormals(positions,indices,data.normals);
-    data.applyToMesh(mesh,true);
+    const existingIndices=this.grassMesh?.getIndices?.()||[];
+    const sameTopology=!!this.grassMesh&&mesh.getTotalVertices?.()===positions.length/3&&
+      existingIndices.length===indices.length&&indices.every((index,i)=>existingIndices[i]===index);
+    if(sameTopology){
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,true,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,data.normals,false,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors,false,false);
+      this.updateCounts.grassBufferUpdates++;
+    }else data.applyToMesh(mesh,true);
+    if(this.grassMesh)this.updateCounts.grassMeshReuses++;
+    mesh.setEnabled(true);
     mesh.material=this.grassMaterial;mesh.useVertexColors=true;mesh.isPickable=false;mesh.receiveShadows=true;
     mesh.metadata={kind:"terrain-grass",visualOnly:true,bladeCount:this.grassBlades.length,variantCounts,clumpsByTerrain};
     // Wind cannot move a tip further than this padded bound. Roots stay fixed.
@@ -253,7 +273,7 @@ export class TerrainRenderer{
 
   animateGrass(dt,force=false){
     this.grassTime+=dt;this.grassFrameTime+=dt;
-    if(!this.grassMesh||(!force&&this.grassFrameTime<1/30))return;
+    if(!this.grassMesh||this.grassMesh.isEnabled?.()===false||(!force&&this.grassFrameTime<1/30))return;
     this.grassFrameTime=0;
     const wind=this.grassWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength);
     // Calm really is calm; do not invent wind in the presentation layer.
@@ -406,18 +426,6 @@ export class TerrainRenderer{
     ].join(":")).join("|");
   }
 
-  cliffWaterSignature(tiles,byKey){
-    // Existing wet cliffs have two vertical bands; dry cliffs have one. Only a
-    // wet/dry crossing on an actual cliff changes that topology, not water level.
-    const boundaryBase=(tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0)-.75;
-    return tiles.map(tile=>DIRS.map(dir=>{
-      const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
-      const lower=neighbor?this.surfaceResolver.elevationOf(neighbor):boundaryBase;
-      if(this.surfaceResolver.elevationOf(tile)-lower<=this.surfaceResolver.maxVisualSlopeDelta)return "";
-      return Math.max(this.surfaceResolver.waterDepthOf(tile),this.surfaceResolver.waterDepthOf(neighbor))>0?1:0;
-    }).join("")).join("|");
-  }
-
   updateSurfaceColors(byKey){
     for(const binding of this.surfaceColorBindings){
       const tile=byKey.get(binding.key),fog=tile.fogged?.62:1;
@@ -497,7 +505,7 @@ export class TerrainRenderer{
     return true;
   }
 
-  buildSurface(tiles,byKey){
+  buildSurface(tiles,byKey,previousMesh=null){
     this.surfaceResolver.clearRenderedSurfaceGeometry();
     this.surfaceColorBindings=[];
     this.updateCounts.surfaceBuilds++;
@@ -602,13 +610,13 @@ export class TerrainRenderer{
     }
     currentTileTriangles=null;
 
-    const mesh=new BABYLON.Mesh("terrain-surface",this.scene);
+    const mesh=previousMesh||new BABYLON.Mesh("terrain-surface",this.scene);
     const data=new BABYLON.VertexData();
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
     data.uvs=out.uvs;
-    data.applyToMesh(mesh,false);
+    data.applyToMesh(mesh,true);
     this.surfaceColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,true);
 
@@ -685,7 +693,7 @@ export class TerrainRenderer{
     out.binding.ranges.push({start,end:out.colors.length,kind});
   }
 
-  buildCliffs(tiles,byKey){
+  buildCliffs(tiles,byKey,previousMesh=null){
     this.surfaceResolver.clearRenderedCliffGeometry();
     this.cliffColorBindings=[];
     this.cliffColors=null;
@@ -724,7 +732,7 @@ export class TerrainRenderer{
         const lowEdge=neighbor?this.cliffSurfaceEdgeSamples(neighbor,{dx:-dir.dx,dy:-dir.dy},byKey).reverse():null;
         out.palette=this.cliffPalette(tile,neighbor,dir,byKey,drop);
         out.waterContact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
-        const {wallColor,wetWallColor,wetWallFactor}=out.palette;
+        const {wallColor}=out.palette;
         out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
         this.cliffColorBindings.push(out.binding);
 
@@ -773,29 +781,16 @@ export class TerrainRenderer{
           // Water-contact cliffs use the same geometry, but the lower rock band
           // becomes damp instead of keeping a grass-derived wall colour all the way
           // down to the waterline.
-          if(wetWallFactor>0){
-            const aMid=aBot+(aTop-aBot)*.46;
-            const bMid=bBot+(bTop-bBot)*.46;
-            const am={x:af.x+(a.x-af.x)*.46,y:aMid,z:af.z+(a.z-af.z)*.46};
-            const bm={x:bf.x+(b.x-bf.x)*.46,y:bMid,z:bf.z+(b.z-bf.z)*.46};
-            emitRegisteredWallQuad(
-              {x:af.x,y:aBot,z:af.z},
-              {x:bf.x,y:bBot,z:bf.z},
-              bm,am,wetWallColor,1,.54
-            );
-            emitRegisteredWallQuad(
-              am,bm,
-              {x:b.x,y:bTop,z:b.z},
-              {x:a.x,y:aTop,z:a.z},wallColor,.54,0
-            );
-          }else{
-            emitRegisteredWallQuad(
-              {x:af.x,y:aBot,z:af.z},
-              {x:bf.x,y:bBot,z:bf.z},
-              {x:b.x,y:bTop,z:b.z},
-              {x:a.x,y:aTop,z:a.z},wallColor,1,0
-            );
-          }
+          // The shader already evaluates the wet waterline against the
+          // actual world Y supplied through cliffWaterContact. One actual
+          // rock quad is sufficient in BOTH wet and dry states: no redundant
+          // middle row, topology change, or extra shadow triangles.
+          emitRegisteredWallQuad(
+            {x:af.x,y:aBot,z:af.z},
+            {x:bf.x,y:bBot,z:bf.z},
+            {x:b.x,y:bTop,z:b.z},
+            {x:a.x,y:aTop,z:a.z},wallColor,1,0
+          );
 
         }
         const pointNormal=index=>{
@@ -832,12 +827,12 @@ export class TerrainRenderer{
     }
 
     if(!out.positions.length)return null;
-    const mesh=new BABYLON.Mesh("terrain-cliffs",this.scene);
+    const mesh=previousMesh||new BABYLON.Mesh("terrain-cliffs",this.scene);
     const data=new BABYLON.VertexData();
     data.positions=out.positions;
     data.indices=out.indices;
     data.normals=out.normals;
-    data.applyToMesh(mesh,false);
+    data.applyToMesh(mesh,true);
     this.cliffColors=new Float32Array(out.colors);
     mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
     this.cliffWaterData=new Float32Array(out.waterContacts);
@@ -873,33 +868,42 @@ export class TerrainRenderer{
 
   sync(state){
     const tiles=[...tilesOf(state)].sort((a,b)=>Number(a.y)-Number(b.y)||Number(a.x)-Number(b.x));
-    this.syncGrass(state,tiles);
     if(!tiles.length){this.disposeMeshes();return;}
     const signature=this.signature(tiles);
     const geometry=this.geometrySignature(tiles);
-    if(signature===this.signatureValue&&geometry===this.surfaceGeometrySignature)return;
+    if(signature===this.signatureValue&&geometry===this.surfaceGeometrySignature){
+      this.syncGrass(state,tiles);
+      return;
+    }
 
     const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
     this.syncMaterialMap(tiles,byKey);
-    const cliffGeometry=geometry+"/"+this.cliffWaterSignature(tiles,byKey);
+    // Cliff topology follows published elevations alone. Wet/dry state
+    // changes shader water contact and rock tint, never triangulation.
+    const cliffGeometry=geometry;
     const rebuildSurface=geometry!==this.surfaceGeometrySignature;
     const rebuildCliffs=cliffGeometry!==this.cliffGeometrySignature;
     if(rebuildSurface){
-      this.meshes.get("surface")?.dispose();
-      this.meshes.set("surface",this.buildSurface(tiles,byKey));
+      const previousSurface=this.meshes.get("surface");
+      this.meshes.set("surface",this.buildSurface(tiles,byKey,previousSurface));
+      if(previousSurface)this.updateCounts.surfaceMeshReuses++;
       this.surfaceGeometrySignature=geometry;
     }else this.updateSurfaceColors(byKey);
 
     if(rebuildCliffs){
-      this.meshes.get("cliffs")?.dispose();
-      this.meshes.delete("cliffs");
-      const cliffs=this.buildCliffs(tiles,byKey);
+      const previousCliffs=this.meshes.get("cliffs");
+      const cliffs=this.buildCliffs(tiles,byKey,previousCliffs);
+      if(cliffs&&previousCliffs)this.updateCounts.cliffMeshReuses++;
+      if(!cliffs&&previousCliffs){previousCliffs.dispose();this.meshes.delete("cliffs");}
       if(cliffs)this.meshes.set("cliffs",cliffs);
       this.cliffGeometrySignature=cliffGeometry;
     }else this.updateCliffColors(byKey);
 
     if(!rebuildSurface||!rebuildCliffs)this.updateCounts.colorUpdates++;
     this.signatureValue=signature;
+    // Grass roots sample TerrainRenderer's exact published triangles, so this
+    // must follow surface/cliff publication, not precede it.
+    this.syncGrass(state,tiles);
   }
 
   diagnostics(){

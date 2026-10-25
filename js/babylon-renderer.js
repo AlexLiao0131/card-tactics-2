@@ -161,6 +161,9 @@ export class BabylonRenderer{
     this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
+    // Read-only commit audit: distinguish one long JS synchronization from a
+    // scene resource replacement or a rendering spike. No alternate renderer.
+    this.presentationCommitHistory=[];
     this.frameSample={start:performance.now(),count:0,frameTotal:0,framePeak:0,
       renderTotal:0,renderPeak:0,shadowTotal:0,shadowPeak:0};
     this.lastDrawCallsCounter=null;
@@ -552,6 +555,18 @@ export class BabylonRenderer{
   }
 
   sync(state,presentationEvents=[]){
+    const commitStarted=performance.now();
+    const owners=()=>({
+      ground:this.terrain.meshes.get("surface")?.uniqueId??null,
+      cliffs:this.terrain.meshes.get("cliffs")?.uniqueId??null,
+      grass:this.terrain.grassMesh?.uniqueId??null,
+      ice:this.environment.surfaceMeshes.get("ICE")?.uniqueId??null,
+      snow:this.environment.surfaceMeshes.get("SNOW")?.uniqueId??null,
+      waterGeometryVersion:this.water.publishedWaterGeometryRevision,
+      terrainGeometryVersion:this.terrain.surfaceResolver.renderedSurfaceGeometryRevision,
+      cliffGeometryVersion:this.terrain.surfaceResolver.renderedCliffGeometryRevision
+    });
+    const before=owners();
     this.lastState=state;
     this.syncVisualTimeTarget(state);
     this.syncSubsystem("sky",()=>this.syncSky(state));
@@ -584,6 +599,16 @@ export class BabylonRenderer{
     this.syncSubsystem("unitHud",()=>this.unitHud.sync(state));
 
     this.syncSubsystem("actionAnchor",()=>this.syncActionAnchor(state));
+    const after=owners();
+    const changes=Object.keys(after).filter(key=>before[key]!==after[key]);
+    const commit={revision:state?.revision??null,round:state?.round??null,
+      elapsedMs:Math.round((performance.now()-commitStarted)*100)/100,
+      changes,owners:after,lights:this.environment.fireLights.length,
+      syncMs:{...this.performanceStats.syncSubsystemMs},
+      errors:[...this.subsystemErrors.keys()]};
+    this.presentationCommitHistory.push(commit);
+    if(this.presentationCommitHistory.length>16)this.presentationCommitHistory.shift();
+    globalThis.CardTacticsDiagnostics?.recordPerf?.("renderSync.totalCommit",commit.elapsedMs);
   }
 
   syncActionAnchor(state){
@@ -705,6 +730,7 @@ export class BabylonRenderer{
       lighting:this.lightingState||null,
       shadows:this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0},
       rendererErrors:Object.fromEntries(this.subsystemErrors),
+      presentationCommits:this.presentationCommitHistory.slice(),
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
       units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},

@@ -169,6 +169,10 @@ export class EnvironmentRenderer{
     // one aggregated colour field instead of one GPU PointLight per map tile.
     this.fireLights=[];
     this.physicalLightsById=new Map();
+    // Fire clusters retain the same physical-light identity as cells spread,
+    // split, or unrelated clusters are inserted earlier in map scan order.
+    this.fireClusterMembership=new Map();
+    this.nextFireClusterId=0;
     this.lightFieldMesh=null;
     this.lightFieldMaterial=this.makeLightFieldMaterial();
     this.lightFieldSignature="";
@@ -609,15 +613,38 @@ export class EnvironmentRenderer{
     // steady across frames, rather than discarding it with the unit-tile glow.
     const equipment=lights.filter(source=>source.source==="EQUIPMENT_LIGHT"&&source.visible!==false&&Number(source.radius||0)>0)
       .map(source=>({...source,steady:true}));
-    const fires=this.groupedEffectTiles(state,["BURNING","FIRE_TORNADO"],{diagonal:true,surfaceTolerance:.30})
-      .map((group,index)=>{
+    const priorFireClusters=this.fireClusterMembership;
+    const nextFireClusters=new Map();
+    const fireGroups=this.groupedEffectTiles(state,["BURNING","FIRE_TORNADO"],
+      {diagonal:true,surfaceTolerance:.30});
+    const fireCells=fireGroups.map(group=>new Set(group.map(tile=>`${tile.x},${tile.y}`)));
+    // Match groups globally by actual overlapping burning cells, not iteration
+    // index. Unrelated fires appearing earlier in map order must not dispose
+    // existing lights or cause a one-frame lighting/shader identity jump.
+    const overlaps=[];
+    for(let index=0;index<fireGroups.length;index++)
+      for(const [id,previous] of priorFireClusters){
+        let count=0;
+        for(const cell of fireCells[index])if(previous.has(cell))count++;
+        if(count)overlaps.push({index,id,count});
+      }
+    overlaps.sort((a,b)=>b.count-a.count||a.index-b.index||a.id.localeCompare(b.id));
+    const assigned=new Map(),taken=new Set();
+    for(const match of overlaps){
+      if(assigned.has(match.index)||taken.has(match.id))continue;
+      assigned.set(match.index,match.id);taken.add(match.id);
+    }
+    const fires=fireGroups.map((group,index)=>{
+        const identity=assigned.get(index)??`fire-${++this.nextFireClusterId}`;
+        nextFireClusters.set(identity,fireCells[index]);
         const x=group.reduce((sum,tile)=>sum+Number(tile.x),0)/group.length;
         const y=group.reduce((sum,tile)=>sum+Number(tile.y),0)/group.length;
         const radius=Math.max(1.5,...group.map(tile=>Math.hypot(tile.x-x,tile.y-y)+1.35));
         const vertical=group.reduce((sum,tile)=>sum+surfaceOf(tile)*ELEVATION_HEIGHT,0)/group.length;
-        return {x,y,radius,source:"FIRE_CLUSTER",sourceId:index,intensity:Math.min(1.4,.72+group.length*.09),
+        return {x,y,radius,source:"FIRE_CLUSTER",sourceId:identity,intensity:Math.min(1.4,.72+group.length*.09),
           color:[1,.39,.10],vertical,steady:false};
       });
+    this.fireClusterMembership=nextFireClusters;
     const sources=[...structures,...equipment,...fires];
     const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
     const active=new Set();
@@ -662,17 +689,14 @@ export class EnvironmentRenderer{
   syncSpatialLightMembership(){
     const lights=this.fireLights;
     const localSet=new Set(lights);
-    // The scene-wide directional/hemi/lightning sources share Babylon's same
-    // maxSimultaneousLights slots. Count the actual lights, never an assumed
-    // device limit or a fire-count-derived Shader capacity.
     const sharedLights=this.scene.lights.filter(light=>!localSet.has(light)&&
       !light.isDisposed?.()&&light.isEnabled?.()!==false);
     const memberships=new Map(lights.map(light=>[light,[]]));
-    // These bindings are selected by the ONE physical-light authority and
-    // are consumed by MapObjectRenderer when grouping static source faces.
     const staticSourceLightBindings=new Map();
     const records={cliffSourcesAvailable:0,cliffSourcesAssigned:0,
-      receivers:0,limitedReceivers:0,sharedLightSlots:sharedLights.length};
+      receivers:0,limitedReceivers:0,sharedLightSlots:sharedLights.length,
+      eligiblePairs:0,candidatePairs:0,lightImpactEvaluations:0,
+      cliffRegionEvaluations:0};
     const footprintHits=(footprint,mesh)=>{
       if(!footprint)return true;
       const bb=mesh.getBoundingInfo?.()?.boundingBox;
@@ -684,16 +708,24 @@ export class EnvironmentRenderer{
         if(footprint.has(`${x},${y}`))return true;
       return false;
     };
-    const impact=(mesh,light,center,radius)=>{
+    // A cheap, exact broad phase uses the existing Babylon bounding spheres.
+    // Rejected lights cannot intersect the receiver; no guessed light radius,
+    // no separate long-lived scene index and no shader policy changes.
+    const impacts=(mesh,light,center,radius)=>{
       const footprint=light.metadata?.footprintCells;
       const p=light.position,range=Number(light.range||0);
-      if(!(range>0))return 0;
+      const limit=range+radius;
+      if(!(range>0)||Math.abs(p.x-center.x)>limit||Math.abs(p.z-center.z)>limit)
+        return null;
+      records.candidatePairs++;
       const regions=mesh.metadata?.cliffLightRegions;
       if(Array.isArray(regions)){
         let best=0;
         for(const region of regions){
-          // A point behind an outward-facing terrain wall is not a plausible
-          // receiver for that wall, regardless of the giant merged mesh bounds.
+          const localLimit=range+region.radius;
+          if(Math.abs(p.x-region.x)>localLimit||Math.abs(p.z-region.z)>localLimit)
+            continue;
+          records.cliffRegionEvaluations++;
           const front=(p.x-region.x)*region.outwardX+(p.z-region.z)*region.outwardZ;
           if(front<=0)continue;
           if(footprint&&!footprint.has(`${region.tileX},${region.tileY}`)&&
@@ -710,11 +742,10 @@ export class EnvironmentRenderer{
     };
     for(const mesh of this.scene.meshes||[]){
       const staticSource=mesh.metadata?.staticBatchSource===true;
-      if(mesh.isDisposed?.()||(!staticSource&&mesh.isVisible===false)||mesh.isEnabled?.()===false||mesh.material?.disableLighting===true||
-        mesh.metadata?.kind==="environment-light-field"||mesh.name==="terrain-surface"||!mesh.material)continue;
+      if(mesh.isDisposed?.()||(!staticSource&&mesh.isVisible===false)||mesh.isEnabled?.()===false||
+        mesh.material?.disableLighting===true||mesh.metadata?.kind==="environment-light-field"||
+        mesh.name==="terrain-surface"||!mesh.material)continue;
       if(mesh.metadata?.kind==="map-object-static-batch"){
-        // All members were grouped using this same light selection. Never
-        // re-rank by the huge merged bounding box and silently lose sources.
         const ids=new Set(mesh.metadata.localLightNames||[]);
         for(const light of lights)if(ids.has(light.name))memberships.get(light).push(mesh);
         records.receivers++;continue;
@@ -726,17 +757,17 @@ export class EnvironmentRenderer{
       const radius=Math.max(0,Number(bounds?.radiusWorld||0));
       const authoredSlots=Number(mesh.material.maxSimultaneousLights);
       const capacity=Number.isFinite(authoredSlots)
-        ?Math.max(0,Math.floor(authoredSlots)-sharedLights.length)
-        :Infinity;
+        ?Math.max(0,Math.floor(authoredSlots)-sharedLights.length):Infinity;
       const ranked=[];
+      records.eligiblePairs+=lights.length;
       for(const light of lights){
-        const strength=impact(mesh,light,center,radius);
+        const strength=impacts(mesh,light,center,radius);
+        if(strength==null)continue;
+        records.lightImpactEvaluations++;
         if(strength>0)ranked.push({light,strength});
       }
       if(mesh.name==="terrain-cliffs")records.cliffSourcesAvailable=ranked.length;
       if(ranked.length>capacity)records.limitedReceivers++;
-      // Sorting only selects local light sources for the *existing* material;
-      // Babylon still evaluates surface normals, built-in shadow and attenuation.
       ranked.sort((a,b)=>b.strength-a.strength||a.light.name.localeCompare(b.light.name));
       const selected=ranked.slice(0,capacity);
       if(staticSource){
@@ -748,16 +779,15 @@ export class EnvironmentRenderer{
       records.receivers++;
     }
     for(const light of lights){
-      const receivers=memberships.get(light)||[];
-      if(!receivers.length){
+      const owners=memberships.get(light)||[];
+      if(!owners.length){
         if(light.isEnabled())light.setEnabled(false);
-        // Babylon treats [] as unrestricted: always disable the light first.
         if(light.includedOnlyMeshes?.length)light.includedOnlyMeshes=[];
         continue;
       }
       const previous=light.includedOnlyMeshes||[];
-      if(previous.length!==receivers.length||previous.some((mesh,i)=>mesh!==receivers[i]))
-        light.includedOnlyMeshes=receivers;
+      if(previous.length!==owners.length||previous.some((mesh,i)=>mesh!==owners[i]))
+        light.includedOnlyMeshes=owners;
       if(!light.isEnabled())light.setEnabled(true);
     }
     this.staticSourceLightBindings=staticSourceLightBindings;
