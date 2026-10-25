@@ -3,6 +3,7 @@ const MOUSE_ROTATE_STEP=56;
 const TOUCH_ROTATE_STEP=Math.PI/4;
 const TOUCH_PINCH_INTENT_PX=14;
 const TOUCH_ROTATE_INTENT=Math.PI/18;
+const HUD_HOLD_MS=420;
 const pointerTypeOf=event=>TAP_SLOP[event.pointerType]?event.pointerType:"mouse";
 const normalizeAngle=value=>Math.atan2(Math.sin(value),Math.cos(value));
 const multiGestureType=gesture=>["MULTI_PENDING","PINCH","ROTATE_TOUCH"].includes(gesture?.type);
@@ -11,12 +12,38 @@ export class BattleInputController{
   constructor(canvas,{camera,picker,onTilePicked}={}){
     this.canvas=canvas;this.camera=camera;this.picker=picker;this.onTilePicked=onTilePicked??(()=>{});
     this.pointers=new Map();this.gesture=null;
+    this.holdTimer=null;this.holdPointerId=null;this.holdActive=false;
     this.install();
   }
 
+  clearHold(){
+    if(this.holdTimer!==null)clearTimeout(this.holdTimer);
+    this.holdTimer=null;this.holdPointerId=null;
+    if(this.holdActive){
+      this.holdActive=false;
+      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
+    }
+  }
+  beginHold(event){
+    this.clearHold();
+    if(event.pointerType!=="touch"&&event.pointerType!=="pen")return;
+    const id=event.pointerId;
+    this.holdPointerId=id;
+    this.holdTimer=setTimeout(()=>{
+      this.holdTimer=null;
+      const pointer=this.pointers.get(id);
+      if(!pointer||pointer.moved||this.pointers.size!==1||this.gesture?.type!=="PAN")return;
+      const tile=this.picker.pickCurrent();
+      if(!tile)return;
+      const state=globalThis.CardTacticsRuntime?.getBattleSnapshot?.();
+      if(!state?.units?.some(unit=>unit.x===tile.x&&unit.y===tile.y))return;
+      pointer.moved=true;
+      this.holdActive=true;
+      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:tile}));
+    },HUD_HOLD_MS);
+  }
+
   install(){
-    // The battlefield owns touch gestures. Otherwise Safari may switch a drag
-    // into native page pinch/double-tap zoom when a pointer is interrupted.
     this.canvas.style.touchAction="none";
     this.onPointerDown=event=>{
       const touch=event.pointerType==="touch";
@@ -24,44 +51,34 @@ export class BattleInputController{
       const rotatePointer=!touch&&event.button===1;
       if(!panPointer&&!rotatePointer)return;
       event.preventDefault();
-      // A new *primary* touch starts a new physical contact sequence. Any
-      // previous pointer left behind by Safari/backgrounding is no longer down.
-      // Non-primary touches remain untouched, preserving real two-finger pinch.
       if(touch&&event.isPrimary===true&&this.pointers.size)this.resetPointers();
       this.pointers.set(event.pointerId,{x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,type:pointerTypeOf(event),moved:false,button:event.button});
       try{this.canvas.setPointerCapture?.(event.pointerId)}catch(_){}
-      if(this.pointers.size>=2)this.beginMultiTouch();
+      if(this.pointers.size>=2){this.clearHold();this.beginMultiTouch();}
       else if(rotatePointer)this.gesture={type:"ROTATE_MOUSE",id:event.pointerId,lastX:event.clientX,accumulatedX:0};
-      else this.gesture={type:"PAN",id:event.pointerId,lastX:event.clientX,lastY:event.clientY};
+      else{this.gesture={type:"PAN",id:event.pointerId,lastX:event.clientX,lastY:event.clientY};this.beginHold(event);}
     };
 
     this.onPointerMove=event=>{
       const pointer=this.pointers.get(event.pointerId);if(!pointer)return;
       pointer.x=event.clientX;pointer.y=event.clientY;
       const movedDistance=Math.hypot(pointer.x-pointer.startX,pointer.y-pointer.startY);
-      if(movedDistance>TAP_SLOP[pointer.type])pointer.moved=true;
-
+      if(movedDistance>TAP_SLOP[pointer.type]){pointer.moved=true;if(this.holdPointerId===event.pointerId)this.clearHold();}
       if(this.pointers.size>=2){
+        this.clearHold();
         if(!multiGestureType(this.gesture))this.beginMultiTouch();
         const metrics=this.multiTouchMetrics();if(!metrics)return;
         [...this.pointers.values()].forEach(p=>p.moved=true);
-
         if(this.gesture.type==="MULTI_PENDING"){
           const pinchDelta=Math.abs(metrics.distance-this.gesture.startDistance);
           const rotateDelta=Math.abs(normalizeAngle(metrics.angle-this.gesture.startAngle));
           if(pinchDelta<TOUCH_PINCH_INTENT_PX&&rotateDelta<TOUCH_ROTATE_INTENT)return;
-          if(rotateDelta>=TOUCH_ROTATE_INTENT&&rotateDelta*180/Math.PI>=pinchDelta*.7){
-            this.gesture={...this.gesture,type:"ROTATE_TOUCH",lastAngle:metrics.angle,accumulatedAngle:0};
-          }else{
-            this.gesture={...this.gesture,type:"PINCH"};
-          }
+          if(rotateDelta>=TOUCH_ROTATE_INTENT&&rotateDelta*180/Math.PI>=pinchDelta*.7)this.gesture={...this.gesture,type:"ROTATE_TOUCH",lastAngle:metrics.angle,accumulatedAngle:0};
+          else this.gesture={...this.gesture,type:"PINCH"};
         }
-
         if(this.gesture.type==="PINCH"){
-          this.camera.setZoom(this.gesture.startZoom*metrics.distance/Math.max(1,this.gesture.startDistance));
-          return;
+          this.camera.setZoom(this.gesture.startZoom*metrics.distance/Math.max(1,this.gesture.startDistance));return;
         }
-
         if(this.gesture.type==="ROTATE_TOUCH"){
           const angleDelta=normalizeAngle(metrics.angle-this.gesture.lastAngle);
           this.gesture.lastAngle=metrics.angle;
@@ -74,7 +91,6 @@ export class BattleInputController{
           return;
         }
       }
-
       if(this.gesture?.type==="ROTATE_MOUSE"&&this.gesture.id===event.pointerId){
         const dx=event.clientX-this.gesture.lastX;
         this.gesture.lastX=event.clientX;
@@ -86,7 +102,6 @@ export class BattleInputController{
         }
         return;
       }
-
       if(this.gesture?.type!=="PAN"||this.gesture.id!==event.pointerId||!pointer.moved)return;
       const dx=event.clientX-this.gesture.lastX,dy=event.clientY-this.gesture.lastY;
       this.gesture.lastX=event.clientX;this.gesture.lastY=event.clientY;
@@ -95,49 +110,36 @@ export class BattleInputController{
 
     this.onPointerUp=event=>{
       const pointer=this.pointers.get(event.pointerId);if(!pointer)return;
+      const consumed=this.holdActive&&this.holdPointerId===event.pointerId;
+      this.clearHold();
       const wasMulti=multiGestureType(this.gesture)||this.pointers.size>1;
       const wasRotate=this.gesture?.type==="ROTATE_MOUSE";
       this.pointers.delete(event.pointerId);
       try{this.canvas.releasePointerCapture?.(event.pointerId)}catch(_){}
-
-      if(this.pointers.size===1){
-        this.resumeSinglePointerPan();
-        return;
-      }
+      if(this.pointers.size===1){this.resumeSinglePointerPan();return;}
       this.gesture=null;
-      if(wasMulti||wasRotate||pointer.moved)return;
+      if(wasMulti||wasRotate||pointer.moved||consumed)return;
       const tile=this.picker.pickCurrent();
       if(tile)this.onTilePicked(tile.x,tile.y);
     };
-
     this.onPointerCancel=event=>{
       if(!this.pointers.has(event.pointerId))return;
-      this.pointers.delete(event.pointerId);
+      this.clearHold();this.pointers.delete(event.pointerId);
       if(this.pointers.size===1)this.resumeSinglePointerPan();
       else if(this.pointers.size===0)this.gesture=null;
       else this.beginMultiTouch();
     };
-
     this.onLostPointerCapture=event=>{
       if(!this.pointers.has(event.pointerId))return;
-      this.pointers.delete(event.pointerId);
+      this.clearHold();this.pointers.delete(event.pointerId);
       if(this.pointers.size===1)this.resumeSinglePointerPan();
       else if(this.pointers.size===0)this.gesture=null;
       else this.beginMultiTouch();
     };
-
-    this.onWheel=event=>{
-      event.preventDefault();
-      this.camera.zoomBy(event.deltaY>0?.9:1.1);
-    };
-    // Pointer capture can be lost while leaving the canvas or when iOS Safari
-    // backgrounds the tab. Release outside touches without generating a tile tap.
-    this.onOutsidePointerUp=event=>{
-      if(event.target!==this.canvas)this.onPointerCancel(event);
-    };
+    this.onWheel=event=>{event.preventDefault();this.camera.zoomBy(event.deltaY>0?.9:1.1);};
+    this.onOutsidePointerUp=event=>{if(event.target!==this.canvas)this.onPointerCancel(event);};
     this.onInterrupted=()=>this.resetPointers();
     this.onVisibilityChange=()=>{if(document.hidden)this.resetPointers();};
-
     this.canvas.addEventListener("pointerdown",this.onPointerDown);
     this.canvas.addEventListener("pointermove",this.onPointerMove);
     this.canvas.addEventListener("pointerup",this.onPointerUp);
@@ -150,14 +152,11 @@ export class BattleInputController{
     window.addEventListener("pagehide",this.onInterrupted);
     document.addEventListener("visibilitychange",this.onVisibilityChange);
   }
-
   resetPointers(){
-    const ids=[...this.pointers.keys()];
-    this.pointers.clear();
-    this.gesture=null;
+    this.clearHold();
+    const ids=[...this.pointers.keys()];this.pointers.clear();this.gesture=null;
     for(const id of ids)try{this.canvas.releasePointerCapture?.(id)}catch(_){}
   }
-
   dispose(){
     this.resetPointers();
     this.canvas.removeEventListener("pointerdown",this.onPointerDown);
@@ -172,37 +171,21 @@ export class BattleInputController{
     window.removeEventListener("pagehide",this.onInterrupted);
     document.removeEventListener("visibilitychange",this.onVisibilityChange);
   }
-
-  diagnostics(){
-    return{gesture:this.gesture?.type||null,activePointers:this.pointers.size,
-      pointerTypes:[...this.pointers.values()].map(pointer=>pointer.type)};
-  }
-
+  diagnostics(){return{gesture:this.gesture?.type||null,activePointers:this.pointers.size,pointerTypes:[...this.pointers.values()].map(pointer=>pointer.type)};}
   multiTouchMetrics(){
-    const pts=[...this.pointers.values()];
-    if(pts.length<2)return null;
+    const pts=[...this.pointers.values()];if(pts.length<2)return null;
     const dx=pts[1].x-pts[0].x,dy=pts[1].y-pts[0].y;
     return{distance:Math.max(1,Math.hypot(dx,dy)),angle:Math.atan2(dy,dx)};
   }
-
   beginMultiTouch(){
+    this.clearHold();
     const metrics=this.multiTouchMetrics();if(!metrics)return;
     [...this.pointers.values()].forEach(p=>p.moved=true);
-    this.gesture={
-      type:"MULTI_PENDING",
-      startDistance:metrics.distance,
-      startZoom:this.camera.getViewState().zoom,
-      startAngle:metrics.angle,
-      lastAngle:metrics.angle,
-      accumulatedAngle:0
-    };
+    this.gesture={type:"MULTI_PENDING",startDistance:metrics.distance,startZoom:this.camera.getViewState().zoom,startAngle:metrics.angle,lastAngle:metrics.angle,accumulatedAngle:0};
   }
-
   resumeSinglePointerPan(){
     const entry=[...this.pointers.entries()][0];if(!entry){this.gesture=null;return;}
-    const[id,remaining]=entry;
-    remaining.moved=true;
-    remaining.startX=remaining.x;remaining.startY=remaining.y;
+    const[id,remaining]=entry;remaining.moved=true;remaining.startX=remaining.x;remaining.startY=remaining.y;
     this.gesture={type:"PAN",id,lastX:remaining.x,lastY:remaining.y};
   }
 }

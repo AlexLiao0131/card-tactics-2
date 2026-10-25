@@ -188,6 +188,10 @@ export const BattleSetupEngine=(()=>{
         ?battleSetup.deck
         :stage.battleDeck||[];
 
+    if(Array.isArray(battleSetup?.deck)){
+      const validation=DeckEngine.validate(battleSetup.deck);
+      if(!validation.valid)throw new Error(`出擊牌組不合法：${validation.errors.join(" ")}`);
+    }
     const battleDeck=requestedDeck.filter(cardId=>{
       const card=CardDatabase.get(cardId);
       return !(

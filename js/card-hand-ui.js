@@ -95,7 +95,7 @@ function skillExplanation(skill,{variant=false,parent=null,resourceRules={}}={})
   if(s.soundMagic)add("此技能標記為聲音魔法");
   if(s.informationSkill)add("此技能用於觀測／資訊支援");
   if(s.support)add("允許參與支援攻擊（仍須符合戰鬥條件）");
-  const utility={STEAL_CARD:"偷取卡牌",ENTER_STEALTH:"進入潛行",LIFT_DROP:"升空摔落",CARRY_ALLY:"攜帶友軍",RELEASE_CARRIED:"放下攜帶目標",SET_VERTICAL_MODE:"切換垂直移動模式"};
+  const utility={STEAL_CARD:"偷取卡牌",ENTER_STEALTH:"進入潛行",CARRY_ENEMY:"抓取敵人／空運摔落",CARRY_ALLY:"攜帶友軍",RELEASE_CARRIED:"放下攜帶目標",SET_VERTICAL_MODE:"切換垂直移動模式"};
   if(s.utilityAction){
     const u=s.utilityAction;
     add(`特殊操作：${utility[u.type]||String(u.type||"技能操作")}${u.mode?`（${String(u.mode)}）`:""}`);

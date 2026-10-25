@@ -2847,17 +2847,12 @@ export class WaterRenderer{
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceSolve",performance.now()-solveStart);
       const buildStart=performance.now();
       const components=this.presentationComponents(presentation);
-      // Keep TEST's read-only per-tile diagnostic shape; these are NOT second
-      // geometry solvers or Mesh owners. The water polygons below are still
-      // consumed directly from the one shared presentation map.
-      this.sheetFlowSurfaces=new Map([...presentation]
-        .filter(([,entry])=>!entry.stored)
-        .map(([key,entry])=>[key,{...entry,maxDepth:entry.maxDepth*ELEVATION_HEIGHT,
-          polygons:entry.polygons.map((points,i)=>({
-            triangleIndex:points.triangleIndex??i,
-            points:points.map(point=>({...point,depth:point.depth*ELEVATION_HEIGHT}))
-          }))
-        }]));
+      // The sheet-flow map is consulted only for presence of authored Q-only
+      // surfaces (spring outlet ownership and batch aliases). Preserve the
+      // canonical VisualSurfaceResolver's records by identity: duplicating
+      // every published polygon and vertex each rainy turn is unnecessary and
+      // creates GC pressure precisely when water geometry is being rebuilt.
+      this.sheetFlowSurfaces=new Map([...presentation].filter(([,entry])=>!entry.stored));
       const previousMeshes=this.surfaceMeshes;
       const previousAnimations=this.surfaceAnimations;
       const previousSignatures=this.surfaceMeshSignatures;

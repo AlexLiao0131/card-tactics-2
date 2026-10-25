@@ -70,11 +70,11 @@
         if(passenger){passenger.x=origin.x;passenger.y=origin.y;passenger.z=origin.z;passenger.verticalState=origin.verticalState;delete passenger.carriedByUnitId;delete passenger.transportHidden;}
         if(carrier){delete carrier.carryingUnitId;const tile=TacticalEngine.tile(state().map,carrier.x,carrier.y);if(tile&&carrierVertical?.mode&&globalThis.VerticalMobilityEngine?.setMode)VerticalMobilityEngine.setMode(carrier,tile,carrierVertical.mode,{altitude:carrierVertical.altitude,depth:carrierVertical.depth});}
       }
-      if(!silent)ctx.pushLog(`已取消空運 ${passenger?.character?.name||"友軍"}，位置與技能資源保持不變。`,"SYSTEM");
+      if(!silent)ctx.pushLog(`已取消空運 ${passenger?.character?.name||"目標"}，位置與技能資源保持不變。`,"SYSTEM");
       pendingTransport=null;return true;
     }
-    function canPickupFrom(carrier,passenger,origin,environmentState){
-      if(!carrier?.alive||carrier.acted||!passenger?.alive||carrier.team!==passenger.team||carrier.id===passenger.id||!canLiftTarget(carrier,passenger))return false;
+    function canPickupFrom(carrier,passenger,origin,environmentState,kind="ALLY"){
+      if(!carrier?.alive||carrier.acted||!passenger?.alive||(kind==="ENEMY"?carrier.team===passenger.team:carrier.team!==passenger.team)||carrier.id===passenger.id||!canLiftTarget(carrier,passenger))return false;
       if(Math.abs(origin.x-passenger.x)+Math.abs(origin.y-passenger.y)!==1)return false;
       // Flight pickup is a controlled descent/ascent beside the passenger,
       // not a ground melee attack. Ground height must not gate this utility.
@@ -85,7 +85,8 @@
     function pickupPlan(carrier,passenger,skill,origins=null){
       const {map,units,environmentState}=state();
       if(!carrier?.alive||carrier.acted||!ctx.canUseSkill(carrier,skill)||!canLiftTarget(carrier,passenger))return null;
-      const candidates=(origins||attackOrigins(carrier)).filter(origin=>canPickupFrom(carrier,passenger,origin,environmentState));
+      const kind=skill.utilityAction?.type==="CARRY_ENEMY"?"ENEMY":"ALLY";
+      const candidates=(origins||attackOrigins(carrier)).filter(origin=>canPickupFrom(carrier,passenger,origin,environmentState,kind));
       if(!candidates.length)return null;
       candidates.sort((a,b)=>a.cost-b.cost||a.y-b.y||a.x-b.x);
       const anchor=candidates[0];
@@ -174,7 +175,7 @@
     function attackPlanForTarget(unit,target,skill){
       const {map,units,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
-      if(skill.utilityAction?.type==="CARRY_ALLY")return pickupPlan(unit,target,skill);
+      if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill.utilityAction?.type))return pickupPlan(unit,target,skill);
       if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
 
       const legal=attackOrigins(unit).filter(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
@@ -199,8 +200,8 @@
         if(target.team!==unit.team&&skill?.ignoreFogOfWar!==true&&
            !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
-        if(skill?.utilityAction?.type==="CARRY_ALLY")return !!pickupPlan(unit,target,skill,origins);
-        if(skill?.utilityAction?.type==="LIFT_DROP"&&!canLiftTarget(unit,target))return false;
+        if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
+        
         return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       });
     }
@@ -233,13 +234,28 @@
     // A skill can explicitly opt in to aiming at an environmental state,
     // independently of its normal combat target. Normal ENEMY combat keeps
     // BattleResolution, reaction, hit chance and damage unchanged.
+    function canObserveFireSource(unit,tile,environmentState,origin=unit){
+      const {map}=state();
+      if(!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y))return false;
+      const observer={...unit,x:origin.x,y:origin.y};
+      // Optical fire-source transmission is distinct from identifying a unit
+      // standing behind opaque smoke. The environment owns the burning state.
+      return TacticalEngine.canSeeLight(map,observer,{x:tile.x,y:tile.y,radius:0},environmentState)&&
+        TacticalEngine.lightTransmission(map,observer,{x:tile.x,y:tile.y,radius:0},environmentState)>0;
+    }
     function environmentTargetTiles(unit,skill){
       if(skill?.environmentTarget!=="BURNING"||skill?.waterContact!=="RAIN_EVENT"||!unit?.alive||unit.acted)return[];
       const {map,units,environmentState}=state();
-      return targetRangeTiles(unit,skill).filter(tile=>
-        !ctx.unitAt(tile.x,tile.y)&&!ctx.coreAt(tile.x,tile.y)&&
-        EnvironmentEngine.isBurning(environmentState,tile.x,tile.y)&&
-        TacticalEngine.teamCanSee(map,units,unit.team,tile,environmentState));
+      const origins=skill.approach?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
+      const r=TacticalEngine.range(skill);
+      return map.tiles.filter(tile=>{
+        if(ctx.unitAt(tile.x,tile.y)||ctx.coreAt(tile.x,tile.y)||!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y))return false;
+        if(!units.some(observer=>observer.alive&&observer.team===unit.team&&canObserveFireSource(observer,tile,environmentState)))return false;
+        return origins.some(origin=>{
+          const d=Math.abs(origin.x-tile.x)+Math.abs(origin.y-tile.y);
+          return d>=r.min&&d<=r.max&&canObserveFireSource(unit,tile,environmentState,origin);
+        });
+      });
     }
     function executeEnvironmentTargetSkill(unit,tile,skill){
       const {map,environmentState}=state();
@@ -250,7 +266,7 @@
       for(const candidate of attackOrigins(unit)){
         const d=Math.abs(candidate.x-tile.x)+Math.abs(candidate.y-tile.y);
         if(d<r.min||d>r.max)continue;
-        if(!TacticalEngine.hasLineOfSight(map,{...unit,x:candidate.x,y:candidate.y},tile,skill,environmentState))continue;
+        if(!canObserveFireSource(unit,tile,environmentState,candidate))continue;
         const route=candidate.x===unit.x&&candidate.y===unit.y?[]:
           TacticalEngine.pathTo(map,state().units,unit,candidate.x,candidate.y);
         unit.facing=originalFacing;
@@ -264,7 +280,7 @@
       }
       // Recheck the actual landing position before spending a resource.
       if(!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y)||
-        !TacticalEngine.hasLineOfSight(map,unit,tile,skill,environmentState))return skillFailure(unit,skill,"ENVIRONMENT_TARGET_CHANGED",tile);
+        !canObserveFireSource(unit,tile,environmentState))return skillFailure(unit,skill,"ENVIRONMENT_TARGET_CHANGED",tile);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
       const cast=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,cast);
       const events=EnvironmentEngine.waterImpact(map,environmentState,tile.x,tile.y,{source:cast.id});
@@ -281,7 +297,7 @@
       const plan=attackPlanForTarget(unit,target,skill);
       if(!plan)return skillFailure(unit,skill,"NO_ATTACK_PATH",target);
       // Air transport plans its approach and placement as one confirmation.
-      if(skill?.utilityAction?.type==="CARRY_ALLY")return true;
+      if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return true;
       if(!plan.path.length)return true;
       if(!pendingMove||pendingMove.unitId!==unit.id)beginPendingMove(unit);
       const result=ctx.traverseUnitPath(unit,plan.path,{kind:"UNIT"});
@@ -393,26 +409,18 @@
         ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
-      if(action.type==="LIFT_DROP"){
-        if(!target?.character||target.team===attacker.team||!canLiftTarget(attacker,target)){ctx.pushLog(`${skill.name} 只能抓起比搬運能力更輕的敵人。`,"SYSTEM");ctx.render();return false;}
-        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-        const tile=TacticalEngine.tile(map,target.x,target.y),landingState=globalThis.VerticalMobilityEngine?.describe?.(target,tile),landingZ=Number(landingState?.physicalZ??target.z??TacticalEngine.elevation(tile)),drop=Math.max(Number(action.minDrop||0),Number(globalThis.FallEngine?.FALL_THRESHOLD||2)+1),fromZ=landingZ+drop;
-        target.z=fromZ;const landing=FallEngine.resolveLanding({map,target,fromZ,applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,skill.name)});
-        ctx.pushLog(`${attacker.character.name} 抓起 ${target.character.name} 升至 Z${fromZ} 後放開｜墜落 ${landing.drop}｜傷害 ${landing.damage}。`,"BATTLE");
-        return finishActiveSkill(attacker);
-      }
-      if(action.type==="CARRY_ALLY"){
+      if(action.type==="CARRY_ALLY"||action.type==="CARRY_ENEMY"){
         if(pendingTransport)return false;
         const pickup=pickupPlan(attacker,target,skill);
-        if(!pickup){ctx.pushLog(`${skill.name}：友軍不在可接近的抓取位置，或重量超過搬運能力。`,"SYSTEM");ctx.render();return false;}
+        if(!pickup){ctx.pushLog(`${skill.name}：目標不在可接近的抓取位置，或重量超過搬運能力。`,"SYSTEM");ctx.render();return false;}
         const releaseSkill=SkillDatabase.get(action.releaseSkillId);
-        if(!releaseSkill)return skillFailure(attacker,skill,"RELEASE_SKILL_MISSING",target);
+        if(!releaseSkill||releaseSkill.utilityAction?.type!=="RELEASE_CARRIED")return skillFailure(attacker,skill,"RELEASE_SKILL_MISSING",target);
         pendingTransport={carrier:attacker,passenger:target,pickup,pickupSkill:skill,
           origin:{x:target.x,y:target.y,z:target.z,verticalState:target.verticalState?JSON.parse(JSON.stringify(target.verticalState)):null},
           carrierVertical:attacker.verticalState?JSON.parse(JSON.stringify(attacker.verticalState)):null,
           releasePlans:null,committed:false};
         ctx.setSelectedSkill(releaseSkill);ctx.setSelectedSkillVariant(null);ctx.setMode("map-target");
-        ctx.pushLog(`${attacker.character.name} 準備空運 ${target.character.name}｜選擇落地位置後才正式抓取與移動。`,"SYSTEM");ctx.render();return true;
+        ctx.pushLog(`${attacker.character.name} 準備${action.type==="CARRY_ENEMY"?"抓起並摔落":"空運"} ${target.character.name}｜選定落點後才正式抓取與移動。`,"SYSTEM");ctx.render();return true;
       }
       return false;
     }
@@ -439,7 +447,7 @@
         if(!moved.completed){pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode(attacker.alive?"command":"inspect");ctx.pushLog(`${attacker.character.name} 接近隊友途中被環境阻斷，未消耗空運技能。`,"SYSTEM");ctx.render();return false;}
       }
       // Commit one skill action only after arrival beside a still-valid ally.
-      if(!canPickupFrom(attacker,passenger,attacker,state().environmentState)||!ctx.canUseSkill(attacker,pending.pickupSkill)){
+      if(!canPickupFrom(attacker,passenger,attacker,state().environmentState,pending.pickupSkill.utilityAction?.type==="CARRY_ENEMY"?"ENEMY":"ALLY")||!ctx.canUseSkill(attacker,pending.pickupSkill)){
         pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("command");ctx.pushLog(`${attacker.character.name} 無法在目前位置抓起友軍。`,"SYSTEM");ctx.render();return false;
       }
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
@@ -458,13 +466,24 @@
       ctx.consumeSkill(attacker,skill);
       passenger.x=destination.x;passenger.y=destination.y;
       delete passenger.carriedByUnitId;delete passenger.transportHidden;delete attacker.carryingUnitId;
-      // Safe placement, unlike the offensive LIFT_DROP. VerticalMobilityEngine
-      // owns the correct water/ice/ground resting layer; no artificial fall.
-      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(passenger,destination);
-      else passenger.z=Number(destination.elevation||0);
+      if(skill.utilityAction?.mode==="DROP"){
+        // The transport route is shared. Only its final release is hostile:
+        // FallEngine is the sole authority for real elevation, equipment and
+        // falling damage, including water/ice landing physics.
+        const landing=globalThis.VerticalMobilityEngine?.describe?.(passenger,destination);
+        const landingZ=Number(landing?.physicalZ??destination.elevation??0);
+        const minDrop=Number(pending.pickupSkill.utilityAction?.minDrop??0);
+        const fromZ=Math.max(Number(attacker.z||0),landingZ+minDrop,landingZ+FallEngine.FALL_THRESHOLD+1);
+        const fall=FallEngine.resolveLanding({map,target:passenger,fromZ,
+          applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,pending.pickupSkill.name)});
+        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 空運摔落至 (${destination.x},${destination.y})｜墜落 ${fall.drop}｜傷害 ${fall.damage}。`,"BATTLE");
+      }else{
+        if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(passenger,destination);
+        else passenger.z=Number(destination.elevation||0);
+        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 安全空運至 (${destination.x},${destination.y})｜無墜落傷害。`,"BATTLE");
+      }
       if(passenger.alive)ctx.enterTile(passenger);
       pendingTransport=null;
-      ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 安全空運至 (${destination.x},${destination.y})｜無墜落傷害。`,"BATTLE");
       return finishActiveSkill(attacker);
     }
 
