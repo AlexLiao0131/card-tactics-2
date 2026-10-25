@@ -588,15 +588,43 @@ export const EnvironmentEngine=(()=>{
     }
     return released;
   }
-  // Water vortex cargo is real Hydrology tile-volume, not an unlimited
-  // visual effect. The vortex borrows exactly the water stored in a source tile,
-  // and returns the unused quantity to real terrain on expiration.
-  function entrainTornadoWater(tile,events=[]){
-    const amount=HydrologyEngine.liquidDepth(tile);
-    if(amount<=HydrologyEngine.EPSILON)return 0;
-    HydrologyEngine.removeWater(tile,amount,events);
-    events.push({type:"TORNADO_WATER_ENTRAINED",x:tile.x,y:tile.y,volume:amount});
-    return amount;
+  // A vortex entrains one existing water-column budget, but the intake is a
+  // connected footprint, never a single emptied grid column. Hydrology alone
+  // owns D/ice/Q and all removals: no separate visual water reservoir.
+  // The old single-column amount remains the transported cargo; distributing
+  // it over actually connected wet cells prevents artificial square dry holes.
+  function entrainTornadoWater(map,cells,events=[]){
+    const contacted=tornadoNearbyCells(map,cells),wet=new Map();
+    for(const point of contacted){
+      const tile=tileAt(map,point.x,point.y);
+      if(tile&&HydrologyEngine.liquidDepth(tile)>HydrologyEngine.EPSILON)wet.set(key(tile.x,tile.y),tile);
+    }
+    const first=contacted.map(point=>wet.get(key(point.x,point.y))).find(Boolean);
+    if(!first)return 0;
+    // Only hydraulic neighbors of the first contacted column participate.
+    // Adjacent-but-disconnected pools must not be robbed by the same vortex.
+    const connected=[],queue=[first],seen=new Set([key(first.x,first.y)]);
+    for(let i=0;i<queue.length;i++){
+      const tile=queue[i];connected.push(tile);
+      for(const [dx,dy] of DIRS){
+        const k=key(tile.x+dx,tile.y+dy),next=wet.get(k);
+        if(!next||seen.has(k))continue;
+        seen.add(k);queue.push(next);
+      }
+    }
+    const budget=HydrologyEngine.liquidDepth(first);
+    const available=connected.reduce((total,tile)=>total+HydrologyEngine.liquidDepth(tile),0);
+    const fraction=available>0?Math.min(1,budget/available):0;
+    let entrained=0;
+    for(const tile of connected){
+      const wanted=HydrologyEngine.liquidDepth(tile)*fraction;
+      const removed=HydrologyEngine.removeWater(tile,wanted,events);
+      if(removed>HydrologyEngine.EPSILON){
+        entrained+=removed;
+        events.push({type:"TORNADO_WATER_ENTRAINED",x:tile.x,y:tile.y,volume:removed});
+      }
+    }
+    return entrained;
   }
   function depositTornadoWater(map,point,volume,events,source){
     const tile=point&&tileAt(map,point.x,point.y);
@@ -654,8 +682,7 @@ export const EnvironmentEngine=(()=>{
       if(entrainedWaterVolume<=HydrologyEngine.EPSILON){
         // Air vortex crossing water acquires one existing column of genuine
         // Hydrology water. Do not mint water from an animation or wind strength.
-        const source=sweep.map(point=>tileAt(map,point.x,point.y)).find(tile=>HydrologyEngine.isWater(tile));
-        if(source)entrainedWaterVolume=entrainTornadoWater(source,events);
+        entrainedWaterVolume=entrainTornadoWater(map,sweep,events);
       }
       if(entrainedWaterVolume>HydrologyEngine.EPSILON){
         entrainedWaterVolume=contactWaterTornadoFire(map,state,sweep,entrainedWaterVolume,events);
@@ -972,10 +999,10 @@ export const EnvironmentEngine=(()=>{
     const clusterId=nextTornadoClusterId(state),sourceTile=map?tileAt(map,x,y):null;
     const existing=effectAt(state,x,y).find(effect=>effect.type===EFFECT.TORNADO);
     const alreadyEntrained=Math.max(0,Number(existing?.entrainedWaterVolume||0));
-    const water=HydrologyEngine.isWater(sourceTile)||alreadyEntrained>HydrologyEngine.EPSILON;
+    const water=HydrologyEngine.liquidDepth(sourceTile)>HydrologyEngine.EPSILON||alreadyEntrained>HydrologyEngine.EPSILON;
     const burning=!water&&isBurning(state,x,y),base={duration,clusterId,basePushDistance:pushDistance,baseLift:lift,baseDamage:damage,baseFireDamage:fireDamage,baseWindStrength:WIND_SCALE.TORNADO,windStrength:WIND_SCALE.TORNADO,pushDistance,lift,resistAxes:{...resistAxes},clusterSize:1,clusterStrength:1,carriedLogIds:[],carriedLogs:0,debrisDamage:0,visionBlock:false};
     if(water){
-      const entrainedWaterVolume=alreadyEntrained+entrainTornadoWater(sourceTile);
+      const entrainedWaterVolume=alreadyEntrained+entrainTornadoWater(map,[{x,y}]);
       addEffect(state,x,y,{...base,type:EFFECT.TORNADO,element:"WATER",damage,damageType:"WATER",entrainedWaterVolume});
       return{type:"WATER_TORNADO_FORMED",clusterId,x,y,effect:EFFECT.TORNADO,clusterSize:1,entrainedWaterVolume};
     }

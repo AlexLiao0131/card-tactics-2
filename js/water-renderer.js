@@ -192,13 +192,19 @@ export class WaterRenderer{
       // from the spring toward its receiver rather than shimmer in place per tile.
       this.runoffTexture.vOffset=(this.runoffTexture.vOffset-dt*.46)%1;
       for(const entry of this.cascades.values()){
-        const impact=Math.max(.32,Number(entry.impactScale||1)),p=1+Math.sin(this.waveTime*(2.6+impact*.9)+entry.phase)*(.035+.035*Math.min(1,impact));
+        // Hydrology flow intensity animates the existing waterfall impact
+        // geometry. A flow-only change must not destroy its rock-bound mesh.
+        const impact=Math.max(.32,Number(entry.impactScale||1));
+        const foamWidth=entry.foamWidthRatio??1;
+        const foamThickness=entry.foamThicknessRatio??1;
+        const p=1+Math.sin(this.waveTime*(2.6+impact*.9)+entry.phase)*(.035+.035*Math.min(1,impact));
         for(const group of entry.impacts||[]){
           group.foam.rotation.y+=dt*.7;
-          group.foam.scaling.set(1.02*p,.24+.08*Math.min(1,impact),.62*p);
+          group.foam.scaling.set(1.02*p*foamWidth,(.24+.08*Math.min(1,impact))*foamThickness,.62*p*foamWidth);
           for(let i=0;i<(group.ripples||[]).length;i++){
             const ripple=group.ripples[i],q=(this.waveTime*(.52+.30*impact)+entry.phase*.07+i*.46)%1,scale=.55+q*.95;
-            ripple.scaling.set(scale,.22,scale*.68);
+            const width=entry.rippleWidthRatios?.[i]??1;
+            ripple.scaling.set(scale*width,.22,scale*.68*width);
             ripple.visibility=entry.baseVisibility*(1-q)*.72;
           }
         }
@@ -2513,7 +2519,7 @@ export class WaterRenderer{
       }
       impacts.push({foam,ripples,center});
     }
-    return{root,mesh,impacts,impactScale,baseVisibility:mesh.visibility,phase:(edge.tile.x*13+edge.tile.y*7)%17};
+    return{root,mesh,impacts,impactScale,geometryImpactScale:impactScale,foamWidthRatio:1,foamThicknessRatio:1,rippleWidthRatios:[1,1],baseVisibility:mesh.visibility,phase:(edge.tile.x*13+edge.tile.y*7)%17};
   }
 
 
@@ -2733,9 +2739,16 @@ export class WaterRenderer{
     const wall=this.surfaceResolver.getRenderedCliffGeometry(edge.tile,this.cascadeDirection(edge));
     const upstream=this.surfacePresentation.get(keyOf(edge.tile.x,edge.tile.y));
     const downstream=this.surfacePresentation.get(keyOf(edge.receiver.x,edge.receiver.y));
+    // Flow speed, hydraulic power and transported volume are dynamic
+    // presentation inputs; they do not change the rock-bound triangles.
+    // For Q-only falls, transport cross-section DOES define the wet lip width,
+    // so keep its exact discharge/volume as geometric dependencies.
+    const transportOnly=!this.isRenderableWater(edge.tile);
     const physical=JSON.stringify([
-      edge.top,edge.bottom,edge.drop,edge.speed,edge.flowVolume,
-      edge.transportVolume,edge.edgeDischarge,edge.hydraulicPower,
+      edge.top,edge.bottom,edge.drop,
+      transportOnly?edge.transportVolume:null,
+      transportOnly?edge.edgeDischarge:null,
+      transportOnly?edge.flowVolume:null,
       edge.hydrologyEdgeReason,edge.storedWaterOvertopping,edge.receiverWet,
       hasAnyWater(edge.receiver)?visualSurface(edge.receiver):null
     ]);
@@ -3067,6 +3080,20 @@ export class WaterRenderer{
       const visibility=edge.tile.fogged?.16:1;
       retained.baseVisibility=visibility;
       retained.mesh.visibility=visibility;
+      // Refresh all flow-only properties without rebuilding either the cliff
+      // surface or its foam/ripple meshes. Animation uses impactScale below.
+      retained.impactScale=clamp(Math.sqrt(Math.max(0,Number(edge.hydraulicPower||0))+.01),.32,1.45);
+      const original=Math.max(.32,Number(retained.geometryImpactScale||retained.impactScale));
+      retained.foamWidthRatio=(.30+.22*retained.impactScale)/(.30+.22*original);
+      retained.foamThicknessRatio=(.026+.018*Math.min(1,retained.impactScale))/(.026+.018*Math.min(1,original));
+      retained.rippleWidthRatios=[0,1].map(i=>(.28+.12*i+.16*retained.impactScale)/(.28+.12*i+.16*original));
+      Object.assign(retained.mesh.metadata,{
+        drop:edge.drop,flowSpeed:edge.speed,flowVolume:edge.flowVolume,
+        transportVolume:edge.transportVolume,edgeDischarge:edge.edgeDischarge,
+        hydraulicPower:edge.hydraulicPower,hydrologyEdgeReason:edge.hydrologyEdgeReason,
+        storedWaterOvertopping:edge.storedWaterOvertopping===true,
+        receiverWet:edge.receiverWet
+      });
       for(const group of retained.impacts||[])group.foam.visibility=visibility;
       if(surfaceChanged){
         const positions=retained.mesh?.getVerticesData?.(BABYLON.VertexBuffer.PositionKind)||[];
