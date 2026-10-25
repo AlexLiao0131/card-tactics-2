@@ -91,7 +91,7 @@ try{
     pendingSnapshot=null;pendingAnimationEvents=[];
     // Release the on-demand callback only if no new snapshot arrived during
     // publication. That preserves reentrant runtime events without another RAF.
-    try{renderer.sync(snap,events);battleUI.render();}
+    try{renderer.sync(snap,events);renderer.unitHud?.presentEvents?.(events);battleUI.render();}
     finally{if(!pendingSnapshot)renderer.presentationFrameSync=null;}
   }
 

@@ -22,7 +22,36 @@ export const UnitAnimationEngine=(()=>{
   const FACINGS=new Set(["N","E","S","W"]);
   const queue=[];
   const previousUnits=new Map();
+  // Damage resolved by BattleResolution is recorded once at the real result
+  // site; the next published HP delta only emits remaining environmental damage.
+  const resolvedDamage=new Map();
   let sequence=0;
+  const NEGATIVE_STATUS_TYPES=new Set(["DAMAGE_OVER_TIME","STUN","STUNNED","FREEZE","FROZEN","POISON","BURN","BURNING","PARALYSIS","SILENCE","SLOW","BLIND","BLEED","CURSE","FEAR"]);
+  const STATUS_NAMES=Object.freeze({DAMAGE_OVER_TIME:"持續傷害",STUN:"暈眩",STUNNED:"暈眩",FREEZE:"凍結",FROZEN:"凍結",POISON:"中毒",BURN:"燃燒",BURNING:"燃燒",PARALYSIS:"麻痺",SILENCE:"沉默",SLOW:"緩速",BLIND:"目盲",BLEED:"流血",CURSE:"詛咒",FEAR:"恐懼"});
+  const statusId=effect=>String(effect?.id||effect?.type||"");
+  const abnormal=effect=>effect?.classification==="NEGATIVE"||NEGATIVE_STATUS_TYPES.has(String(effect?.id||"").toUpperCase())||NEGATIVE_STATUS_TYPES.has(String(effect?.type||"").toUpperCase());
+  const statusLabel=effect=>String(effect?.name||STATUS_NAMES[String(effect?.id||"").toUpperCase()]||STATUS_NAMES[String(effect?.type||"").toUpperCase()]||effect?.id||effect?.type||"異常狀態");
+  function abnormalStatuses(unit){
+    const statuses=[],seen=new Set();
+    for(const effect of unit?.effects||[]){
+      if(!abnormal(effect))continue;
+      const id=statusId(effect),name=statusLabel(effect);
+      if(!id||seen.has(id))continue;
+      seen.add(id);
+      statuses.push({id,type:effect.type||null,name,remaining:effect.remaining??null});
+    }
+    // Sinking without aquatic/breathing protection is the existing gameplay
+    // condition that inflicts drowning damage, not a synthetic EffectEngine BUFF.
+    if(unit?.waterInteractionState==="SINKING"&&unit?.waterBreathing!==true)
+      statuses.push({id:"WATER_DROWNING",type:"WATER_DROWNING",name:"溺水",remaining:null});
+    return statuses;
+  }
+  const floatPosition=unit=>({unitId:unit.id,x:Number(unit.x||0),y:Number(unit.y||0),renderZ:Number(unit.renderZ??unit.z??0)});
+  function emitFloat(unit,kind,value,{afterDeath=false}={}){
+    if(!unit?.id||!Number.isFinite(Number(value))&&kind!=="STATUS")return null;
+    if(kind!=="STATUS"&&Number(value)<=0)return null;
+    return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(unit),kind,value,afterDeath});
+  }
 
   function normalizeState(value){
     const state=String(value||STATE.IDLE).toUpperCase();
@@ -114,8 +143,28 @@ export const UnitAnimationEngine=(()=>{
     return emit(target,STATE.HURT,detail);
   }
 
+  function emitResolvedHit(target,{damage=0,critical=false}={}){
+    if(!target?.id)return null;
+    const actual=Math.max(0,Math.round(Number(damage)||0));
+    if(!actual)return null;
+    const id=String(target.id);
+    // Presentation never reveals a hidden opponent: only the last visible
+    // snapshot may own a floating combat number (also on lethal hits).
+    const previouslyVisible=previousUnits.get(id);
+    if(!previouslyVisible)return null;
+    resolvedDamage.set(id,(resolvedDamage.get(id)||0)+actual);
+    return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true});
+  }
+
   function emitDeath(unit,detail={}){
     if(!unit?.id)return null;
+    const previous=previousUnits.get(String(unit.id));
+    // Any combat hit already has its own result-derived floating number.
+    // Only residual, non-combat damage is still represented by the death delta.
+    if(previous&&Number(previous.hp)>0){
+      const residual=Math.max(0,Number(previous.hp)-Number(resolvedDamage.get(String(unit.id))||0));
+      if(residual>0)emitFloat(previous,"DAMAGE",Math.round(residual),{afterDeath:true});
+    }
     return emit(unit,STATE.DEATH,{duration:durationFor(unit,STATE.DEATH,detail),...detail});
   }
 
@@ -161,14 +210,23 @@ export const UnitAnimationEngine=(()=>{
             if(before>=0)queue.splice(before,0,tail);else queue.push(tail);
           }
         }
-        const lost=Math.max(0,Number(previous.hp||0)-Number(unit.hp||0));
-        if(lost>0&&!queued(unit.id,STATE.HURT,STATE.DEATH)){
-          emitHit(unit,{damage:lost,source:"STATE_DELTA"});
+        const hpDelta=Number(unit.hp||0)-Number(previous.hp||0);
+        if(hpDelta<0){
+          const remaining=Math.max(0,-hpDelta-Number(resolvedDamage.get(String(unit.id))||0));
+          if(remaining>0)emitFloat(unit,"DAMAGE",Math.round(remaining));
+          if(!queued(unit.id,STATE.HURT,STATE.DEATH))emitHit(unit,{damage:-hpDelta,source:"STATE_DELTA"});
+        }else if(hpDelta>0)emitFloat(unit,"HEAL",Math.round(hpDelta));
+        const former=new Set(abnormalStatuses(previous).map(effect=>effect.id));
+        for(const effect of abnormalStatuses(unit)){
+          if(former.has(effect.id))continue;
+          emitFloat(unit,"STATUS",effect.name);
+          former.add(effect.id);
         }
       }
     }
     previousUnits.clear();
     for(const[id,unit]of current)previousUnits.set(id,unit);
+    resolvedDamage.clear();
     return snapshot;
   }
 
@@ -177,11 +235,11 @@ export const UnitAnimationEngine=(()=>{
     return queue.splice(0,queue.length);
   }
 
-  function clear(){queue.length=0;previousUnits.clear();}
+  function clear(){queue.length=0;previousUnits.clear();resolvedDamage.clear();}
 
   return Object.freeze({
     STATE,DEFAULTS,normalizeState,normalizeFacing,visualDefinition,skillState,
-    emit,emitPresentation,emitAction,emitHit,emitDeath,emitMove,observe,drain,clear
+    emit,emitPresentation,emitAction,emitHit,emitResolvedHit,emitDeath,emitMove,abnormalStatuses,observe,drain,clear
   });
 })();
 

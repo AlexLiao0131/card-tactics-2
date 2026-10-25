@@ -815,6 +815,20 @@ export const VisualDatabase=(()=>{
 
   function character(id){return get("characters",id);}
   function characterBattle(id){return character(id)?.battle||null;}
+  // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
+  // generated thumbnails, fallback network guesses, or second asset registry.
+  const hudPortraits=Object.freeze({
+    livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
+    reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
+    church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",
+    seraphina:"seraphina.png",nereia:"nereia.png",
+    cat_thief_hero:"cat_thief_hero.png",angel_archer_hero:"angel_archer_hero.png",
+    velsa:"velsa.png"
+  });
+  function characterHudPortrait(characterId){
+    const name=hudPortraits[String(characterId||"")];
+    return name?`assets/images/cards/heroes/${name}`:null;
+  }
   function card(id){return get("cards",id);}
   function terrainMaterial(id){return get("terrainMaterials",id)||presentation("terrain",id);}
   function object(id){return get("objects",id)||presentation("objects",id);}
@@ -823,7 +837,7 @@ export const VisualDatabase=(()=>{
 
   return{
     group,get,asset,presentation,register,
-    character,characterBattle,card,terrainMaterial,object,effect,animation
+    character,characterBattle,characterHudPortrait,card,terrainMaterial,object,effect,animation
   };
 })();
 

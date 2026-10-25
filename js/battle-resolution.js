@@ -92,7 +92,11 @@ export const BattleResolution=(()=>{
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
       hooks.consumeSkill?.(action.actor,skill);
       const hallucinationHit=action.target?.hallucination===true&&baseResult.hit,shield=hallucinationHit?{damage:Math.max(1,Number(action.target.hp||1)),absorbed:0,shieldHp:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(action.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
+      const hpBefore=Math.max(0,Number(action.target.hp||0));
       action.target.hp=Math.max(0,action.target.hp-result.damage);
+      globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{
+        damage:hpBefore-action.target.hp,critical:result.crit===true
+      });
       if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
       else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:Number(result.damage||0)});
       if(action.target.alive&&globalThis.EffectEngine){
