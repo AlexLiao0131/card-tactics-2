@@ -88,6 +88,14 @@ export class WaterRenderer{
     // Separate actual indexed geometry ownership from flow/colour/wave inputs.
     // An attribute-only change must not dispose a conforming water mesh.
     this.surfaceGeometrySignatures=new Map();
+    // Exact per-component tile ownership, for skipping unrelated component
+    // polygon/cliff/signature work. No duplicate topology or hydrology state.
+    this.surfaceComponentMembership=new Map();
+    // Derived exact cliff-clipped polygons for tiles inside changing water
+    // components. Cached only by immutable resolver publication identity and
+    // the original conservative dirty dependency set.
+    this.surfaceTileOwnedPolygons=new Map();
+    this.publishedSurfaceSourcesSignature=null;
     this.publishedWaterGeometryRevision=0;
     this.levelSamples=null;
     // Snapshot-scoped memo for the SAME authored D/Q cliff connectivity.
@@ -426,6 +434,9 @@ export class WaterRenderer{
     this.surfaceAnimations.clear();
     this.surfaceMeshSignatures.clear();
     this.surfaceGeometrySignatures.clear();
+    this.surfaceComponentMembership.clear();
+    this.surfaceTileOwnedPolygons.clear();
+    this.publishedSurfaceSourcesSignature=null;
   }
 
   setWind(value){
@@ -1255,31 +1266,46 @@ export class WaterRenderer{
   // Resolve ownership with the EXISTING submerged-cliff/continuous-water
   // contract. No separate water-body test, water level, or render overlay.
   // Other cliffs (exposed rock, dry banks, waterfalls) are left untouched.
-  componentSurfacePolygons(component,presentation){
+  componentSurfacePolygons(component,presentation,clipReuse=null){
     const members=new Map(component.tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
     let excludedSubmergedShoulders=0,clippedSubmergedShoulders=0;
     const tiles=component.tiles.map(tile=>{
-      const key=keyOf(tile.x,tile.y),polygons=[];
-      const limits=[];
-      if(hasAnyWater(tile))for(const dir of DIRS){
-        const neighbor=members.get(keyOf(Number(tile.x)+dir.dx,Number(tile.y)+dir.dy));
-        if(!neighbor||!hasAnyWater(neighbor))continue;
-        if(!this.surfaceResolver.getRenderedCliffGeometry(tile,dir))continue;
-        if(!this.surfaceResolver.submergedStoredWaterCliff(tile,neighbor))continue;
-        if(!this.continuousWaterEdge(tile,neighbor))continue;
-        limits.push(dir.dx!==0
-          ?{axis:"x",bound:(Number(tile.x)+dir.dx*.5)*TILE_SIZE,keepLess:dir.dx>0}
-          :{axis:"z",bound:(Number(tile.y)+dir.dy*.5)*TILE_SIZE,keepLess:dir.dy>0});
+      const key=keyOf(tile.x,tile.y),source= presentation.get(key)?.polygons||[];
+      const previous=clipReuse?.previous?.get(key);
+      const canReuse=previous?.componentId===component.id&&
+        previous.source===source&&!clipReuse.dirtyKeys.has(key);
+      let owned=null,excluded=0,clipped=0;
+      if(canReuse){
+        owned=previous.owned;
+        excluded=previous.excluded;clipped=previous.clipped;
+        clipReuse.metrics.tilesClippingReused++;
+      }else{
+        const limits=[];
+        if(hasAnyWater(tile))for(const dir of DIRS){
+          const neighbor=members.get(keyOf(Number(tile.x)+dir.dx,Number(tile.y)+dir.dy));
+          if(!neighbor||!hasAnyWater(neighbor))continue;
+          if(!this.surfaceResolver.getRenderedCliffGeometry(tile,dir))continue;
+          if(!this.surfaceResolver.submergedStoredWaterCliff(tile,neighbor))continue;
+          if(!this.continuousWaterEdge(tile,neighbor))continue;
+          limits.push(dir.dx!==0
+            ?{axis:"x",bound:(Number(tile.x)+dir.dx*.5)*TILE_SIZE,keepLess:dir.dx>0}
+            :{axis:"z",bound:(Number(tile.y)+dir.dy*.5)*TILE_SIZE,keepLess:dir.dy>0});
+        }
+        owned=[];
+        for(const polygon of source){
+          if(!limits.length){owned.push(polygon);continue;}
+          const retained=this.clipSubmergedShoulderToTile(polygon,limits);
+          if(retained.length<3){excluded++;continue;}
+          if(retained!==polygon)clipped++;
+          owned.push(retained);
+        }
+        if(clipReuse)clipReuse.metrics.tilesClippingRecomputed++;
       }
-      for(const polygon of presentation.get(key)?.polygons||[]){
-        if(!limits.length){polygons.push(polygon);continue;}
-        const owned=this.clipSubmergedShoulderToTile(polygon,limits);
-        if(owned.length<3){excludedSubmergedShoulders++;continue;}
-        if(owned!==polygon)clippedSubmergedShoulders++;
-        polygons.push(owned);
-      }
-      // Flow is defined per hydrology tile, not per surface vertex.
-      return{tile,key,polygons,motion:this.tileMotion(tile)};
+      excludedSubmergedShoulders+=excluded;
+      clippedSubmergedShoulders+=clipped;
+      clipReuse?.next.set(key,{componentId:component.id,source,owned,excluded,clipped});
+      // Motion always comes from this snapshot's one Q network owner.
+      return{tile,key,polygons:owned,motion:this.tileMotion(tile)};
     });
     return{tiles,excludedSubmergedShoulders,clippedSubmergedShoulders};
   }
@@ -2351,7 +2377,13 @@ export class WaterRenderer{
         tile.channelBankElevation,tile.hydrologyChannelWidthFraction,
         tile.hydrologySource,tile.hydrologySourceDisabled,tile.sourceKind,
         tile.hydrologyDrain,tile.hydrologySourceInflow,tile.fogged,
-        this.publishedWaterGeometrySignature(geometry,"SURFACE"),cliffs,edges
+        this.publishedWaterGeometrySignature(geometry,"SURFACE"),cliffs,edges,
+        // These exact render inputs influence colour, source waves, or authored
+        // cliff/water transitions. Do not let a global signature change while
+        // the local dirty dependency map incorrectly reports "unchanged".
+        tile.waterTurbidity,tile.hydrologyRequestedSourceInflow,
+        tile.discharge,tile.hydrologyCascadeToX,tile.hydrologyCascadeToY,
+        tile.hydrologyCascadeDrop,tile.hydrologyEdgeOutflows
       ]));
     }
     return signatures;
@@ -2374,6 +2406,33 @@ export class WaterRenderer{
     return changed;
   }
 
+  // The component can bypass polygon clipping, hydrology-source filtering,
+  // cliff signature serialization and the indexed topology builder ONLY if
+  // every tile in the conservative existing dependency halo is unchanged,
+  // the exact member set is identical and all active spring fields are equal.
+  // Do not substitute rounded water levels, smaller dirty halos or an inferred
+  // "similar enough" region. The unchanged Mesh and animation remain the
+  // authoritative published data until a genuinely affected component builds.
+  surfaceComponentMembershipSignature(component){
+    return component.tiles.map(tile=>keyOf(tile.x,tile.y)).sort().join("|");
+  }
+
+  canReuseUnchangedSurfaceComponent(component,dirtyKeys,sourcesChanged,mesh,animation,
+    oldMembership,oldSignature,oldGeometrySignature,previousPresentation,presentation){
+    if(sourcesChanged||!mesh||mesh.isDisposed?.()||!animation||
+      oldSignature==null||oldGeometrySignature==null||
+      oldMembership!==this.surfaceComponentMembershipSignature(component))return false;
+    // The resolver is the single authoritative polygon publisher. An actual
+    // publication change must win over our dependency prefilter even if an
+    // upstream producer forgot to advertise a changed input.
+    return !component.tiles.some(tile=>{
+      const key=keyOf(tile.x,tile.y);
+      return dirtyKeys.has(key)||
+        previousPresentation?.get(key)?.polygons!==presentation?.get(key)?.polygons||
+        previousPresentation?.get(key)?.stored!==presentation?.get(key)?.stored;
+    });
+  }
+
   // Change categories are derived from the EXACT signatures already used
   // by the incremental resolver. These counters are observations only, not
   // extra invalidation rules or a second water-surface calculation.
@@ -2383,7 +2442,7 @@ export class WaterRenderer{
       publishedTerrain:0,publishedCliffs:0,visibility:0,other:0};
     if(!this.surfaceSignature){reasons.initial=next.size;return reasons;}
     const compare=(a,b,indices)=>indices.some(i=>JSON.stringify(a[i])!==JSON.stringify(b[i]));
-    const otherIndices=[0,1,2,9,10,11,12,13,14,15];
+    const otherIndices=[0,1,2,9,10,11,12,13,14,15,20,21,22,23,24,25,26];
     for(const [key,signature] of next){
       const previous=prior.get(key);
       if(previous===undefined){reasons.addedOrRemoved++;continue;}
@@ -2569,7 +2628,12 @@ export class WaterRenderer{
     globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.flowInventory",performance.now()-flowStart);
     // This signature uses the true D/Q inputs, not the generated polygons.
     // Terrain and Q change on turns, not on every animation frame.
-    const surfaceSignature=this.surfaceSignatureFor([],state);
+    // A spring may inherit its rate from discharge, rather than explicit
+    // hydrologySourceInflow. That exact shader input is part of the revision
+    // contract even when the D/Q surface happens to remain unchanged.
+    const activeSourceSignature=JSON.stringify(sources.map(source=>
+      [source.x,source.z,source.rate]));
+    const surfaceSignature=this.surfaceSignatureFor([],state)+"#sources:"+activeSourceSignature;
     const surfaceChanged=surfaceSignature!==this.surfaceSignature;
     if(surfaceChanged){
       this.seamAuditRevision++;
@@ -2609,18 +2673,39 @@ export class WaterRenderer{
       const previousAnimations=this.surfaceAnimations;
       const previousSignatures=this.surfaceMeshSignatures;
       const previousGeometrySignatures=this.surfaceGeometrySignatures;
+      const previousMembership=this.surfaceComponentMembership;
+      const sourcesChanged=this.publishedSurfaceSourcesSignature!==activeSourceSignature;
+      const clipReuse={dirtyKeys,previous:this.surfaceTileOwnedPolygons,next:new Map(),
+        metrics:{tilesClippingReused:0,tilesClippingRecomputed:0}};
       // Compare the resolved, exact D/Q polygons before touching any GPU mesh.
       // Free all obsolete buffers before allocating replacements, so heavy
       // floods do not temporarily double WebGL memory during an update.
       const signatureStart=performance.now();
+      let unchangedComponentsSkipped=0;
       const planned=components.map(component=>{
-        const resolved=this.componentSurfacePolygons(component,presentation);
+        const mesh=previousMeshes.get(component.id);
+        const valid=!!mesh&&!mesh.isDisposed?.();
+        const previousSignature=previousSignatures.get(component.id);
+        const previousGeometrySignature=previousGeometrySignatures.get(component.id);
+        const unchanged=this.canReuseUnchangedSurfaceComponent(
+          component,dirtyKeys,sourcesChanged,valid?mesh:null,
+          previousAnimations.get(component.id),previousMembership.get(component.id),
+          previousSignature,previousGeometrySignature,previousPresentation,presentation);
+        if(unchanged){
+          unchangedComponentsSkipped++;
+          for(const tile of component.tiles){
+            const key=keyOf(tile.x,tile.y),record=clipReuse.previous.get(key);
+            if(record?.componentId===component.id&&record.source===presentation.get(key)?.polygons)
+              clipReuse.next.set(key,record);
+          }
+          return{component,resolved:null,signature:previousSignature,
+            geometrySignature:previousGeometrySignature,mesh,reuse:true};
+        }
+        const resolved=this.componentSurfacePolygons(component,presentation,clipReuse);
         const localSources=this.componentHydrologySources(resolved,sources);
         const signature=this.surfaceMeshSignatureFor(component,presentation,localSources,allMap,resolved);
         const geometrySignature=this.surfaceGeometrySignatureFor(component,resolved);
-        const mesh=previousMeshes.get(component.id);
-        const valid=!!mesh&&!mesh.isDisposed?.();
-        const reuse=valid&&previousSignatures.get(component.id)===signature;
+        const reuse=valid&&previousSignature===signature;
         return{component:{...component,sources:localSources},resolved,signature,geometrySignature,
           mesh:valid?mesh:null,reuse};
       });
@@ -2634,6 +2719,8 @@ export class WaterRenderer{
       this.surfaceAnimations=new Map();
       this.surfaceMeshSignatures=new Map();
       this.surfaceGeometrySignatures=new Map();
+      this.surfaceComponentMembership=new Map();
+      this.surfaceTileOwnedPolygons=clipReuse.next;
       this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
       // Register unchanged canonical resting vertices before rebuilding any
@@ -2676,6 +2763,8 @@ export class WaterRenderer{
         this.surfaceMeshes.set(component.id,mesh);
         this.surfaceMeshSignatures.set(component.id,signature);
         this.surfaceGeometrySignatures.set(component.id,geometrySignature);
+        this.surfaceComponentMembership.set(component.id,
+          this.surfaceComponentMembershipSignature(component));
         if(keepPreviousAnimation&&animation)this.surfaceAnimations.set(component.id,animation);
         for(const tile of component.tiles){
           const key=keyOf(tile.x,tile.y);
@@ -2701,9 +2790,12 @@ export class WaterRenderer{
       }
       this.publishedWaterTileTriangles=iceSources;
       this.surfaceSignature=surfaceSignature;
+      this.publishedSurfaceSourcesSignature=activeSourceSignature;
       this.surfaceRebuildDetail={revision:this.seamAuditRevision,at:new Date().toISOString(),
         totalTiles:tiles.length,dirtyTiles:resolvedTiles,reusedTileResults:tiles.length-resolvedTiles,
         publishedWaterTiles:presentation.size,inputReasons,meshReasons,
+        unchangedComponentsSkipped,componentsInspected:components.length-unchangedComponentsSkipped,
+        ...clipReuse.metrics,
         surfaceSolveMs:Number((buildStart-solveStart).toFixed(2)),
         meshBuildMs:Number((performance.now()-buildStart).toFixed(2))};
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceMeshes",performance.now()-buildStart);
@@ -2818,6 +2910,9 @@ export class WaterRenderer{
       this.cascadeMeshUpdate={reused:0,built:0,disposed:0};
         this.surfaceMeshSignatures.clear();
         this.surfaceGeometrySignatures.clear();
+        this.surfaceComponentMembership.clear();
+        this.surfaceTileOwnedPolygons.clear();
+        this.publishedSurfaceSourcesSignature=null;
         this.publishedWaterGeometryRevision++;
         this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,
           topologyIndicesUpdated:0,topologyBuffersReallocated:0,built:0,disposed:0,
