@@ -52,6 +52,11 @@ export class BattleInputController{
     this.canvas.style.webkitTouchCallout="none";
     this.canvas.style.webkitUserSelect="none";
     this.canvas.style.userSelect="none";
+    // WebKit's iOS loupe is a native TOUCH gesture, not a pointer/context-menu
+    // default action. Cancel only touches that start on the tactical canvas.
+    // This canvas is wholly pointer-controlled, including custom pan/pinch;
+    // using a non-passive touchstart does not interfere with other UI controls.
+    this.onNativeTouchStart=event=>{if(event.cancelable)event.preventDefault();};
     this.onNativeContextMenu=event=>event.preventDefault();
     this.onNativeSelectStart=event=>event.preventDefault();
     this.onPointerDown=event=>{
@@ -155,6 +160,7 @@ export class BattleInputController{
     this.canvas.addEventListener("pointercancel",this.onPointerCancel);
     this.canvas.addEventListener("lostpointercapture",this.onLostPointerCapture);
     this.canvas.addEventListener("wheel",this.onWheel,{passive:false});
+    this.canvas.addEventListener("touchstart",this.onNativeTouchStart,{passive:false});
     this.canvas.addEventListener("contextmenu",this.onNativeContextMenu);
     this.canvas.addEventListener("selectstart",this.onNativeSelectStart);
     window.addEventListener("pointerup",this.onOutsidePointerUp);
@@ -176,6 +182,7 @@ export class BattleInputController{
     this.canvas.removeEventListener("pointercancel",this.onPointerCancel);
     this.canvas.removeEventListener("lostpointercapture",this.onLostPointerCapture);
     this.canvas.removeEventListener("wheel",this.onWheel);
+    this.canvas.removeEventListener("touchstart",this.onNativeTouchStart);
     this.canvas.removeEventListener("contextmenu",this.onNativeContextMenu);
     this.canvas.removeEventListener("selectstart",this.onNativeSelectStart);
     window.removeEventListener("pointerup",this.onOutsidePointerUp);
