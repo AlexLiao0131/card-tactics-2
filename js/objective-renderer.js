@@ -2,15 +2,17 @@ import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 const ownerKey=owner=>owner==="PLAYER"?"PLAYER":owner==="ENEMY"?"ENEMY":"NEUTRAL";
 const tileKey=(x,y)=>`${x},${y}`;
 const surfaceZ=tile=>tile?.waterSurfaceZ==null?Number(tile?.elevation||0):Math.max(Number(tile?.elevation||0),Number(tile.waterSurfaceZ));
+const CORE_WIDTH=1.22;
+const CORE_HEIGHT=1.65;
 const MARKER_RADIUS=.675;
 const MARKER_CLEARANCE=.025;
 const MARKER_SEGMENTS=32;
 const MARKER_HEIGHT=.09;
 
 export class ObjectiveRenderer{
-  constructor(scene,{environment=null}={}){
-    this.scene=scene;this.environment=environment;this.coverGeometry=[];this.cores=new Map();this.points=new Map();this.signatureValue=null;
-    this.latestState=null;this.terrainMesh=null;this.terrainDataCache=null;
+  constructor(scene,{environment=null,terrain=null}={}){
+    this.scene=scene;this.environment=environment;this.terrain=terrain;this.coverGeometry=[];this.cores=new Map();this.points=new Map();this.signatureValue=null;
+    this.latestState=null;this.terrainDataCache=null;
     this.materials={
       PLAYER:this.mat("objective-player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("objective-enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -23,19 +25,11 @@ export class ObjectiveRenderer{
       ENEMY:this.mat("core-enemy",new BABYLON.Color3(.90,.24,.24),true),
       NEUTRAL:this.mat("core-neutral",new BABYLON.Color3(.86,.70,.18),true)
     };
-    // BabylonRenderer currently syncs objectives before terrain. Read the
-    // authoritative terrain-surface mesh after terrain has published it, in the
-    // same scene frame. This is still this ObjectiveRenderer's single sync path.
-    scene.onBeforeRenderObservable.add(()=>{
-      if(!this.latestState)return;
-      const mesh=this.publishedTerrainMesh();
-      if(mesh===this.terrainMesh)return;
-      this.terrainMesh=mesh;
-      this.terrainDataCache=null;
-      this.signatureValue=null;
-      this.refresh(this.latestState);
-    });
+    // TerrainRenderer publishes its triangles before ObjectiveRenderer.sync().
+    // There is only one placement path; geometry revision, not mesh identity,
+    // determines whether a height sample is still valid.
   }
+
   mat(name,color,crystal=false){
     const m=new BABYLON.StandardMaterial(name,this.scene);
     // Restore the original physically raised, light-responsive materials.
@@ -86,12 +80,17 @@ export class ObjectiveRenderer{
     const mesh=this.scene.getMeshByName("terrain-surface");
     return mesh?.metadata?.kind==="terrain-surface"?mesh:null;
   }
+  publishedTerrainRevision(){
+    return this.terrain?.surfaceResolver?.renderedSurfaceGeometryRevision??null;
+  }
   terrainData(){
     const mesh=this.publishedTerrainMesh();
-    if(!mesh)return null;
-    if(this.terrainDataCache?.mesh===mesh)return this.terrainDataCache;
+    if(!mesh){this.terrainDataCache=null;return null;}
+    const revision=this.publishedTerrainRevision();
+    if(this.terrainDataCache?.mesh===mesh&&this.terrainDataCache.revision===revision)
+      return this.terrainDataCache;
     const positions=mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind),indices=mesh.getIndices();
-    this.terrainDataCache=positions?.length&&indices?.length?{mesh,positions,indices}:null;
+    this.terrainDataCache=positions?.length&&indices?.length?{mesh,revision,positions,indices}:null;
     return this.terrainDataCache;
   }
   // The triangle vertices are the actual TerrainRenderer -> Babylon output,
@@ -123,6 +122,41 @@ export class ObjectiveRenderer{
     }
     return null;
   }
+  // Exact support under a rigid Core box: clip the already published terrain
+  // triangles against its world-space footprint. The maximum of a planar
+  // triangle over that rectangle occurs at an intersection vertex. Sampling
+  // only the centre can embed half a box into a sloped terrain patch.
+  terrainFootprintHighest(data,cx,cz,halfWidth,halfDepth){
+    if(!data)return null;
+    const minX=cx-halfWidth,maxX=cx+halfWidth,minZ=cz-halfDepth,maxZ=cz+halfDepth;
+    const clip=(polygon,axis,bound,greater)=>{
+      if(!polygon.length)return polygon;
+      const result=[];
+      for(let i=0;i<polygon.length;i++){
+        const a=polygon[i],b=polygon[(i+1)%polygon.length];
+        const ain=greater?a[axis]>=bound:a[axis]<=bound;
+        const bin=greater?b[axis]>=bound:b[axis]<=bound;
+        if(ain)result.push(a);
+        if(ain!==bin){
+          const t=(bound-a[axis])/(b[axis]-a[axis]);
+          result.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t});
+        }
+      }
+      return result;
+    };
+    let highest=null;
+    for(let i=0;i<data.indices.length;i+=3){
+      if(!this.triangleMayTouch(data,i,minX,maxX,minZ,maxZ))continue;
+      let polygon=this.terrainTriangle(data,i);
+      polygon=clip(polygon,"x",minX,true);
+      polygon=clip(polygon,"x",maxX,false);
+      polygon=clip(polygon,"z",minZ,true);
+      polygon=clip(polygon,"z",maxZ,false);
+      for(const vertex of polygon)highest=highest==null?vertex.y:Math.max(highest,vertex.y);
+    }
+    return highest;
+  }
+
   // Build a height sampler from the *published* terrain triangles covering the
   // capture footprint. The renderer's actual terrain mesh remains the only
   // spatial authority; this does not recompute terrain from grid elevations.
@@ -218,15 +252,17 @@ export class ObjectiveRenderer{
   signature(state,byKey){
     const cores=(state?.cores||[]).map(core=>[
       "C",core.id,ownerKey(core.owner),core.hp>0?1:0,core.x,core.y,
-      surfaceZ(byKey.get(tileKey(core.x,core.y))).toFixed(3)
+      surfaceZ(byKey.get(tileKey(core.x,core.y))),
+      this.waterY(byKey.get(tileKey(core.x,core.y)))
     ].join(":"));
     const points=(state?.presentation?.deploymentPoints||[]).filter(point=>point.capturable!==false&&point.captureTiles?.[0]).map(point=>{
       const tile=point.captureTiles[0];
-      return["P",point.id,ownerKey(point.owner),tile.x,tile.y,surfaceZ(byKey.get(tileKey(tile.x,tile.y))).toFixed(3)].join(":");
+      return["P",point.id,ownerKey(point.owner),tile.x,tile.y,
+        surfaceZ(byKey.get(tileKey(tile.x,tile.y))),this.waterY(byKey.get(tileKey(tile.x,tile.y)))].join(":");
     });
     // Snow/ice geometry is published before ObjectiveRenderer.sync(). Any
     // change in the cover vertices must refresh core and capture support.
-    return `${this.environment?.publishedCoverRevision||0}|${[...cores,...points].sort().join(";")}`;
+    return `${this.publishedTerrainMesh()?.uniqueId??"unpublished"}|${this.publishedTerrainRevision()??"unpublished"}|${this.environment?.publishedCoverRevision||0}|${[...cores,...points].sort().join(";")}`;
   }
   sync(state){
     this.latestState=state;
@@ -243,13 +279,13 @@ export class ObjectiveRenderer{
     const coreAlive=new Set();
     for(const core of state?.cores||[]){
       coreAlive.add(core.id);let mesh=this.cores.get(core.id);
-      if(!mesh){mesh=BABYLON.MeshBuilder.CreateBox(`core-${core.id}`,{width:1.22,depth:1.22,height:1.65},this.scene);mesh.isPickable=false;this.cores.set(core.id,mesh);}
+      if(!mesh){mesh=BABYLON.MeshBuilder.CreateBox(`core-${core.id}`,{width:CORE_WIDTH,depth:CORE_WIDTH,height:CORE_HEIGHT},this.scene);mesh.isPickable=false;this.cores.set(core.id,mesh);}
       const tile=byKey.get(tileKey(core.x,core.y)),cx=core.x*TILE_SIZE,cz=core.y*TILE_SIZE;
-      const publishedY=this.pointHeight(terrain,cx,cz);
+      const publishedY=this.terrainFootprintHighest(terrain,cx,cz,CORE_WIDTH/2,CORE_WIDTH/2);
       mesh.material=this.coreMaterials[ownerKey(core.owner)];
       const supportY=Math.max(publishedY??Number(tile?.elevation||0)*ELEVATION_HEIGHT,
         this.waterY(tile),this.coverYAt(tile,cx,cz));
-      mesh.position.set(cx,supportY+.825,cz);
+      mesh.position.set(cx,supportY+CORE_HEIGHT/2,cz);
       mesh.visibility=core.hp>0?1:.2;
     }
     for(const[id,mesh]of this.cores)if(!coreAlive.has(id)){mesh.dispose();this.cores.delete(id);}
@@ -336,6 +372,9 @@ export class ObjectiveRenderer{
           material:mesh?.material?{name:mesh.material.name,disableLighting:!!mesh.material.disableLighting,
             specularPower:mesh.material.specularPower??null}:null,
           groundWorldY:this.pointHeight(terrain,core.x*TILE_SIZE,core.y*TILE_SIZE),
+          groundFootprintHighestY:this.terrainFootprintHighest(terrain,core.x*TILE_SIZE,core.y*TILE_SIZE,CORE_WIDTH/2,CORE_WIDTH/2),
+          terrainGeometryRevision:this.publishedTerrainRevision(),
+          bottomWorldY:mesh?mesh.position.y-CORE_HEIGHT/2:null,
           waterWorldY:Number.isFinite(this.waterY(tile))?this.waterY(tile):null};
       })
     };

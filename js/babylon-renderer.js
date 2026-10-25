@@ -152,7 +152,7 @@ export class BabylonRenderer{
     // Water publishes D/Q wet polygons before EnvironmentRenderer.sync().
     // Ice is a visual state of that surface, not an independent terrain grid.
     this.environment.water=this.water;
-    this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment});
+    this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment,terrain:this.terrain});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
