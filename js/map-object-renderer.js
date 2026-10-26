@@ -222,23 +222,35 @@ export class MapObjectRenderer{
       const localLength=Math.hypot(lx,lz);if(localLength>0){lx/=localLength;lz/=localLength;}
       const primary=.58+.30*Math.sin(this.vegetationTime*((sway.speed??1.9)+strength*.16)+sway.phase),gust=.12*Math.sin(this.vegetationTime*(3.4+strength*.22)+sway.phase*1.73);
       const bend=strength*(sway.amplitude??.022)*Math.max(.18,primary+gust);
+      // The canonical row batch owns the GPU positions, while each source
+      // retains its exact local deformed vertices for subsequent terrain /
+      // contact sync. Write both representations in ONE vertex visit rather
+      // than walking all foliage a second time to project the same positions.
+      // The cached member transform is refreshed only by syncStaticBatches().
+      const membership=this.batchedSwayMembers.get(mesh);
+      const batch=membership?.batch,member=membership?.member;
+      const world=batch?.positions,m=member?.worldMatrix;
+      const first=member?member.offset*3:0;
       for(let v=0;v<sway.weights.length;v++){
         const offset=v*3,amount=bend*sway.weights[v];
         sway.positions[offset]=sway.rest[offset]+lx*amount;
         sway.positions[offset+2]=sway.rest[offset+2]+lz*amount;
+        if(world&&m){
+          // Match writeBatchMemberPositions() exactly: read the authored
+          // Float32Array after quantization, not the unrounded intermediate.
+          const x=sway.positions[offset]||0,y=sway.positions[offset+1]||0,
+            z=sway.positions[offset+2]||0,d=first+offset;
+          world[d]=m[0]*x+m[4]*y+m[8]*z+m[12];
+          world[d+1]=m[1]*x+m[5]*y+m[9]*z+m[13];
+          world[d+2]=m[2]*x+m[6]*y+m[10]*z+m[14];
+        }
       }
-      const batched=this.batchedSwayMembers.get(mesh);
-      if(batched)changedSwayBatches.add(batched);
+      if(batch)changedSwayBatches.add(batch);
       else mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
     }
-    // Reuse the existing static-batch vertex owner. The per-leaf phase,
-    // inverse wind direction and weights above remain independent, while
-    // Babylon uploads each affected ROW once per 30 Hz animation update.
+    // Keep exactly one GPU upload for each affected existing row batch.
+    // Normals / colours are unchanged by the CPU bend and are never rewritten.
     for(const batch of changedSwayBatches){
-      // Wind deforms only local vertex coordinates. Shading normals and
-      // environmental tint were already authored on the source geometry and
-      // must not be fetched or rewritten on each animation tick.
-      for(const member of batch.members)this.writeBatchMemberPositions(batch,member);
       batch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,batch.positions,false,false);
       this.ensureWindBatchBounds(batch,strength);
       this.windBatchMetrics.positionUploads++;
@@ -678,7 +690,10 @@ export class MapObjectRenderer{
     for(const batch of this.staticBatches.values()){
       if(!batch.mesh.metadata?.windSwayBatch)continue;
       windSwayGroups++;
-      for(const member of batch.members){this.batchedSwayMembers.set(member.mesh,batch);windSwaySources++;}
+      for(const member of batch.members){
+        // Membership and world basis share the one static batch lifecycle.
+        this.batchedSwayMembers.set(member.mesh,{batch,member});windSwaySources++;
+      }
     }
     this.staticBatchStats={groups:this.staticBatches.size,sourceMeshes,
       drawCallsAvoided:sourceMeshes-this.staticBatches.size,rebuilds,removed,refreshed,

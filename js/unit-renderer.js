@@ -74,8 +74,8 @@ export class UnitRenderer{
       this.battleVisual(unit)?.animations?.[state]||{};
   }
 
-  animationAsset(unit,definition,state,facing){
-    const animation=this.animationDefinition(unit,state),f=normalizeFacing(facing);
+  animationAsset(unit,definition,state,facing,resolvedAnimation=null){
+    const animation=resolvedAnimation||this.animationDefinition(unit,state),f=normalizeFacing(facing);
     return animation?.facingAssets?.[f]||animation?.asset||animation?.src||this.baseAssetForFacing(unit,definition,f);
   }
 
@@ -1846,6 +1846,12 @@ export class UnitRenderer{
       ...visual,signature,facingMarker,animationBadge,verticalCue,definition,lastUnit:{...unit},baseScale:1,
       basePosition:new BABYLON.Vector3(0,0,0),baseMarkerPosition:new BABYLON.Vector3(0,0,0)
     };
+    // Pivot membership and bind poses are immutable for this visual entry.
+    // Keep references on the existing entry; no secondary animation owner.
+    entry.poseResetParts=[
+      ...Object.values(entry.figureParts||{}).map(node=>({node,base:node?.metadata?.figureBase})),
+      ...Object.values(entry.birdParts||{}).map(node=>({node,base:node?.metadata?.birdBase}))
+    ].filter(item=>item.node&&item.base);
     this.entries.set(unit.id,entry);
     this.meshes.set(unit.id,entry.root);
     this.figureBuildStats.entriesCreated++;
@@ -1873,12 +1879,12 @@ export class UnitRenderer{
     for(const mesh of entry?.facingMarker?.meshes||[])mesh.visibility=value;
   }
 
-  applyFacing(entry,unit,definition,facingOverride=null,animationState="IDLE"){
+  applyFacing(entry,unit,definition,facingOverride=null,animationState="IDLE",resolvedAnimation=null){
     const facing=normalizeFacing(facingOverride??unit?.facing),angle=FACING_ANGLE[facing];
     entry.facingMarker.root.rotation.y=angle;
     if(entry.kind!=="BILLBOARD")entry.root.rotation.y=angle;
 
-    const animation=this.animationDefinition(unit,animationState);
+    const animation=resolvedAnimation||this.animationDefinition(unit,animationState);
     const ownsFacing=!!(animation?.facingAssets||definition?.facingAssets);
     if(entry.kind==="BILLBOARD"&&entry.plane){
       if(ownsFacing){entry.plane.scaling.x=1;return;}
@@ -1892,9 +1898,10 @@ export class UnitRenderer{
     }
   }
 
-  setBillboardAsset(entry,unit,state,facing,progress=0){
+  setBillboardAsset(entry,unit,state,facing,progress=0,resolvedAnimation=null){
     if(entry.kind!=="BILLBOARD"||!entry.texture)return;
-    const animation=this.animationDefinition(unit,state),asset=this.animationAsset(unit,entry.definition,state,facing);
+    const animation=resolvedAnimation||this.animationDefinition(unit,state),
+      asset=this.animationAsset(unit,entry.definition,state,facing,animation);
     if(asset&&asset!==entry.currentAsset){
       entry.texture.updateURL(asset);
       entry.currentAsset=asset;
@@ -1964,21 +1971,13 @@ export class UnitRenderer{
     entry.root.rotation.z=0;
     entry.root.scaling.setAll(entry.baseScale);
     if(entry.plane)entry.plane.rotation.z=0;
-    for(const node of Object.values(entry.figureParts||{})){
-      const base=node?.metadata?.figureBase;
-      if(!base)continue;
+    for(const {node,base} of entry.poseResetParts||[]){
       node.position.copyFrom(base.position);
       node.rotation.copyFrom(base.rotation);
       node.scaling.copyFrom(base.scaling);
     }
-    for(const node of Object.values(entry.birdParts||{})){
-      const base=node?.metadata?.birdBase;
-      if(!base)continue;
-      node.position.copyFrom(base.position);
-      node.rotation.copyFrom(base.rotation);
-      node.scaling.copyFrom(base.scaling);
-    }
-    this.applyFacing(entry,unit,entry.definition,null,"IDLE");
+    // updateFrame() applies the resolved facing exactly once after reset.
+    // A second IDLE-facing evaluation here was overwritten immediately.
   }
 
   applyFigureWalk(entry,definition,local){
@@ -2486,7 +2485,9 @@ export class UnitRenderer{
   }
 
   updateFrame(now=performance.now()){
-    for(const[id,entry]of [...this.entries]){
+    // Deleting a finished DEATH entry during Map iteration is safe and avoids
+    // allocating a fresh array of all visible units every rendered frame.
+    for(const[id,entry]of this.entries){
       const unit=entry.lastUnit||{};
       let active=this.activeAnimations.get(id)||this.startNext(id,now);
       if(active&&now-active.startedAt>=active.duration){
@@ -2501,8 +2502,9 @@ export class UnitRenderer{
       const progress=active?clamp01((now-active.startedAt)/duration):((now%duration)/duration);
       const definition=this.animationDefinition(unit,state);
       const event=active?.event||{state,facing:unit.facing};
-      this.applyFacing(entry,unit,entry.definition,event.facing??unit.facing,state);
-      this.setBillboardAsset(entry,unit,state,event.facing??unit.facing,progress);
+      const facing=event.facing??unit.facing;
+      this.applyFacing(entry,unit,entry.definition,facing,state,definition);
+      this.setBillboardAsset(entry,unit,state,facing,progress,definition);
       this.applyProcedural(entry,unit,state,progress,now,event,definition);
       this.updateAnimationBadge(entry,unit,state);
     }
@@ -2578,7 +2580,9 @@ export class UnitRenderer{
       this.disposeEntry(id);
     }
     this.syncNightReadability(state);
-    this.updateFrame();
+    // The one BabylonRenderer render loop advances unit poses immediately
+    // before scene.render(). Running updateFrame() inside sync() duplicated
+    // the same animation/pose work during presentation publication.
   }
 
   setAnimationDebug(value){

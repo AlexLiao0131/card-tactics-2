@@ -248,6 +248,10 @@ export class UnitHudOverlay{
 
   updateFrame(){
     if(!this.root.isConnected||!this.camera)return;
+    // No expanded long-hold and no transient text means there is nothing
+    // to project. Avoid repeated DOM layout reads and world-space projection
+    // on every Babylon frame when the tactical HUD is dormant.
+    if(this.hudUnitId==null&&this.floats.length===0)return;
     const renderWidth=Math.max(1,this.engine.getRenderWidth());
     const renderHeight=Math.max(1,this.engine.getRenderHeight());
     const viewport=this.camera.viewport.toGlobal(renderWidth,renderHeight);
