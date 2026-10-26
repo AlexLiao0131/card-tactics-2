@@ -46,6 +46,26 @@ export const UnitAnimationEngine=(()=>{
       statuses.push({id:"WATER_DROWNING",type:"WATER_DROWNING",name:"溺水",remaining:null});
     return statuses;
   }
+  // The active EffectEngine entries are the sole source for HUD buffs and
+  // debuffs. Drowning is already derived by abnormalStatuses() from the
+  // published WaterInteraction state; do not create another status store.
+  function statusIndicators(unit){
+    const negative=abnormalStatuses(unit).map(effect=>({...effect,classification:"NEGATIVE"}));
+    const seen=new Set(negative.map(effect=>effect.id));
+    const positive=[];
+    for(const effect of unit?.effects||[]){
+      const type=String(effect?.type||"").toUpperCase();
+      if(effect?.classification!=="POSITIVE"&&
+        !["BUFF","SHIELD","HEAL_OVER_TIME","STEALTH"].includes(type))continue;
+      const id=statusId(effect);
+      if(!id||seen.has(id))continue;
+      seen.add(id);
+      positive.push({id,type:effect.type||null,
+        name:String(effect?.name||id),remaining:effect.remaining??null,
+        classification:"POSITIVE"});
+    }
+    return[...positive,...negative];
+  }
   const floatPosition=unit=>({unitId:unit.id,x:Number(unit.x||0),y:Number(unit.y||0),renderZ:Number(unit.renderZ??unit.z??0)});
   function emitFloat(unit,kind,value,{afterDeath=false}={}){
     if(!unit?.id||!Number.isFinite(Number(value))&&kind!=="STATUS")return null;
@@ -239,7 +259,7 @@ export const UnitAnimationEngine=(()=>{
 
   return Object.freeze({
     STATE,DEFAULTS,normalizeState,normalizeFacing,visualDefinition,skillState,
-    emit,emitPresentation,emitAction,emitHit,emitResolvedHit,emitDeath,emitMove,abnormalStatuses,observe,drain,clear
+    emit,emitPresentation,emitAction,emitHit,emitResolvedHit,emitDeath,emitMove,abnormalStatuses,statusIndicators,observe,drain,clear
   });
 })();
 

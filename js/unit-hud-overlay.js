@@ -16,13 +16,29 @@ const STATUS_PICTOGRAMS=Object.freeze({
   BLEED:{symbol:"❢",kind:"bleed"}, BLEEDING:{symbol:"❢",kind:"bleed"},
   CURSE:{symbol:"☾",kind:"curse"}, FEAR:{symbol:"!",kind:"fear"},
   DEF_DOWN:{symbol:"↓",kind:"debuff"},
-  DAMAGE_OVER_TIME:{symbol:"◆",kind:"debuff"}
+  DAMAGE_OVER_TIME:{symbol:"◆",kind:"debuff"},
+  SHIELD:{symbol:"⬡",kind:"shield"},
+  STEALTH:{symbol:"◈",kind:"stealth"},
+  HEAL_OVER_TIME:{symbol:"✚",kind:"regen"},
+  ATK_UP:{symbol:"↑",kind:"attack"},
+  DEF_UP:{symbol:"▣",kind:"defense"},
+  SPD_UP:{symbol:"»",kind:"speed"}
 });
 const STATUS_ICON_KEYS=Object.keys(STATUS_PICTOGRAMS);
 function statusPictogram(effect){
+  const positive=effect?.classification==="POSITIVE";
   const id=String(effect?.id||"").toUpperCase(),type=String(effect?.type||"").toUpperCase();
   const exact=STATUS_PICTOGRAMS[id];
   if(exact)return exact;
+  if(positive){
+    if(type==="SHIELD"||/SHIELD|GUARD|護盾|護甲/.test(id))return STATUS_PICTOGRAMS.SHIELD;
+    if(type==="HEAL_OVER_TIME"||/HEAL|REGEN|RECOVER|治療|恢復/.test(id))return STATUS_PICTOGRAMS.HEAL_OVER_TIME;
+    if(type==="STEALTH"||/STEALTH|INVIS|隱形|潛行/.test(id))return STATUS_PICTOGRAMS.STEALTH;
+    if(/ATTACK|ATK|POWER|攻擊/.test(id))return STATUS_PICTOGRAMS.ATK_UP;
+    if(/DEFENSE|DEF|ARMOR|防禦/.test(id))return STATUS_PICTOGRAMS.DEF_UP;
+    if(/SPEED|SPD|HASTE|迅捷/.test(id))return STATUS_PICTOGRAMS.SPD_UP;
+    return{symbol:"✦",kind:"buff"};
+  }
   // Specific status IDs win before generic EffectEngine types such as
   // DAMAGE_OVER_TIME. A future PNG asset will bind to the same semantic kind.
   const identified=STATUS_ICON_KEYS.find(name=>id.startsWith(name+"_")||id.endsWith("_"+name));
@@ -91,12 +107,14 @@ export class UnitHudOverlay{
     const manaFill=createElement("i","unit-hud-fill unit-hud-mana-fill");
     const resourceBox=createElement("div","unit-hud-resource-box");
     const statuses=createElement("div","unit-hud-statuses");
-    statuses.setAttribute("aria-label","目前異常狀態");
+    statuses.setAttribute("aria-label","目前增益與異常狀態");
     const portrait=createElement("div","unit-hud-portrait");
     const image=createElement("img","unit-hud-portrait-image");
     image.alt="";image.draggable=false;image.decoding="async";image.loading="lazy";
     const fallback=createElement("span","unit-hud-portrait-fallback");
     fallback.textContent="◆";
+    image.hidden=true;
+    image.onload=()=>{image.hidden=false;fallback.hidden=true;};
     image.onerror=()=>{image.hidden=true;fallback.hidden=false;};
     portrait.append(image,fallback);
     const details=createElement("div","unit-hud-details");
@@ -122,13 +140,16 @@ export class UnitHudOverlay{
     const picture=globalThis.VisualDatabase?.characterHudPortrait?.(unit.characterId)||null;
     if(hud.portraitPath!==picture){
       hud.portraitPath=picture;
-      hud.image.hidden=!picture;hud.fallback.hidden=!!picture;
+      // Show an immediate fallback until the full illustration is decoded.
+      // Loading starts eagerly only for the actually held unit; other units
+      // keep their existing lazy portrait state to avoid mobile memory spikes.
+      hud.image.hidden=true;hud.fallback.hidden=false;
       if(picture)hud.image.src=new URL(picture,document.baseURI).href;
       else hud.image.removeAttribute("src");
       hud.fallback.textContent=String(unit.name||"◆").slice(0,1);
     }
-    const abnormal=globalThis.UnitAnimationEngine?.abnormalStatuses?.(unit)||[];
-    const statusKey=abnormal.map(effect=>`${effect.id}:${effect.name}:${effect.remaining??""}`).join("|");
+    const indicators=globalThis.UnitAnimationEngine?.statusIndicators?.(unit)||[];
+    const statusKey=indicators.map(effect=>`${effect.id}:${effect.classification}:${effect.name}:${effect.remaining??""}`).join("|");
     const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${statusKey}|${unit.team}|${unit.finished?1:0}`;
     if(hud.key===key)return;
     hud.key=key;
@@ -148,7 +169,7 @@ export class UnitHudOverlay{
       track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
     }
     hud.statuses.replaceChildren();
-    for(const effect of abnormal){
+    for(const effect of indicators){
       const graphic=statusPictogram(effect);
       const chip=createElement("span","unit-hud-status");
       chip.dataset.statusKind=graphic.kind;
@@ -161,14 +182,21 @@ export class UnitHudOverlay{
       chip.setAttribute("aria-label",detail);
       hud.statuses.appendChild(chip);
     }
-    hud.statuses.hidden=abnormal.length===0;
+    hud.statuses.hidden=indicators.length===0;
     hud.node.dataset.team=String(unit.team||"NEUTRAL");
     hud.node.classList.toggle("finished",!!unit.finished);
     hud.fill.classList.toggle("warn",pct<=.5&&pct>.25);
     hud.fill.classList.toggle("danger",pct<=.25);
   }
 
-  applyVisibility(){for(const[id,hud]of this.nodes)hud.node.hidden=id!==this.hudUnitId;}
+  applyVisibility(){
+    for(const[id,hud]of this.nodes){
+      hud.node.hidden=id!==this.hudUnitId;
+      // Loading a full-size card painting while hidden is deliberately lazy.
+      // Once a long hold selects it, request the real portrait immediately.
+      if(id===this.hudUnitId&&hud.portraitPath)hud.image.loading="eager";
+    }
+  }
 
   presentEvents(events){
     const now=performance.now();
