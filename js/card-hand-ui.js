@@ -216,7 +216,7 @@ globalThis.CardTacticsHeroCard=Object.freeze({
 export class CardHandUI{
   constructor(){
     this.host=document.getElementById("cardPhasePanel");
-    this.runtime=null;this.previewId=null;this.detailsOpen=false;this.mulligan=new Set();
+    this.runtime=null;this.previewId=null;this.detailsOpen=false;this.mulligan=new Set();this.openingHandRef=null;
     this.regions=null;this.regionMarkup=new Map();
     ensureHeroCardStyles();
   }
@@ -289,6 +289,7 @@ export class CardHandUI{
         if(oldLabel&&newLabel)oldLabel.textContent=newLabel.textContent;
       }
       existing._visualSignature=nextSignature;
+      existing.dataset.handIndex=next.dataset.handIndex;
       existing.className=next.className;
       existing.disabled=next.disabled;
       existing.style.cssText=next.style.cssText;
@@ -316,8 +317,11 @@ export class CardHandUI{
     const opening=phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone;
     const id=button.dataset.card;
     if(id){
-      if(opening){this.mulligan.has(id)?this.mulligan.delete(id):this.mulligan.add(id);}
-      else{this.previewId=id;this.detailsOpen=false;}
+      if(opening){
+        const index=Number(button.dataset.handIndex);
+        if(!Number.isInteger(index)||index<0||state.zones.hand[index]!==id)return;
+        this.mulligan.has(index)?this.mulligan.delete(index):this.mulligan.add(index);
+      }else{this.previewId=id;this.detailsOpen=false;}
       this.render();return;
     }
     switch(button.id){
@@ -343,13 +347,18 @@ export class CardHandUI{
     const r=this.runtime;if(!r)return;
     const state=r.getCardState(),phase=r.getPhase(),pending=r.getPendingCard(),enemy=r.getEnemyCardState?.(),view=r.getEnemyPresentation?.();
     if(!state){
-      this.detailsOpen=false;
+      this.detailsOpen=false;this.mulligan.clear();this.openingHandRef=null;
       if(this.regions){this.host.replaceChildren();this.regions=null;this.regionMarkup.clear();}
       return;
     }
     this.host.classList.toggle("battle-pass-through",phase!=="CARD_PHASE");
     if(phase!=="CARD_PHASE"){this.previewId=null;this.detailsOpen=false;}
     const cards=globalThis.CardDatabase.list(state.zones.hand),opening=phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone;
+    // A new match gets a new hand array: do not carry slot choices across
+    // games. The game engine and UI both identify a duplicate by hand index.
+    if(opening){
+      if(this.openingHandRef!==state.zones.hand){this.openingHandRef=state.zones.hand;this.mulligan.clear();}
+    }else{this.openingHandRef=null;this.mulligan.clear();}
     if(pending){this.previewId=null;this.detailsOpen=false;}
     if(this.previewId&&!cards.some(c=>c.id===this.previewId)){this.previewId=null;this.detailsOpen=false;}
     const preview=this.previewId?globalThis.CardDatabase.get(this.previewId):null,targeting=!!pending;
@@ -358,7 +367,7 @@ export class CardHandUI{
     this.host.classList.toggle("hero-info-open",this.detailsOpen&&isHeroCard(preview));
     const enemyMotion=phase==="ENEMY_TURN"?(view?.kind==="DRAW"?"enemy-draw":view?.kind==="CARD_SELECT"?"enemy-select":"enemy-thinking"):"";
     const enemyHtml=enemy?`<div class="opponent-hand ${enemyMotion}">${Array.from({length:enemy.zones?.hand?.length||0},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-((enemy.zones?.hand?.length||1)-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">敵方　💎 ${enemy.crystals||0}/${enemy.crystalCapacity||0}　牌庫 ${enemy.zones?.deck?.length||0}</div>${phase==="ENEMY_TURN"?`<div class="opponent-message">${esc(view?.message||"敵方思考中…")}</div>`:""}`:"";
-    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(c.id),disabled=!opening&&!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
+    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=!opening&&!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" data-hand-index="${i}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
     const art=preview?cardArt(preview):null,heroPreview=isHeroCard(preview);
     const previewHtml=!opening&&!targeting&&preview?`<div class="card-preview ${heroPreview?"hero-preview":""}">${heroPreview?heroCardFace(preview,{variant:"preview"}):`<div class="preview-card-face">${art?`<span class="preview-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="preview-cost">${preview.cost}</span><strong>${esc(preview.name)}</strong><small>${esc(preview.type)}</small><p>${esc(describe(preview))}</p></div>`}<div class="preview-actions"><button id="confirmCardUse">使用</button>${heroPreview?`<button id="openHeroCardInfo" type="button">詳細資訊</button>`:""}<button id="cancelCardPreview">取消</button></div></div>`:"";
     const mulliganHtml=opening?`<div class="mulligan-guide"><strong>起手換牌</strong><span>選擇不要的牌；整場僅一次。</span></div><div class="mulligan-actions"><button id="confirmMulligan" ${this.mulligan.size?"":"disabled"}>換掉 ${this.mulligan.size} 張</button><button id="keepOpeningHand">全部保留</button></div>`:"";

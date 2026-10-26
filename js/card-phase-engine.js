@@ -15,7 +15,24 @@ export const CardPhaseEngine=(()=>{
     return granted;
   }
   function begin(state,{handSize=state.handSize||DEFAULT_HAND_SIZE}={}){const expired=expireTurnCards(state);state.lastExpiredTurnCards=expired;state.active=true;state.crystalCapacity=Math.min(Number(state.maxCrystals||DEFAULT_MAX_CRYSTALS),Number(state.startingCrystals||DEFAULT_STARTING_CRYSTALS)+Math.max(0,Number(state.turnsStarted||0))*Number(state.crystalGrowth||DEFAULT_CRYSTAL_GROWTH));state.turnsStarted=Number(state.turnsStarted||0)+1;state.crystals=state.crystalCapacity;state.played=[];state.lastGeneratedCards=[];const missing=Math.max(0,Number(handSize||0)-handSizeCount(state));return DeckEngine.draw(state.zones,missing);}
-  function mulligan(state,cardIds=[]){if(!state?.active||!state.mulliganAvailable||state.mulliganDone)return[];const selected=[...new Set(cardIds)].filter(id=>state.zones.hand.includes(id)&&CardDatabase.get(id)?.mulliganEligible!==false),held=[];selected.forEach(id=>{if(DeckEngine.removeFromHand(state.zones,id))held.push(id);});const drawn=DeckEngine.draw(state.zones,held.length);state.zones.deck.push(...held);DeckEngine.shuffle(state.zones);state.mulliganAvailable=false;state.mulliganDone=true;return drawn;}
+  // A hand position is one physical draw occurrence. Card IDs describe card
+  // definitions and may legally repeat; never deduplicate mulligan by card ID.
+  // This same canonical hand-array position is used by the card UI and engine.
+  function mulligan(state,handIndices=[]){
+    if(!state?.active||!state.mulliganAvailable||state.mulliganDone)return[];
+    const hand=state.zones.hand;
+    const selected=[...new Set(handIndices)]
+      .filter(index=>Number.isInteger(index)&&index>=0&&index<hand.length&&CardDatabase.get(hand[index])?.mulliganEligible!==false)
+      .sort((a,b)=>a-b);
+    const held=selected.map(index=>hand[index]);
+    // Remove from right to left, preserving the indices of remaining copies.
+    for(let i=selected.length-1;i>=0;i--)hand.splice(selected[i],1);
+    const drawn=DeckEngine.draw(state.zones,held.length);
+    state.zones.deck.push(...held);
+    DeckEngine.shuffle(state.zones);
+    state.mulliganAvailable=false;state.mulliganDone=true;
+    return drawn;
+  }
   function keepOpeningHand(state){if(!state?.mulliganAvailable||state.mulliganDone)return false;state.mulliganAvailable=false;state.mulliganDone=true;return true;}
   function canPlay(state,card){return !!state.active&&!!card&&state.zones.hand.includes(card.id)&&state.crystals>=Number(card.cost||0);}
   function commit(state,card){if(!canPlay(state,card))return false;if(!DeckEngine.removeFromHand(state.zones,card.id))return false;state.crystals-=Number(card.cost||0);state.played.push(card.id);state.lastGeneratedCards=[];if(CardDatabase.isCharacter(card))grantGeneratedCards(state,LoadoutDatabase.generatedCardsForCard(card));if(CardDatabase.isSpell(card))DeckEngine.toDiscard(state.zones,card.id);return true;}

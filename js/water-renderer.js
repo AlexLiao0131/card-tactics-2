@@ -133,6 +133,9 @@ export class WaterRenderer{
     this.sourceSignature="";
     this.waveTime=0;
     this.waveAccumulator=0;
+    // Whether a GPU-water component was actually displaced by a special wave.
+    // Normal water remains shader-driven; no idle full-region scan is needed.
+    this.surfaceSpecialsActive=false;
     this.wind={x:0,z:0,strength:0};
     this.renderableWaterKeys=new Set();
     this.rogueWaves=[];
@@ -161,27 +164,43 @@ export class WaterRenderer{
       // Presentation events stay on the CPU, but persistent wind / current waves are
       // displaced by the water material on the GPU. This avoids rebuilding and
       // uploading every water vertex 30 times per second on mobile.
-      const active=[];
-      for(const wave of this.rogueWaves){
-        const age=this.waveTime-wave.startedAt;
+      // Expired waves are retired in-place. The old per-frame filter allocated
+      // an extra Array even when the water had no special wave active.
+      const waves=this.rogueWaves;
+      let retained=0;
+      for(let i=0;i<waves.length;i++){
+        const wave=waves[i],age=this.waveTime-wave.startedAt;
         if(age>wave.duration+.25){wave.visual?.dispose?.();continue;}
-        this.updateRogueWaveVisual(wave,age);active.push(wave);
+        this.updateRogueWaveVisual(wave,age);
+        waves[retained++]=wave;
       }
-      this.rogueWaves=active;
+      waves.length=retained;
 
       this.waveAccumulator+=dt;
       if(this.waveAccumulator>=1/30){
         this.waveAccumulator=0;
         if(this.gpuSurfaceWaves){
-          const activeSurfaceIds=new Set();
-          for(const wave of this.rogueWaves)for(const id of wave.surfaceIds||[])activeSurfaceIds.add(id);
-          for(const whirl of this.whirlpools.values())for(const id of whirl.surfaceIds||[])activeSurfaceIds.add(id);
-          for(const entry of this.surfaceAnimations.values()){
-            if(activeSurfaceIds.has(entry.id))this.animateSpecialSurface(entry,this.waveTime);
-            else if(entry.specialActive)this.resetSpecialSurface(entry);
+          // Ordinary wind/flow waves are already displaced by the GPU. Only
+          // exceptional disturbances need CPU polygon vertex animation.
+          if(waves.length||this.whirlpools.size){
+            const activeSurfaceIds=new Set();
+            for(const wave of waves)for(const id of wave.surfaceIds||[])activeSurfaceIds.add(id);
+            for(const whirl of this.whirlpools.values())for(const id of whirl.surfaceIds||[])activeSurfaceIds.add(id);
+            let anySpecial=false;
+            for(const entry of this.surfaceAnimations.values()){
+              if(activeSurfaceIds.has(entry.id))this.animateSpecialSurface(entry,this.waveTime);
+              else if(entry.specialActive)this.resetSpecialSurface(entry);
+              if(entry.specialActive)anySpecial=true;
+            }
+            this.surfaceSpecialsActive=anySpecial;
+          }else if(this.surfaceSpecialsActive){
+            // Restore changed vertices ONCE on the transition back to calm.
+            for(const entry of this.surfaceAnimations.values())
+              if(entry.specialActive)this.resetSpecialSurface(entry);
+            this.surfaceSpecialsActive=false;
           }
         }else{
-          // Safety fallback for environments where CustomMaterial is unavailable.
+          // Preserve the existing CPU wave fallback when shaders are absent.
           for(const entry of this.surfaceAnimations.values())this.animateSurface(entry,this.waveTime);
         }
       }
