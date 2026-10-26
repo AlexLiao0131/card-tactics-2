@@ -77,13 +77,17 @@ try{
   function syncEngagementFocus(){
     const model=runtime.getEngagementPresentation?.();
     if(!model||!model.attackerId||!model.defenderId){focusedEngagementKey=null;return;}
-    const key=`${model.attackerId}:${model.defenderId}:${model.skillName}`;
+    const key=String(model.focusId??`${model.attackerId}:${model.defenderId}:${model.skillName}`);
     if(key===focusedEngagementKey)return;
     // Only focus when combat/response is entered; do not repeatedly fight a
     // player's panning while they inspect their counter/defense choices.
     if(model.mode!=="support-select"&&!String(model.mode).startsWith("enemy-"))return;
-    focusedEngagementKey=key;
-    renderer.camera.focusEngagement?.([model.player,model.enemy].filter(Boolean));
+    const points=[model.player,model.enemy].filter(Boolean).map(point=>{
+      const renderUnit=(renderer.lastState?.units||[]).find(unit=>unit.id===point.id);
+      return {...point,renderZ:renderUnit?.renderZ??null};
+    });
+    // A rejected focus must remain eligible after a resize / scene commit.
+    if(renderer.camera.focusEngagement(points,key))focusedEngagementKey=key;
   }
 
   function observeSnapshot(){

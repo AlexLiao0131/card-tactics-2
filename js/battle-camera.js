@@ -1,10 +1,11 @@
-import { TILE_SIZE } from "./coordinate-system.js";
+import { TILE_SIZE, ELEVATION_HEIGHT } from "./coordinate-system.js";
 
 const BASE_ALPHA=-Math.PI/4;
 const ISO_BETA=Math.PI/3.2;
 const TOP_BETA=.035;
 const ZOOM_MIN=.32;
 const ZOOM_MAX=5.5;
+const ENGAGEMENT_FOCUS_SECONDS=.42;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 function mapInfo(state){
@@ -78,6 +79,8 @@ export class BattleCamera{
     this.zoom=1;
     this.mapKey="";
     this.baseTarget=BABYLON.Vector3.Zero();
+    this.homeTarget=BABYLON.Vector3.Zero();
+    this.focusMotion=null;
 
     // Panning is a screen-space view offset, not a world-space target translation.
     // This keeps pan independent from camera depth and prevents the map from
@@ -96,10 +99,14 @@ export class BattleCamera{
     this.camera.minZ=.1;
     this.camera.maxZ=1000;
     this.camera.inputs.clear();
+    // Animation advances under the renderer's existing scene.render() loop.
+    // There is no independent requestAnimationFrame, timer, or camera runtime.
+    this.scene.onBeforeRenderObservable.add(()=>this.advanceEngagementFocus());
     this.sync(state);
   }
 
   panByPixels(dx,dy){
+    this.cancelEngagementFocus("MANUAL_PAN");
     dx=Number(dx||0);
     dy=Number(dy||0);
     if(!dx&&!dy)return false;
@@ -116,6 +123,7 @@ export class BattleCamera{
   }
 
   setZoom(value){
+    this.cancelEngagementFocus("MANUAL_ZOOM");
     const next=clamp(Number(value)||1,ZOOM_MIN,ZOOM_MAX);
     if(Math.abs(next-this.zoom)<.0001)return false;
     this.zoom=next;
@@ -133,7 +141,7 @@ export class BattleCamera{
     if(key!==this.mapKey){
       this.mapKey=key;
       this.info=info;
-      this.baseTarget=new BABYLON.Vector3(
+      this.homeTarget=new BABYLON.Vector3(
         ((info.width-1)*TILE_SIZE)/2,
         0,
         ((info.height-1)*TILE_SIZE)/2
@@ -150,6 +158,8 @@ export class BattleCamera{
   }
 
   restoreHomeView(emit=true){
+    this.cancelEngagementFocus("HOME_VIEW");
+    this.baseTarget=this.homeTarget.clone();
     this.projection=this.homeProjection;
     this.quarterTurns=this.homeQuarterTurns;
     this.panPixels=BABYLON.Vector2.Zero();
@@ -204,6 +214,7 @@ export class BattleCamera{
   }
 
   rotate(delta=1){
+    this.cancelEngagementFocus("MANUAL_ROTATE");
     this.quarterTurns=((this.quarterTurns+Number(delta||0))%4+4)%4;
     this.apply();
     this.emitView();
@@ -211,6 +222,7 @@ export class BattleCamera{
   }
 
   setProjection(mode){
+    this.cancelEngagementFocus("MANUAL_PROJECTION");
     const next=mode==="TOP"?"TOP":"ISO";
     if(next===this.projection)return false;
     this.projection=next;
@@ -222,32 +234,74 @@ export class BattleCamera{
   toggleProjection(){return this.setProjection(this.projection==="ISO"?"TOP":"ISO");}
   resetView(){this.restoreHomeView(true);}
 
-  focusEngagement(points){
-    const valid=(points||[]).filter(p=>Number.isFinite(Number(p?.x))&&Number.isFinite(Number(p?.y)));
-    if(!valid.length)return false;
-    // Preserve the player's rotation/projection. Bring both combatants to the
-    // centre of the existing Babylon orthographic viewport by screen-space pan.
-    const mid=averagePoint(valid);
-    this.zoom=Math.max(this.zoom,1.85);
-    this.apply();
-    this.camera.computeWorldMatrix(true);
-    this.scene.updateTransformMatrix?.(true);
-    const engine=this.scene.getEngine();
-    const renderW=Math.max(1,engine.getRenderWidth()),renderH=Math.max(1,engine.getRenderHeight());
-    const world=new BABYLON.Vector3(mid.x*TILE_SIZE,0,mid.y*TILE_SIZE);
-    const view=this.camera.viewport.toGlobal(renderW,renderH);
-    const at=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),this.scene.getTransformMatrix(),view);
-    if(!Number.isFinite(at.x)||!Number.isFinite(at.y))return false;
+  cancelEngagementFocus(reason){
+    const motion=this.focusMotion;
+    if(!motion)return;
+    this.focusMotion=null;
+    globalThis.CardTacticsDiagnostics?.push?.("CAMERA_FOCUS_CANCELLED",{
+      reason,focusId:motion.focusId,progress:Number(motion.elapsed.toFixed(3))
+    });
+  }
+
+  // The canonical camera target is the actual world point, not a guess from
+  // Vector3.Project + targetScreenOffset. Target + ortho framing are advanced
+  // by the existing Babylon render loop, so a view sync cannot discard focus.
+  focusEngagement(points,focusId=null){
+    const valid=(points||[]).filter(p=>p?.x!=null&&p?.y!=null&&
+      Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y)));
     const rect=this.canvas.getBoundingClientRect();
-    // The reaction selector sits in the middle of the battlefield screen.
-    // Frame the clash above it instead of centering units behind the menu.
-    const dx=(renderW/2-at.x)*rect.width/renderW;
-    const dy=(renderH*.14-at.y)*rect.height/renderH;
-    this.panPixels.x+=dx;
-    this.panPixels.y+=dy;
-    this.apply();
-    this.emitView();
+    if(!valid.length||rect.width<2||rect.height<2){
+      globalThis.CardTacticsDiagnostics?.push?.("CAMERA_FOCUS_REJECTED",{
+        focusId,reason:!valid.length?"NO_WORLD_COORDINATES":"CANVAS_NOT_LAID_OUT"
+      });
+      return false;
+    }
+    const mid=averagePoint(valid);
+    const elevation=valid.reduce((sum,p)=>{
+      const z=Number(p.renderZ);
+      return sum+(p.renderZ!=null&&Number.isFinite(z)?z:0);
+    },0)/valid.length;
+    const destination=new BABYLON.Vector3(
+      mid.x*TILE_SIZE,elevation*ELEVATION_HEIGHT,mid.y*TILE_SIZE);
+    if(![destination.x,destination.y,destination.z].every(Number.isFinite))return false;
+    this.cancelEngagementFocus("NEW_ENGAGEMENT");
+    this.focusMotion={
+      focusId,elapsed:0,
+      fromTarget:this.baseTarget.clone(),toTarget:destination,
+      fromPan:this.panPixels.clone(),
+      // Engagement menu occupies the central/lower viewport. Show the encounter
+      // just above it, without altering its world position or map geometry.
+      toPan:new BABYLON.Vector2(0,-rect.height*.16),
+      fromZoom:this.zoom,toZoom:Math.max(this.zoom,1.85)
+    };
+    globalThis.CardTacticsDiagnostics?.push?.("CAMERA_FOCUS_START",{
+      focusId,world:{x:destination.x,y:destination.y,z:destination.z},
+      from:{x:this.baseTarget.x,y:this.baseTarget.y,z:this.baseTarget.z},
+      canvas:{width:Math.round(rect.width),height:Math.round(rect.height)},
+      projection:this.projection,rotation:this.quarterTurns
+    });
     return true;
+  }
+
+  advanceEngagementFocus(){
+    const motion=this.focusMotion;
+    if(!motion)return;
+    const delta=Math.min(.05,Math.max(0,Number(this.camera.getEngine().getDeltaTime()||16)/1000));
+    motion.elapsed+=delta;
+    const t=clamp(motion.elapsed/ENGAGEMENT_FOCUS_SECONDS,0,1);
+    const ease=t*t*(3-2*t);
+    this.baseTarget=BABYLON.Vector3.Lerp(motion.fromTarget,motion.toTarget,ease);
+    this.panPixels=BABYLON.Vector2.Lerp(motion.fromPan,motion.toPan,ease);
+    this.zoom=motion.fromZoom+(motion.toZoom-motion.fromZoom)*ease;
+    this.apply();
+    if(t>=1){
+      this.focusMotion=null;
+      this.emitView();
+      globalThis.CardTacticsDiagnostics?.push?.("CAMERA_FOCUS_COMPLETE",{
+        focusId:motion.focusId,target:{x:this.baseTarget.x,y:this.baseTarget.y,z:this.baseTarget.z},
+        zoom:this.zoom,pan:{x:this.panPixels.x,y:this.panPixels.y}
+      });
+    }
   }
 
   getViewState(){
