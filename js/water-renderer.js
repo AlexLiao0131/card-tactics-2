@@ -18,6 +18,23 @@ const WATER_DEEP_COLOR=Object.freeze([.045,.23,.38]);
 const WATER_MURKY_COLOR=Object.freeze([.29,.31,.18]);
 const WATER_SHALLOW_ALPHA=.46;
 const WATER_DEEP_ALPHA=.82;
+// The recurring 2π wave profile is immutable. All connected water bodies
+// sample the same cycle using WORLD-space phase; no per-pond frame cache can
+// drift out of sync or create another independently animated water surface.
+const WATER_CYCLE_SAMPLES=128;
+const WATER_CYCLE_INV_TAU=1/(Math.PI*2);
+function waterCyclePixels(size=WATER_CYCLE_SAMPLES){
+  const data=new Uint8Array(size*size*4);
+  for(let z=0;z<size;z++)for(let x=0;x<size;x++){
+    const a=(x+.5)*Math.PI*2/size,b=(z+.5)*Math.PI*2/size;
+    const offset=(z*size+x)*4;
+    data[offset]=Math.round(127.5*(1+Math.sin(a)));
+    data[offset+1]=Math.round(127.5*(1+Math.cos(a)));
+    data[offset+2]=Math.round(127.5*(1+Math.sin(b)));
+    data[offset+3]=Math.round(127.5*(1+Math.cos(b)));
+  }
+  return data;
+}
 // Runoff UVs use world-distance phase so adjacent hydrology edges read as one
 // moving stream instead of restarting their texture at every tile boundary.
 const RUNOFF_UV_REPEAT_DISTANCE=TILE_SIZE*.78;
@@ -137,6 +154,10 @@ export class WaterRenderer{
     // Normal water remains shader-driven; no idle full-region scan is needed.
     this.surfaceSpecialsActive=false;
     this.wind={x:0,z:0,strength:0};
+    this.windWaveShape={amplitude:0,frequency:2.15/TILE_SIZE,rate:.75,visual:0};
+    this.windWaveStateChanges=0;
+    this.waveCycleTexture=null;
+    this.waveCycleBuilds=0;
     this.renderableWaterKeys=new Set();
     this.rogueWaves=[];
     this.seenRogueWaveSequences=new Set();
@@ -231,6 +252,33 @@ export class WaterRenderer{
     });
   }
 
+  // Precompute the periodic sine/cosine pair once per Babylon scene. Changing
+  // wind or flow changes UV phase/frequency (or existing vertex attributes),
+  // not this reusable wave profile. A single RGBA8 128² texture is 64 KiB.
+  // If vertex texture sampling is unavailable, retain the EXACT analytic
+  // shader instead of allocating a second CPU animation pipeline.
+  createWaterCycleTexture(){
+    const caps=this.scene.getEngine()?.getCaps?.();
+    if(typeof BABYLON.RawTexture?.CreateRGBATexture!=="function"||
+       !(Number(caps?.maxVertexTextureImageUnits||0)>0))return null;
+    try{
+      const texture=BABYLON.RawTexture.CreateRGBATexture(
+        waterCyclePixels(),WATER_CYCLE_SAMPLES,WATER_CYCLE_SAMPLES,
+        this.scene,false,false,BABYLON.Texture.BILINEAR_SAMPLINGMODE,
+        BABYLON.Engine?.TEXTURETYPE_UNSIGNED_BYTE
+      );
+      texture.name="water-shared-periodic-wave-cycle";
+      texture.wrapU=BABYLON.Texture.WRAP_ADDRESSMODE;
+      texture.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
+      texture.anisotropicFilteringLevel=1;
+      this.waveCycleBuilds++;
+      return texture;
+    }catch(error){
+      console.warn("[WaterRenderer] Wave cycle texture unavailable; preserving analytic shader.",error);
+      return null;
+    }
+  }
+
   makeSurfaceMaterial(){
     // Stylized water belongs to the same low-poly visual language as the terrain.
     // Depth, transparency and colour come from shared mesh vertex colours instead
@@ -240,6 +288,7 @@ export class WaterRenderer{
       ?new BABYLON.CustomMaterial("water-surface-stylized",this.scene)
       :new BABYLON.StandardMaterial("water-surface-stylized",this.scene);
     if(this.gpuSurfaceWaves){
+      this.waveCycleTexture=this.createWaterCycleTexture();
       // x/y = normalized local current direction, z = current speed, w = shoreline wave weight.
       m.AddAttribute("waterAnim");
       m.AddAttribute("waterBaseXZ");
@@ -247,9 +296,16 @@ export class WaterRenderer{
       m.AddUniform("waterTime","float",0);
       m.AddUniform("waterSpecialActive","float",0);
       m.AddUniform("waterWind","vec4",new BABYLON.Vector4(0,0,0,0));
+      m.AddUniform("waterWindShape","vec4",new BABYLON.Vector4(0,2.15/TILE_SIZE,.75,0));
+      if(this.waveCycleTexture)m.AddUniform("waterWaveCycle","sampler2D");
       m.AddUniform("waterTileSize","float",TILE_SIZE);
       m.AddUniform("waterElevationHeight","float",ELEVATION_HEIGHT);
+      const periodicWave=this.waveCycleTexture
+        ?`vec4 sampled=texture2D(waterWaveCycle,fract(vec2(p1,p2)*${WATER_CYCLE_INV_TAU.toPrecision(16)}));
+           return sampled*2.0-1.0;`
+        :`return vec4(sin(p1),cos(p1),sin(p2),cos(p2));`;
       m.Vertex_Definitions(`
+        vec4 waterWavePair(float p1,float p2){${periodicWave}}
         attribute vec4 waterAnim;
         attribute vec2 waterBaseXZ;
         attribute vec2 waterSource;
@@ -266,7 +322,6 @@ export class WaterRenderer{
           vec2 flow=animData.xy;
           float flowLength=length(flow);
           float rawWind=clamp(waterWind.z,0.0,8.0);
-          float windStrength=clamp(waterWind.w,0.0,8.0);
           float calmAmp=waterElevationHeight*.009;
           if(fs>.001&&flowLength>.001){
             flow/=flowLength;
@@ -280,14 +335,16 @@ export class WaterRenderer{
             float cross=dot(p.xz,flowPerp);
             float p1=along*flowK-waterTime*rate*2.8;
             float p2=cross*crossK-waterTime*rate*1.12;
-            float s1=sin(p1),s2=sin(p2),c1=cos(p1),c2=cos(p2);
+            vec4 cycle=waterWavePair(p1,p2);
+            float s1=cycle.x,c1=cycle.y,s2=cycle.z,c2=cycle.w;
             height+=flowAmp*(s1+.28*s2);
             dydx+=flowAmp*(c1*flowK*flow.x+.28*c2*crossK*flowPerp.x);
             dydz+=flowAmp*(c1*flowK*flow.y+.28*c2*crossK*flowPerp.y);
           }else if(rawWind<=.001){
             float p1=(p.x*.78+p.z*.42)*(2.0/waterTileSize)-waterTime*.46;
             float p2=(p.x*.31-p.z*.86)*(2.6/waterTileSize)+waterTime*.31;
-            float s1=sin(p1),s2=sin(p2),c1=cos(p1),c2=cos(p2);
+            vec4 cycle=waterWavePair(p1,p2);
+            float s1=cycle.x,c1=cycle.y,s2=cycle.z,c2=cycle.w;
             height+=calmAmp*(s1+.42*s2);
             dydx+=calmAmp*(c1*(2.0/waterTileSize)*.78+.42*c2*(2.6/waterTileSize)*.31);
             dydz+=calmAmp*(c1*(2.0/waterTileSize)*.42-.42*c2*(2.6/waterTileSize)*.86);
@@ -297,15 +354,16 @@ export class WaterRenderer{
             float windLength=length(wind);
             if(windLength>.001)wind/=windLength;
             vec2 windPerp=vec2(-wind.y,wind.x);
-            float windPresence=waterSmooth01(rawWind/.8);
-            float windAmp=waterElevationHeight*min(.24,.010*windPresence+.012*windStrength+.0036*windStrength*windStrength);
-            float windK=(2.15+windStrength*.72)/waterTileSize;
-            float windRate=.75+windStrength*.82;
+            // Wind-only constants are evaluated on CPU when climate wind changes.
+            float windAmp=waterWindShape.x;
+            float windK=waterWindShape.y;
+            float windRate=waterWindShape.z;
             float along=dot(p.xz,wind);
             float cross=dot(p.xz,windPerp);
             float p1=along*windK-waterTime*windRate*2.35;
             float p2=cross*(windK*1.42)+waterTime*windRate*.72;
-            float s1=sin(p1),s2=sin(p2),c1=cos(p1),c2=cos(p2);
+            vec4 cycle=waterWavePair(p1,p2);
+            float s1=cycle.x,c1=cycle.y,s2=cycle.z,c2=cycle.w;
             height+=windAmp*(s1+.36*s2);
             dydx+=windAmp*(c1*windK*wind.x+.36*c2*windK*1.42*windPerp.x);
             dydz+=windAmp*(c1*windK*wind.y+.36*c2*windK*1.42*windPerp.y);
@@ -315,7 +373,12 @@ export class WaterRenderer{
       `);
       m.Vertex_Before_PositionUpdated(`
         waterWaveValue=waterAmbientWave(vec3(waterBaseXZ.x,positionUpdated.y,waterBaseXZ.y),waterAnim);
-        float sourcePulse=waterSource.x*(0.58+0.42*sin(waterTime*4.4-waterSource.y*6.2831853));
+        // No lookup or trigonometry for the ordinary vertices with no spring.
+        float sourcePulse=0.0;
+        if(waterSource.x>.0001){
+          float phase=waterTime*4.4-waterSource.y*6.2831853;
+          sourcePulse=waterSource.x*(.58+.42*waterWavePair(phase,0.0).x);
+        }
         positionUpdated.y+=waterWaveValue.x*waterAnim.w+waterElevationHeight*.034*sourcePulse;
       `);
       m.Vertex_Before_NormalUpdated(`
@@ -331,10 +394,12 @@ export class WaterRenderer{
       `);
       m.onBindObservable.add(mesh=>{
         const effect=m.getEffect?.();if(!effect)return;
-        const raw=clamp(this.wind?.strength||0,0,8),visual=globalThis.EnvironmentEngine?.windVisualStrength?.(raw)??raw;
+        const wind=this.wind,shape=this.windWaveShape;
         effect.setFloat("waterTime",this.waveTime);
         effect.setFloat("waterSpecialActive",mesh?.metadata?.waterSpecialActive?1:0);
-        effect.setFloat4("waterWind",Number(this.wind?.x||0),Number(this.wind?.z||0),raw,visual);
+        effect.setFloat4("waterWind",wind.x,wind.z,wind.strength,shape.visual);
+        effect.setFloat4("waterWindShape",shape.amplitude,shape.frequency,shape.rate,0);
+        if(this.waveCycleTexture)effect.setTexture("waterWaveCycle",this.waveCycleTexture);
         effect.setFloat("waterTileSize",TILE_SIZE);
         effect.setFloat("waterElevationHeight",ELEVATION_HEIGHT);
       });
@@ -484,12 +549,23 @@ export class WaterRenderer{
   }
 
   setWind(value){
-    const strength=clamp(value?.strength||0,0,8);
+    let strength=clamp(value?.strength||0,0,8);
     let x=Number(value?.x||0),z=Number(value?.y??value?.z??0);
     const length=Math.hypot(x,z);
-    if(strength<=EPSILON||length<=EPSILON){this.wind={x:0,z:0,strength:0};return this.wind;}
-    x/=length;z/=length;
+    if(strength<=EPSILON||length<=EPSILON){x=0;z=0;strength=0;}
+    else{x/=length;z/=length;}
+    // Existing climate is the ONE source of wind changes. Keep its last
+    // normalized result and shader coefficients until that state really moves.
+    if(this.wind.x===x&&this.wind.z===z&&this.wind.strength===strength)return this.wind;
+    const visual=globalThis.EnvironmentEngine?.windVisualStrength?.(strength)??strength;
+    const presence=smooth01(strength/.8);
+    this.windWaveShape={
+      amplitude:ELEVATION_HEIGHT*Math.min(.24,.010*presence+.012*visual+.0036*visual*visual),
+      frequency:(2.15+visual*.72)/TILE_SIZE,
+      rate:.75+visual*.82,visual
+    };
     this.wind={x,z,strength};
+    this.windWaveStateChanges++;
     return this.wind;
   }
 
@@ -3695,6 +3771,7 @@ export class WaterRenderer{
       topology:"EXISTING_REGION_COMPONENTS",waveSampleSpace:"WORLD_XZ",
       meshCacheScope:"LOCAL_PUBLISHED_DQ_POLYGONS_CLIFF_SEAMS_TILE_FLOW",
       waveMode:this.gpuSurfaceWaves?"GPU_SHADER":"CPU_VERTEX",
+      waveCycleMode:this.waveCycleTexture?"SHARED_LOOP_TEXTURE":this.gpuSurfaceWaves?"ANALYTIC_SHADER":"CPU_VERTEX",
       surfaceRegions:this.surfaceMeshes.size,surfaceMeshes:this.surfaceMeshes.size,
       update:{...this.surfaceMeshUpdate},cascades:{count:this.cascades.size,update:{...this.cascadeMeshUpdate}},
       ...counters,internalBoundaries,warningCount:counters.invalidVertices+counters.invalidIndices+
@@ -3761,6 +3838,10 @@ export class WaterRenderer{
       stylizedWater:true,
       animatedWaterSurface:true,
       waterWaveAnimation:this.gpuSurfaceWaves?"gpu-vertex-displacement":"cpu-vertex-displacement-30hz",
+      waveCycle:{mode:this.waveCycleTexture?"SHARED_LOOP_TEXTURE":this.gpuSurfaceWaves?"ANALYTIC_SHADER":"CPU_VERTEX",
+        textureBuilds:this.waveCycleBuilds,textureBytes:this.waveCycleTexture?WATER_CYCLE_SAMPLES*WATER_CYCLE_SAMPLES*4:0,
+        sharedAcrossSurfaces:true,windStateChanges:this.windWaveStateChanges,
+        continuousWorldPhase:true,requiresPerFrameDraw:true},
       gpuSurfaceWaves:this.gpuSurfaceWaves,
       cpuSurfaceUploadsOnlyForSpecialEvents:this.gpuSurfaceWaves,
       localFlowSpeedWaves:true,
