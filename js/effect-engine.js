@@ -155,8 +155,8 @@ export const EffectEngine=(()=>{
   function tick(unit){
     const events=[];
     for(const effect of [...state(unit)]){
-      if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
-      if(effect.type==="DAMAGE_OVER_TIME"){const amount=damage(unit,effect.amount);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
+      if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
+      if(effect.type==="DAMAGE_OVER_TIME"){const amount=damage(unit,effect.amount);globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
       if(effect.remaining!=null)effect.remaining--;
     }
     unit.effects=unit.effects.filter(e=>e.remaining==null||e.remaining>0);

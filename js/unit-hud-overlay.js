@@ -205,8 +205,13 @@ export class UnitHudOverlay{
       if(event?.type!=="UNIT_FLOAT_TEXT"||!event.unitId)continue;
       // The snapshot is already filtered by TacticalEngine visibility.
       if(!living.has(String(event.unitId))&&!event.afterDeath)continue;
-      const kind=event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":event.kind==="CRITICAL"?"critical":"damage";
-      const text=kind==="heal"?`+${Math.round(Number(event.value)||0)}`:kind==="status"?String(event.value||""):`-${Math.round(Number(event.value)||0)}`;
+      const outcomes={MISS:"miss",DODGE:"dodge",BLOCK:"block",PARRY:"parry",GRAZE:"graze"};
+      const kind=outcomes[event.kind]||
+        (event.kind==="DOT"?"dot":event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":event.kind==="CRITICAL"?"critical":"damage");
+      const text=outcomes[event.kind]?event.kind:
+        kind==="dot"?`${String(event.label||"持續傷害")} -${Math.round(Number(event.value)||0)}`:
+        kind==="heal"?`+${Math.round(Number(event.value)||0)}`:
+        kind==="status"?String(event.value||""):`-${Math.round(Number(event.value)||0)}`;
       if(!text||text==="+0"||text==="-0")continue;
       const node=createElement("span",`unit-float-text unit-float-${kind}`);
       node.textContent=text;
@@ -214,7 +219,7 @@ export class UnitHudOverlay{
       const stack=Math.min(3,this.floats.filter(item=>item.unitId===event.unitId&&now-item.start<260).length);
       this.floats.push({node,unitId:event.unitId,x:event.x,y:event.y,
         renderZ:event.renderZ,afterDeath:!!event.afterDeath,start:now,stack,
-        lifetime:kind==="status"?1400:kind==="critical"?1250:1100});
+        lifetime:kind==="status"?1400:kind==="critical"?1250:kind==="dot"?1350:1100});
     }
     // Bound DOM work under AoE and mass-status effects; never retain old nodes.
     while(this.floats.length>40)this.floats.shift().node.remove();

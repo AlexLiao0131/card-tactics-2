@@ -97,6 +97,22 @@ export const BattleResolution=(()=>{
       globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{
         damage:hpBefore-action.target.hp,critical:result.crit===true
       });
+      const defense=resolved.defense;
+      // One resolved judgement, not a separate per-frame damage guess.
+      if(!result.hit){
+        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
+          c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
+      }else if(defense?.triggered&&defense.success!==false&&
+        (Number(defense.damageMultiplier)<1||Number(result.damage||0)===0)){
+        // Partial guard mitigation still counts as a successful BLOCK, while
+        // the reduced HP loss retains its own red damage number.
+        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
+          defense.method?.method==="PARRY"?"PARRY":"BLOCK");
+      }else if(Number(result.shieldAbsorbed||0)>0){
+        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
+      }else if(result.graze){
+        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
+      }
       if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
       else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:Number(result.damage||0)});
       if(action.target.alive&&globalThis.EffectEngine){

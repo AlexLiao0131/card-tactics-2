@@ -73,6 +73,18 @@ try{
   // every animation delta on the existing runtime events, then commit the latest
   // snapshot immediately before Babylon draws that frame. No second RAF path.
   let pendingSnapshot=null,pendingAnimationEvents=[],lastObservedSnapshot=renderer.lastState;
+  let focusedEngagementKey=null;
+  function syncEngagementFocus(){
+    const model=runtime.getEngagementPresentation?.();
+    if(!model||!model.attackerId||!model.defenderId){focusedEngagementKey=null;return;}
+    const key=`${model.attackerId}:${model.defenderId}:${model.skillName}`;
+    if(key===focusedEngagementKey)return;
+    // Only focus when combat/response is entered; do not repeatedly fight a
+    // player's panning while they inspect their counter/defense choices.
+    if(model.mode!=="support-select"&&!String(model.mode).startsWith("enemy-"))return;
+    focusedEngagementKey=key;
+    renderer.camera.focusEngagement?.([model.player,model.enemy].filter(Boolean));
+  }
 
   function observeSnapshot(){
     const snap=runtime.getBattleSnapshot(),prev=lastObservedSnapshot;
@@ -91,7 +103,7 @@ try{
     pendingSnapshot=null;pendingAnimationEvents=[];
     // Release the on-demand callback only if no new snapshot arrived during
     // publication. That preserves reentrant runtime events without another RAF.
-    try{renderer.sync(snap,events);renderer.unitHud?.presentEvents?.(events);battleUI.render();}
+    try{renderer.sync(snap,events);renderer.unitHud?.presentEvents?.(events);syncEngagementFocus();battleUI.render();}
     finally{if(!pendingSnapshot)renderer.presentationFrameSync=null;}
   }
 

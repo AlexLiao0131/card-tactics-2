@@ -310,7 +310,12 @@ export class BattleUI{
     bar.innerHTML="";
     bar.classList.add("engagement-overlay");
     const title=document.createElement("strong");
-    title.textContent=model.skillName||"交戰";bar.appendChild(title);
+    title.textContent=model.mode==="support-select"?"我方交戰準備":"敵方攻擊・選擇應對";bar.appendChild(title);
+    const incoming=document.createElement("div");incoming.className="engagement-threat";
+    const actor=document.createElement("strong");actor.textContent=`${model.attackerName||"未知"} → ${model.defenderName||"未知"}`;
+    const skill=document.createElement("span");
+    skill.textContent=`使用技能：${model.skillName||"未知技能"}${model.attackType?`｜${model.attackType}`:""}`;
+    incoming.append(actor,skill);bar.appendChild(incoming);
 
     for(const group of model.groups||[]){
       const wrap=document.createElement("div");wrap.className="support-choice";

@@ -25,6 +25,7 @@ export const UnitAnimationEngine=(()=>{
   // Damage resolved by BattleResolution is recorded once at the real result
   // site; the next published HP delta only emits remaining environmental damage.
   const resolvedDamage=new Map();
+  const resolvedHealing=new Map();
   let sequence=0;
   const NEGATIVE_STATUS_TYPES=new Set(["DAMAGE_OVER_TIME","STUN","STUNNED","FREEZE","FROZEN","POISON","BURN","BURNING","PARALYSIS","SILENCE","SLOW","BLIND","BLEED","CURSE","FEAR"]);
   const STATUS_NAMES=Object.freeze({DAMAGE_OVER_TIME:"持續傷害",STUN:"暈眩",STUNNED:"暈眩",FREEZE:"凍結",FROZEN:"凍結",POISON:"中毒",BURN:"燃燒",BURNING:"燃燒",PARALYSIS:"麻痺",SILENCE:"沉默",SLOW:"緩速",BLIND:"目盲",BLEED:"流血",CURSE:"詛咒",FEAR:"恐懼"});
@@ -176,13 +177,42 @@ export const UnitAnimationEngine=(()=>{
     return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true});
   }
 
+  // Combat outcomes are reported by BattleResolution, never guessed from HP.
+  // Only visible, previously-published units can receive a floating result.
+  function emitOutcome(unit,kind){
+    const previous=previousUnits.get(String(unit?.id||""));
+    if(!previous||!["MISS","DODGE","BLOCK","PARRY","GRAZE"].includes(kind))return null;
+    return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(previous),kind,value:kind});
+  }
+  // EffectEngine is authoritative for individual DOT ticks. Claim the actual
+  // HP loss here so the generic snapshot observer cannot duplicate its number.
+  function emitDamageOverTime(unit,amount,effect={}){
+    const actual=Math.max(0,Math.round(Number(amount)||0));
+    if(!actual||!unit?.id)return null;
+    const id=String(unit.id),prior=previousUnits.get(id);
+    if(!prior)return null;
+    resolvedDamage.set(id,(resolvedDamage.get(id)||0)+actual);
+    const name=String(effect.name||(/POISON|VENOM|TOXIN/i.test(String(effect.id))?"中毒":/BURN|FIRE/i.test(String(effect.id))?"燃燒":/BLEED|BLOOD/i.test(String(effect.id))?"流血":"持續傷害"));
+    return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(prior),kind:"DOT",value:actual,label:name,afterDeath:true});
+  }
+
+  function emitHealingOverTime(unit,amount){
+    const actual=Math.max(0,Math.round(Number(amount)||0));
+    if(!actual||!unit?.id)return null;
+    const id=String(unit.id),prior=previousUnits.get(id);
+    if(!prior)return null;
+    resolvedHealing.set(id,(resolvedHealing.get(id)||0)+actual);
+    return emitFloat(prior,"HEAL",actual);
+  }
+
   function emitDeath(unit,detail={}){
     if(!unit?.id)return null;
     const previous=previousUnits.get(String(unit.id));
     // Any combat hit already has its own result-derived floating number.
     // Only residual, non-combat damage is still represented by the death delta.
     if(previous&&Number(previous.hp)>0){
-      const residual=Math.max(0,Number(previous.hp)-Number(resolvedDamage.get(String(unit.id))||0));
+      const residual=Math.max(0,Number(previous.hp)-Number(unit.hp||0)-
+        Number(resolvedDamage.get(String(unit.id))||0)+Number(resolvedHealing.get(String(unit.id))||0));
       if(residual>0)emitFloat(previous,"DAMAGE",Math.round(residual),{afterDeath:true});
     }
     return emit(unit,STATE.DEATH,{duration:durationFor(unit,STATE.DEATH,detail),...detail});
@@ -231,11 +261,15 @@ export const UnitAnimationEngine=(()=>{
           }
         }
         const hpDelta=Number(unit.hp||0)-Number(previous.hp||0);
-        if(hpDelta<0){
-          const remaining=Math.max(0,-hpDelta-Number(resolvedDamage.get(String(unit.id))||0));
-          if(remaining>0)emitFloat(unit,"DAMAGE",Math.round(remaining));
-          if(!queued(unit.id,STATE.HURT,STATE.DEATH))emitHit(unit,{damage:-hpDelta,source:"STATE_DELTA"});
-        }else if(hpDelta>0)emitFloat(unit,"HEAL",Math.round(hpDelta));
+        const markedDamage=Number(resolvedDamage.get(String(unit.id))||0);
+        const markedHealing=Number(resolvedHealing.get(String(unit.id))||0);
+        // Per-event DoT/healing can cancel in net HP; preserve both floats.
+        const unknownDelta=hpDelta+markedDamage-markedHealing;
+        if(unknownDelta<0)emitFloat(unit,"DAMAGE",Math.round(-unknownDelta));
+        else if(unknownDelta>0)emitFloat(unit,"HEAL",Math.round(unknownDelta));
+        if(hpDelta<0||markedDamage>0){
+          if(!queued(unit.id,STATE.HURT,STATE.DEATH))emitHit(unit,{damage:Math.max(0,-hpDelta),source:"STATE_DELTA"});
+        }
         const former=new Set(abnormalStatuses(previous).map(effect=>effect.id));
         for(const effect of abnormalStatuses(unit)){
           if(former.has(effect.id))continue;
@@ -247,6 +281,7 @@ export const UnitAnimationEngine=(()=>{
     previousUnits.clear();
     for(const[id,unit]of current)previousUnits.set(id,unit);
     resolvedDamage.clear();
+    resolvedHealing.clear();
     return snapshot;
   }
 
@@ -255,11 +290,11 @@ export const UnitAnimationEngine=(()=>{
     return queue.splice(0,queue.length);
   }
 
-  function clear(){queue.length=0;previousUnits.clear();resolvedDamage.clear();}
+  function clear(){queue.length=0;previousUnits.clear();resolvedDamage.clear();resolvedHealing.clear();}
 
   return Object.freeze({
     STATE,DEFAULTS,normalizeState,normalizeFacing,visualDefinition,skillState,
-    emit,emitPresentation,emitAction,emitHit,emitResolvedHit,emitDeath,emitMove,abnormalStatuses,statusIndicators,observe,drain,clear
+    emit,emitPresentation,emitAction,emitHit,emitResolvedHit,emitOutcome,emitDamageOverTime,emitHealingOverTime,emitDeath,emitMove,abnormalStatuses,statusIndicators,observe,drain,clear
   });
 })();
 

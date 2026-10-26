@@ -222,6 +222,34 @@ export class BattleCamera{
   toggleProjection(){return this.setProjection(this.projection==="ISO"?"TOP":"ISO");}
   resetView(){this.restoreHomeView(true);}
 
+  focusEngagement(points){
+    const valid=(points||[]).filter(p=>Number.isFinite(Number(p?.x))&&Number.isFinite(Number(p?.y)));
+    if(!valid.length)return false;
+    // Preserve the player's rotation/projection. Bring both combatants to the
+    // centre of the existing Babylon orthographic viewport by screen-space pan.
+    const mid=averagePoint(valid);
+    this.zoom=Math.max(this.zoom,1.85);
+    this.apply();
+    this.camera.computeWorldMatrix(true);
+    this.scene.updateTransformMatrix?.(true);
+    const engine=this.scene.getEngine();
+    const renderW=Math.max(1,engine.getRenderWidth()),renderH=Math.max(1,engine.getRenderHeight());
+    const world=new BABYLON.Vector3(mid.x*TILE_SIZE,0,mid.y*TILE_SIZE);
+    const view=this.camera.viewport.toGlobal(renderW,renderH);
+    const at=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),this.scene.getTransformMatrix(),view);
+    if(!Number.isFinite(at.x)||!Number.isFinite(at.y))return false;
+    const rect=this.canvas.getBoundingClientRect();
+    // The reaction selector sits in the middle of the battlefield screen.
+    // Frame the clash above it instead of centering units behind the menu.
+    const dx=(renderW/2-at.x)*rect.width/renderW;
+    const dy=(renderH*.14-at.y)*rect.height/renderH;
+    this.panPixels.x+=dx;
+    this.panPixels.y+=dy;
+    this.apply();
+    this.emitView();
+    return true;
+  }
+
   getViewState(){
     return{
       projection:this.projection,
