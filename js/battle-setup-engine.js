@@ -175,7 +175,7 @@ export const BattleSetupEngine=(()=>{
     }
 
     const createUnit=(id,team,characterId,x,y)=>
-      UnitRuntimeEngine.create({id,team,characterId,x,y,map});
+      UnitRuntimeEngine.create({id,team,characterId,x,y,map,cores});
 
     const forcedHeroIds=new Set(
       (stage.playerSpawns||[])

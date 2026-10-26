@@ -50,7 +50,17 @@ export const UnitRuntimeEngine=(()=>{
     return out;
   }
   function createSkillResources(){return{}}
-  function createFromResolvedCharacter({id,team,character,x,y,map}){
+  // Initial deployment uses the stage's actual opposing Core, not a fixed
+  // compass direction. The tactical facing state remains the sole authority:
+  // movement, attacks and player rotations can change it after spawn.
+  function initialFacingTarget(team,cores){
+    const opponent=team==="P"||team==="PLAYER"?"ENEMY":
+      team==="E"||team==="ENEMY"?"PLAYER":null;
+    if(!opponent)return null;
+    return(cores||[]).find(core=>core?.owner===opponent&&
+      Number.isFinite(Number(core.x))&&Number.isFinite(Number(core.y)))||null;
+  }
+  function createFromResolvedCharacter({id,team,character,x,y,map,cores=null}){
     if(!character)return null;
     const runtimeCharacter=clone(character);
     const unit={id,team,character:runtimeCharacter,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
@@ -70,18 +80,20 @@ export const UnitRuntimeEngine=(()=>{
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
     syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});
-    TacticalEngine.ensureFacing(unit);
+    const target=initialFacingTarget(team,cores??globalThis.CardTacticsRuntime?.getCores?.());
+    if(target)TacticalEngine.faceToward(unit,target);
+    else TacticalEngine.ensureFacing(unit);
     liveUnits.set(unit.id,unit);
     return unit;
   }
   function resolveCharacter(characterId,loadoutId=null){return LoadoutDatabase.resolveCharacter(characterId,loadoutId)}
-  function create({id,team,characterId,loadoutId=null,x,y,map}){
+  function create({id,team,characterId,loadoutId=null,x,y,map,cores=null}){
     const character=resolveCharacter(characterId,loadoutId);if(!character)return null;
-    return createFromResolvedCharacter({id,team,character,x,y,map});
+    return createFromResolvedCharacter({id,team,character,x,y,map,cores});
   }
-  function createFromCard({id,team,card,x,y,map,itemIds=[]}){
+  function createFromCard({id,team,card,x,y,map,itemIds=[],cores=null}){
     if(!CardDatabase.isCharacter(card))return null;
-    const unit=create({id,team,characterId:card.characterId,loadoutId:card.loadoutId,x,y,map});
+    const unit=create({id,team,characterId:card.characterId,loadoutId:card.loadoutId,x,y,map,cores});
     if(unit&&globalThis.ItemRuntimeEngine)ItemRuntimeEngine.initializeUnitInventory(unit,itemIds,{owned:true,source:"PREPARATION"});
     return unit;
   }

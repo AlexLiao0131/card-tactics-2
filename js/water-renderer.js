@@ -799,19 +799,28 @@ export class WaterRenderer{
     return continuous;
   }
 
+  // Authoritative CONTACT rule for both component membership and vertex
+  // welding. A component can wind around a cliff and meet itself on opposite
+  // levels: being in the same transitive component is not permission to weld
+  // across that hard local cliff. Use precisely the same D/Q edge decision.
+  surfaceEdgeContinuous(tile,next){
+    if(!tile||!next)return false;
+    const dx=Number(tile.x)-Number(next.x),dy=Number(tile.y)-Number(next.y);
+    if(dx===0&&dy===0)return true;
+    if(Math.abs(dx)+Math.abs(dy)!==1)return false;
+    if(hasAnyWater(tile)&&hasAnyWater(next))return this.continuousWaterEdge(tile,next);
+    const a=keyOf(tile.x,tile.y),b=keyOf(next.x,next.y);
+    return[...(this.sheetFlowNetwork?.get(a)?.incoming||[]),
+           ...(this.sheetFlowNetwork?.get(a)?.outgoing||[])]
+      .some(edge=>edge.geometryJoinValid&&!edge.cascade&&
+        ((edge.fromKey===a&&edge.toKey===b)||(edge.fromKey===b&&edge.toKey===a)));
+  }
+
   // All D and Q tiles use one surface connectivity and one horizontal Mesh
   // builder. Published cliffs are NOT continuous horizontal water boundaries.
   presentationComponents(presentation){
     const tiles=[...presentation.values()].map(item=>item.tile);
     const by=this.byKey(tiles),remaining=new Set(by.keys()),out=[];
-    const canJoin=(tile,next)=>{
-      if(hasAnyWater(tile)&&hasAnyWater(next))return this.continuousWaterEdge(tile,next);
-      const a=keyOf(tile.x,tile.y),b=keyOf(next.x,next.y);
-      return[...(this.sheetFlowNetwork.get(a)?.incoming||[]),
-             ...(this.sheetFlowNetwork.get(a)?.outgoing||[])]
-        .some(edge=>edge.geometryJoinValid&&!edge.cascade&&
-          ((edge.fromKey===a&&edge.toKey===b)||(edge.fromKey===b&&edge.toKey===a)));
-    };
     while(remaining.size){
       const first=by.get(remaining.values().next().value);
       const group=this.surfaceGroup(first),queue=[first],members=[];
@@ -820,7 +829,7 @@ export class WaterRenderer{
         const tile=queue.shift();members.push(tile);
         for(const dir of DIRS){
           const neighbor=by.get(keyOf(tile.x+dir.dx,tile.y+dir.dy));
-          if(!neighbor||this.surfaceGroup(neighbor)!==group||!canJoin(tile,neighbor))continue;
+          if(!neighbor||this.surfaceGroup(neighbor)!==group||!this.surfaceEdgeContinuous(tile,neighbor))continue;
           const neighborKey=keyOf(neighbor.x,neighbor.y);
           if(!remaining.delete(neighborKey))continue;
           queue.push(neighbor);
@@ -1086,13 +1095,35 @@ export class WaterRenderer{
   addVertex(out,cache,point,allMap,turbidity,tile,sources=[],knownMotion=null,localCliffSeams=null,prepared=null){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const seam=this.canonicalWaterPoint({x:Number(point.x),y,z:Number(point.z)});
-    const cacheKey=`${seam.x.toFixed(5)}:${seam.y.toFixed(5)}:${seam.z.toFixed(5)}`;
-    const existing=cache.get(cacheKey);
+    // A topological contact uses one XYZ even when the two local D/Q solvers
+    // report different heights at the same XZ. DO NOT weld every point in the
+    // component indiscriminately: a loop around a cliff could put the upper
+    // and lower (legitimately different) water layers in the same component.
+    // Use the SAME direct edge-continuity owner as presentationComponents.
+    const cacheKey=`${seam.x.toFixed(5)}:${seam.z.toFixed(5)}`;
+    const contacts=cache.get(cacheKey)||[];
+    const contact=contacts.find(record=>record.tiles.some(owner=>
+      this.surfaceEdgeContinuous(owner,tile)));
+    const existing=contact?.index;
     if(existing!=null){
-      // Shared coordinates can arrive from either tile. A stored D vertex
-      // owns the colour/alpha/depth-driven animation at a D/Q seam, regardless
-      // of tile iteration order. Q still contributes its real flow direction.
+      if(!contact.tiles.some(owner=>owner===tile))contact.tiles.push(tile);
+      const owners=out.vertexContactTiles[existing];
+      if(!owners.some(owner=>owner===tile))owners.push(tile);
+      // A genuinely connected D/D boundary takes its height from the already
+      // authoritative, cliff-aware hydrology interpolation. This eliminates
+      // tile-order dependence when the two stored surfaces slope differently.
+      // Never use this for unconnected cliff/cascade surfaces: those are built
+      // in different components before this code runs.
+      if(hasAnyWater(tile)&&out.storedVertexAuthority[existing]&&
+        Math.fround(out.positions[existing*3+1])!==Math.fround(seam.y)){
+        out.positions[existing*3+1]=
+          this.waterLevelAtWorld(tile,seam.x,seam.z,allMap)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+      }
+      // Stored D is the authoritative height at a D/Q join, as well as the
+      // colour/depth owner. Q can contribute velocity but cannot open a
+      // second height layer inside the same connected water component.
       if(hasAnyWater(tile)&&!out.storedVertexAuthority[existing]){
+        out.positions[existing*3+1]=seam.y;
         const visual=prepared?.visual||this.waterVertexVisual(point,allMap,turbidity);
         if(prepared&&!prepared.visual)prepared.visual=visual;
         out.colors[existing*4]=visual.color[0];
@@ -1120,6 +1151,7 @@ export class WaterRenderer{
     out.uvs.push(seam.x/(TILE_SIZE*3.25),seam.z/(TILE_SIZE*3.25));
     out.colors.push(visual.color[0],visual.color[1],visual.color[2],visual.alpha);
     out.storedVertexAuthority.push(hasAnyWater(tile));
+    out.vertexContactTiles.push([tile]);
     const onCliffLip=prepared?.onCliffLip??this.onRenderedCliffWaterSeam(tile,point,allMap,localCliffSeams);
     if(prepared&&prepared.onCliffLip===undefined)prepared.onCliffLip=onCliffLip;
     out.waveWeights.push(onCliffLip?0:smooth01(visual.depth/.34));
@@ -1128,7 +1160,8 @@ export class WaterRenderer{
     out.sourceWeights.push(sourceField.weight);out.sourcePhases.push(sourceField.phase);
     out.flowXSum.push(0);out.flowZSum.push(0);out.flowSpeedSum.push(0);out.flowSampleCount.push(0);
     this.accumulateVertexMotion(out,index,tile,knownMotion);
-    cache.set(cacheKey,index);
+    contacts.push({index,tiles:[tile]});
+    cache.set(cacheKey,contacts);
     return index;
   }
 
@@ -1144,6 +1177,14 @@ export class WaterRenderer{
     const area=(bz-az)*(cx-ax)-(bx-ax)*(cz-az);
     if(area===0)return;
     if(area>0){const swap=b;b=c;c=swap;}
+    // Intersected D/Q micro-triangles may publish the exact same triangular
+    // face twice. The canonical index owner is one draw triangle, not two
+    // coincident alpha faces (which z-fight and manufacture non-manifold
+    // edges). Deduplicate during the original topology assembly, including
+    // cached triangle reuse below; never overlay a cover-up mesh.
+    const id=[a,b,c].sort((x,y)=>x-y).join(":");
+    if(out.triangleKeys.has(id))return;
+    out.triangleKeys.add(id);
     out.indices.push(a,b,c);
   }
 
@@ -1208,9 +1249,8 @@ export class WaterRenderer{
       }
       return JSON.stringify([face.map(i=>footprintKeys[i]),cells]);
     };
-    // The spacing is governed by the float32 render buffer and the existing
-    // five-decimal canonical water-coordinate registry, not an artistic tuning
-    // parameter. Any vertices with genuinely different Y stay separate.
+    // Spacing follows the existing five-decimal seam registry and GPU float32
+    // positions; this component already contains no cliff/cascade separation.
     const renderTolerance=(...values)=>Math.max(0.00001,
       2*Math.pow(2,-23)*Math.max(1,...values.map(v=>Math.abs(v))));
     const edgeVertices=(a,b,priorCandidates=null)=>{
@@ -1222,20 +1262,34 @@ export class WaterRenderer{
       const len2=dx*dx+dz*dz;
       const result=[{index:u,t:0},{index:v,t:1}],candidates=[];
       if(len2>0){
-        const spatial=renderTolerance(A.x,A.z,B.x,B.z),vertical=renderTolerance(A.y,B.y);
+        const spatial=renderTolerance(A.x,A.z,B.x,B.z);
         const qualifies=index=>{
           if(index===u||index===v)return;
           const P=renderPoints[index],px=P.x-A.x,pz=P.z-A.z;
           const t=(px*dx+pz*dz)/len2;
           if(t<=0||t>=1||Math.hypot(px-dx*t,pz-dz*t)>spatial)return;
+          // Geometry in a transitive region can still straddle a real cliff
+          // with two independent surface layers. Join only local tile pairs
+          // authorised by the SAME direct D/Q connection used for regions.
+          const owners=out.vertexContactTiles;
+          if(owners){
+            const belongs=(endpoint)=>owners[index]?.some(source=>
+              owners[endpoint]?.some(other=>this.surfaceEdgeContinuous(source,other)));
+            if(!belongs(u)&&!belongs(v))return;
+          }
           // All X/Z candidates are saved, not just those currently coplanar.
           // A future change in water height can create or remove a T-junction.
           candidates.push(footprintKeys[index]);
-          if(Math.abs(P.y-(A.y+(B.y-A.y)*t))<=vertical)
-            result.push({index,t});
+          // This component has already passed the authored no-cascade /
+          // submerged-cliff continuity check. A different height on a
+          // projected edge is precisely the cracked D/Q join: split the
+          // original triangle edge at the REAL neighbour vertex rather than
+          // discarding its contact and leaving two free boundaries. The
+          // shared index gives both sides one XYZ and one GPU wave input.
+          result.push({index,t});
         };
-        // Unchanged exact X/Z surroundings have the SAME candidates. Recheck
-        // their CURRENT Y collinearity without repeating the tile-bucket scan.
+        // Unchanged exact X/Z surroundings have the same possible edge joins.
+        // Recheck the CURRENT projected edge before reusing those candidates.
         // If any horizontal key is ambiguous, fall through to the full solver.
         const validPrior=Array.isArray(priorCandidates)&&
           priorCandidates.every(key=>indexByFootprint.get(key)!=null);
@@ -1286,8 +1340,9 @@ export class WaterRenderer{
       const signature=faceSignature(face);
       const old=priorFaces?.get(faceId);
       // The edge solver is still authoritative: recompute the CURRENT exact
-      // float32 3D collinearity for every edge. A new/removed T-junction or
-      // changed vertical contact invalidates the cached triangles even if
+      // float32 XZ collinearity for every edge. Within one continuous water
+      // body the neighbouring vertex supplies the common Y; a new/removed
+      // T-junction invalidates cached triangles even if
       // their X/Z footprints are identical. No guessed water-level tolerance.
       const mayReuseCandidates=old?.footprintTopology===true&&old.signature===signature;
       const edges=face.map((index,i)=>
@@ -1304,8 +1359,10 @@ export class WaterRenderer{
       const reuse=old?.footprintTopology===true&&old.signature===signature&&
         stable(old.vertices)&&sameEdges;
       if(reuse){
-        for(const point of old.triangles)
-          out.indices.push(indexByFootprint.get(point));
+        for(let i=0;i<old.triangles.length;i+=3)
+          this.pushTriangle(out,indexByFootprint.get(old.triangles[i]),
+            indexByFootprint.get(old.triangles[i+1]),
+            indexByFootprint.get(old.triangles[i+2]));
         nextFaces.set(faceId,old);
         reusedFaces++;
         // An elevation-only edit is a valid topology cache hit. The original
@@ -1619,7 +1676,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state,presentation,resolvedSurface=null,allMap=null,previousMesh=null,priorFaces=null,vertexReuse=null){
-    const out={positions:[],indices:[],normals:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const out={positions:[],indices:[],triangleKeys:new Set(),normals:[],uvs:[],colors:[],vertexContactTiles:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
     const cache=new Map(),localCliffSeams=new Map(),tileMap=allMap||this.allByKey(state),
       sources=component.sources??this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
