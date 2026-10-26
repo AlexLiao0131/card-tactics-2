@@ -37,7 +37,7 @@ export class UnitRenderer{
     this.figureTintMaterials=new Map();
     this.figureBuildStats={templatesBuilt:0,templatesReused:0,originalMeshes:0,batchedMeshes:0,
       buildMs:0,cloneMs:0,entriesCreated:0,entriesDisposed:0,entryBuildMs:0,
-      tintableSourceMeshes:0,tintedDrawMeshes:0,articulatedBatchesSaved:0};
+      tintableSourceMeshes:0,tintedDrawMeshes:0,articulatedBatchesSaved:0,birdShadowDrawMeshesSaved:0};
     this.materials={
       PLAYER:this.mat("player",new BABYLON.Color3(.20,.55,.95)),
       ENEMY:this.mat("enemy",new BABYLON.Color3(.90,.24,.24)),
@@ -278,11 +278,11 @@ export class UnitRenderer{
       color:[mesh.color?.r??1,mesh.color?.g??1,mesh.color?.b??1]};
   }
 
-  instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition){
+  instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition,kind="FIGURE"){
     const meshes=[];
     for(let i=0;i<template.surfaces.length;i++){
       const group=template.surfaces[i],pivot=figureParts[group.part]||root;
-      const mesh=new BABYLON.Mesh(`figure-batch-${group.part}-${i}-${unit.id}`,this.scene);
+      const mesh=new BABYLON.Mesh(`unit-batch-${group.part}-${i}-${unit.id}`,this.scene);
       const data=new BABYLON.VertexData();
       data.positions=group.positions;data.normals=group.normals;
       data.uvs=group.uvs;data.indices=group.indices;
@@ -294,7 +294,8 @@ export class UnitRenderer{
       mesh.useVertexColors=!!group.tintClass;
       mesh.useVertexAlpha=false;
       mesh.receiveShadows=group.receiveShadows;mesh.isPickable=false;
-      mesh.metadata={kind:"unit-part",unitId:unit.id,figurePart:group.part,
+      mesh.metadata={kind:"unit-part",unitId:unit.id,
+        ...(kind==="BIRD"?{birdPart:group.part}:{figurePart:group.part}),
         castShadow:group.castShadow,sourceMeshCount:group.sources,
         vertexTintBatch:!!group.tintClass,tintClass:group.tintClass||null};
       meshes.push(mesh);
@@ -311,10 +312,11 @@ export class UnitRenderer{
         castShadow:false,lineOnly:true};
       meshes.push(mesh);
     }
-    return{root,meshes,figureParts,kind:"FIGURE",height,lift:Number(definition?.lift||0)};
+    return{root,meshes,[kind==="BIRD"?"birdParts":"figureParts"]:figureParts,
+      kind,height,lift:Number(definition?.lift||0)};
   }
 
-  batchFigureParts(unit,signature,root,figureParts,meshes,materials,height,definition){
+  batchFigureParts(unit,signature,root,figureParts,meshes,materials,height,definition,kind="FIGURE"){
     // Stable order comes from createFigure()'s own formal primitive builders.
     // A batch shares a SINGLE animated pivot, material, and shadow policy.
     // The original meshes are disposed only after the complete local geometry
@@ -322,7 +324,7 @@ export class UnitRenderer{
     const materialKeys=new Map(Object.entries(materials).map(([k,v])=>[v,k]));
     const groups=[],byKey=new Map(),lines=[];
     for(const mesh of meshes){
-      const part=mesh.metadata?.figurePart||"",pivot=figureParts[part]||root;
+      const part=mesh.metadata?.figurePart||mesh.metadata?.birdPart||"",pivot=figureParts[part]||root;
       if(mesh.metadata?.lineOnly){lines.push(this.figureLineLayout(mesh,pivot));continue;}
       const materialKey=materialKeys.get(mesh.material);
       if(!materialKey)throw new Error(`FIGURE material not registered: ${mesh.name}`);
@@ -359,7 +361,7 @@ export class UnitRenderer{
     const template={surfaces:groups,lines};
     // The first instance also uses the same creation contract as every later
     // instance, so batching has no separate visual or animation implementation.
-    const entry=this.instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition);
+    const entry=this.instantiateFigureTemplate(unit,template,figureParts,root,materials,height,definition,kind);
     this.figureTemplates.set(signature,template);
     this.figureBuildStats.templatesBuilt++;
     this.figureBuildStats.originalMeshes+=meshes.length;
@@ -371,10 +373,17 @@ export class UnitRenderer{
     for(const mesh of meshes){
       if(mesh.metadata?.lineOnly)continue;
       const originalKey=materialKeys.get(mesh.material);
-      legacyGroups.add(JSON.stringify([mesh.metadata?.figurePart||"",originalKey,
+      legacyGroups.add(JSON.stringify([mesh.metadata?.figurePart||mesh.metadata?.birdPart||"",originalKey,
         mesh.metadata?.castShadow!==false,mesh.receiveShadows!==false]));
     }
     this.figureBuildStats.articulatedBatchesSaved+=Math.max(0,legacyGroups.size-groups.length);
+    // Actual per-frame scene + shadow submissions for a BIRD are one mesh
+    // per existing animated pivot/material compatibility group, rather than
+    // one submission for each feather/claw primitive. Geometry and lighting
+    // remain identical; no shadow caster is discarded.
+    if(kind==="BIRD")this.figureBuildStats.birdShadowDrawMeshesSaved+=
+      Math.max(0,meshes.filter(mesh=>mesh.metadata?.castShadow!==false).length-
+        entry.meshes.filter(mesh=>mesh.metadata?.castShadow!==false).length);
     for(const mesh of meshes)mesh.dispose(false,false);
     return entry;
   }
@@ -1681,7 +1690,7 @@ export class UnitRenderer{
     return entry;
   }
 
-  createBird(unit,definition){
+  createBird(unit,definition,signature=this.visualSignature(unit,definition)){
     const bird=definition?.bird||{},colors=bird.colors||{};
     const height=Math.max(.35,Number(definition?.height||bird.height||.72)),scale=height/.72;
     const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
@@ -1695,6 +1704,17 @@ export class UnitRenderer{
     };
     makePart("body",[0,.32,0]);makePart("head",[0,.49,.10]);makePart("leftWing",[-.12,.36,0]);makePart("rightWing",[.12,.36,0]);makePart("tail",[0,.27,-.15]);
     const bodyMat=this.figureMaterial("bird-body",colors.body||"#65452f"),wingMat=this.figureMaterial("bird-wing",colors.wing||"#4b3326"),lightMat=this.figureMaterial("bird-light",colors.light||"#d8c6a1"),headMat=this.figureMaterial("bird-head-light",colors.head||colors.light||"#e2dccb"),beakMat=this.figureMaterial("bird-beak",colors.beak||"#c89534"),eyeMat=this.figureMaterial("bird-eye",colors.eyes||"#d3a42e"),talonMat=this.figureMaterial("bird-talon",colors.talons||"#b18a4a");
+    const material={body:bodyMat,wing:wingMat,light:lightMat,head:headMat,
+      beak:beakMat,eye:eyeMat,talon:talonMat};
+    // Bird wings/tail articulate through the SAME pivots as before. Share the
+    // figure geometry batching owner for immutable bird primitives; keeping
+    // a separate bird batching/shadow runtime would duplicate ownership.
+    const template=this.figureTemplates.get(signature);
+    if(template){
+      this.figureBuildStats.templatesReused++;
+      return this.instantiateFigureTemplate(unit,template,birdParts,root,material,height,definition,"BIRD");
+    }
+    const geometryBuildStart=performance.now();
     const finish=(mesh,mat,part,pos=null,rotation=null,scaling=null)=>{
       const node=birdParts[part]||root;mesh.parent=node;mesh.material=mat;mesh.isPickable=false;mesh.receiveShadows=true;
       const pivot=part==="body"?[0,.32,0]:part==="head"?[0,.49,.10]:part==="leftWing"?[-.12,.36,0]:part==="rightWing"?[.12,.36,0]:[0,.27,-.15];
@@ -1741,7 +1761,9 @@ export class UnitRenderer{
       }
     }
 
-    return{root,meshes,birdParts,kind:"BIRD",height,lift:Number(definition?.lift||0)};
+    const entry=this.batchFigureParts(unit,signature,root,birdParts,meshes,material,height,definition,"BIRD");
+    this.figureBuildStats.buildMs+=performance.now()-geometryBuildStart;
+    return entry;
   }
 
   createVerticalCue(unit){
@@ -1837,7 +1859,7 @@ export class UnitRenderer{
       :kind==="FIGURE"
         ?this.createFigure(unit,definition,signature)
         :kind==="BIRD"
-          ?this.createBird(unit,definition)
+          ?this.createBird(unit,definition,signature)
           :this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);

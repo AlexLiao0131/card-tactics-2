@@ -313,6 +313,7 @@
       if(target.kind!=="CORE")return skillFailure(unit,skill,"TARGET_NOT_CORE",target);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
       skill=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,skill);
+      TacticalEngine.faceToward(unit,target);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
       const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-Number(target.core.defense||30)));
@@ -538,6 +539,7 @@
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+      TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
       if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
         const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
@@ -673,6 +675,7 @@
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+      TacticalEngine.faceToward(attacker,target);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];
       if(Array.isArray(skill.relationEffects)){
