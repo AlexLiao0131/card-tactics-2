@@ -93,7 +93,7 @@
 }
 
 /* Portraits are live square crops of registered full-character paintings. */
-.unit-hud{display:flex;align-items:flex-start;gap:7px;width:188px}
+.unit-hud:not([hidden]){display:flex;align-items:flex-start;gap:7px;width:188px}
 .unit-hud-portrait{position:relative;flex:0 0 42px;width:42px;height:42px;
   overflow:hidden;border:1px solid rgba(216,231,255,.52);border-radius:3px;
   background:linear-gradient(135deg,#23364a,#101822)}
@@ -113,7 +113,7 @@
 .unit-float-heal{color:#56ed86}
 .unit-float-status{color:#ffca78;font-size:15px}
 @media(max-width:700px){
- .unit-hud{width:165px;gap:6px}
+ .unit-hud:not([hidden]){width:165px;gap:6px}
  .unit-hud-portrait{flex-basis:36px;width:36px;height:36px}
  .unit-float-text{font-size:18px}
  .unit-float-status{font-size:14px}
@@ -150,6 +150,13 @@
 .unit-hud-status[data-status-kind="curse"]{background:#392a50;border-color:#9875c3;color:#dbc7ff}
 .unit-hud-status[data-status-kind="fear"]{background:#4b3523;border-color:#b18456;color:#ffdd9a}
 .unit-hud-status[data-status-kind="debuff"]{background:#432735;border-color:#a26583;color:#f3c3dc}
+.unit-hud-status[data-status-kind="buff"],
+.unit-hud-status[data-status-kind="attack"],
+.unit-hud-status[data-status-kind="speed"]{background:#1f4939;border-color:#60ad83;color:#b9f5d6}
+.unit-hud-status[data-status-kind="shield"],
+.unit-hud-status[data-status-kind="defense"]{background:#233b58;border-color:#6d9cda;color:#d0e4ff}
+.unit-hud-status[data-status-kind="regen"]{background:#1f4631;border-color:#80c18d;color:#c9ffd7}
+.unit-hud-status[data-status-kind="stealth"]{background:#343257;border-color:#8984cf;color:#e0dcff}
 .unit-float-critical{color:#ffcf38;font-size:28px;letter-spacing:.8px;
   text-shadow:0 1px 2px #3b2500,0 2px 4px #000,0 0 12px #d68100}
 @media(max-width:700px){
