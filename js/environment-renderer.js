@@ -858,8 +858,20 @@ export class EnvironmentRenderer{
     if(!tile)return y+.026;
     const sample={height:y/ELEVATION_HEIGHT,ox:clamp(x/TILE_SIZE-tile.x,-.5,.5),oz:clamp(z/TILE_SIZE-tile.y,-.5,.5)};
     let top=y;
-    const water=this.surfaceResolver.waterSurfaceOf(tile);
-    if(water!=null)top=Math.max(top,Number(water)*ELEVATION_HEIGHT);
+    // Illuminate only the water footprint actually published by WaterRenderer.
+    // A stored D level does not cover every 3D vertex of a shore or cliff tile;
+    // raising the entire light field to that level makes floating reflective
+    // patches next to structures. The D/Q polygons already own the wet shape.
+    if(this.water?.surfacePresentation){
+      const polygons=this.water.surfacePresentation.get(`${tile.x},${tile.y}`)?.polygons;
+      if(polygons?.length){
+        const level=this.water.waterSurfaceLevelAtPoint({x,z},polygons);
+        if(level!=null)top=Math.max(top,level*ELEVATION_HEIGHT);
+      }
+    }else{
+      const water=this.surfaceResolver.waterSurfaceOf(tile);
+      if(water!=null)top=Math.max(top,Number(water)*ELEVATION_HEIGHT);
+    }
     for(const type of ["SNOW"]){
       if(this.surfaceLayerAmount(type,tile)<=SURFACE_EPSILON)continue;
       const amount=this.layerAmountAt(type,tile,byKey,sample.ox,sample.oz);
@@ -869,26 +881,21 @@ export class EnvironmentRenderer{
     return top+.055;
   }
 
-  // The terrain mesh has already published its true 3D topology. Index the
-  // triangle ownership once by large grid tile; the light field only needs
-  // each tile's source offsets and never regenerates its ground triangles.
+  // TerrainRenderer already publishes the exact final triangles, keyed by
+  // the tile which authored them. Reuse that registry as the sole spatial
+  // source of truth. A centroid rounded to the nearest tile is NOT ownership:
+  // rugged cliff shoulders can legitimately reach into adjacent grid cells.
+  // This registry is read-only; no second terrain geometry or topology is made.
   lightFieldTerrainIndex(terrain){
-    const revision=this.surfaceResolver.renderedSurfaceGeometryRevision;
+    const publisher=this.water?.surfaceResolver||this.surfaceResolver;
+    const revision=publisher.renderedSurfaceGeometryRevision;
     const prior=this.lightFieldSourceIndex;
     if(prior?.terrain===terrain&&prior.revision===revision)return prior;
-    const vertices=terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
-    const indices=terrain.getIndices()||[];
     const byTile=new Map();
-    for(let i=0;i+2<indices.length;i+=3){
-      const offsets=[indices[i]*3,indices[i+1]*3,indices[i+2]*3];
-      const cx=(vertices[offsets[0]]+vertices[offsets[1]]+vertices[offsets[2]])/3;
-      const cz=(vertices[offsets[0]+2]+vertices[offsets[1]+2]+vertices[offsets[2]+2])/3;
-      const key=`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`;
-      let triangles=byTile.get(key);
-      if(!triangles){triangles=[];byTile.set(key,triangles);}
-      triangles.push(offsets);
+    for(const [key,published] of publisher.renderedSurfaceGeometry||[]){
+      if(published?.triangles?.length)byTile.set(key,published.triangles);
     }
-    const index={terrain,revision,vertices,byTile};
+    const index={terrain,revision,byTile};
     this.lightFieldSourceIndex=index;
     this.lightFieldStats.sourceIndexBuilds++;
     return index;
@@ -951,7 +958,10 @@ export class EnvironmentRenderer{
       const tile=byKey.get(key);
       fieldStamp.set(key,{
         color:JSON.stringify(cells.get(key)),
-        height:this.lightFieldSurfaceSignature(tile,byKey)
+        height:this.lightFieldSurfaceSignature(tile,byKey),
+        // This same publication can change a local wet footprint without a
+        // change to the tile's stored water level (Q-only and shore handoffs).
+        wetPolygons:this.water?.surfacePresentation?.get(key)?.polygons??null
       });
     }
     if(!sameTopology){
@@ -959,10 +969,9 @@ export class EnvironmentRenderer{
       for(const key of active){
         const tile=byKey.get(key),tint=colorsFor(cells.get(key));
         const begin=positions.length/3,triangles=source.byTile.get(key);
-        for(const offsets of triangles){
+        for(const triangle of triangles){
           const base=positions.length/3;
-          for(const offset of offsets){
-            const x=source.vertices[offset],y=source.vertices[offset+1],z=source.vertices[offset+2];
+          for(const {x,y,z} of triangle){
             positions.push(x,this.lightFieldVertexY(tile,byKey,x,y,z),z);
             colors.push(...tint);
           }
@@ -1000,7 +1009,7 @@ export class EnvironmentRenderer{
     for(const key of active){
       const next=fieldStamp.get(key),old=this.lightFieldTileSignatures.get(key);
       const colorChanged=old?.color!==next.color;
-      const heightChanged=old?.height!==next.height;
+      const heightChanged=old?.height!==next.height||old?.wetPolygons!==next.wetPolygons;
       if(!colorChanged&&!heightChanged){this.lightFieldStats.unchangedCells++;continue;}
       const tile=byKey.get(key),span=this.lightFieldTileSpans.get(key);
       const tint=colorChanged?colorsFor(cells.get(key)):null;
@@ -1009,10 +1018,9 @@ export class EnvironmentRenderer{
         colors=this.lightFieldMesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
       if(heightChanged&&!positions)
         positions=this.lightFieldMesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-      for(const offsets of span.triangles)for(const offset of offsets){
+      for(const triangle of span.triangles)for(const {x,y,z} of triangle){
         if(tint){const c=vertex*4;for(let i=0;i<4;i++)colors[c+i]=tint[i];}
-        if(heightChanged){const x=source.vertices[offset],y=source.vertices[offset+1],
-          z=source.vertices[offset+2],p=vertex*3;
+        if(heightChanged){const p=vertex*3;
           positions[p+1]=this.lightFieldVertexY(tile,byKey,x,y,z);
         }
         vertex++;
