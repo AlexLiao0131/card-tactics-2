@@ -175,9 +175,17 @@ export class EnvironmentRenderer{
     this.nextFireClusterId=0;
     this.lightFieldMesh=null;
     this.lightFieldMaterial=this.makeLightFieldMaterial();
-    this.lightFieldSignature="";
     this.lightFieldTerrain=null;
     this.lightFieldCells=0;
+    // The one light-field mesh owns its buffers. The source index is derived
+    // once from TerrainRenderer's published triangles (large grid tiles), not
+    // a second terrain mesh or a separately authored lighting system.
+    this.lightFieldSourceIndex=null;
+    this.lightFieldTileSpans=new Map();
+    this.lightFieldTileSignatures=new Map();
+    this.lightFieldFootprint="";
+    this.lightFieldStats={sourceIndexBuilds:0,meshBuilds:0,topologyReuses:0,
+      unchangedCells:0,changedCells:0,positionUploads:0,colorUploads:0};
     this.fireGlows=new Map();
     this.structureGlowMaterials=new Map();
     this.fireCameraKey="";
@@ -861,55 +869,167 @@ export class EnvironmentRenderer{
     return top+.055;
   }
 
+  // The terrain mesh has already published its true 3D topology. Index the
+  // triangle ownership once by large grid tile; the light field only needs
+  // each tile's source offsets and never regenerates its ground triangles.
+  lightFieldTerrainIndex(terrain){
+    const revision=this.surfaceResolver.renderedSurfaceGeometryRevision;
+    const prior=this.lightFieldSourceIndex;
+    if(prior?.terrain===terrain&&prior.revision===revision)return prior;
+    const vertices=terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
+    const indices=terrain.getIndices()||[];
+    const byTile=new Map();
+    for(let i=0;i+2<indices.length;i+=3){
+      const offsets=[indices[i]*3,indices[i+1]*3,indices[i+2]*3];
+      const cx=(vertices[offsets[0]]+vertices[offsets[1]]+vertices[offsets[2]])/3;
+      const cz=(vertices[offsets[0]+2]+vertices[offsets[1]+2]+vertices[offsets[2]+2])/3;
+      const key=`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`;
+      let triangles=byTile.get(key);
+      if(!triangles){triangles=[];byTile.set(key,triangles);}
+      triangles.push(offsets);
+    }
+    const index={terrain,revision,vertices,byTile};
+    this.lightFieldSourceIndex=index;
+    this.lightFieldStats.sourceIndexBuilds++;
+    return index;
+  }
+
+  // Exact input dependency: snow on a neighbouring tile affects the original
+  // layerAmountAt() sampling. Retain that real 3x3 dependency; changing wind,
+  // camera, or an unrelated light source does not change exposed field height.
+  lightFieldSurfaceSignature(tile,byKey){
+    if(!tile)return "MISSING";
+    const neighbours=[];
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const adjacent=byKey.get(`${tile.x+dx},${tile.y+dy}`);
+      neighbours.push(adjacent?[adjacent.x,adjacent.y,
+        snowDepth(adjacent),iceThickness(adjacent),waterDepth(adjacent),
+        adjacent.waterSurfaceZ??null,adjacent.elevation]:null);
+    }
+    return JSON.stringify(neighbours);
+  }
+
+  // One canonical light-field mesh. Existing topology and GPU index/position
+  // buffers survive colour-only day/night and local-source changes. A real
+  // snow/ice/water height change updates only affected tile vertices; a true
+  // change of illuminated tile membership rebuilds the one batch, not every
+  // weather sync. Neither source light physics nor shadow ownership changes.
   syncLightField(state){
     const terrain=this.scene.getMeshByName("terrain-surface"),cells=this.litCellColors(state);
     const byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
-    const stamp=[...cells].sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([key,values])=>{
-        const tile=byKey.get(key);
-        // Visible surface height changes independently of the lighting source.
-        const layers=tile?[tile.waterSurfaceZ??"n",snowDepth(tile),iceThickness(tile)].map(v=>String(v)).join(":"):"";
-        return`${key}:${values.map(n=>n.toFixed(3)).join(",")}:${layers}`;
-      }).join("|");
-    if(terrain===this.lightFieldTerrain&&stamp===this.lightFieldSignature)return;
-    this.lightFieldSignature=stamp;this.lightFieldTerrain=terrain;
-    this.lightFieldMesh?.dispose();this.lightFieldMesh=null;this.lightFieldCells=cells.size;
-    if(!terrain||!cells.size)return;
-    const sourceVertices=terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
-    const sourceIndices=terrain.getIndices()||[];
-    const positions=[],colors=[],indices=[];
-    for(let i=0;i+2<sourceIndices.length;i+=3){
-      const offsets=[sourceIndices[i]*3,sourceIndices[i+1]*3,sourceIndices[i+2]*3];
-      const cx=(sourceVertices[offsets[0]]+sourceVertices[offsets[1]]+sourceVertices[offsets[2]])/3;
-      const cz=(sourceVertices[offsets[0]+2]+sourceVertices[offsets[1]+2]+sourceVertices[offsets[2]+2])/3;
-      const key=`${Math.round(cx/TILE_SIZE)},${Math.round(cz/TILE_SIZE)}`;
-      const lit=cells.get(key),tile=byKey.get(key);
-      if(!lit||!tile)continue;
-      const base=positions.length/3;
-      // Vertex RGB stores the source colour; alpha stores its brightness once.
-      const peak=Math.max(0,...lit),alpha=Math.min(1,peak);
-      const tint=peak>1e-8?lit.map(channel=>Math.min(1,channel/peak)):[0,0,0];
-      for(const offset of offsets){
-        const x=sourceVertices[offset],y=sourceVertices[offset+1],z=sourceVertices[offset+2];
-        positions.push(x,this.lightFieldVertexY(tile,byKey,x,y,z),z);
-        colors.push(tint[0],tint[1],tint[2],alpha);
-      }
-      indices.push(base,base+1,base+2);
+    if(!terrain||!cells.size){
+      this.lightFieldMesh?.dispose();this.lightFieldMesh=null;
+      this.lightFieldTerrain=terrain;
+      this.lightFieldTileSpans.clear();this.lightFieldTileSignatures.clear();
+      this.lightFieldFootprint="";this.lightFieldCells=0;
+      if(!terrain)this.lightFieldSourceIndex=null;
+      return;
     }
-    if(!indices.length)return;
-    const mesh=new BABYLON.Mesh("environment-cell-light-field",this.scene);
-    const data=new BABYLON.VertexData();data.positions=positions;data.colors=colors;data.indices=indices;
-    data.applyToMesh(mesh,false);
-    mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
-    // WaterRenderer publishes translucent water at alphaIndex 10–13. The
-    // aggregated radiance must reach its exposed water/ice/snow surface AFTER
-    // those layers, while the optical haze and tactical markers remain above.
-    mesh.alphaIndex=SURFACE_RENDER_ORDER.RADIANCE;
-    mesh.material=this.lightFieldMaterial;
-    mesh.isPickable=false;mesh.receiveShadows=false;
-    mesh.metadata={kind:"environment-light-field",castShadow:false,mergedMesh:true,litCells:cells.size,
-      exposedSurfaceAligned:true,boundedFireFootprint:"3x3",structureFootprint:"DEPLOYMENT_AREA",unitFootprint:"OWN_TILE"};
-    this.lightFieldMesh=mesh;
+    const source=this.lightFieldTerrainIndex(terrain);
+    const active=[...cells.keys()].filter(key=>byKey.has(key)&&source.byTile.has(key)).sort();
+    const footprint=active.join("|");
+    this.lightFieldCells=cells.size;
+    if(!active.length){
+      this.lightFieldMesh?.dispose();this.lightFieldMesh=null;
+      this.lightFieldTileSpans.clear();this.lightFieldTileSignatures.clear();
+      this.lightFieldFootprint="";this.lightFieldTerrain=terrain;
+      return;
+    }
+    const sameTopology=this.lightFieldMesh&&!this.lightFieldMesh.isDisposed?.()&&
+      this.lightFieldTerrain===terrain&&this.lightFieldFootprint===footprint&&
+      this.lightFieldTileSpans.size===active.length&&
+      this.lightFieldIndexRevision===source.revision;
+    const fieldStamp=new Map();
+    const colorsFor=values=>{
+      const peak=Math.max(0,...values),alpha=Math.min(1,peak);
+      return peak>1e-8?[Math.min(1,values[0]/peak),
+        Math.min(1,values[1]/peak),Math.min(1,values[2]/peak),alpha]:[0,0,0,alpha];
+    };
+    // The exact source values—not rounded visual approximations—own each
+    // cell's colour. Terrain/water/snow values own only its 3D position.
+    for(const key of active){
+      const tile=byKey.get(key);
+      fieldStamp.set(key,{
+        color:JSON.stringify(cells.get(key)),
+        height:this.lightFieldSurfaceSignature(tile,byKey)
+      });
+    }
+    if(!sameTopology){
+      const positions=[],colors=[],indices=[],spans=new Map();
+      for(const key of active){
+        const tile=byKey.get(key),tint=colorsFor(cells.get(key));
+        const begin=positions.length/3,triangles=source.byTile.get(key);
+        for(const offsets of triangles){
+          const base=positions.length/3;
+          for(const offset of offsets){
+            const x=source.vertices[offset],y=source.vertices[offset+1],z=source.vertices[offset+2];
+            positions.push(x,this.lightFieldVertexY(tile,byKey,x,y,z),z);
+            colors.push(...tint);
+          }
+          indices.push(base,base+1,base+2);
+        }
+        spans.set(key,{vertexStart:begin,triangles});
+      }
+      this.lightFieldMesh?.dispose();this.lightFieldMesh=null;
+      const mesh=new BABYLON.Mesh("environment-cell-light-field",this.scene);
+      const data=new BABYLON.VertexData();
+      data.positions=positions;data.colors=colors;data.indices=indices;
+      // These are the SAME canonical buffers, updated in-place on a later
+      // lighting event. An immutable buffer would force a dispose/reallocate.
+      data.applyToMesh(mesh,true);
+      mesh.useVertexColors=true;mesh.hasVertexAlpha=true;
+      mesh.alphaIndex=SURFACE_RENDER_ORDER.RADIANCE;
+      mesh.material=this.lightFieldMaterial;
+      mesh.isPickable=false;mesh.receiveShadows=false;
+      mesh.metadata={kind:"environment-light-field",castShadow:false,mergedMesh:true,
+        litCells:cells.size,exposedSurfaceAligned:true,boundedFireFootprint:"3x3",
+        structureFootprint:"DEPLOYMENT_AREA",unitFootprint:"OWN_TILE"};
+      this.lightFieldMesh=mesh;
+      this.lightFieldTileSpans=spans;
+      this.lightFieldTileSignatures=fieldStamp;
+      this.lightFieldFootprint=footprint;
+      this.lightFieldTerrain=terrain;
+      this.lightFieldIndexRevision=source.revision;
+      this.lightFieldStats.meshBuilds++;
+      this.lightFieldStats.changedCells+=active.length;
+      return;
+    }
+    this.lightFieldStats.topologyReuses++;
+    this.lightFieldMesh.metadata.litCells=cells.size;
+    let positions=null,colors=null,changed=0;
+    for(const key of active){
+      const next=fieldStamp.get(key),old=this.lightFieldTileSignatures.get(key);
+      const colorChanged=old?.color!==next.color;
+      const heightChanged=old?.height!==next.height;
+      if(!colorChanged&&!heightChanged){this.lightFieldStats.unchangedCells++;continue;}
+      const tile=byKey.get(key),span=this.lightFieldTileSpans.get(key);
+      const tint=colorChanged?colorsFor(cells.get(key)):null;
+      let vertex=span.vertexStart;
+      if(colorChanged&&!colors)
+        colors=this.lightFieldMesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
+      if(heightChanged&&!positions)
+        positions=this.lightFieldMesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      for(const offsets of span.triangles)for(const offset of offsets){
+        if(tint){const c=vertex*4;for(let i=0;i<4;i++)colors[c+i]=tint[i];}
+        if(heightChanged){const x=source.vertices[offset],y=source.vertices[offset+1],
+          z=source.vertices[offset+2],p=vertex*3;
+          positions[p+1]=this.lightFieldVertexY(tile,byKey,x,y,z);
+        }
+        vertex++;
+      }
+      changed++;
+    }
+    if(colors){
+      this.lightFieldMesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,colors,false,false);
+      this.lightFieldStats.colorUploads++;
+    }
+    if(positions){
+      this.lightFieldMesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,positions,false,false);
+      this.lightFieldMesh.refreshBoundingInfo();
+      this.lightFieldStats.positionUploads++;
+    }
+    this.lightFieldStats.changedCells+=changed;
+    this.lightFieldTileSignatures=fieldStamp;
   }
 
   makeFireGlowMaterial(color=[1,125/255,30/255]){
@@ -2109,7 +2229,7 @@ export class EnvironmentRenderer{
       structureGlows:[...this.fireGlows.values()].filter(mesh=>mesh.metadata?.source==="CORE_LIGHT"||mesh.metadata?.source==="CAPTURE_LIGHT").length,
       fireLights:{physicalLights:this.fireLights.filter(light=>light.isEnabled()).length,
         cellField:{active:!!this.lightFieldMesh,cells:this.lightFieldCells,
-          exposedSurfaceAligned:this.lightFieldMesh?.metadata?.exposedSurfaceAligned===true},globalLightLimit:null,fireClusters:true,spatialMembership:this.lightMembershipDiagnostics||null},
+          cache:{...this.lightFieldStats},exposedSurfaceAligned:this.lightFieldMesh?.metadata?.exposedSurfaceAligned===true},globalLightLimit:null,fireClusters:true,spatialMembership:this.lightMembershipDiagnostics||null},
       electrifiedPresentation:"sparse-surface-arcs",
       perTileElectricRings:false
     };
