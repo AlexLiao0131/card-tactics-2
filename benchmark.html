@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Card Tactics 2.0｜正式戰局效能測試</title></head>
+<body style="background:#07101c;color:#eaf1ff;font:14px system-ui;padding:18px">
+  <p id="bootMessage">正在讀取正式 index.html 並啟動診斷模式…</p>
+  <script type="module">
+    try {
+      // Load the shipped *complete* game document without changing its source.
+      // The benchmark script is injected at bootstrap only, into this top-level document.
+      // No iframe, second WebGL scene, duplicated game engine, or source-code patches.
+      const response=await fetch('./index.html',{cache:'no-store'});
+      if(!response.ok)throw new Error(`index.html HTTP ${response.status}`);
+      const original=await response.text();
+      const hook='<script type="module" src="./js/full-game-benchmark.js"><'+'/script>';
+      if(!original.includes('</body>'))throw new Error('正式 index.html 找不到結尾 body');
+      document.open();
+      document.write(original.replace('</body>',hook+'\n</body>'));
+      document.close();
+    }catch(error){document.getElementById('bootMessage').textContent='正式遊戲載入失敗：'+String(error?.message||error);}
+  </script>
+</body>
+</html>
