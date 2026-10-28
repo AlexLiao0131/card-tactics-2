@@ -57,6 +57,33 @@ function mixColor(a,b,t){
   ];
 }
 
+// The battle snapshot is republished after selections, movement highlights and
+// UI interactions. Those annotation fields are NOT water input. Preserve every
+// other published tile field exactly (no quantization/hash), the actual map
+// objects, scene geometry revisions, and the authored wind. This is one
+// renderer-side invalidation contract, not another water/flow model.
+const WATER_NON_VISUAL_ANNOTATIONS=new Set([
+  "reachable","targetRange","attackable","deployable","inspected",
+  "atmosphericVisible","visionBlocked","deploymentAreaOwner","capturePoint","core"
+]);
+function waterVisualInputSignature(state,resolver){
+  const tiles=tilesOf(state).map(tile=>{
+    const visual={};
+    for(const key of Object.keys(tile||{}))
+      if(!WATER_NON_VISUAL_ANNOTATIONS.has(key))visual[key]=tile[key];
+    return visual;
+  });
+  // Both revisions come from the one terrain surface registry, not from
+  // independent water heights or an approximate dirty-region heuristic.
+  return JSON.stringify([
+    state?.map?.id??null,state?.map?.width??null,state?.map?.height??null,
+    resolver?.renderedSurfaceGeometryRevision??null,
+    resolver?.renderedCliffGeometryRevision??null,
+    tiles,state?.map?.objects||[],
+    state?.presentation?.environment?.wind??state?.environment?.wind??state?.wind??null
+  ]);
+}
+
 export class WaterRenderer{
   constructor(scene,terrainRenderer=null){
     this.scene=scene;
@@ -79,6 +106,9 @@ export class WaterRenderer{
     this.sheetFlowMeshes=new Map();
     this.surfaceSignature="";
     this.surfaceTileInputSignatures=new Map();
+    this.lastWaterVisualInput=null;
+    this.lastWaterVisualRevision=null;
+    this.visualInputAudit={syncs:0,identicalInputsSkipped:0,keyBuildMs:0,keyLength:0};
     // Geometry registries publish immutable buffers; cache their EXACT XYZ
     // fingerprint by source-object identity, not by a global revision number.
     this.publishedWaterGeometrySignatures=new WeakMap();
@@ -471,6 +501,9 @@ export class WaterRenderer{
   }
 
   disposeSurfaceMeshes(){
+    // If an external owner clears geometry, the next identical snapshot still
+    // must republish its authoritative water surfaces.
+    this.lastWaterVisualInput=null;
     this.disposeMap(this.surfaceMeshes);
     this.surfaceAnimations.clear();
     this.surfaceMeshSignatures.clear();
@@ -2918,6 +2951,24 @@ export class WaterRenderer{
   }
 
   sync(state,presentationEvents=[]){
+    const signatureStart=performance.now();
+    const input=waterVisualInputSignature(state,this.surfaceResolver);
+    const signatureElapsed=performance.now()-signatureStart;
+    this.visualInputAudit.keyBuildMs=Math.round(signatureElapsed*100)/100;
+    this.visualInputAudit.keyLength=input.length;
+    // The only presentation event consumed by WaterRenderer.sync() is
+    // ROGUE_WAVE; all other events are owned by other presentation systems.
+    const waveEvent=(presentationEvents||[]).some(event=>
+      String(event?.type||"").toUpperCase()==="ROGUE_WAVE");
+    const currentRevision=Number(state?.revision??0);
+    const reset=this.lastWaterVisualRevision!=null&&
+      currentRevision<this.lastWaterVisualRevision;
+    this.lastWaterVisualRevision=currentRevision;
+    if(!reset&&!waveEvent&&input===this.lastWaterVisualInput){
+      this.visualInputAudit.identicalInputsSkipped++;
+      return;
+    }
+    this.visualInputAudit.syncs++;
     // A sync consumes one BattlePresentation snapshot. Never carry cached water
     // heights into the next snapshot, even if a tile retains the same ID.
     this.levelSamples=new Map();
@@ -3296,6 +3347,8 @@ export class WaterRenderer{
           vertexBufferUploads:0,vertexBufferUploadBytes:0,estimatedUploadBytes:0};
     }
     this.levelSamples=null;
+    // Commit only after the entire official sync has completed successfully.
+    this.lastWaterVisualInput=input;
   }
 
   // Diagnostic-only audit of the PRESENTED water mesh, not a second water
@@ -3801,6 +3854,7 @@ export class WaterRenderer{
       persistentPerEdgeDischarge:true,
       sheetFlowSurfaceMeshes:0,
       unifiedDQSurfaceMeshes:true,
+      visualInputInvalidation:{...this.visualInputAudit},
       qSurfaceMeshAliases:this.sheetFlowMeshes.size,
       sheetFlowBoundaryInventory:true,
       sheetFlowActiveTiles:[...this.sheetFlowNetwork.values()].filter(tile=>tile.incoming.length||tile.outgoing.length).length,

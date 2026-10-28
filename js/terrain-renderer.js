@@ -107,6 +107,13 @@ export class TerrainRenderer{
     this.cliffGeometrySignature="";
     this.surfaceColorBindings=[];
     this.cliffColorBindings=[];
+    // Exact tile colour signatures; shader/material/geometry still have one
+    // original owner. No second terrain mesh or colour calculation is added.
+    this.colorTileSignatures=new Map();
+    this.materialTileSignatures=new Map();
+    this.materialPixels=null;
+    this.materialMapBounds=null;
+    this.colorInvalidationAudit={changedTiles:0,affectedTiles:0,surfaceBindings:0,cliffBindings:0,mixPixels:0};
     this.surfaceColors=null;
     this.cliffColors=null;
     this.cliffWaterData=null;
@@ -299,19 +306,38 @@ export class TerrainRenderer{
     if(signature===this.textureSignature)return;
     const minX=Math.min(...tiles.map(t=>Number(t.x))),minY=Math.min(...tiles.map(t=>Number(t.y)));
     const spanX=Math.max(...tiles.map(t=>Number(t.x)))-minX+1,spanY=Math.max(...tiles.map(t=>Number(t.y)))-minY+1;
-    const width=spanX*4,height=spanY*4,pixels=new Uint8Array(width*height*4);
+    const width=spanX*4,height=spanY*4;
+    const nextMaterialInputs=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),[
+      tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,
+      this.surfaceResolver.elevationOf(tile),Number(tile.waterDepth||0)>0?1:0
+    ].join(":" )]));
+    const sameLayout=this.materialPixels?.length===width*height*4&&
+      this.materialMapBounds?.minX===minX&&this.materialMapBounds?.minY===minY&&
+      this.materialMapBounds?.spanX===spanX&&this.materialMapBounds?.spanY===spanY;
+    const dirty=sameLayout?this.dirtyMaterialKeys(this.materialTileSignatures,nextMaterialInputs).affected:null;
+    // CPU sampling only for affected material micro-regions; the existing
+    // RawTexture remains the one authoritative GPU owner. Full texture upload
+    // preserves Babylon WebGL compatibility and exact previous pixels.
+    const pixels=sameLayout?this.materialPixels.slice():new Uint8Array(width*height*4);
+    let evaluated=0;
     for(let py=0;py<height;py++)for(let px=0;px<width;px++){
       const gx=minX-.5+(px+.5)/4,gy=minY-.5+(py+.5)/4;
-      const tile=byKey.get(keyOf(Math.round(gx),Math.round(gy)));
+      const key=keyOf(Math.round(gx),Math.round(gy));
+      if(dirty&&!dirty.has(key))continue;
+      const tile=byKey.get(key);
       const w=tile?this.surfaceResolver.materialWeightsAt(tile,byKey,gx-tile.x,gy-tile.y):[0,1,0,0];
       const offset=(py*width+px)*4,first=w[0]+w[1],firstThree=first+w[2];
-      // MixMaterial uses sequential blends, with inverted alpha (not RGBA
-      // additive splatting). Convert normalized weights to those blend factors.
+      // MixMaterial's original sequential blend contract is unchanged.
       pixels[offset]=255;
       pixels[offset+1]=Math.round(255*(first>0?w[1]/first:0));
       pixels[offset+2]=Math.round(255*(firstThree>0?w[2]/firstThree:0));
       pixels[offset+3]=Math.round(255*(1-w[3]));
+      evaluated++;
     }
+    this.materialPixels=pixels;
+    this.materialTileSignatures=nextMaterialInputs;
+    this.materialMapBounds={minX,minY,spanX,spanY};
+    this.colorInvalidationAudit.mixPixels=evaluated;
     const previous=this.surfaceMaterial.mixTexture1,dimensions=previous.getSize();
     if(dimensions.width===width&&dimensions.height===height)previous.update(pixels);
     else{
@@ -401,19 +427,36 @@ export class TerrainRenderer{
     this.cliffColors=null;
     this.cliffWaterData=null;
     this.textureSignature="";
+    this.colorTileSignatures.clear();
+    this.materialTileSignatures.clear();
+    this.materialPixels=null;
+    this.materialMapBounds=null;
+  }
+
+  tileColorSignature(tile){
+    return [tile.x,tile.y,String(tile.terrain||""),String(tile.dryTerrain||""),
+      String(tile.material||""),Math.max(0,Number(tile.waterDepth||0)),
+      this.surfaceResolver.waterSurfaceOf(tile),
+      Math.max(0,Number(tile.soilMoisture||0)),tile.fogged?1:0].join(":");
+  }
+
+  // Rendering samples neighbouring tiles for shore/mud/biome blending. The
+  // two-cell halo is conservative; unchanged bindings are never recomputed.
+  dirtyMaterialKeys(previous,next,halo=2){
+    const changed=new Set();
+    for(const [key,value] of next)if(previous.get(key)!==value)changed.add(key);
+    for(const key of previous.keys())if(!next.has(key))changed.add(key);
+    const affected=new Set();
+    for(const key of changed){
+      const [x,y]=key.split(",").map(Number);
+      for(let dy=-halo;dy<=halo;dy++)for(let dx=-halo;dx<=halo;dx++)
+        affected.add(keyOf(x+dx,y+dy));
+    }
+    return{changed,affected};
   }
 
   signature(tiles){
-    return tiles.map(tile=>[
-      tile.x,tile.y,
-      String(tile.terrain||""),
-      String(tile.dryTerrain||""),
-      String(tile.material||""),
-      Math.max(0,Number(tile.waterDepth||0)),
-      this.surfaceResolver.waterSurfaceOf(tile),
-      Math.max(0,Number(tile.soilMoisture||0)),
-      tile.fogged?1:0
-    ].join(":")).sort().join("|");
+    return tiles.map(tile=>this.tileColorSignature(tile)).sort().join("|");
   }
 
 
@@ -426,8 +469,11 @@ export class TerrainRenderer{
     ].join(":")).join("|");
   }
 
-  updateSurfaceColors(byKey){
+  updateSurfaceColors(byKey,dirty=null){
+    let updated=0;
     for(const binding of this.surfaceColorBindings){
+      if(dirty&&!dirty.has(binding.key))continue;
+      updated++;
       const tile=byKey.get(binding.key),fog=tile.fogged?.62:1;
       const colors=binding.samples.map(sample=>shade(
         this.surfaceResolver.surfaceColorAt(tile,byKey,sample.ox,sample.oz),
@@ -438,7 +484,8 @@ export class TerrainRenderer{
         this.surfaceColors.set([...color,1],vertex.offset);
       }
     }
-    this.meshes.get("surface").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors);
+    if(updated)this.meshes.get("surface").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors);
+    this.colorInvalidationAudit.surfaceBindings=updated;
   }
 
   cliffPalette(tile,neighbor,dir,byKey,drop){
@@ -456,9 +503,12 @@ export class TerrainRenderer{
     };
   }
 
-  updateCliffColors(byKey){
+  updateCliffColors(byKey,dirty=null){
     if(!this.meshes.has("cliffs"))return;
+    let updated=0;
     for(const binding of this.cliffColorBindings){
+      if(dirty&&!dirty.has(binding.key))continue;
+      updated++;
       const tile=byKey.get(binding.key);
       const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+binding.dir.dx,tile.y+binding.dir.dy);
       const palette=this.cliffPalette(tile,neighbor,binding.dir,byKey,binding.drop);
@@ -471,8 +521,11 @@ export class TerrainRenderer{
         }
       }
     }
-    this.meshes.get("cliffs").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors);
-    this.meshes.get("cliffs").updateVerticesData("cliffWaterContact",this.cliffWaterData);
+    if(updated){
+      this.meshes.get("cliffs").updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors);
+      this.meshes.get("cliffs").updateVerticesData("cliffWaterContact",this.cliffWaterData);
+    }
+    this.colorInvalidationAudit.cliffBindings=updated;
   }
 
 
@@ -869,7 +922,13 @@ export class TerrainRenderer{
   sync(state){
     const tiles=[...tilesOf(state)].sort((a,b)=>Number(a.y)-Number(b.y)||Number(a.x)-Number(b.x));
     if(!tiles.length){this.disposeMeshes();return;}
-    const signature=this.signature(tiles);
+    this.colorInvalidationAudit.changedTiles=0;
+    this.colorInvalidationAudit.affectedTiles=0;
+    this.colorInvalidationAudit.surfaceBindings=0;
+    this.colorInvalidationAudit.cliffBindings=0;
+    this.colorInvalidationAudit.mixPixels=0;
+    const colorInputs=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),this.tileColorSignature(tile)]));
+    const signature=[...colorInputs.values()].sort().join("|");
     const geometry=this.geometrySignature(tiles);
     if(signature===this.signatureValue&&geometry===this.surfaceGeometrySignature){
       this.syncGrass(state,tiles);
@@ -877,6 +936,10 @@ export class TerrainRenderer{
     }
 
     const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    const invalidation=this.dirtyMaterialKeys(this.colorTileSignatures,colorInputs);
+    this.colorInvalidationAudit.changedTiles=invalidation.changed.size;
+    this.colorInvalidationAudit.affectedTiles=tiles.filter(tile=>
+      invalidation.affected.has(keyOf(tile.x,tile.y))).length;
     this.syncMaterialMap(tiles,byKey);
     // Cliff topology follows published elevations alone. Wet/dry state
     // changes shader water contact and rock tint, never triangulation.
@@ -888,7 +951,7 @@ export class TerrainRenderer{
       this.meshes.set("surface",this.buildSurface(tiles,byKey,previousSurface));
       if(previousSurface)this.updateCounts.surfaceMeshReuses++;
       this.surfaceGeometrySignature=geometry;
-    }else this.updateSurfaceColors(byKey);
+    }else this.updateSurfaceColors(byKey,invalidation.affected);
 
     if(rebuildCliffs){
       const previousCliffs=this.meshes.get("cliffs");
@@ -897,10 +960,11 @@ export class TerrainRenderer{
       if(!cliffs&&previousCliffs){previousCliffs.dispose();this.meshes.delete("cliffs");}
       if(cliffs)this.meshes.set("cliffs",cliffs);
       this.cliffGeometrySignature=cliffGeometry;
-    }else this.updateCliffColors(byKey);
+    }else this.updateCliffColors(byKey,invalidation.affected);
 
     if(!rebuildSurface||!rebuildCliffs)this.updateCounts.colorUpdates++;
     this.signatureValue=signature;
+    this.colorTileSignatures=colorInputs;
     // Grass roots sample TerrainRenderer's exact published triangles, so this
     // must follow surface/cliff publication, not precede it.
     this.syncGrass(state,tiles);
@@ -911,6 +975,7 @@ export class TerrainRenderer{
     return{
       meshes:this.meshes.size,
       updates:{...this.updateCounts},
+      materialInvalidation:{...this.colorInvalidationAudit},
       surfaceMaterial:"MixMaterial",
       cliffMaterial:"CustomMaterial(StandardLighting+TriPlanar)",
       detailTextureSize:128,
