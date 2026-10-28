@@ -2,42 +2,74 @@
 <html lang="zh-Hant">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Card Tactics 2.0｜正式戰局效能測試</title></head>
 <body style="background:#07101c;color:#eaf1ff;font:14px system-ui;padding:18px">
-  <p id="bootMessage">正在檢查 GitHub Pages 已部署的 8N-B 程式…</p>
+  <p id="bootMessage">正在驗證 8N-C 的正式 Water／MapObject 程式與載入版本…</p>
   <script type="module">
     try {
       // Use the real top-level game document and its one original Babylon scene.
       // Reject stale JS BEFORE allowing a costly full-game benchmark to start.
-      const token=`8NB-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
+      const token=`8NC-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
       const url=path=>`${path}${path.includes('?')?'&':'?'}benchBoot=${encodeURIComponent(token)}`;
       const controllerUrl=url('./js/full-game-benchmark.js');
       const waterUrl=url('./js/water-renderer.js');
-      const [gameReply,controllerReply,waterReply]=await Promise.all([
+      const mapObjectsUrl=url('./js/map-object-renderer.js');
+      const mainUrl=url('./js/main.js');
+      const [gameReply,controllerReply,waterReply,mapObjectsReply,mainReply]=await Promise.all([
         fetch(url('./index.html'),{cache:'no-store'}),
         fetch(controllerUrl,{cache:'no-store'}),
-        fetch(waterUrl,{cache:'no-store'})
+        fetch(waterUrl,{cache:'no-store'}),
+        fetch(mapObjectsUrl,{cache:'no-store'}),
+        fetch(mainUrl,{cache:'no-store'})
       ]);
       if(!gameReply.ok)throw new Error(`index.html HTTP ${gameReply.status}`);
       if(!controllerReply.ok)throw new Error(`full-game-benchmark.js HTTP ${controllerReply.status}`);
       if(!waterReply.ok)throw new Error(`water-renderer.js HTTP ${waterReply.status}`);
-      const [original,controllerCode,waterCode]=await Promise.all([
-        gameReply.text(),controllerReply.text(),waterReply.text()
+      if(!mapObjectsReply.ok)throw new Error(`map-object-renderer.js HTTP ${mapObjectsReply.status}`);
+      if(!mainReply.ok)throw new Error(`main.js HTTP ${mainReply.status}`);
+      const [original,controllerCode,waterCode,mapObjectsCode,mainCode]=await Promise.all([
+        gameReply.text(),controllerReply.text(),waterReply.text(),mapObjectsReply.text(),mainReply.text()
       ]);
       const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_B['"]/.test(controllerCode)
         &&controllerCode.includes('eventLoopObservations')
         &&controllerCode.includes('TREE_BUSH_WIND_UPDATE_AND_UPLOAD');
-      const waterReady=waterCode.includes('exactTopologyLayoutHits')
-        &&waterCode.includes('exactTopologyLayoutMisses');
-      if(!controllerReady||!waterReady){
-        const which=[!controllerReady?'full-game-benchmark.js':'',!waterReady?'water-renderer.js':'']
-          .filter(Boolean).join('、');
-        throw new Error(`GitHub Pages 仍提供舊版 8N-B 程式（${which}）。請等網站部署完成後重開 benchmark.html；目前已阻止執行舊版長時間測試。`);
+      // Exact 8N-C implementation markers: the failed-water-frame fix and
+      // the row-batched wind CPU/GPU path must be in the deployed files.
+      const waterReady=waterCode.includes('createSurfaceVertexAccumulator(){')
+        &&waterCode.includes('const out=this.createSurfaceVertexAccumulator();')
+        &&waterCode.includes('exactTopologyLayoutHits');
+      const mapObjectsReady=mapObjectsCode.includes('syncVegetationSourcePose(mesh)')
+        &&mapObjectsCode.includes('deferredSourceVertexWrites')
+        &&mapObjectsCode.includes('directPositionUploads');
+      const mainReady=mainCode.includes('const BOOT_REVISION=Date.now()')
+        &&mainCode.includes('versioned(path)');
+      if(!controllerReady||!waterReady||!mapObjectsReady||!mainReady){
+        const which=[!controllerReady?'full-game-benchmark.js':'',
+          !waterReady?'water-renderer.js':'',
+          !mapObjectsReady?'map-object-renderer.js':'',
+          !mainReady?'main.js':''].filter(Boolean).join('、');
+        throw new Error(`GitHub Pages 尚未提供完整 8N-C 程式（${which}）。本次測試已停止，以免產生舊版本的錯誤診斷。`);
       }
-      if(!original.includes('</body>'))throw new Error('正式 index.html 找不到結尾 body');
-      // The unique URL is the SAME URL verified immediately above. No second
-      // renderer, alternative game state, hidden runtime patch or extra RAF.
+      if(!original.includes('</body>')||!original.includes('</head>'))
+        throw new Error('正式 index.html 缺少 head/body 結尾');
+      const mainTag='<script type="module" src="./js/main.js"><'+'/script>';
+      if(!original.includes(mainTag))
+        throw new Error('正式 index.html 找不到預期的唯一 main.js 啟動入口');
+      // Static imports from babylon-renderer.js normally resolve to bare
+      // ./water-renderer.js and ./map-object-renderer.js, bypassing main.js's
+      // dynamic import cache token. Import maps bind both static imports to
+      // the very SAME URLs that passed the no-store preflight above. This is
+      // limited to the benchmark document and does not touch normal index.html.
+      const importMap=JSON.stringify({imports:{
+        './js/water-renderer.js':waterUrl,
+        './js/map-object-renderer.js':mapObjectsUrl
+      }});
+      const importMapTag='<script type="importmap">'+importMap+'<'+'/script>';
+      const freshMainTag=`<script type="module" src="${mainUrl}"><`+'/script>';
       const hook=`<script type="module" src="${controllerUrl}"><`+'/script>';
+      const verifiedGame=original.replace('</head>',importMapTag+'\n</head>')
+        .replace(mainTag,freshMainTag)
+        .replace('</body>',hook+'\n</body>');
       document.open();
-      document.write(original.replace('</body>',hook+'\n</body>'));
+      document.write(verifiedGame);
       document.close();
     }catch(error){
       const node=document.getElementById('bootMessage');
