@@ -2,12 +2,12 @@
 <html lang="zh-Hant">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Card Tactics 2.0｜正式戰局效能測試</title></head>
 <body style="background:#07101c;color:#eaf1ff;font:14px system-ui;padding:18px">
-  <p id="bootMessage">正在驗證 8N-C 的正式 Water／MapObject 程式與載入版本…</p>
+  <p id="bootMessage">正在驗證 8N-D 測試控制器及 8N-C 正式 Water／MapObject 版本…</p>
   <script type="module">
     try {
       // Use the real top-level game document and its one original Babylon scene.
       // Reject stale JS BEFORE allowing a costly full-game benchmark to start.
-      const token=`8NC-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
+      const token=`8ND-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
       const url=path=>`${path}${path.includes('?')?'&':'?'}benchBoot=${encodeURIComponent(token)}`;
       const controllerUrl=url('./js/full-game-benchmark.js');
       const waterUrl=url('./js/water-renderer.js');
@@ -28,9 +28,11 @@
       const [original,controllerCode,waterCode,mapObjectsCode,mainCode]=await Promise.all([
         gameReply.text(),controllerReply.text(),waterReply.text(),mapObjectsReply.text(),mainReply.text()
       ]);
-      const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_B['"]/.test(controllerCode)
+      const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_D_TEST_DRIVER['"]/.test(controllerCode)
         &&controllerCode.includes('eventLoopObservations')
-        &&controllerCode.includes('TREE_BUSH_WIND_UPDATE_AND_UPLOAD');
+        &&controllerCode.includes('TREE_BUSH_WIND_UPDATE_AND_UPLOAD')
+        &&controllerCode.includes('CARD_TACTICS_2_MANUAL_PLAY_PERF')
+        &&controllerCode.includes('ATTACK_RESOLVED');
       // Exact 8N-C implementation markers: the failed-water-frame fix and
       // the row-batched wind CPU/GPU path must be in the deployed files.
       const waterReady=waterCode.includes('createSurfaceVertexAccumulator(){')
@@ -46,7 +48,7 @@
           !waterReady?'water-renderer.js':'',
           !mapObjectsReady?'map-object-renderer.js':'',
           !mainReady?'main.js':''].filter(Boolean).join('、');
-        throw new Error(`GitHub Pages 尚未提供完整 8N-C 程式（${which}）。本次測試已停止，以免產生舊版本的錯誤診斷。`);
+        throw new Error(`GitHub Pages 尚未提供完整 8N-D 測試器或 8N-C 遊戲程式（${which}）。本次測試已停止，以免產生舊版本的錯誤診斷。`);
       }
       if(!original.includes('</body>')||!original.includes('</head>'))
         throw new Error('正式 index.html 缺少 head/body 結尾');
