@@ -52,44 +52,175 @@ async function readyGame(){
   throw new Error('正式 Runtime / Babylon Renderer 未在啟動期限內載入');
 }
 
-/** Owns a bounded set of samples collected from the EXISTING Babylon scene clock. */
+/** This is a passive diagnostic observer; BabylonRenderer remains the sole RAF/render owner.
+ * After-render microtasks read this SAME frame's CPU stats AFTER runRenderLoop commits them.
+ * A long visible frame gap is never discarded, even when it exceeds two seconds.
+ */
+const MAX_WINDOWS=700,MAX_COMMITS=2500,MAX_SPIKES_PER_KIND=48;
+const PUBLISH_STAGES=['sky','lighting','camera','picker','terrain','water','mapObjects','units','environment','mapObjectBatches','objectives','highlights','shadows','unitHud','actionAnchor'];
+const singleMetric=n=>Number.isFinite(n)?round2(n):null;
 class FrameCapture{
   constructor(win,report){
-    this.win=win;this.report=report;this.windowStart=performance.now();this.previousTime=null;
-    this.interval=[];this.cpu=[];this.render=[];this.shadow=[];this.windowPhase='BOOT';this.windowRound=1;
-    this.initialFrames=0;
-    this.disposed=false;
+    this.win=win;this.report=report;this.startedAt=performance.now();
+    this.windowStart=this.startedAt;this.windowPhase='BOOT';this.windowRound=0;this.heartbeatAt=this.startedAt;this.heartbeatWarned=false;
+    this.lastFrameAt=null;this.disposed=false;this.seenCommits=new WeakSet();
+    this.data=this.emptyData();this.visibleFrames=0;this.hiddenFrames=0;
+    for(const oldCommit of win.CardTacticsRenderer.presentationCommitHistory||[])this.seenCommits.add(oldCommit);
     this.observer=win.CardTacticsRenderer.scene.onAfterRenderObservable.add(()=>this.sample());
+    this.watchdog=setInterval(()=>{
+      if(this.disposed||document.hidden)return;
+      const gap=performance.now()-this.heartbeatAt;
+      if(gap>=2000&&!this.heartbeatWarned){
+        this.heartbeatWarned=true;
+        if(this.report.lifecycle.length>=80)this.report.lifecycle.shift();
+        this.report.lifecycle.push({type:'VISIBLE_NO_SCENE_FRAME_HEARTBEAT',
+          atMs:round2(performance.now()-this.report.startedAtMonotonic),
+          gapObservedMs:round2(gap),
+          note:'JS event loop scheduling delay or scene rendering pause; this is not a root cause classification'});
+      }
+    },1000);
+    this.onVisibility=()=>{
+      const now=performance.now();
+      if(this.report.lifecycle.length>=80)this.report.lifecycle.shift();
+      this.report.lifecycle.push({atMs:round2(now-this.report.startedAtMonotonic),type:'VISIBILITY',state:document.visibilityState});
+      // Do not mix background suspension into foreground FPS. Never silently drop it.
+      if(document.hidden){this.flush();this.lastFrameAt=null;this.report.visibilityInterruptions++;}
+      else{this.lastFrameAt=null;this.windowStart=now;}
+      this.heartbeatAt=now;this.heartbeatWarned=false;
+    };
+    this.onPageHide=()=>{this.report.lifecycle.push({atMs:round2(performance.now()-this.report.startedAtMonotonic),type:'PAGEHIDE'});this.lastFrameAt=null;};
+    document.addEventListener('visibilitychange',this.onVisibility);
+    window.addEventListener('pagehide',this.onPageHide);
   }
+  emptyData(){return{interval:[],cpu:[],render:[],shadow:[],nonScene:[],sync:[],frames:0,commits:0};}
   sample(){
-    if(this.disposed||document.hidden||this.win.document.hidden){this.previousTime=null;return;}
-    const now=performance.now(),perf=this.win.CardTacticsRenderer.performanceStats||{};
-    const phase=this.win.CardTacticsRuntime.getPhase?.()||'UNKNOWN';
-    const round=Number(this.win.CardTacticsRenderer.lastState?.round||0);
-    if(phase!==this.windowPhase||round!==this.windowRound){this.flush();this.windowPhase=phase;this.windowRound=round;this.previousTime=null;}
-    if(this.previousTime!==null&&now-this.previousTime<2000)this.interval.push(now-this.previousTime);
-    this.previousTime=now;
-    if(Number.isFinite(perf.frameMs))this.cpu.push(perf.frameMs);
-    if(Number.isFinite(perf.renderMs))this.render.push(perf.renderMs);
-    if(Number.isFinite(perf.shadowPassCpuMs))this.shadow.push(perf.shadowPassCpuMs);
-    if(now-this.windowStart>=5000)this.flush();
+    if(this.disposed)return;
+    const now=performance.now();
+    if(document.hidden){this.hiddenFrames++;this.lastFrameAt=null;return;}
+    this.heartbeatAt=now;this.heartbeatWarned=false;
+    const renderer=this.win.CardTacticsRenderer,frame=renderer.lastState||{};
+    const phase=frame.phase||this.win.CardTacticsRuntime.getPhase?.()||'UNKNOWN',round=Number(frame.round||0);
+    if(phase!==this.windowPhase||round!==this.windowRound){
+      this.flush();this.windowPhase=phase;this.windowRound=round;this.windowStart=now;
+    }
+    const interval=this.lastFrameAt==null?null:now-this.lastFrameAt;
+    this.lastFrameAt=now;
+    const commits=this.collectCommits(now);
+    const commitMs=commits.reduce((sum,c)=>sum+Number(c.elapsedMs||0),0);
+    // scene.render returns to the existing engine.runRenderLoop after this callback.
+    // A microtask is a non-rendering read of the resulting frame statistics.
+    queueMicrotask(()=>{
+      if(this.disposed||document.hidden)return;
+      const p=renderer.performanceStats||{};
+      const cpu=Number(p.frameMs),render=Number(p.renderMs),shadow=Number(p.shadowPassCpuMs);
+      const nonScene=Number.isFinite(cpu)&&Number.isFinite(render)?Math.max(0,cpu-render):null;
+      const d=this.data;d.frames++;this.visibleFrames++;
+      if(interval!=null&&Number.isFinite(interval)&&interval>=0){d.interval.push(interval);this.remember('FRAME_GAP',interval,{round,phase,weather:frame.presentation?.environment?.weather,frameCpuMs:singleMetric(cpu),renderCpuMs:singleMetric(render),commitMs:singleMetric(commitMs)});}
+      if(Number.isFinite(cpu)){d.cpu.push(cpu);this.remember('CPU_FRAME',cpu,{round,phase,weather:frame.presentation?.environment?.weather,renderCpuMs:singleMetric(render),nonSceneCpuMs:singleMetric(nonScene),commitMs:singleMetric(commitMs)});}
+      if(Number.isFinite(render))d.render.push(render);
+      if(Number.isFinite(shadow))d.shadow.push(shadow);
+      if(nonScene!=null){d.nonScene.push(nonScene);this.remember('CPU_OUTSIDE_SCENE_RENDER',nonScene,{round,phase,weather:frame.presentation?.environment?.weather,frameCpuMs:singleMetric(cpu),renderCpuMs:singleMetric(render),commitMs:singleMetric(commitMs)});}
+      if(commits.length){d.commits+=commits.length;d.sync.push(commitMs);}
+      if(now-this.windowStart>=5000)this.flush();
+    });
+  }
+  collectCommits(now){
+    const renderer=this.win.CardTacticsRenderer,commits=[];
+    for(const commit of renderer.presentationCommitHistory||[]){
+      if(this.seenCommits.has(commit))continue;
+      this.seenCommits.add(commit);
+      const ms=Number(commit.elapsedMs||0);
+      const item={atMs:round2(now-this.report.startedAtMonotonic),revision:commit.revision,round:commit.round,
+        elapsedMs:singleMetric(ms),complete:commit.complete===true,failedStages:[...(commit.failedStages||[])],
+        ownersChanged:[...(commit.changes||[])],stages:Object.fromEntries(PUBLISH_STAGES
+          .filter(name=>Number.isFinite(Number(commit.syncMs?.[name])))
+          .map(name=>[name,Number(commit.syncMs[name])]))};
+      commits.push(item);this.report.publication.totalCommits++;
+      if(!item.complete)this.report.publication.failedCommits++;
+      const buckets=this.report.publication.bySubsystem;
+      for(const [name,duration] of Object.entries(item.stages)){
+        const b=buckets[name]||(buckets[name]={count:0,totalMs:0,maxMs:0,recentSamples:[]});
+        b.count++;b.totalMs=round2(b.totalMs+duration);b.maxMs=Math.max(b.maxMs,duration);
+        if(b.recentSamples.length>=MAX_COMMITS)b.recentSamples.shift();
+        b.recentSamples.push(duration);
+      }
+      this.remember('SYNC_COMMIT',ms,{revision:item.revision,round:item.round,complete:item.complete,stages:item.stages,ownersChanged:item.ownersChanged});
+      if(this.report.publication.commits.length>=MAX_COMMITS){this.report.publication.discardedOldestCommits++;this.report.publication.commits.shift();}
+      this.report.publication.commits.push(item);
+    }
+    return commits;
+  }
+  remember(kind,elapsedMs,detail){
+    const top=this.report.spikes[kind]||(this.report.spikes[kind]=[]);
+    if(top.length>=MAX_SPIKES_PER_KIND&&elapsedMs<=top[top.length-1].elapsedMs)return;
+    top.push({atMs:round2(performance.now()-this.report.startedAtMonotonic),elapsedMs:round2(elapsedMs),...detail});
+    top.sort((a,b)=>b.elapsedMs-a.elapsedMs);
+    if(top.length>MAX_SPIKES_PER_KIND)top.pop();
   }
   flush(){
-    if(!this.interval.length&&!this.cpu.length){this.windowStart=performance.now();return;}
-    const win=this.win,renderer=win.CardTacticsRenderer;
-    const metrics=renderer.diagnostics?.();
+    const d=this.data;
+    if(!d.frames)return;
+    const renderer=this.win.CardTacticsRenderer,metrics=renderer.diagnostics?.();
+    if(this.report.windows.length>=MAX_WINDOWS){this.report.discardedOldestWindows++;this.report.windows.shift();}
     this.report.windows.push({atMs:round2(performance.now()-this.report.startedAtMonotonic),round:this.windowRound,
-      phase:this.windowPhase,frameIntervalMs:metricSet(this.interval),cpuFrameMs:metricSet(this.cpu),
-      sceneRenderCpuMs:metricSet(this.render),shadowSubmissionCpuMs:metricSet(this.shadow),
-      drawCallsPerFrame:metrics?.performance?.drawCallsPerFrame??null,
-      meshes:renderer.scene.meshes.length,activeMeshes:renderer.scene.getActiveMeshes?.()?.length??null,
+      phase:this.windowPhase,frameIntervalMs:metricSet(d.interval),cpuFrameMs:metricSet(d.cpu),
+      sceneRenderCpuMs:metricSet(d.render),shadowSubmissionCpuMs:metricSet(d.shadow),
+      cpuOutsideSceneRenderMs:metricSet(d.nonScene),syncCommitMs:metricSet(d.sync),
+      frames:d.frames,commits:d.commits,drawCallsPerFrame:metrics?.performance?.drawCallsPerFrame??null,
+      meshes:renderer.scene.meshes.length,materials:renderer.scene.materials.length,
+      activeMeshes:renderer.scene.getActiveMeshes?.()?.length??null,
       shadowsCasters:metrics?.shadows?.casters??null,
-      rendererErrors:metrics?.rendererErrors||{},weather:win.CardTacticsRuntime.debug?.state?.()?.weather||null});
-    this.interval.length=0;this.cpu.length=0;this.render.length=0;this.shadow.length=0;this.windowStart=performance.now();
+      rendererErrors:metrics?.rendererErrors||{},weather:renderer.lastState?.presentation?.environment?.weather??null,
+      night:renderer.lastState?.presentation?.environment?.timeOfDay??null});
+    this.data=this.emptyData();this.windowStart=performance.now();
   }
-  dispose(){if(this.disposed)return;this.flush();this.disposed=true;this.win.CardTacticsRenderer.scene.onAfterRenderObservable.remove(this.observer);}
+  dispose(){
+    if(this.disposed)return;
+    // Drain latest commit before final disposal; no ownership changes.
+    this.collectCommits(performance.now());this.flush();this.disposed=true;
+    clearInterval(this.watchdog);
+    document.removeEventListener('visibilitychange',this.onVisibility);
+    window.removeEventListener('pagehide',this.onPageHide);
+    this.win.CardTacticsRenderer.scene.onAfterRenderObservable.remove(this.observer);
+    this.report.frameCoverage={visibleFrames:this.visibleFrames,hiddenFrames:this.hiddenFrames,
+      method:'onAfterRender -> queueMicrotask; every foreground interval included; no 2s cutoff',
+      caveat:'Frame interval contains scheduling and GPU pacing. CPU frameMs is not a GPU timer. Unattributed CPU includes non-render work not identified by published sync stages.'};
+  }
 }
 
+/** Require the SAME committed snapshot on the real renderer and at least two rendered
+ * scene turns. A loaded Runtime alone does NOT mean an XLARGE terrain is published.
+ */
+async function waitForPresentation(win,{abort=null,timeoutMs=45000,label='SCENE_READY'}={}){
+  const renderer=win.CardTacticsRenderer,runtime=win.CardTacticsRuntime;
+  const started=performance.now();let lastRenderId=renderer.scene.getRenderId?.()??-1;
+  let stable=0,lastDiagnostic=null;
+  while(performance.now()-started<timeoutMs){
+    if(abort?.stop)throw new Error(`${label}:STOPPED`);
+    const snap=runtime.getBattleSnapshot(),actual=renderer.lastState;
+    const commit=(renderer.presentationCommitHistory||[]).at(-1);
+    const renderId=renderer.scene.getRenderId?.()??-1;
+    const errors=[...(renderer.subsystemErrors?.keys?.()||[])];
+    const hasTerrain=!!renderer.terrain?.meshes?.get?.('surface');
+    const published=Number.isFinite(Number(snap?.revision))&&
+      renderer.lastCompletedPresentationRevision===snap.revision&&
+      actual?.revision===snap.revision&&actual?.map?.id===snap.map?.id&&
+      actual?.map?.tiles?.length===snap.map?.tiles?.length&&
+      commit?.revision===snap.revision&&commit?.complete===true&&errors.length===0&&hasTerrain;
+    const drew=renderId>lastRenderId&&document.visibilityState==='visible';
+    stable=published&&drew?stable+1:0;
+    lastDiagnostic={label,published,drew,stable,expectedRevision:snap?.revision,
+      completedRevision:renderer.lastCompletedPresentationRevision??null,
+      rendererRevision:actual?.revision??null,commitRevision:commit?.revision??null,
+      expectedTiles:snap?.map?.tiles?.length??null,renderedTiles:actual?.map?.tiles?.length??null,
+      mapId:snap?.map?.id,renderedMapId:actual?.map?.id,
+      terrainMeshExists:hasTerrain,errors,renderId,visible:!document.hidden};
+    if(stable>=2)return{...lastDiagnostic,waitMs:round2(performance.now()-started)};
+    lastRenderId=renderId;
+    await sleep(100);
+  }
+  throw new Error(`${label}:PRESENTATION_NOT_READY:${JSON.stringify(lastDiagnostic)}`);
+}
 const actionButtons=doc=>[...doc.querySelectorAll('#skillBar button')].filter(b=>!b.disabled);
 const findButton=(doc,pattern)=>actionButtons(doc).find(b=>pattern.test(b.textContent||''));
 const clickBtn=button=>{if(!button)return false;button.click();return true;};
@@ -254,19 +385,26 @@ async function playerAction(win,report,abort){
 // refresh/start/stop interfaces and restore every original state in finally.
 async function measureStaticPass(win,label,abort){
   const scene=win.CardTacticsRenderer.scene,renderer=win.CardTacticsRenderer;
-  const intervals=[],render=[],frameCpu=[];let previous=null;
+  const intervals=[],render=[],frameCpu=[];
+  let previous=null,interruptions=0;
+  const onVisibility=()=>{interruptions++;previous=null;};
+  document.addEventListener('visibilitychange',onVisibility);
   const capture=scene.onAfterRenderObservable.add(()=>{
     if(abort.stop||document.hidden)return;
     const now=performance.now();
-    if(previous!=null&&now-previous<2000)intervals.push(now-previous);
+    if(previous!=null)intervals.push(now-previous); // NEVER discard >2s foreground stalls.
     previous=now;
-    const stats=renderer.performanceStats||{};
-    if(Number.isFinite(stats.renderMs))render.push(stats.renderMs);
-    if(Number.isFinite(stats.frameMs))frameCpu.push(stats.frameMs);
+    queueMicrotask(()=>{
+      if(abort.stop||document.hidden)return;
+      const stats=renderer.performanceStats||{};
+      if(Number.isFinite(stats.renderMs))render.push(stats.renderMs);
+      if(Number.isFinite(stats.frameMs))frameCpu.push(stats.frameMs);
+    });
   });
   try{await sleep(3000);}
-  finally{scene.onAfterRenderObservable.remove(capture);}
-  return{label,frameIntervalMs:metricSet(intervals),renderCpuMs:metricSet(render),frameCpuMs:metricSet(frameCpu)};
+  finally{scene.onAfterRenderObservable.remove(capture);document.removeEventListener('visibilitychange',onVisibility);}
+  return{label,frameIntervalMs:metricSet(intervals),renderCpuMs:metricSet(render),
+    frameCpuMs:metricSet(frameCpu),visibilityInterrupted:interruptions>0};
 }
 async function staticAB(win,report,abort,label='INITIAL'){
   const runtime=win.CardTacticsRuntime,renderer=win.CardTacticsRenderer;
@@ -288,7 +426,7 @@ async function staticAB(win,report,abort,label='INITIAL'){
       }
     }finally{restore();}
     output.trials.push({name,segments:results,valid:results.length===4&&constant()&&!abort.stop&&
-      results.every(x=>x.frameIntervalMs.count>0),
+      results.every(x=>x.frameIntervalMs.count>0&&!x.visibilityInterrupted),
       interpretation:'Inspect raw segment medians/P95 and return-to-baseline; no inferred GPU milliseconds or temperature.'});
   }
   // A rendering diagnostic, never a permanent shadow disable or lighting change.
@@ -324,18 +462,33 @@ function reportCheckpoint(win,report,label){
     shadowCasters:perf?.shadows?.casters||0,drawCallsPerFrame:perf?.performance?.drawCallsPerFrame??null,
     lastFrame:perf?.performance?.frameMs??null,renderElapsed:perf?.performance?.renderMs??null,
     mapObjects:perf?.mapObjects||null,environment:perf?.environment||null,
+    rendererPublishedRevision:renderer.lastCompletedPresentationRevision??null,
+    rendererPublishedTileCount:renderer.lastState?.map?.tiles?.length??null,
+    publicationComplete:renderer.lastCompletedPresentationRevision===snap.revision&&
+      renderer.lastState?.map?.tiles?.length===snap.map?.tiles?.length,
+    lastPublication:renderer.presentationCommitHistory?.at(-1)?{
+      revision:renderer.presentationCommitHistory.at(-1).revision,
+      totalMs:renderer.presentationCommitHistory.at(-1).elapsedMs,
+      complete:renderer.presentationCommitHistory.at(-1).complete,
+      slowSubsystems:Object.entries(renderer.presentationCommitHistory.at(-1).syncMs||{})
+        .filter(([key])=>PUBLISH_STAGES.includes(key))
+        .sort((a,b)=>b[1]-a[1]).slice(0,6)}:null,
+    unitMaterialsCached:renderer.units?.figureMaterials?.size??null,
+    unitEntries:renderer.units?.entries?.size??null,
     errors:perf?.rendererErrors||{}});
 }
 
 async function runBenchmark(win,setup,abort){
   const runtime=win.CardTacticsRuntime,doc=win.document;
-  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:1,reviewedSourceHead:'94376c9834e9a944a95d1d08d708378e77c20929',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
+  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:2,reviewedSourceHead:'71d0491ebfbc47335b01d409d9204b903443cd17',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
     generatedAt:null,startedAt:new Date().toISOString(),startedAtMonotonic:performance.now(),
     setup:{...setup},scenarioInjections:[],engine:'REAL_INDEX_HTML_TOP_LEVEL',gameplayPath:'OFFICIAL_RUNTIME_AND_AI',
-    limitation:'The shipped index.html is loaded into the top-level document. No GPU time or temperature is inferred. No A/B isolation has yet been performed.',
+    limitation:'Existing official renderer publish-commit timing is observed without changing its ownership. Long foreground stalls are retained. GPU time and chip temperature are not inferred. A/B coverage is partial.',
     status:'RUNNING',actions:{CARD_SELECT:0,CARD_RESOLVED:0,CARD_END:0,MOVE:0,ATTACK_TARGET:0,CAPTURE:0,WAIT:0,REACTION:0,TURN_END:0},
-    checkpoints:[],windows:[],warnings:[],errors:[],completedRounds:0,coverage:{weather:[],timeOfDay:[],rounds:0,battleActions:0}};
-  const capture=new FrameCapture(win,report);
+    checkpoints:[],windows:[],lifecycle:[],visibilityInterruptions:0,discardedOldestWindows:0,
+    spikes:{},publication:{commits:[],totalCommits:0,failedCommits:0,discardedOldestCommits:0,bySubsystem:{}},
+    warnings:[],errors:[],completedRounds:0,coverage:{weather:[],timeOfDay:[],rounds:0,battleActions:0}};
+  let capture=null;
   const seenWeather=new Set(),seenDay=new Set();
   let lastRound=0,lastCheckpointAt=0,lastProgressAt=performance.now(),lastProgress='',loopCount=0,lastEnemySnapshot=null,lastEnemySnapshotAt=0;
   const stressPlan=new Map([[2,'HEAVY_RAIN'],[4,'SNOW'],[6,'BLIZZARD'],[8,'SCORCHING_SUN'],[10,'THUNDERSTORM']]);
@@ -356,10 +509,24 @@ async function runBenchmark(win,setup,abort){
     for(const screen of doc.querySelectorAll('.game-screen'))screen.classList.toggle('active',screen.id==='battleScreen');
     win.CardTacticsRenderer.resize();win.CardTacticsRenderer.resetView();
     win.dispatchEvent(new win.CustomEvent('cardtactics:battle-screen-enter'));
-    reportCheckpoint(win,report,'START');
+    textStatus('等待正式 XLARGE/所選地圖已經發布到 Babylon Renderer…');
+    report.sceneReady=await waitForPresentation(win,{abort,label:'AFTER_RESET'});
+    // A fully-published initial terrain can be expensive, but this boot cost
+    // must not pollute the steady-state gameplay frame distribution.
+    const initialCommit=win.CardTacticsRenderer.presentationCommitHistory?.at(-1);
+    report.initialScenePublication=initialCommit?{revision:initialCommit.revision,
+      elapsedMs:initialCommit.elapsedMs,complete:initialCommit.complete,
+      stages:Object.fromEntries(PUBLISH_STAGES.filter(k=>initialCommit.syncMs?.[k]!=null)
+        .map(k=>[k,initialCommit.syncMs[k]]))}:null;
+    capture=new FrameCapture(win,report);
+    reportCheckpoint(win,report,'START_PUBLISHED');
     await sleep(1500);
     textStatus('正在做正式場景影格 A/B 對照（陰影、目前啟動的粒子）；不推進遊戲。');
     await staticAB(win,report,abort,'INITIAL_FULL_GAME');
+    if(!abort.stop){
+      try{report.sceneReadyAfterAB=await waitForPresentation(win,{abort,label:'AFTER_INITIAL_AB'});}
+      catch(error){report.warnings.push('POST_AB_SCENE_NOT_STABLE:'+String(error?.message||error));}
+    }
     while(!abort.stop){
       const phase=runtime.getPhase();
       const now=performance.now();
@@ -383,6 +550,7 @@ async function runBenchmark(win,setup,abort){
           report.scenarioInjections.push({round,weather,duration,success,source:'OFFICIAL_RUNTIME_DEBUG_WEATHER',appliedWithoutImmediatePulse:true});
           if(!success)report.warnings.push(`SCENARIO_WEATHER_REJECTED:${weather}`);
           else if(weather==='BLIZZARD'){
+            report.blizzardSceneReady=await waitForPresentation(win,{abort,label:'BLIZZARD_BEFORE_AB'});
             await sleep(1500);
             textStatus('完整戰局暴風雪場景｜執行第二組 A/B 影格測試，保留正式水文與 AI 狀態。');
             await staticAB(win,report,abort,'BLIZZARD_FULL_GAME');
@@ -406,18 +574,27 @@ async function runBenchmark(win,setup,abort){
       await sleep(250);
     }
     if(abort.stop)report.status='STOPPED_BY_USER';
-  }catch(error){report.status='ERROR';report.errors.push(String(error?.stack||error));}
+  }catch(error){report.status='ERROR';report.errors.push(String(error?.stack||error));
+    if(String(error?.message||error).includes('PRESENTATION_NOT_READY'))report.warnings.push('INVALID_SCENE_PUBLICATION_NO_BENCHMARK_RESULT');}
   finally{
-    capture.dispose();reportCheckpoint(win,report,'FINAL');
+    capture?.dispose();reportCheckpoint(win,report,'FINAL');
+    for(const summary of Object.values(report.publication.bySubsystem)){
+      const recent=summary.recentSamples||[];
+      summary.recentMetrics=metricSet(recent);delete summary.recentSamples;
+    }
     report.generatedAt=new Date().toISOString();report.durationMs=round2(performance.now()-report.startedAtMonotonic);
     report.coverage.weather=[...seenWeather];report.coverage.timeOfDay=[...seenDay];report.coverage.rounds=report.completedRounds;
     report.coverage.battleActions=report.actions.MOVE+report.actions.ATTACK_TARGET+report.actions.CAPTURE;
     if(report.actions.CARD_RESOLVED===0)report.warnings.push('NO_CARD_RESOLVED');
     if(report.actions.WAIT>0&&report.actions.ATTACK_TARGET===0)report.warnings.push('PASSIVE_PLAYER_BOT_NO_ATTACK_YET');
-    report.attributionStatus='NOT_PROVEN_NO_CONTROLLED_AB_ISOLATION';
+    report.attributionStatus='PARTIAL_AB_ONLY_NO_PROVEN_ROOT_CAUSE';
+    report.captureLimitations=['No GPU timer or chip temperature readout',
+      'published per-subsystem sync times are exact per commit; CPU outside scene render is residual, not identified subsystem time',
+      'same-round play can diverge due to shuffled deck and AI: no complete-game replay equivalence asserted'];
     if(report.actions.ATTACK_TARGET===0)report.warnings.push('NO_PLAYER_ATTACK_COVERAGE');
     if(report.actions.CAPTURE===0)report.warnings.push('NO_CAPTURE_COVERAGE');
     if(!seenWeather.has('BLIZZARD'))report.warnings.push('BLIZZARD_NOT_COVERED_BY_NATURAL_GAMEPLAY');
+    if(report.visibilityInterruptions)report.warnings.push('BACKGROUND_INTERRUPTION_FOREGROUND_WINDOWS_NOT_COMPARABLE');
     delete report.startedAtMonotonic;
   }
   return report;
@@ -437,7 +614,8 @@ els.start.onclick=async()=>{
     // gesture, so the download button stays enabled as an explicit fallback.
     try{downloadJson(`Card_Tactics_2_FullBattleBenchmark_${lastReport.setup.seed}_${Date.now()}.json`,lastReport);}
     catch(error){lastReport.warnings.push(`AUTO_EXPORT_DENIED:${String(error?.message||error)}`);}
-    textStatus(`測試結束｜${lastReport.status}\n已完成回合 ${lastReport.completedRounds}｜量測視窗 ${lastReport.windows.length}\n出牌 ${lastReport.actions.CARD_RESOLVED}、移動 ${lastReport.actions.MOVE}、攻擊 ${lastReport.actions.ATTACK_TARGET}、佔點 ${lastReport.actions.CAPTURE}\n警示 ${lastReport.warnings.length}｜已嘗試自動輸出；若手機未下載，請點「下載 JSON 報告」。`);
+    const worstCpu=lastReport.spikes?.CPU_FRAME?.[0],worstSync=lastReport.spikes?.SYNC_COMMIT?.[0];
+    textStatus(`測試結束｜${lastReport.status}\n已完成回合 ${lastReport.completedRounds}｜量測視窗 ${lastReport.windows.length}\n最重CPU幀 ${worstCpu?.elapsedMs??'—'}ms｜最重場景同步 ${worstSync?.elapsedMs??'—'}ms\n出牌 ${lastReport.actions.CARD_RESOLVED}、移動 ${lastReport.actions.MOVE}、攻擊 ${lastReport.actions.ATTACK_TARGET}、佔點 ${lastReport.actions.CAPTURE}\n警示 ${lastReport.warnings.length}｜已嘗試自動輸出；若手機未下載，請點「下載 JSON 報告」。`);
   }catch(error){textStatus(`測試啟動失敗：${error?.message||error}`);}
   finally{runner=null;els.start.disabled=false;els.stop.disabled=true;}
 };
