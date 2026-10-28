@@ -1701,6 +1701,17 @@ export class WaterRenderer{
     return{bytes,changed:true};
   }
 
+  // Single authoritative accumulator shape for both full geometry builds and
+  // attribute-only refreshes. addVertex() requires vertexContactTiles when
+  // welding shared D/Q vertices; keeping two separate object literals allowed
+  // the refresh path to omit it and throw during a real blizzard battle.
+  createSurfaceVertexAccumulator(){
+    return{positions:[],indices:[],triangleKeys:new Set(),normals:[],uvs:[],colors:[],
+      vertexContactTiles:[],storedVertexAuthority:[],waveWeights:[],
+      sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],
+      flowSpeedSum:[],flowSampleCount:[]};
+  }
+
   // Derive the exact shader and CPU-animation inputs from the existing canonical
   // vertex accumulator. The builder and attribute refresh share this one path.
   surfaceMotionAttributes(out){
@@ -1725,8 +1736,7 @@ export class WaterRenderer{
   // caller must use the complete conforming geometry path instead.
   refreshSurfaceAttributes(component,resolved,state,mesh,entry,allMap,vertexReuse=null){
     if(!mesh||!entry||!this.gpuSurfaceWaves)return false;
-    const out={positions:[],uvs:[],colors:[],storedVertexAuthority:[],waveWeights:[],
-      sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const out=this.createSurfaceVertexAccumulator();
     const cache=new Map(),cliffSeams=new Map();
     const sources=component.sources??this.activeHydrologySources(state);
     const baseTiles=component.tiles.some(hasAnyWater)
@@ -1774,7 +1784,7 @@ export class WaterRenderer{
   }
 
   buildSurface(component,state,presentation,resolvedSurface=null,allMap=null,previousMesh=null,priorFaces=null,vertexReuse=null){
-    const out={positions:[],indices:[],triangleKeys:new Set(),normals:[],uvs:[],colors:[],vertexContactTiles:[],storedVertexAuthority:[],waveWeights:[],sourceWeights:[],sourcePhases:[],flowXSum:[],flowZSum:[],flowSpeedSum:[],flowSampleCount:[]};
+    const out=this.createSurfaceVertexAccumulator();
     const cache=new Map(),localCliffSeams=new Map(),tileMap=allMap||this.allByKey(state),
       sources=component.sources??this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));

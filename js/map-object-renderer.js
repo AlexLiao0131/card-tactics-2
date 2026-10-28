@@ -52,7 +52,9 @@ export class MapObjectRenderer{
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
     this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
-    this.windBatchMetrics={positionUploads:0,boundsResolves:0,animatedGroups:0};
+    this.windBatchMetrics={positionUploads:0,boundsResolves:0,animatedGroups:0,
+      directPositionUploads:0,fallbackPositionUploads:0,
+      deferredSourceVertexWrites:0,sourcePoseSynchronizations:0};
     // Stage 12J: keep a direct registry of the few meshes that actually sway.
     // The old loop walked every map object and rebuilt an inverse world matrix
     // for every tree/bush at 30 Hz even though those transforms only change on sync.
@@ -203,6 +205,23 @@ export class MapObjectRenderer{
     this.windBatchMetrics.boundsResolves++;
   }
 
+  // Foliage source meshes are hidden while the canonical row batch renders.
+  // Their CPU pose remains available to placement, weather and batch rebuilds,
+  // but needs materializing only when one of those consumers actually reads it.
+  // The visible batch receives the same float32-quantized positions every tick.
+  syncVegetationSourcePose(mesh){
+    const sway=mesh?.metadata?.leafSway;
+    if(!sway?.sourcePoseDirty)return;
+    const lx=sway.frameLocalX,lz=sway.frameLocalZ,bend=sway.frameBend;
+    for(let v=0;v<sway.weights.length;v++){
+      const offset=v*3,amount=bend*sway.weights[v];
+      sway.positions[offset]=sway.rest[offset]+lx*amount;
+      sway.positions[offset+2]=sway.rest[offset+2]+lz*amount;
+    }
+    sway.sourcePoseDirty=false;
+    this.windBatchMetrics.sourcePoseSynchronizations++;
+  }
+
   updateVegetationWind(dt){
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
@@ -231,27 +250,58 @@ export class MapObjectRenderer{
       const batch=membership?.batch,member=membership?.member;
       const world=batch?.positions,m=member?.worldMatrix;
       const first=member?member.offset*3:0;
-      for(let v=0;v<sway.weights.length;v++){
-        const offset=v*3,amount=bend*sway.weights[v];
-        sway.positions[offset]=sway.rest[offset]+lx*amount;
-        sway.positions[offset+2]=sway.rest[offset+2]+lz*amount;
-        if(world&&m){
-          // Match writeBatchMemberPositions() exactly: read the authored
-          // Float32Array after quantization, not the unrounded intermediate.
-          const x=sway.positions[offset]||0,y=sway.positions[offset+1]||0,
-            z=sway.positions[offset+2]||0,d=first+offset;
+      if(world&&m){
+        // The hidden original is not the GPU presentation owner. Calculate
+        // exact float32-quantized leaf positions directly into the existing
+        // row batch, without writing the duplicate per-object vertex arrays.
+        // A later structural/placement sync materializes the latest source pose.
+        sway.frameLocalX=lx;sway.frameLocalZ=lz;sway.frameBend=bend;
+        sway.sourcePoseDirty=true;
+        this.windBatchMetrics.deferredSourceVertexWrites+=sway.weights.length*2;
+        for(let v=0;v<sway.weights.length;v++){
+          const offset=v*3,amount=bend*sway.weights[v];
+          const x=Math.fround(sway.rest[offset]+lx*amount)||0,
+            y=sway.rest[offset+1]||0,
+            z=Math.fround(sway.rest[offset+2]+lz*amount)||0,d=first+offset;
           world[d]=m[0]*x+m[4]*y+m[8]*z+m[12];
           world[d+1]=m[1]*x+m[5]*y+m[9]*z+m[13];
           world[d+2]=m[2]*x+m[6]*y+m[10]*z+m[14];
         }
+        changedSwayBatches.add(batch);
+      }else{
+        // A source without an active row batch remains independently rendered.
+        // Preserve the original CPU/GPU update contract for this fallback.
+        for(let v=0;v<sway.weights.length;v++){
+          const offset=v*3,amount=bend*sway.weights[v];
+          sway.positions[offset]=sway.rest[offset]+lx*amount;
+          sway.positions[offset+2]=sway.rest[offset+2]+lz*amount;
+        }
+        sway.sourcePoseDirty=false;
+        mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
       }
-      if(batch)changedSwayBatches.add(batch);
-      else mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,sway.positions,false,false);
     }
     // Keep exactly one GPU upload for each affected existing row batch.
     // Normals / colours are unchanged by the CPU bend and are never rewritten.
     for(const batch of changedSwayBatches){
-      batch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,batch.positions,false,false);
+      // Babylon direct buffer updates avoid the extra geometry staging/copy
+      // performed by updateVerticesData(). The row batch's Float32Array stays
+      // the CPU source of truth; only animated positions are uploaded.
+      // On a wind-strength or placement change, the existing bounding-box
+      // owner must sample the CURRENT positions. Perform a normal update on
+      // that transition; direct uploads are safe while the bounds envelope
+      // stays unchanged. This prevents frustum/shadow culling regressions.
+      const boundsChanging=batch.windBoundsStrength!==strength||batch.windBoundsDirty===true;
+      const positionBuffer=batch.mesh.getVertexBuffer?.(BABYLON.VertexBuffer.PositionKind);
+      const direct=!boundsChanging&&!!positionBuffer&&
+        typeof batch.mesh.updateVerticesDataDirectly==="function"&&
+        positionBuffer.isUpdatable?.()!==false;
+      if(direct){
+        batch.mesh.updateVerticesDataDirectly(BABYLON.VertexBuffer.PositionKind,batch.positions,0,false);
+        this.windBatchMetrics.directPositionUploads++;
+      }else{
+        batch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,batch.positions,false,false);
+        this.windBatchMetrics.fallbackPositionUploads++;
+      }
       this.ensureWindBatchBounds(batch,strength);
       this.windBatchMetrics.positionUploads++;
     }
@@ -575,6 +625,9 @@ export class MapObjectRenderer{
 
   writeBatchMemberPositions(batch,member){
     const {mesh,count,offset}=member;
+    // Reconstruct a hidden leaf source only when its row membership or
+    // placement requires real CPU geometry. This is not a second animation.
+    this.syncVegetationSourcePose(mesh);
     const positions=mesh.metadata?.leafSway?.positions||mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
     const m=member.worldMatrix;
     for(let i=0;i<count;i++){
