@@ -114,6 +114,7 @@ export class WaterRenderer{
     this.publishedWaterGeometrySignatures=new WeakMap();
     this.surfaceSolveStats={totalTiles:0,resolvedTiles:0,reusedTiles:0};
     this.surfaceRebuildDetail=null;
+    this.surfaceRebuildHistory=[];
     this.surfaceMeshSignatures=new Map();
     // Separate actual indexed geometry ownership from flow/colour/wave inputs.
     // An attribute-only change must not dispose a conforming water mesh.
@@ -135,11 +136,18 @@ export class WaterRenderer{
     // WaterRenderer owns this cache; it has no gameplay or Mesh ownership.
     // Face identity and ALL nearby float32 vertices gate every reuse.
     this.surfacePolygonTriangulations=new Map();
+    // Exact topology reuse within the existing canonical component owner.
+    // Only identical float32 X/Z positions, face ownership/indices, and the
+    // actual connected tile graph permit bypassing conforming triangulation.
+    // No hydrology state, alternate geometry, approximation or persistent GPU
+    // resource is created; cached indices are derived from the published mesh.
+    this.surfaceTopologyLayouts=new Map();
     // Per-tile immutable vertex evaluations. One owner and one invalidation
     // contract: the exact published polygons, conservative Dirty halo, local
     // source field, and component-wide turbidity. Shared vertex interning is
     // still performed by addVertex in its original stable order.
-    this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,topologyVerifiedFacesReused:0,elapsedMs:0};
+    this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,
+      topologyVerifiedFacesReused:0,elapsedMs:0,exactLayoutHits:0,exactLayoutMisses:0};
     this.publishedSurfaceSourcesSignature=null;
     this.publishedWaterGeometryRevision=0;
     this.levelSamples=null;
@@ -513,6 +521,8 @@ export class WaterRenderer{
     this.surfaceComponentGeometryVersions.clear();
     this.surfaceTileOwnedPolygons.clear();
     this.surfacePolygonTriangulations.clear();
+    this.surfaceTopologyLayouts.clear();
+    this.surfaceRebuildHistory.length=0;
     this.publishedSurfaceSourcesSignature=null;
   }
 
@@ -1221,6 +1231,61 @@ export class WaterRenderer{
     out.indices.push(a,b,c);
   }
 
+  // Build a height-independent, exact identity for the *existing* canonical
+  // vertex/face layout. When every float32 X/Z value, indexed polygon,
+  // polygon owner and tile-connectivity edge matches, only Y (and attributes)
+  // may differ. In that case the original conforming triangle index order is
+  // identical. Ambiguous X/Z aliases always run the full original solver:
+  // their different Y layers can change which boundary points may be welded.
+  surfaceTopologyLayout(component,out,polygons,polygonOwners){
+    if(!component||!polygons)return null;
+    const n=out.positions.length/3;
+    if(!Number.isSafeInteger(n)||!n)return null;
+    const coordinates=new Float32Array(n*2),seen=new Set();
+    for(let i=0;i<n;i++){
+      const x=Math.fround(out.positions[i*3]),z=Math.fround(out.positions[i*3+2]);
+      if(!Number.isFinite(x)||!Number.isFinite(z))return null;
+      // Native coordinate identity, no quantization and no random/hash alias.
+      const key=String(x)+":"+String(z);
+      if(seen.has(key))return null;
+      seen.add(key);
+      coordinates[i*2]=x;coordinates[i*2+1]=z;
+    }
+    const faceIndices=[],faceLengths=[],owners=[];
+    for(let i=0;i<polygons.length;i++){
+      const poly=polygons[i];
+      faceLengths.push(poly.length);
+      owners.push(String(polygonOwners?.[i]??""));
+      for(const index of poly)faceIndices.push(index);
+    }
+    // Connectivity is determined only by the same authoritative
+    // surfaceEdgeContinuous() used by presentationComponents()/addVertex().
+    // A topology/continuity edit cannot reuse obsolete T-junctions.
+    const members=new Map(component.tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    const connections=[];
+    for(const tile of component.tiles){
+      for(const dir of [{dx:1,dy:0},{dx:0,dy:1}]){
+        const other=members.get(keyOf(Number(tile.x)+dir.dx,Number(tile.y)+dir.dy));
+        if(other&&this.surfaceEdgeContinuous(tile,other))
+          connections.push(keyOf(tile.x,tile.y)+">"+keyOf(other.x,other.y));
+      }
+    }
+    connections.sort();
+    return{coordinates,faceIndices,faceLengths,owners,connections};
+  }
+
+  // Equality is exact (float32 GPU-representable X/Z and integer face indices).
+  // Not a content hash, not an epsilon, and not a second topology authority.
+  sameSurfaceTopologyLayout(previous,next){
+    if(!previous||!next)return false;
+    for(const key of ["coordinates","faceIndices","faceLengths","owners","connections"]){
+      const a=previous[key],b=next[key];
+      if(a.length!==b.length)return false;
+      for(let i=0;i<a.length;i++)if(a[i]!==b[i])return false;
+    }
+    return true;
+  }
+
   // One conforming triangulation for the EXISTING published wet polygons.
   // D-only polygons have the terrain's original tessellation; Q transport
   // triangles can be subdivided. At a shared edge their vertices must become
@@ -1732,12 +1797,43 @@ export class WaterRenderer{
         polygonOwners.push(keyOf(tile.x,tile.y));
       }
     }
-    const triangulation=this.triangulateSurfacePolygons(out,wetPolygons,polygonOwners,priorFaces);
-    if(!out.positions.length||!out.indices.length)return null;
-    // Keep the derived polygon cache next to this one component's Mesh lifecycle;
-    // never expose cached old indices to ice, wave animation or the GPU.
-    this.surfacePolygonTriangulations.set(component.id,triangulation.faceCache);
-    delete triangulation.faceCache;
+    const exactLayout=this.surfaceTopologyLayout(component,out,wetPolygons,polygonOwners);
+    const cachedLayout=this.surfaceTopologyLayouts.get(component.id);
+    let triangulation;
+    if(exactLayout&&cachedLayout&&this.sameSurfaceTopologyLayout(cachedLayout,exactLayout)){
+      // The previous publication's final topology is used by the one existing
+      // indexed mesh owner. New water heights still recompute normals, wave
+      // inputs, ice source buffers and any changed Babylon vertex buffers.
+      out.indices=cachedLayout.indices.slice();
+      triangulation={...cachedLayout.triangulation,
+        tileIndexRanges:new Map(cachedLayout.tileIndexRanges),
+        reusedFaces:cachedLayout.triangulation.sourcePolygons,
+        recomputedFaces:0,topologyVerifiedFacesReused:cachedLayout.triangulation.sourcePolygons};
+      this.surfacePolygonTriangulations.set(component.id,cachedLayout.faceCache);
+      this.surfaceTriangulationStats.reusedFaces+=triangulation.reusedFaces;
+      this.surfaceTriangulationStats.topologyVerifiedFacesReused+=triangulation.topologyVerifiedFacesReused;
+      this.surfaceTriangulationStats.exactLayoutHits++;
+    }else{
+      const fresh=this.triangulateSurfacePolygons(out,wetPolygons,polygonOwners,priorFaces);
+      this.surfacePolygonTriangulations.set(component.id,fresh.faceCache);
+      triangulation=fresh;
+      this.surfaceTriangulationStats.exactLayoutMisses++;
+    }
+    if(!out.positions.length||!out.indices.length){
+      this.surfaceTopologyLayouts.delete(component.id);
+      return null;
+    }
+    // Layouts are bound to the same component lifecycle as the original
+    // surfaceMeshSignatures; no cache entry outlives its published component.
+    if(exactLayout)this.surfaceTopologyLayouts.set(component.id,{
+      ...exactLayout,indices:out.indices.slice(),
+      faceCache:this.surfacePolygonTriangulations.get(component.id),
+      tileIndexRanges:new Map(triangulation.tileIndexRanges),
+      triangulation:{sourcePolygons:triangulation.sourcePolygons,
+        splitEdges:triangulation.splitEdges,
+        insertedEdgeVertices:triangulation.insertedEdgeVertices}
+    });
+    else this.surfaceTopologyLayouts.delete(component.id);
     BABYLON.VertexData.ComputeNormals(out.positions,out.indices,out.normals);
     // The indexed D/Q triangulation is authoritative even when the shoreline
     // changes. Mesh *identity* is independent of the vertex/index layout:
@@ -2963,6 +3059,9 @@ export class WaterRenderer{
     const currentRevision=Number(state?.revision??0);
     const reset=this.lastWaterVisualRevision!=null&&
       currentRevision<this.lastWaterVisualRevision;
+    // A new battle is an entirely new publication authority, even if its
+    // canonical component IDs and X/Z positions happen to match prior play.
+    if(reset){this.surfaceTopologyLayouts.clear();this.surfaceRebuildHistory.length=0;}
     this.lastWaterVisualRevision=currentRevision;
     if(!reset&&!waveEvent&&input===this.lastWaterVisualInput){
       this.visualInputAudit.identicalInputsSkipped++;
@@ -3105,7 +3204,8 @@ export class WaterRenderer{
       this.surfaceComponentSourceSignatures=new Map();
       this.surfaceComponentGeometryVersions=new Map();
       this.surfacePolygonTriangulations=new Map();
-      this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,topologyVerifiedFacesReused:0,elapsedMs:0};
+      this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,
+        topologyVerifiedFacesReused:0,elapsedMs:0,exactLayoutHits:0,exactLayoutMisses:0};
       this.surfaceTileOwnedPolygons=clipReuse.next;
       this.sheetFlowMeshes.clear(); // Aliases only: never dispose twice.
       this.resetWaterSeamRegistry();
@@ -3174,6 +3274,10 @@ export class WaterRenderer{
         mesh.dispose();meshReasons.disposed++;this.surfaceMeshUpdate.disposed++;
         geometryChanged=true;
       }
+      // Prune the exact topology of removed components as soon as their
+      // Babylon mesh owner is disposed. Unchanged components retain identity.
+      for(const id of this.surfaceTopologyLayouts.keys())
+        if(!this.surfaceMeshes.has(id))this.surfaceTopologyLayouts.delete(id);
       if(geometryChanged)this.publishedWaterGeometryRevision++;
       // Share the exact, *final* Babylon mesh triangles (including water
       // canonical seam welding and conforming edge subdivisions). A frozen
@@ -3206,8 +3310,16 @@ export class WaterRenderer{
         topologyVerifiedFacesReused:this.surfaceTriangulationStats.topologyVerifiedFacesReused,
         triangulationFacesRecomputed:this.surfaceTriangulationStats.recomputedFaces,
         triangulationMs:Number(this.surfaceTriangulationStats.elapsedMs.toFixed(2)),
+        exactTopologyLayoutHits:this.surfaceTriangulationStats.exactLayoutHits,
+        exactTopologyLayoutMisses:this.surfaceTriangulationStats.exactLayoutMisses,
         surfaceSolveMs:Number((buildStart-solveStart).toFixed(2)),
         meshBuildMs:Number((performance.now()-buildStart).toFixed(2))};
+      // The renderer's one commit pipeline can now match expensive water
+      // rebuilds to a game revision without reading an unrelated later state.
+      // Retain a bounded read-only history, not a second simulation cache.
+      this.surfaceRebuildHistory.push({gameRevision:state?.revision??null,
+        round:state?.round??null,...this.surfaceRebuildDetail});
+      if(this.surfaceRebuildHistory.length>32)this.surfaceRebuildHistory.shift();
       globalThis.CardTacticsDiagnostics?.recordPerf?.("waterSync.surfaceMeshes",performance.now()-buildStart);
     }else this.sheetFlowNetwork=oldNetwork;
     // WaterRenderer owns wave motion for liquid AND frozen water. Climate
@@ -3339,6 +3451,7 @@ export class WaterRenderer{
       this.surfaceComponentGeometryVersions.clear();
       this.surfaceTileOwnedPolygons.clear();
       this.surfacePolygonTriangulations.clear();
+      this.surfaceTopologyLayouts.clear();
         this.publishedSurfaceSourcesSignature=null;
         this.publishedWaterGeometryRevision++;
         this.surfaceMeshUpdate={reused:0,attributesUpdated:0,verticesUpdated:0,

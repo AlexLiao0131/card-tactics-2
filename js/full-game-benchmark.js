@@ -64,12 +64,45 @@ class FrameCapture{
     this.win=win;this.report=report;this.startedAt=performance.now();
     this.windowStart=this.startedAt;this.windowPhase='BOOT';this.windowRound=0;this.heartbeatAt=this.startedAt;this.heartbeatWarned=false;
     this.lastFrameAt=null;this.disposed=false;this.seenCommits=new WeakSet();
+    this.lastWatchdogAt=performance.now();
+    report.eventLoopObservations={timerDelays:[],browserLongTasks:[],
+      longTaskApiSupported:false,
+      interpretation:'Timer delay is not a GPU timer or proof of thermal throttling.'};
+    // A browser-supported long-task entry provides independent evidence of
+    // main-thread blocking. Safari may not expose this API: absence is not
+    // evidence that the main thread was idle.
+    this.longTaskObserver=null;
+    try{
+      if(typeof PerformanceObserver!=='undefined'&&
+        PerformanceObserver.supportedEntryTypes?.includes('longtask')){
+        report.eventLoopObservations.longTaskApiSupported=true;
+        this.longTaskObserver=new PerformanceObserver(list=>{
+          for(const entry of list.getEntries()){
+            const events=report.eventLoopObservations.browserLongTasks;
+            if(events.length>=160)events.shift();
+            events.push({atMs:round2(entry.startTime-report.startedAtMonotonic),
+              durationMs:round2(entry.duration),entryType:entry.entryType});
+          }
+        });
+        this.longTaskObserver.observe({entryTypes:['longtask']});
+      }
+    }catch(_){this.longTaskObserver?.disconnect?.();this.longTaskObserver=null;}
     this.data=this.emptyData();this.visibleFrames=0;this.hiddenFrames=0;
     for(const oldCommit of win.CardTacticsRenderer.presentationCommitHistory||[])this.seenCommits.add(oldCommit);
     this.observer=win.CardTacticsRenderer.scene.onAfterRenderObservable.add(()=>this.sample());
     this.watchdog=setInterval(()=>{
-      if(this.disposed||document.hidden)return;
-      const gap=performance.now()-this.heartbeatAt;
+      if(this.disposed)return;
+      const now=performance.now(),delay=now-this.lastWatchdogAt-1000;
+      this.lastWatchdogAt=now;
+      if(document.hidden)return;
+      if(delay>=1500){
+        const events=report.eventLoopObservations.timerDelays;
+        if(events.length>=160)events.shift();
+        events.push({atMs:round2(now-report.startedAtMonotonic),
+          delayMs:round2(delay),visible:!document.hidden,
+          note:'Timer scheduling delay: main-thread blockage OR browser scheduling/throttling; not independently causal.'});
+      }
+      const gap=now-this.heartbeatAt;
       if(gap>=2000&&!this.heartbeatWarned){
         this.heartbeatWarned=true;
         if(this.report.lifecycle.length>=80)this.report.lifecycle.shift();
@@ -86,7 +119,7 @@ class FrameCapture{
       // Do not mix background suspension into foreground FPS. Never silently drop it.
       if(document.hidden){this.flush();this.lastFrameAt=null;this.report.visibilityInterruptions++;}
       else{this.lastFrameAt=null;this.windowStart=now;}
-      this.heartbeatAt=now;this.heartbeatWarned=false;
+      this.heartbeatAt=now;this.heartbeatWarned=false;this.lastWatchdogAt=now;
     };
     this.onPageHide=()=>{this.report.lifecycle.push({atMs:round2(performance.now()-this.report.startedAtMonotonic),type:'PAGEHIDE'});this.lastFrameAt=null;};
     document.addEventListener('visibilitychange',this.onVisibility);
@@ -135,6 +168,13 @@ class FrameCapture{
         ownersChanged:[...(commit.changes||[])],stages:Object.fromEntries(PUBLISH_STAGES
           .filter(name=>Number.isFinite(Number(commit.syncMs?.[name])))
           .map(name=>[name,Number(commit.syncMs[name])]))};
+      // Preserve provenance. These are measured by the real WaterRenderer at
+      // the moment it actually rebuilt, NOT inferred from elapsed frame time.
+      if(ms>=150||item.ownersChanged.includes('waterGeometryVersion')){
+        const details=renderer.water?.surfaceRebuildHistory?.findLast?.(entry=>
+          entry.gameRevision===item.revision);
+        if(details)item.waterRebuild={...details};
+      }
       commits.push(item);this.report.publication.totalCommits++;
       if(!item.complete)this.report.publication.failedCommits++;
       const buckets=this.report.publication.bySubsystem;
@@ -179,6 +219,7 @@ class FrameCapture{
     // Drain latest commit before final disposal; no ownership changes.
     this.collectCommits(performance.now());this.flush();this.disposed=true;
     clearInterval(this.watchdog);
+    this.longTaskObserver?.disconnect?.();
     document.removeEventListener('visibilitychange',this.onVisibility);
     window.removeEventListener('pagehide',this.onPageHide);
     this.win.CardTacticsRenderer.scene.onAfterRenderObservable.remove(this.observer);
@@ -410,8 +451,8 @@ async function staticAB(win,report,abort,label='INITIAL'){
   const runtime=win.CardTacticsRuntime,renderer=win.CardTacticsRenderer;
   const revision=runtime.getBattleSnapshot().revision;
   const output={label,sourceRevision:revision,mode:'PAUSED_REAL_BATTLE_SCENE',trials:[],status:'RUNNING',
-    notCovered:['TREE_WIND_CPU','GRASS_WIND_CPU','WATER_RENDER'],
-    note:'Only SHADOW_REPAINT and ACTIVE_WEATHER_PARTICLES are isolated by stable Babylon controls. Not a full A-F attribution.'};
+    notCovered:['GRASS_WIND_CPU','WATER_RENDER'],
+    note:'Vegetation sway, shadow repaint and active particle ownership are isolated only while gameplay state is paused. Frame intervals include GPU pacing; these are not GPU timings.'};
   (report.isolations||(report.isolations=[])).push(output);
   const constant=()=>runtime.getBattleSnapshot().revision===revision;
   async function runOne(name,apply,restore){
@@ -449,6 +490,20 @@ async function staticAB(win,report,abort,label='INITIAL'){
     catch(error){output.trials.push({name:'WEATHER_PARTICLE_SYSTEMS',valid:false,error:String(error?.message||error)});}
     finally{started.forEach(system=>{if(!system.isStarted())system.start();});}
   }else output.trials.push({name:'WEATHER_PARTICLE_SYSTEMS',valid:false,reason:'NO_ACTIVE_SYSTEM_OR_STATE_CHANGED'});
+  // Isolate the existing vegetation animation observer without removing or
+  // reordering it, replacing its shader, or disabling scene light/shadows.
+  // Observer.mask=0 simply suppresses callbacks for this stationary A/B pass.
+  // Preserve the exact original mask in every exit path.
+  const windObserver=renderer.mapObjects?.vegetationObserver;
+  if(windObserver&&typeof windObserver.mask==='number'&&
+    Number(renderer.mapObjects?.vegetationWind?.strength||0)>0&&constant()&&!abort.stop){
+    const saved=windObserver.mask;
+    try{await runOne('TREE_BUSH_WIND_UPDATE_AND_UPLOAD',()=>{windObserver.mask=0;},
+      ()=>{windObserver.mask=saved;});}
+    catch(error){output.trials.push({name:'TREE_BUSH_WIND_UPDATE_AND_UPLOAD',valid:false,error:String(error?.message||error)});}
+    finally{windObserver.mask=saved;}
+  }else output.trials.push({name:'TREE_BUSH_WIND_UPDATE_AND_UPLOAD',valid:false,
+    reason:'OBSERVER_MASK_UNAVAILABLE_OR_CALM_WIND_OR_STATE_CHANGED'});
   output.status=abort.stop?'STOPPED':constant()?'DONE':'INVALID_GAME_STATE_CHANGED';
 }
 
@@ -480,7 +535,7 @@ function reportCheckpoint(win,report,label){
 
 async function runBenchmark(win,setup,abort){
   const runtime=win.CardTacticsRuntime,doc=win.document;
-  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:2,reviewedSourceHead:'71d0491ebfbc47335b01d409d9204b903443cd17',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
+  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:2,reviewedSourceHead:'8ce014504acbb229d09f3fa9e9bb57bc9f1c9fe3',diagnosticRevision:'STAGE_8N_B',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
     generatedAt:null,startedAt:new Date().toISOString(),startedAtMonotonic:performance.now(),
     setup:{...setup},scenarioInjections:[],engine:'REAL_INDEX_HTML_TOP_LEVEL',gameplayPath:'OFFICIAL_RUNTIME_AND_AI',
     limitation:'Existing official renderer publish-commit timing is observed without changing its ownership. Long foreground stalls are retained. GPU time and chip temperature are not inferred. A/B coverage is partial.',
