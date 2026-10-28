@@ -2,21 +2,47 @@
 <html lang="zh-Hant">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Card Tactics 2.0｜正式戰局效能測試</title></head>
 <body style="background:#07101c;color:#eaf1ff;font:14px system-ui;padding:18px">
-  <p id="bootMessage">正在讀取正式 index.html 並啟動診斷模式…</p>
+  <p id="bootMessage">正在檢查 GitHub Pages 已部署的 8N-B 程式…</p>
   <script type="module">
     try {
-      // Load the shipped *complete* game document without changing its source.
-      // The benchmark script is injected at bootstrap only, into this top-level document.
-      // No iframe, second WebGL scene, duplicated game engine, or source-code patches.
-      const response=await fetch('./index.html',{cache:'no-store'});
-      if(!response.ok)throw new Error(`index.html HTTP ${response.status}`);
-      const original=await response.text();
-      const hook='<script type="module" src="./js/full-game-benchmark.js"><'+'/script>';
+      // Use the real top-level game document and its one original Babylon scene.
+      // Reject stale JS BEFORE allowing a costly full-game benchmark to start.
+      const token=`8NB-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
+      const url=path=>`${path}${path.includes('?')?'&':'?'}benchBoot=${encodeURIComponent(token)}`;
+      const controllerUrl=url('./js/full-game-benchmark.js');
+      const waterUrl=url('./js/water-renderer.js');
+      const [gameReply,controllerReply,waterReply]=await Promise.all([
+        fetch(url('./index.html'),{cache:'no-store'}),
+        fetch(controllerUrl,{cache:'no-store'}),
+        fetch(waterUrl,{cache:'no-store'})
+      ]);
+      if(!gameReply.ok)throw new Error(`index.html HTTP ${gameReply.status}`);
+      if(!controllerReply.ok)throw new Error(`full-game-benchmark.js HTTP ${controllerReply.status}`);
+      if(!waterReply.ok)throw new Error(`water-renderer.js HTTP ${waterReply.status}`);
+      const [original,controllerCode,waterCode]=await Promise.all([
+        gameReply.text(),controllerReply.text(),waterReply.text()
+      ]);
+      const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_B['"]/.test(controllerCode)
+        &&controllerCode.includes('eventLoopObservations')
+        &&controllerCode.includes('TREE_BUSH_WIND_UPDATE_AND_UPLOAD');
+      const waterReady=waterCode.includes('exactTopologyLayoutHits')
+        &&waterCode.includes('exactTopologyLayoutMisses');
+      if(!controllerReady||!waterReady){
+        const which=[!controllerReady?'full-game-benchmark.js':'',!waterReady?'water-renderer.js':'']
+          .filter(Boolean).join('、');
+        throw new Error(`GitHub Pages 仍提供舊版 8N-B 程式（${which}）。請等網站部署完成後重開 benchmark.html；目前已阻止執行舊版長時間測試。`);
+      }
       if(!original.includes('</body>'))throw new Error('正式 index.html 找不到結尾 body');
+      // The unique URL is the SAME URL verified immediately above. No second
+      // renderer, alternative game state, hidden runtime patch or extra RAF.
+      const hook=`<script type="module" src="${controllerUrl}"><`+'/script>';
       document.open();
       document.write(original.replace('</body>',hook+'\n</body>'));
       document.close();
-    }catch(error){document.getElementById('bootMessage').textContent='正式遊戲載入失敗：'+String(error?.message||error);}
+    }catch(error){
+      const node=document.getElementById('bootMessage');
+      if(node)node.textContent='正式測試未啟動：'+String(error?.message||error);
+    }
   </script>
 </body>
 </html>
