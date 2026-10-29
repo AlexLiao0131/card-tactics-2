@@ -33,7 +33,7 @@ const EQUIPMENT_FALLBACK=Object.freeze({
   "weapon-trident":"戟","weapon-greatsword":"巨","weapon-rapier":"刺",
   "weapon-claw":"爪","weapon-club":"棍","weapon-weapon":"武",
   "armor-light":"輕","armor-medium":"中","armor-heavy":"重",
-  "armor-none":"無","shield":"盾"
+  "armor-none":"無","shield":"盾","accessory":"飾"
 });
 function weaponIconKind(weapon){
   const declared=String(weapon?.weaponKind||"").toUpperCase();
@@ -44,28 +44,31 @@ function weaponIconKind(weapon){
   return"WEAPON";
 }
 function equipmentIcons(unit){
-  // Never derive loadout from the UI snapshot or an older copy of the card.
   const live=globalThis.UnitRuntimeEngine?.getLiveUnit?.(unit.id);
   const character=live?.character||unit.character;
   if(!character)return[];
-  const icons=[];
-  const weapons=Object.values(character.weapons||{}).filter(Boolean);
-  const seen=new Set();
-  for(const weapon of weapons){
-    if(seen.has(weapon.id))continue;
-    seen.add(weapon.id);
+  const icons=[],seen=new Set();
+  const append=(item,group,key,label,typeLabel="")=>{
+    if(!item||seen.has(item.id||item))return;
+    seen.add(item.id||item);
+    icons.push({group,key,name:item.name||label,label,typeLabel});
+  };
+  for(const weapon of Object.values(character.weapons||{}).filter(Boolean)){
     const key=`weapon-${weaponIconKind(weapon).toLowerCase()}`;
-    icons.push({key,name:weapon.name||"武器",label:EQUIPMENT_FALLBACK[key]||"武"});
+    append(weapon,"weapon",key,EQUIPMENT_FALLBACK[key]||"武");
   }
   const armor=character.armor;
   if(armor){
     const kind=String(armor.type||armor.types?.[0]||"NONE").toLowerCase();
-    const key=`armor-${["light","medium","heavy"].includes(kind)?kind:"none"}`;
-    icons.push({key,name:armor.name||"護甲",label:EQUIPMENT_FALLBACK[key]});
+    const normalized=["light","medium","heavy"].includes(kind)?kind:"none";
+    const label={light:"輕甲",medium:"中甲",heavy:"重甲",none:"無甲"}[normalized];
+    append(armor,"armor",`armor-${normalized}`,EQUIPMENT_FALLBACK[`armor-${normalized}`],label);
   }
-  const guard=character.guard||character.equipment?.find?.(item=>
-    item?.defenseProfiles?.some?.(profile=>profile.method==="GUARD"));
-  if(guard)icons.push({key:"shield",name:guard.name||"盾牌",label:"盾"});
+  for(const item of [...(character.equipment||[]),character.guard].filter(Boolean)){
+    const isShield=item.defenseProfiles?.some(profile=>profile.method==="GUARD")||item.id?.includes("shield")||item.id==="buckler";
+    const key=isShield?"shield":"accessory";
+    append(item,"other",key,isShield?"盾":"飾");
+  }
   return icons;
 }
 function iconAsset(group,key){
@@ -119,6 +122,7 @@ export class UnitHudOverlay{
     this.nodes=new Map();
     this.hudUnitId=null;
     this.floats=[];
+    this.inspectorUnitId=null;
     this.failedIcons=new Set();
 
     const battleScreen=document.getElementById("battleScreen");
@@ -127,18 +131,9 @@ export class UnitHudOverlay{
     this.root.setAttribute("aria-hidden","true");
     battleScreen.appendChild(this.root);
 
-    // The input controller owns pointer lifetime. A simple tap may select or
-    // inspect a unit, but can never leave a floating HUD covering the map.
-    this.onHold=event=>{
-      const x=event.detail?.x,y=event.detail?.y;
-      const unit=Number.isFinite(x)&&Number.isFinite(y)
-        ?this.units.find(candidate=>candidate.x===x&&candidate.y===y)
-        :null;
-      this.hudUnitId=unit?.id||null;
-      this.applyVisibility();
-      this.updateFrame();
-    };
-    window.addEventListener("cardtactics:unit-hud-hold",this.onHold);
+    // BattleUI owns the sole character-detail panel. UnitHudOverlay owns the
+    // portrait, HP/MP, equipment and status contents rendered INSIDE it.
+    // The battlefield overlay itself is only for damage/outcome float text.
   }
 
   createHud(unit){
@@ -159,7 +154,7 @@ export class UnitHudOverlay{
     const manaFill=createElement("i","unit-hud-fill unit-hud-mana-fill");
     const resourceBox=createElement("div","unit-hud-resource-box");
     const equipment=createElement("div","unit-hud-equipment");
-    equipment.setAttribute("aria-label","目前裝備");
+    equipment.setAttribute("aria-label","武器、護甲與其他裝備");
     const statuses=createElement("div","unit-hud-statuses");
     statuses.setAttribute("aria-label","目前增益與異常狀態");
     const portrait=createElement("div","unit-hud-portrait");
@@ -177,10 +172,13 @@ export class UnitHudOverlay{
     track.appendChild(fill);
     manaRow.append(manaIcon,mana);
     manaTrack.appendChild(manaFill);
-    details.append(row,hpRow,track,manaRow,manaTrack,resourceBox,equipment,statuses);
+    const statusSection=createElement("section","unit-hud-equipment-row unit-hud-effects-row");
+    const statusLabel=createElement("span","unit-hud-equipment-label");statusLabel.textContent="狀態";
+    statusSection.append(statusLabel,statuses);
+    details.append(row,hpRow,track,manaRow,manaTrack,resourceBox,equipment,statusSection);
     node.append(portrait,details);
     this.root.appendChild(node);
-    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,resourceBox,equipment,statuses,image,fallback,portraitPath:undefined,key:""};
+    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,resourceBox,equipment,statuses,statusSection,image,fallback,portraitPath:undefined,key:""};
     this.nodes.set(unit.id,hud);
     return hud;
   }
@@ -231,7 +229,7 @@ export class UnitHudOverlay{
     const indicators=globalThis.UnitAnimationEngine?.statusIndicators?.(unit)||[];
     const statusKey=indicators.map(effect=>`${effect.id}:${effect.classification}:${effect.name}:${effect.remaining??""}`).join("|");
     const equipped=equipmentIcons(unit);
-    const equipKey=equipped.map(icon=>`${icon.key}:${icon.name}`).join("|");
+    const equipKey=equipped.map(item=>`${item.group}:${item.key}:${item.name}`).join("|");
     const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}`;
     if(hud.key===key)return;
     hud.key=key;
@@ -251,10 +249,22 @@ export class UnitHudOverlay{
       track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
     }
     hud.equipment.replaceChildren();
-    for(const item of equipped){
-      hud.equipment.appendChild(this.makeIcon(item.key,item.label,item.name));
+    for(const [group,label] of [["weapon","武器"],["armor","護甲"],["other","裝備"]]){
+      const items=equipped.filter(item=>item.group===group);
+      if(!items.length)continue;
+      const row=createElement("section","unit-hud-equipment-row");
+      const heading=createElement("span","unit-hud-equipment-label");heading.textContent=label;
+      const icons=createElement("div","unit-hud-equipment-icons");
+      for(const item of items){
+        const slot=this.makeIcon(item.key,item.label,item.name);
+        if(group==="armor"){
+          const type=createElement("span","unit-hud-armor-label");type.textContent=item.typeLabel;
+          slot.appendChild(type);
+        }
+        icons.appendChild(slot);
+      }
+      row.append(heading,icons);hud.equipment.appendChild(row);
     }
-    hud.equipment.hidden=equipped.length===0;
     hud.statuses.replaceChildren();
     for(const effect of indicators){
       const graphic=statusPictogram(effect);
@@ -263,19 +273,44 @@ export class UnitHudOverlay{
       chip.dataset.statusKind=graphic.kind;
       hud.statuses.appendChild(chip);
     }
-    hud.statuses.hidden=indicators.length===0;
+    hud.statusSection.hidden=indicators.length===0;
     hud.node.dataset.team=String(unit.team||"NEUTRAL");
     hud.node.classList.toggle("finished",!!unit.finished);
     hud.fill.classList.toggle("warn",pct<=.5&&pct>.25);
     hud.fill.classList.toggle("danger",pct<=.25);
   }
 
+  // A single physical HUD node moves between its dormant float layer and the
+  // canonical inspector. No cloned portrait, bars or effects can diverge.
+  mountInInspector(unitId,host){
+    this.releaseInspectorHud();
+    if(!host)return false;
+    const unit=this.units.find(candidate=>candidate.id===unitId);
+    if(!unit)return false;
+    const hud=this.nodes.get(unitId)||this.createHud(unit);
+    this.updateContent(hud,unit);
+    host.appendChild(hud.node);
+    hud.node.style.removeProperty("transform");
+    this.inspectorUnitId=unitId;
+    this.hudUnitId=unitId;
+    this.applyVisibility();
+    return true;
+  }
+  releaseInspectorHud(){
+    const hud=this.nodes.get(this.inspectorUnitId);
+    if(hud){
+      hud.node.hidden=true;
+      hud.node.style.removeProperty("transform");
+      if(this.root.isConnected)this.root.appendChild(hud.node);
+    }
+    this.inspectorUnitId=null;
+    this.hudUnitId=null;
+    this.applyVisibility();
+  }
   applyVisibility(){
-    for(const[id,hud]of this.nodes){
-      hud.node.hidden=id!==this.hudUnitId;
-      // Loading a full-size card painting while hidden is deliberately lazy.
-      // Once a long hold selects it, request the real portrait immediately.
-      if(id===this.hudUnitId){
+    for(const [id,hud] of this.nodes){
+      hud.node.hidden=id!==this.inspectorUnitId;
+      if(id===this.inspectorUnitId){
         if(hud.portraitPath)hud.image.loading="eager";
         this.loadIcons(hud);
       }
@@ -320,7 +355,7 @@ export class UnitHudOverlay{
     for(const[id,hud]of this.nodes){
       if(alive.has(id))continue;
       hud.node.remove();this.nodes.delete(id);
-      if(this.hudUnitId===id)this.hudUnitId=null;
+      if(this.inspectorUnitId===id){this.inspectorUnitId=null;this.hudUnitId=null;}
     }
     const living=new Set(this.units.map(unit=>String(unit.id)));
     this.floats=this.floats.filter(item=>{
@@ -332,10 +367,7 @@ export class UnitHudOverlay{
 
   updateFrame(){
     if(!this.root.isConnected||!this.camera)return;
-    // No expanded long-hold and no transient text means there is nothing
-    // to project. Avoid repeated DOM layout reads and world-space projection
-    // on every Babylon frame when the tactical HUD is dormant.
-    if(this.hudUnitId==null&&this.floats.length===0)return;
+    if(!this.floats.length)return;
     const renderWidth=Math.max(1,this.engine.getRenderWidth());
     const renderHeight=Math.max(1,this.engine.getRenderHeight());
     const viewport=this.camera.viewport.toGlobal(renderWidth,renderHeight);
@@ -346,18 +378,6 @@ export class UnitHudOverlay{
     const scaleY=canvasRect.height/renderHeight;
     const offsetX=canvasRect.left-rootRect.left;
     const offsetY=canvasRect.top-rootRect.top;
-    for(const unit of this.units){
-      const hud=this.nodes.get(unit.id);if(!hud)continue;
-      if(unit.id!==this.hudUnitId){hud.node.hidden=true;continue;}
-      const world=new BABYLON.Vector3(Number(unit.x)*TILE_SIZE,Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+UNIT_VISUAL_HEIGHT+.52,Number(unit.y)*TILE_SIZE);
-      const projected=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),transform,viewport);
-      const x=offsetX+projected.x*scaleX,y=offsetY+projected.y*scaleY;
-      const visible=projected.z>=0&&projected.z<=1&&x>-180&&x<rootRect.width+180&&y>-100&&y<rootRect.height+100;
-      hud.node.hidden=!visible;
-      if(!visible)continue;
-      hud.node.style.transform=`translate3d(${Math.round(x)}px,${Math.round(y)}px,0) translate(-50%,-100%)`;
-    }
-    if(!this.floats.length)return;
     const now=performance.now(),retained=[];
     for(const item of this.floats){
       const elapsed=now-item.start;
@@ -379,7 +399,7 @@ export class UnitHudOverlay{
 
   diagnostics(){return{count:this.nodes.size,expandedUnitId:this.hudUnitId,activeFloats:this.floats.length};}
   dispose(){
-    window.removeEventListener("cardtactics:unit-hud-hold",this.onHold);
-    this.root.remove();this.nodes.clear();this.units=[];this.hudUnitId=null;this.floats=[];this.failedIcons.clear();
+    this.releaseInspectorHud();
+    this.root.remove();this.nodes.clear();this.units=[];this.hudUnitId=null;this.inspectorUnitId=null;this.floats=[];this.failedIcons.clear();
   }
 }

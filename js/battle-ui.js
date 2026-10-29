@@ -18,7 +18,7 @@ export class BattleUI{
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.heldInspection=null; // Read-only snapshot of explicitly long-pressed tile.
     this.inspectorHome=q("battleScreen");
-    this.inspectorHudNode=null;
+    this.contextHudSlot=q("contextHudSlot");
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
     this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
     this.statusUnitId=null;
@@ -45,51 +45,8 @@ export class BattleUI{
     q("contextClose").onclick=()=>this.setContextOpen(false);
     q("contextUnitTab").onclick=()=>this.setContextTab("UNIT");
     q("contextTileTab").onclick=()=>this.setContextTab("TILE");
-    // The existing UnitHudOverlay is the visual owner of portrait/HP/MP.
-    // Reparent the canonical inspector beneath that SAME HUD only while
-    // inspecting a visible unit; empty tiles use the original standalone panel.
-    if(!document.getElementById("unit-hud-inspection-layout")){
-      const style=document.createElement("style");style.id="unit-hud-inspection-layout";
-      style.textContent=`
-        .unit-hud-layer:has(.battle-context-inspector.open){overflow:visible;z-index:105}
-        .unit-hud.inspection-open{opacity:1!important;z-index:3}
-        .unit-hud .battle-context-inspector{
-          display:none;position:absolute;z-index:4;
-          left:calc(50% + var(--inspector-shift-x,0px));
-          right:auto;top:calc(100% + 6px);bottom:auto;
-          transform:translateX(-50%);
-          width:min(282px,calc(100vw - 20px));
-          max-height:min(32vh,255px);pointer-events:auto;
-          text-align:left;color:#e6eaf1;
-          border-color:rgba(214,184,120,.7)
-        }
-        .unit-hud .battle-context-inspector.open{display:block}
-        .unit-hud .battle-context-inspector.inspection-above{top:auto;bottom:calc(100% + 6px)}
-        .unit-hud .battle-context-inspector button{pointer-events:auto;touch-action:manipulation}
-        .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
-        .unit-hud .battle-context-inspector.inspection-compact #contextUnitName,
-        .unit-hud .battle-context-inspector.inspection-compact #contextUnitVitals,
-        .unit-hud .battle-context-inspector.inspection-compact #contextUnitPosition,
-        .unit-hud .battle-context-inspector.inspection-compact #contextUnitSkills,
-        .unit-hud .battle-context-inspector.inspection-compact .context-section-title{display:none}
-        .unit-hud-equipment{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-        .unit-hud-equipment[hidden]{display:none}
-        .unit-hud-equipment-slot{box-sizing:border-box;display:inline-flex;align-items:center;
-          justify-content:center;width:21px;height:21px;border:1px solid #7990a8;
-          border-radius:3px;background:rgba(22,32,45,.88);color:#dbe6f4}
-        .unit-hud-icon-image{width:100%;height:100%;object-fit:contain}
-        .unit-hud-icon-image[hidden],.unit-hud-icon-fallback[hidden]{display:none}
-        .unit-hud-icon-fallback{font-size:11px;font-weight:750;line-height:1}
-        .unit-hud-status:has(.unit-hud-icon-image){overflow:hidden}
-        .unit-hud-status .unit-hud-icon-fallback{font-size:12px}
-        .unit-hud .battle-context-inspector.inspection-compact .context-grid{gap:3px}
-        @media(max-width:700px){
-          .unit-hud .battle-context-inspector{max-height:30vh}
-          .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-        }`;
-      document.head.appendChild(style);
-    }
-
+    // Inspector layout lives in index.html and css/unit-inspector.css.
+    // UnitHudOverlay provides the ONE portrait/bars/equipment/effects node.
     q("mapToggle").onclick=()=>this.togglePanel(this.mapShell,"open");
     q("mapClose").onclick=()=>this.mapShell.classList.remove("open");
 
@@ -209,8 +166,10 @@ export class BattleUI{
   render(publishedSnapshot=null){
     if(!this.runtime)return;
     const snapshot=publishedSnapshot||this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
-    if(this.inspectorHudNode&&!this.inspectorHudNode.isConnected)
-      this.setContextOpen(false); // Defeated/removed unit: restore inspector DOM owner.
+    // An inspected unit can die or disappear under visibility rules.
+    // Never keep its last-known portrait/HP on screen after it leaves the snapshot.
+    if(this.heldInspection?.unit&&!snapshot.units.some(u=>u.id===this.heldInspection.unit.id))
+      this.setContextOpen(false);
     const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");
     const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team==="PLAYER"&&!unit.finished);
     next.disabled=phase!=="PLAYER_TURN"||eligible.length===0;
@@ -324,11 +283,7 @@ export class BattleUI{
         }))};
     }
     this.heldInspection={x,y,unit:unitData,tile:tileData};
-    // The original portrait/HP/MP HUD persists after release. Acted/waited
-    // units are valid: snapshot.units includes them (finished is NOT filtered).
-    window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{
-      detail:unitData?{x,y}:null
-    }));
+    // Do not open a separate floating HUD; the official unit tab owns it.
     this.contextTab=unitData?'UNIT':'TILE';
     this.setContextOpen(true);
     return true;
@@ -348,48 +303,21 @@ export class BattleUI{
     return data.unit?"UNIT":"TILE";
   }
 
-  // Reuse the one canonical inspector DOM. The original UnitHudOverlay keeps
-  // owning and updating its portrait, HP/MP bars, effects and screen projection.
-  mountInspector(unitId=null){
-    if(this.inspectorHudNode){
-      this.inspectorHudNode.classList.remove("inspection-open");
-      this.inspectorHudNode.style.removeProperty("--inspector-shift-x");
-      this.inspectorHudNode=null;
-    }
-    this.context.classList.remove("inspection-above");
-    if(this.context.parentElement!==this.inspectorHome)this.inspectorHome.appendChild(this.context);
-    const hud=unitId?this.renderer?.unitHud?.nodes?.get(unitId)?.node:null;
-    if(!hud||!hud.isConnected)return;
-    this.inspectorHudNode=hud;
-    hud.classList.add("inspection-open");
-    hud.appendChild(this.context);
-    // One layout read only on long-hold (never on every render frame).
-    const rect=hud.getBoundingClientRect(),bounds=this.inspectorHome.getBoundingClientRect();
-    const width=Math.min(282,Math.max(0,bounds.width-20));
-    const center=rect.left+rect.width/2;
-    const safeCenter=Math.min(bounds.right-width/2-10,Math.max(bounds.left+width/2+10,center));
-    hud.style.setProperty("--inspector-shift-x",`${Math.round(safeCenter-center)}px`);
-    const below=bounds.bottom-rect.bottom,above=rect.top-bounds.top;
-    this.context.classList.toggle("inspection-above",below<Math.min(bounds.height*.42,260)&&above>below);
-  }
-
   setContextOpen(open){
     const data=this.contextData();
     if(open&&!data.unit&&!data.tile)return false;
-    if(open)this.contextTab=this.chooseContextTab(data,this.contextTab);
+    const unitHud=this.renderer?.unitHud;
     if(open){
-      this.mountInspector(this.heldInspection?.unit?.id||null);
+      this.contextTab=this.chooseContextTab(data,this.contextTab);
+      unitHud?.mountInInspector?.(data.unit?.id||null,this.contextHudSlot);
+      this.mapShell.classList.remove("open");
+      this.logShell.classList.remove("active");
     }else{
-      this.mountInspector(null);
+      unitHud?.releaseInspectorHud?.();
       this.heldInspection=null;
-      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
     }
-    this.context.classList.toggle("inspection-compact",!!open&&!!this.heldInspection?.unit);
     this.context.classList.toggle("open",!!open);
     this.context.setAttribute("aria-hidden",String(!open));
-    if(open){
-      this.mapShell.classList.remove("open");this.logShell.classList.remove("active");
-    }
     this.renderContext();
     return !!open;
   }
@@ -417,20 +345,14 @@ export class BattleUI{
 
     if(data.unit){
       const u=data.unit,s=u.stats||{};
-      q("contextUnitName").textContent=`${u.name}｜${u.team}`;
-      q("contextUnitVitals").textContent=`HP ${u.hp}/${u.maxHp}　MP ${u.mana}/${u.maxMana}　MOVE ${u.move}`;
       const stats=[
         ["ATK",s.atk],["DEF",s.def],["MATK",s.matk],["MDEF",s.mdef],
-        ["HIT",`${s.hit??"-"}%`],
-        ...(!this.heldInspection?.unit?[["基準閃避",s.baseDodge==null?"—":`${s.baseDodge}%`]]:[]),
+        ["HIT",s.hit==null?"—":`${s.hit}%`],
         ["EVA修正",s.eva==null?"—":`${s.eva>=0?"+":""}${s.eva}`],
-        ["CRIT",`${s.crit??"-"}%`],["SPD",s.spd]
+        ["CRIT",s.crit==null?"—":`${s.crit}%`],["SPD",s.spd],["MOVE",u.move]
       ];
-      q("contextUnitStats").innerHTML=stats.map(([name,value])=>`<div class="context-stat"><b>${name}</b><span>${esc(value??"-")}</span></div>`).join("");
-      q("contextUnitPosition").textContent=`狀態：${u.actionState}｜位置 (${u.x},${u.y})｜${u.terrain}｜高度 ${u.elevation}｜基準閃避僅以同 AGI、零命中加成為比較條件，實戰由雙方屬性及技能決定。`;
-      q("contextUnitSkills").innerHTML=(u.skills||[]).length
-        ?u.skills.map(skill=>`<div class="context-skill"><strong>${esc(skill.name)}</strong><small>${esc(skill.category)}｜射程 ${skill.range?.min??"-"}-${skill.range?.max??"-"}｜${esc(skill.resource||"")}${skill.variants?.length?`｜變化：${skill.variants.map(v=>esc(v.name)).join("／")}`:""}</small></div>`).join("")
-        :`<div class="context-line">沒有可用技能資料。</div>`;
+      q("contextUnitStats").innerHTML=stats.map(([name,value])=>`<div class="context-stat"><b>${name}</b><span>${esc(value??"—")}</span></div>`).join("");
+      q("contextUnitPosition").textContent=[u.actionState,`(${u.x},${u.y})`,u.terrain].filter(Boolean).join(" · ");
     }
 
     if(data.tile){
