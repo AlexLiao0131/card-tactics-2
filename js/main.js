@@ -69,10 +69,16 @@ try{
   loadingStep="battle-test-console.js";
   await load("./battle-test-console.js");
 
-  // Battle state and Babylon presentation have ONE render frame owner. Collect
-  // every animation delta on the existing runtime events, then commit the latest
-  // snapshot immediately before Babylon draws that frame. No second RAF path.
-  let pendingSnapshot=null,pendingAnimationEvents=[],lastObservedSnapshot=renderer.lastState;
+  // One presentation publication owner, one snapshot per Babylon draw.
+  // Game events only invalidate the presentation. Existing gameplay and
+  // animation events keep their original sequence and are never throttled.
+  let presentationDirty=true,lastObservedSnapshot=renderer.lastState;
+  let signalsPending=0;
+  const presentationStats={signals:0,commits:0,snapshots:0,coalescedSignals:0,
+    lastSnapshotMs:0,lastAnimationMs:0,lastUiMs:0,lastSignalsPerCommit:0};
+  globalThis.CardTacticsPresentation=Object.freeze({
+    diagnostics:()=>({...presentationStats,pending:presentationDirty})
+  });
   let focusedEngagementKey=null;
   function syncEngagementFocus(){
     const model=runtime.getEngagementPresentation?.();
@@ -90,39 +96,75 @@ try{
     if(renderer.camera.focusEngagement(points,key))focusedEngagementKey=key;
   }
 
-  function observeSnapshot(){
-    const snap=runtime.getBattleSnapshot(),prev=lastObservedSnapshot;
-    if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))globalThis.UnitAnimationEngine?.clear?.();
-    globalThis.UnitAnimationEngine?.observe?.(snap);
-    const events=globalThis.UnitAnimationEngine?.drain?.()||[];
-    if(events.length)pendingAnimationEvents.push(...events);
-    pendingSnapshot=snap;
-    lastObservedSnapshot=snap;
-    return snap;
+  function publishFrame(){
+    if(!presentationDirty){
+      renderer.presentationFrameSync=null;
+      return;
+    }
+    // Clear dirty BEFORE constructing / publishing: reentrant state changes
+    // schedule their own next publication rather than being discarded.
+    presentationDirty=false;
+    const bundledSignals=signalsPending;
+    signalsPending=0;
+    try{
+      const snapshotStart=performance.now();
+      const snap=runtime.getBattleSnapshot();
+      const snapshotMs=performance.now()-snapshotStart;
+      presentationStats.snapshots++;
+      presentationStats.lastSnapshotMs=Math.round(snapshotMs*100)/100;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("presentation.snapshotBuild",snapshotMs);
+
+      const animationStart=performance.now(),prev=lastObservedSnapshot;
+      if(prev&&(prev.map?.id!==snap.map?.id||Number(snap.round||0)<Number(prev.round||0)))
+        globalThis.UnitAnimationEngine?.clear?.();
+      globalThis.UnitAnimationEngine?.observe?.(snap);
+      // Explicit gameplay/animation events preserve their order. The snapshot
+      // records the final drawable state; it never consumes animation history.
+      const events=globalThis.UnitAnimationEngine?.drain?.()||[];
+      lastObservedSnapshot=snap;
+      const animationMs=performance.now()-animationStart;
+      presentationStats.lastAnimationMs=Math.round(animationMs*100)/100;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("presentation.animationCollect",animationMs);
+
+      renderer.sync(snap,events);
+      renderer.unitHud?.presentEvents?.(events);
+      syncEngagementFocus();
+
+      // One published immutable-in-practice view is shared by all official UIs.
+      // No UI listener rebuilds the 704-tile battlefield snapshot on a second
+      // synchronous game-state event.
+      const uiStart=performance.now();
+      window.dispatchEvent(new CustomEvent("cardtactics:presentation-published",{
+        detail:{snapshot:snap}
+      }));
+      const uiMs=performance.now()-uiStart;
+      presentationStats.lastUiMs=Math.round(uiMs*100)/100;
+      presentationStats.commits++;
+      presentationStats.coalescedSignals+=Math.max(0,bundledSignals-1);
+      presentationStats.lastSignalsPerCommit=bundledSignals;
+      globalThis.CardTacticsDiagnostics?.recordPerf?.("presentation.uiPublish",uiMs);
+    }finally{
+      // Never cancel an invalidation received during Babylon.sync or DOM work.
+      renderer.presentationFrameSync=presentationDirty?publishFrame:null;
+    }
   }
 
-  function flushSync(){
-    if(!pendingSnapshot){renderer.presentationFrameSync=null;return;}
-    const snap=pendingSnapshot,events=pendingAnimationEvents;
-    pendingSnapshot=null;pendingAnimationEvents=[];
-    // Release the on-demand callback only if no new snapshot arrived during
-    // publication. That preserves reentrant runtime events without another RAF.
-    try{renderer.sync(snap,events);renderer.unitHud?.presentEvents?.(events);syncEngagementFocus();battleUI.render();}
-    finally{if(!pendingSnapshot)renderer.presentationFrameSync=null;}
+  function invalidatePresentation(){
+    presentationStats.signals++;
+    signalsPending++;
+    presentationDirty=true;
+    renderer.presentationFrameSync=publishFrame;
   }
 
-  function scheduleSync(){
-    observeSnapshot();
-    renderer.presentationFrameSync=flushSync;
-  }
-
-  window.addEventListener("cardtactics:battle-render",scheduleSync);
-  window.addEventListener("cardtactics:state",scheduleSync);
-  window.addEventListener("cardtactics:battle-screen-enter",()=>{renderer.resize();scheduleSync()});
-  observeSnapshot();
-  flushSync();
-  // Future snapshots are consumed by the scene-render loop before its shadow
-  // and colour passes, using the same DOM and geometry publication event.
+  window.addEventListener("cardtactics:battle-render",invalidatePresentation);
+  window.addEventListener("cardtactics:state",invalidatePresentation);
+  window.addEventListener("cardtactics:battle-screen-enter",()=>{
+    renderer.resize();
+    invalidatePresentation();
+  });
+  // Initial publication uses the same owner, without another RAF loop.
+  publishFrame();
+  // Next updates are consumed by Babylon just before its scene render.
 }catch(error){
   const name=error?.name||"Error",message=error?.message||String(error);
   if(bootStatus){

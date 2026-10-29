@@ -114,8 +114,7 @@ export class BattleUI{
     });
 
     window.addEventListener("cardtactics:view-change",()=>this.renderView());
-    window.addEventListener("cardtactics:battle-render",()=>this.render());
-    window.addEventListener("cardtactics:state",()=>this.render());
+    window.addEventListener("cardtactics:presentation-published",event=>this.render(event.detail?.snapshot));
     window.addEventListener("cardtactics:log",()=>this.queueLogRender());
     window.addEventListener("cardtactics:inspection",()=>{
       // Selecting a tile normally never changes which held tile is shown.
@@ -191,9 +190,9 @@ export class BattleUI{
     }
   }
 
-  render(){
+  render(publishedSnapshot=null){
     if(!this.runtime)return;
-    const snapshot=this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
+    const snapshot=publishedSnapshot||this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
     if(this.inspectorHudNode&&!this.inspectorHudNode.isConnected)
       this.setContextOpen(false); // Defeated/removed unit: restore inspector DOM owner.
     const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");

@@ -98,15 +98,13 @@ export class UnitControlUI{
     this.runtime=runtime;
     this.left.onclick=()=>this.rotate(-1);this.right.onclick=()=>this.rotate(1);
     this.down.onclick=()=>this.changeAltitude(-1);this.up.onclick=()=>this.changeAltitude(1);
-    this.onRender=()=>this.render();
-    window.addEventListener("cardtactics:battle-render",this.onRender);
-    window.addEventListener("cardtactics:state",this.onRender);
-    window.addEventListener("cardtactics:battle-screen-enter",this.onRender);
+    this.onRender=event=>this.render(event.detail?.snapshot);
+    window.addEventListener("cardtactics:presentation-published",this.onRender);
     this.render();
   }
 
-  selected(){
-    const snapshot=this.runtime?.getBattleSnapshot?.();
+  selected(publishedSnapshot=null){
+    const snapshot=publishedSnapshot||this.runtime?.getBattleSnapshot?.();
     if(!snapshot||snapshot.phase!=="PLAYER_TURN")return null;
     return(snapshot.units||[]).find(unit=>unit.selected&&unit.team==="PLAYER"&&!unit.finished)||null;
   }
@@ -123,8 +121,8 @@ export class UnitControlUI{
     this.runtime?.refresh?.();return true;
   }
 
-  render(){
-    const unit=this.selected();this.host.hidden=!unit;if(!unit)return;
+  render(publishedSnapshot=null){
+    const unit=this.selected(publishedSnapshot);this.host.hidden=!unit;if(!unit)return;
     const facing=String(unit.facing||"N").toUpperCase();
     this.facingLabel.innerHTML=`角色朝向<strong>${FACING_LABEL[facing]||facing}</strong>`;
 

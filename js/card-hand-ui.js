@@ -222,8 +222,7 @@ export class CardHandUI{
   }
   bind(runtime){
     this.runtime=runtime;
-    window.addEventListener("cardtactics:state",()=>this.render());
-    window.addEventListener("cardtactics:battle-render",()=>this.render());
+    window.addEventListener("cardtactics:presentation-published",()=>this.render());
     // Delegate interactions once: card image DOM survives unrelated battlefield updates.
     this.host.addEventListener("click",event=>this.handleClick(event));
     window.addEventListener("keydown",event=>{
