@@ -61,6 +61,54 @@ async function readyGame(){
 const MAX_WINDOWS=700,MAX_COMMITS=2500,MAX_SPIKES_PER_KIND=48;
 const PUBLISH_STAGES=['sky','lighting','camera','picker','terrain','water','mapObjects','units','environment','mapObjectBatches','objectives','highlights','shadows','unitHud','actionAnchor'];
 const singleMetric=n=>Number.isFinite(n)?round2(n):null;
+const enemySubphase=win=>{
+  // This is a presentation label (THINK / MOVE_PLAN / MOVE / ATTACK /
+  // TACTICAL / DRAW etc.), not a measurement of CPU inside the AI planner.
+  const view=win.CardTacticsRuntime?.getEnemyPresentation?.();
+  return view?.active?String(view.kind||'UNKNOWN'):'NONE';
+};
+const unitTeamCounts=win=>{
+  // Official runtime debug state is read only at low-frequency checkpoints.
+  // Unlike rendered units this includes enemies currently outside the FOV.
+  const units=win.CardTacticsRuntime?.debug?.state?.()?.units||[];
+  const count=team=>units.filter(u=>u.team===team).length;
+  return{player:count('P'),enemy:count('E'),neutral:count('N'),total:units.length};
+};
+const recordEnemyPhaseSample=(report,entry)=>{
+  const phase=String(entry.phase||'UNKNOWN');
+  const group=report.phaseSamples||(report.phaseSamples={});
+  const key=phase==='ENEMY_TURN'?`ENEMY_TURN/${entry.enemySubphase||'NONE'}`:phase;
+  const record=group[key]||(group[key]={count:0,fps:[],cpu:[],render:[],enemies:[],drawCalls:[]});
+  record.count++;
+  for(const[k,v]of [['fps',entry.fps],['cpu',entry.cpuFrameMs],['render',entry.sceneRenderCpuMs],
+                    ['enemies',entry.aliveUnits?.enemy],['drawCalls',entry.drawCallsPerFrame]])
+    if(v!==null&&v!==undefined&&Number.isFinite(Number(v)))record[k].push(Number(v));
+};
+// Once per report, after sampling has stopped: extract official AI timers
+// already accumulated by CardTacticsDiagnostics.recordPerf(). The cumulative
+// scope is the diagnostics SESSION, not a strictly isolated benchmark window.
+const completedEnemyAiTiming=win=>{
+  const diagnostics=win.CardTacticsDiagnostics;
+  if(diagnostics?.isEnabled?.()!==true||typeof diagnostics.report!=='function')
+    return{available:false,reason:'STANDARD_DIAGNOSTICS_DISABLED'};
+  try{
+    const full=diagnostics.report();
+    const source=JSON.parse(full.slice(full.indexOf('\n')+1));
+    const onlyAi=object=>Object.fromEntries(Object.entries(object||{})
+      .filter(([key])=>key.startsWith('enemyAI.')));
+    return{available:true,scope:'STANDARD_DIAGNOSTICS_SESSION_CUMULATIVE',
+      performance:onlyAi(source.performance),perfPeaks:onlyAi(source.perfPeaks)};
+  }catch(error){return{available:false,reason:'STANDARD_DIAGNOSTICS_REPORT_FAILED',
+    message:String(error?.message||error)};}
+};
+const finalizeEnemyPhaseSamples=report=>{
+  const groups=report.phaseSamples||{};
+  report.phaseComparison=Object.fromEntries(Object.entries(groups).map(([phase,row])=>[
+    phase,{samples:row.count,fps:metricSet(row.fps),cpuFrameMs:metricSet(row.cpu),
+      sceneRenderCpuMs:metricSet(row.render),enemyUnits:metricSet(row.enemies),
+      drawCalls:metricSet(row.drawCalls)}]));
+  delete report.phaseSamples;
+};
 class FrameCapture{
   constructor(win,report){
     this.win=win;this.report=report;this.startedAt=performance.now();
@@ -152,6 +200,7 @@ class FrameCapture{
       this.flush();this.windowPhase=phase;this.windowRound=round;this.windowStart=now;
     }
     const commits=this.collectCommits(now);
+    const enemyMode=phase==='ENEMY_TURN'?enemySubphase(this.win):null;
     // Rendering statistics are finalized by the game's render loop; read
     // them in a microtask on detailed samples ONLY, never on every frame.
     queueMicrotask(()=>{
@@ -159,6 +208,11 @@ class FrameCapture{
       const p=renderer.performanceStats||{};
       const cpu=Number(p.frameMs),render=Number(p.renderMs),shadow=Number(p.shadowPassCpuMs);
       const nonScene=Number.isFinite(cpu)&&Number.isFinite(render)?Math.max(0,cpu-render):null;
+      // Attribute observed CPU by phase / presentation step at 2Hz. This is
+      // NOT the isolated CPU duration of chooseAttack or reachable/pathTo.
+      recordEnemyPhaseSample(this.report,{phase,enemySubphase:enemyMode,
+        cpuFrameMs:singleMetric(cpu),sceneRenderCpuMs:singleMetric(render),
+        drawCallsPerFrame:singleMetric(p.drawCallsPerFrame)});
       if(Number.isFinite(cpu)){d.cpu.push(cpu);this.remember('CPU_FRAME',cpu,{round,phase,weather:frame.presentation?.environment?.weather,renderCpuMs:singleMetric(render),nonSceneCpuMs:singleMetric(nonScene)});}
       if(Number.isFinite(render))d.render.push(render);
       if(Number.isFinite(shadow))d.shadow.push(shadow);
@@ -238,6 +292,7 @@ class FrameCapture{
     document.removeEventListener('visibilitychange',this.onVisibility);
     window.removeEventListener('pagehide',this.onPageHide);
     this.win.CardTacticsRenderer.scene.onAfterRenderObservable.remove(this.observer);
+    finalizeEnemyPhaseSamples(this.report);
     this.report.frameCoverage={visibleFrames:this.visibleFrames,hiddenFrames:this.hiddenFrames,
       method:'O(1) after-render interval recorder; detailed stats <=2Hz; all foreground frame intervals included',
       detailedSamples:this.detailSamples,
@@ -617,7 +672,7 @@ function reportCheckpoint(win,report,label){
 
 async function runBenchmark(win,setup,abort){
   const runtime=win.CardTacticsRuntime,doc=win.document;
-  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:2,reviewedSourceHead:'ede84124f21212c288187cc64cc4f8f2ecf85dba',diagnosticRevision:'STAGE_8N_D_TEST_DRIVER',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
+  const report={kind:'CARD_TACTICS_2_FORMAL_BATTLE_AUTO_BENCHMARK',version:2,reviewedSourceHead:'9b87073d02df00d527c03cca7593e0fdb288c859',diagnosticRevision:'STAGE_8N_E_ENEMY_PHASE_EVIDENCE',servedCodeHead:'NOT_VERIFIED_IN_BROWSER',
     generatedAt:null,startedAt:new Date().toISOString(),startedAtMonotonic:performance.now(),
     setup:{...setup},scenarioInjections:[],engine:'REAL_INDEX_HTML_TOP_LEVEL',gameplayPath:'OFFICIAL_RUNTIME_AND_AI',
     limitation:'Game sync timings are official. Frame intervals include scheduling and GPU pacing. CPU detailed stats sampled <=2Hz. Optional A/B is never representative of manual play.',
@@ -724,6 +779,7 @@ async function runBenchmark(win,setup,abort){
       const recent=summary.recentSamples||[];
       summary.recentMetrics=metricSet(recent);delete summary.recentSamples;
     }
+    report.enemyAiTiming=completedEnemyAiTiming(win);
     report.generatedAt=new Date().toISOString();report.durationMs=round2(performance.now()-report.startedAtMonotonic);
     report.coverage.weather=[...seenWeather];report.coverage.timeOfDay=[...seenDay];report.coverage.rounds=report.completedRounds;
     report.coverage.battleActions=report.actions.MOVE+report.actions.ATTACK_RESOLVED+report.actions.CAPTURE;
@@ -733,6 +789,7 @@ async function runBenchmark(win,setup,abort){
     report.captureLimitations=['No GPU timer or chip temperature readout',
       'published per-subsystem sync times are exact per commit; CPU outside scene render is residual, not identified subsystem time',
       'auto benchmark is not manual play and cannot be used to claim manual-play FPS',
+      'Enemy subphase grouping observes FPS/CPU at 2Hz; enemyAiTiming stores official function CPU timings aggregated over the diagnostics session',
       '2Hz CPU detailed sampling; frame interval observations are all frames',
       'same-round play can diverge due to shuffled deck and AI: no complete-game replay equivalence asserted'];
     if(report.actions.ATTACK_RESOLVED===0)report.warnings.push('NO_CONFIRMED_PLAYER_ATTACK_COVERAGE');
@@ -772,16 +829,19 @@ async function runManualObservation(win,abort){
   const renderer=win.CardTacticsRenderer;
   const started=performance.now();
   const report={kind:'CARD_TACTICS_2_MANUAL_PLAY_PERF',version:1,
-    diagnosticRevision:'STAGE_8N_D_QUIET_MANUAL',generatedAt:null,
+    diagnosticRevision:'STAGE_8N_E_QUIET_ENEMY_MANUAL',generatedAt:null,
     startedAt:new Date().toISOString(),status:'RUNNING',
     mode:'MANUAL_PLAY_PASSIVE',setup:{seed:win.CardTacticsBattleSetup?.seed||null,
       mapSize:win.CardTacticsBattleSetup?.mapSize||null},
     pollingIntervalMs:2000,sceneRenderObserverInstalled:false,
     botActions:0,abInterventions:0,gameStateMutations:0,
     samples:[],commitSpikes:[],totalNewCommits:0,failedCommits:0,
+    phaseSamples:{},
     visibilityInterruptions:0,monitoringCost:{samples:0,totalMs:0,maxMs:0},
     notes:['Existing Babylon engine.getFps and renderer.performanceStats are sampled, not recalculated.',
       '2s polling reports point-in-time values, NOT continuous frame FPS percentiles.',
+      'Enemy stage labels and unit counts are sampled every 2s, not continuously.',
+      'Enemy phase grouping measures observed FPS/CPU; enemyAiTiming separately collects exact official AI function timers when standard diagnostics are enabled.',
       'Commit history has bounded retention; this is not guaranteed exhaustive across long pauses.',
       'Do not directly compare these samples with the detailed auto benchmark.']};
   let lastCommit=renderer.presentationCommitHistory?.at(-1)||null;
@@ -817,6 +877,8 @@ async function runManualObservation(win,abort){
       if(report.samples.length>=1200)report.samples.shift();
       report.samples.push({atMs:round2(performance.now()-started),
         round:game.round??null,phase:game.phase??null,
+        enemySubphase:game.phase==='ENEMY_TURN'?enemySubphase(win):null,
+        aliveUnits:unitTeamCounts(win),
         weather:game.presentation?.environment?.weather||null,
         time:game.presentation?.environment?.timeOfDay||null,
         units:game.units?.length??null,tiles:game.map?.tiles?.length??null,
@@ -825,6 +887,7 @@ async function runManualObservation(win,abort){
         sceneRenderCpuMs:singleMetric(Number(perf.renderMs)),
         drawCallsPerFrame:singleMetric(Number(perf.drawCallsPerFrame)),
         meshes:renderer.scene?.meshes?.length??null});
+      recordEnemyPhaseSample(report,report.samples.at(-1));
       const cost=performance.now()-t0;
       report.monitoringCost.samples++;
       report.monitoringCost.totalMs=round2(report.monitoringCost.totalMs+cost);
@@ -836,6 +899,8 @@ async function runManualObservation(win,abort){
     if(abort.stop)report.status='STOPPED_BY_USER';
   }finally{
     document.removeEventListener('visibilitychange',onVisibility);
+    finalizeEnemyPhaseSamples(report);
+    report.enemyAiTiming=completedEnemyAiTiming(win);
     report.generatedAt=new Date().toISOString();report.durationMs=round2(performance.now()-started);
     report.monitoringCost.meanMs=report.monitoringCost.samples?
       round2(report.monitoringCost.totalMs/report.monitoringCost.samples):null;

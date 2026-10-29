@@ -9,13 +9,42 @@
       const NEUTRAL=window.EncounterEngine?.TEAM_NEUTRAL||"N";
 
       const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+      // Official diagnostics only: no extra actor/terrain scans, second state,
+      // AI decisions or timer-driven work. Values are measured synchronously
+      // around the original function invocation and returned unchanged.
+      let decisionTotals=null;
+      const measured=(name,run)=>{
+        const diag=globalThis.CardTacticsDiagnostics;
+        if(diag?.isEnabled?.()!==true)return run();
+        const at=performance.now();
+        try{return run();}finally{
+          const ms=performance.now()-at;
+          // Many visibility/LOS calls may occur inside one actor decision.
+          // Aggregate in memory, then publish ONCE per operation per actor,
+          // rather than burdening the game with recordPerf for each target.
+          if(decisionTotals)decisionTotals[name]=(decisionTotals[name]||0)+ms;
+          else diag.recordPerf?.(name,ms);
+        }
+      };
+      const measureDecision=(name,run)=>{
+        const diag=globalThis.CardTacticsDiagnostics;
+        if(diag?.isEnabled?.()!==true)return run();
+        const previous=decisionTotals;
+        decisionTotals=Object.create(null);
+        try{return measured(name,run);}finally{
+          const result=decisionTotals;
+          decisionTotals=previous;
+          for(const [metric,ms]of Object.entries(result))diag.recordPerf?.(metric,ms);
+        }
+      };
       const afterStep=(fn,ms=550)=>{
         if(stepTimer)clearTimeout(stepTimer);
         stepTimer=setTimeout(()=>{stepTimer=null;fn?.();},ms);
       };
       const showStep=(kind,message,extra={})=>{
         ctx.setEnemyView({active:true,kind,message,...extra});
-        ctx.render();ctx.emitState();
+        measured("enemyAI.showStepRender",()=>ctx.render());
+        measured("enemyAI.showStepStateEvent",()=>ctx.emitState());
       };
       const isNeutral=unit=>unit?.team===NEUTRAL;
       const actorLabel=unit=>isNeutral(unit)?"野怪":"AI";
@@ -31,8 +60,8 @@
       };
 
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
-        TacticalEngine.actorCanTrackTarget(ctx.map(),ctx.state().units,actor,target,ctx.actionState?.().environmentState||null,ctx.state())&&
-        TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null)
+        measured("enemyAI.targetVisibility",()=>TacticalEngine.actorCanTrackTarget(ctx.map(),ctx.state().units,actor,target,ctx.actionState?.().environmentState||null,ctx.state()))&&
+        measured("enemyAI.targetRangeLOS",()=>TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null))
       );
 
       const chooseAttack=actor=>{
@@ -57,7 +86,7 @@
         const state=ctx.state();
         const objectives=state.units
           .filter(unit=>unit.alive&&unit.id!==actor.id&&unit.team!==actor.team&&
-            TacticalEngine.actorCanTrackTarget(state.map,state.units,actor,unit,state.environmentState||null,state))
+            measured("enemyAI.goalVisibility",()=>TacticalEngine.actorCanTrackTarget(state.map,state.units,actor,unit,state.environmentState||null,state)))
           .map(unit=>({x:unit.x,y:unit.y}));
 
         if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"){
@@ -67,7 +96,7 @@
         }
 
         if(!objectives.length)return[];
-        const reachable=TacticalEngine.reachable(state.map,state.units,actor);
+        const reachable=measured("enemyAI.reachable",()=>TacticalEngine.reachable(state.map,state.units,actor));
         if(!reachable.size)return[];
         let best=null;
         reachable.forEach((cost,key)=>{
@@ -77,7 +106,7 @@
           const nearest=Math.min(...objectives.map(point=>Math.abs(x-point.x)+Math.abs(y-point.y)));
           if(!best||nearest<best.nearest||(nearest===best.nearest&&(cost<best.cost||(cost===best.cost&&(y<best.y||(y===best.y&&x<best.x))))))best={x,y,nearest,cost};
         });
-        return best?TacticalEngine.pathTo(state.map,state.units,actor,best.x,best.y)||[]:[];
+        return best?measured("enemyAI.pathTo",()=>TacticalEngine.pathTo(state.map,state.units,actor,best.x,best.y))||[]:[];
       };
 
       const animateMove=(actor,path,done)=>{
@@ -86,7 +115,7 @@
           if(!steps.length||!actor.alive){actor.moved=true;done?.();return;}
           const tile=steps.shift();
           if(!habitatAllows(actor,tile)){actor.moved=true;done?.();return;}
-          const result=ctx.traverseUnitPath(actor,[tile],{kind:"UNIT"});
+          const result=measured("enemyAI.traverseUnitStep",()=>ctx.traverseUnitPath(actor,[tile],{kind:"UNIT"}));
           ctx.pushLog(`${actor.character.name} 移動至 (${actor.x},${actor.y})。`,"DETAIL");
           showStep("MOVE",`${actor.character.name} 移動 → (${actor.x},${actor.y})`,{unitId:actor.id});
           if(!result?.completed||!actor.alive){actor.moved=true;done?.();return;}
@@ -165,16 +194,16 @@
           if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"&&ctx.canUnitCapture(actor)){
             ctx.executeCapture(actor);afterStep(continuePhase,300);return;
           }
-          let attack=chooseAttack(actor);
+          let attack=measureDecision("enemyAI.chooseAttack",()=>chooseAttack(actor));
           if(attack){requestAttack(attack);return;}
 
-          const path=movePath(actor);
+          const path=measureDecision("enemyAI.movePath",()=>movePath(actor));
           if(path.length)showStep("MOVE_PLAN",`${actorLabel(actor)} 決策｜${actor.character.name} 移動 ${path.length} 格`,{unitId:actor.id});
           afterStep(()=>animateMove(actor,path,()=>{
             if(!isNeutral(actor)&&state.stage?.ruleset==="CORE_CAPTURE"&&ctx.canUnitCapture(actor)){
               ctx.executeCapture(actor);afterStep(continuePhase,300);return;
             }
-            attack=chooseAttack(actor);
+            attack=measureDecision("enemyAI.chooseAttack",()=>chooseAttack(actor));
             if(attack){requestAttack(attack);return;}
             actor.moved=true;actor.acted=true;actor.waited=true;
             showStep("WAIT",`${actor.character.name} 待機`,{unitId:actor.id});
@@ -207,7 +236,7 @@
             const card=CardDatabase.get(id);
             return CardDatabase.isCharacter(card)&&CardPhaseEngine.canPlay(cards,card);
           });
-          const tile=deploymentTiles()[0];
+          const tile=measured("enemyAI.deploymentTiles",()=>deploymentTiles()[0]);
           if(!cardId||!tile){CardPhaseEngine.end(cards);showStep("CARD_END","敵方結束卡牌階段");afterStep(done,350);return;}
           const card=CardDatabase.get(cardId);
           showStep("CARD_SELECT",`敵方選擇「${card.name}」｜消耗 ${card.cost} 水晶`,{cardId:card.id});

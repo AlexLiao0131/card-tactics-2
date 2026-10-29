@@ -16,6 +16,7 @@ const WEATHER_LABEL=Object.freeze({
 export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
+    this.heldInspection=null; // Read-only snapshot of explicitly long-pressed tile.
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
     this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
     this.statusUnitId=null;
@@ -35,7 +36,10 @@ export class BattleUI{
     q("projectionToggle").onclick=()=>renderer.toggleProjection();
     q("resetView").onclick=()=>renderer.resetView();
 
-    q("infoToggle").onclick=()=>this.toggleContext();
+    // The on-map long hold is the only inspector entry point. Remove obsolete
+    // right-side toggles; the existing canonical inspector remains the view.
+    q("infoToggle")?.remove();
+    q("hudToggle")?.remove();
     q("contextClose").onclick=()=>this.setContextOpen(false);
     q("contextUnitTab").onclick=()=>this.setContextTab("UNIT");
     q("contextTileTab").onclick=()=>this.setContextTab("TILE");
@@ -43,12 +47,6 @@ export class BattleUI{
     q("mapToggle").onclick=()=>this.togglePanel(this.mapShell,"open");
     q("mapClose").onclick=()=>this.mapShell.classList.remove("open");
 
-    q("hudToggle").onclick=()=>{
-      const hud=q("versusCoreHud");
-      if(!hud.classList.contains("available"))return;
-      const open=hud.classList.toggle("open");
-      q("hudToggle").classList.toggle("active",open);
-    };
 
     this.logTabs?.querySelectorAll("[data-log-type]").forEach(button=>{
       button.onclick=()=>{
@@ -75,7 +73,7 @@ export class BattleUI{
 
     window.TacticalUIController=Object.freeze({
       renderEngagement:()=>this.renderEngagement(),
-      openInspector:(tab=null)=>{if(tab)this.contextTab=tab;this.setContextOpen(true)},
+      openInspector:(tab=null)=>{this.heldInspection=null;if(tab)this.contextTab=tab;this.setContextOpen(true)},
       openStatus:unitId=>this.openStatus(unitId),
       closeInspector:()=>this.setContextOpen(false),
       toggleInspector:()=>this.toggleContext()
@@ -89,7 +87,15 @@ export class BattleUI{
     window.addEventListener("cardtactics:battle-render",()=>this.render());
     window.addEventListener("cardtactics:state",()=>this.render());
     window.addEventListener("cardtactics:log",()=>this.queueLogRender());
-    window.addEventListener("cardtactics:inspection",()=>this.renderContext());
+    window.addEventListener("cardtactics:inspection",()=>{
+      // Selecting a tile normally never changes which held tile is shown.
+      if(!this.heldInspection)this.renderContext();
+    });
+    window.addEventListener("cardtactics:battle-inspect-hold",event=>{
+      const pos=event.detail;
+      if(!Number.isInteger(pos?.x)||!Number.isInteger(pos?.y))return;
+      this.inspectHeldTile(pos.x,pos.y);
+    });
 
     this.render();
   }
@@ -148,8 +154,7 @@ export class BattleUI{
       if(panel!==this.context)this.context.classList.remove("open");
       if(panel!==this.mapShell)this.mapShell.classList.remove("open");
       if(panel!==this.logShell)this.logShell.classList.remove("active");
-      q("versusCoreHud")?.classList.remove("open");
-      q("hudToggle")?.classList.remove("active");
+      // Core / capture status remains available without a toggle button.
     }
   }
 
@@ -163,8 +168,8 @@ export class BattleUI{
     const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
     coreHud.classList.toggle("available",hasCores);
     coreHud.setAttribute("aria-hidden",String(!hasCores));
-    q("hudToggle").disabled=!hasCores;
-    if(!hasCores){coreHud.classList.remove("open");q("hudToggle").classList.remove("active");}
+    // The core + capture HUD is the one authoritative persistent scoreboard.
+    coreHud.classList.toggle("open",hasCores);
     q("playerCoreHp").textContent=player?`${player.hp}/${player.maxHp}`:"—";
     q("enemyCoreHp").textContent=enemy?`${enemy.hp}/${enemy.maxHp}`:"—";
     q("playerCoreBar").style.width=player?`${Math.max(0,Math.min(100,player.hp/Math.max(1,player.maxHp)*100))}%`:"0%";
@@ -209,7 +214,68 @@ export class BattleUI{
     q("projectionToggle").textContent=state.projection==="ISO"?"正視圖":"45°視角";
   }
 
+  // The official game owns all data. Long press reads it without selecting a
+  // unit, changing the action mode or firing a tactical tile click.
+  inspectHeldTile(x,y){
+    const snapshot=this.runtime?.getBattleSnapshot?.();
+    const published=snapshot?.map?.tiles?.find(tile=>tile.x===x&&tile.y===y);
+    const map=this.runtime?.getBattleMap?.();
+    const tile=globalThis.TacticalEngine?.tile?.(map,x,y);
+    if(!published||!tile)return false;
+    let tileData=globalThis.TileInspectionPresentation?.create?.({map,environmentState:null,tile})||null;
+    if(tileData){
+      // The runtime owns tactical visibility. Use the already-published effect
+      // presentation without creating a second state or revealing hidden units.
+      const effects=(published.effectDetails||[]).map(effect=>
+        `${effect.type}${effect.duration==null?'':` ${effect.duration} 回合`}`);
+      const climate=snapshot.presentation?.environment||{};
+      const weather=WEATHER_LABEL[climate.weather]?.[1]||climate.weather||'—';
+      // The tile-only source does not carry the private environmentState; remove
+      // its baseline "晴朗"/"效果：無" rather than misleading with stale values.
+      const lines=(tileData.details||'').split('\n')
+        .filter(line=>!line.startsWith('效果：'))
+        .map(line=>line.startsWith('環境材質：')?line.replace(/｜氣候：.*/,`｜氣候：${weather}`):line);
+      tileData={...tileData,summary:{...tileData.summary,
+        status:effects.length?effects.join('、'):'無'},
+        details:[...lines,`目前效果：${effects.length?effects.join('、'):'無'}`].join('\n')};
+    }
+    const seen=(snapshot.units||[]).find(unit=>unit.x===x&&unit.y===y);
+    const live=seen?globalThis.UnitRuntimeEngine?.getLiveUnit?.(seen.id):null;
+    let unitData=null;
+    if(seen&&live?.alive){
+      const combat=live.character?.combat||{};
+      const ids=globalThis.EffectEngine?.skillIds?.(live)||live.character?.skills||[];
+      unitData={id:seen.id,name:seen.name,team:seen.team,
+        hp:seen.hp,maxHp:seen.maxHp,mana:seen.mana,maxMana:seen.maxMana,
+        move:Number(combat.move||0),x,y,
+        terrain:globalThis.TERRAINS?.[tile.terrain]?.name||tile.terrain,
+        elevation:Number(tile.elevation||0),
+        actionState:seen.acted?'已完成行動':seen.moved?'已移動':'可行動',
+        stats:{atk:Number(combat.atk||0),def:Number(combat.def||0),
+          matk:Number(combat.matk||0),mdef:Number(combat.mdef||0),
+          hit:globalThis.BATTLE_RULES?.combatParams?Math.max(BATTLE_RULES.combatParams.minHit,Math.min(BATTLE_RULES.combatParams.maxHit,BATTLE_RULES.combatParams.baseHit+BattleEngine.accuracy(live.character,{}))):null,
+          eva:globalThis.BattleEngine?.evasion?.(live.character),
+          crit:globalThis.BattleEngine?.critChance?.(live.character,{}),
+          spd:globalThis.BattleEngine?.actionSpeed?.(live.character,{})},
+        skills:(globalThis.SkillDatabase?.list?.(ids)||[]).map(skill=>({
+          name:skill.name,category:skill.category,
+          range:{min:skill.range?.min,max:skill.range?.max},
+          resource:globalThis.UnitRuntimeEngine?.resourceLabel?.(live,skill)||'',
+          variants:Array.isArray(skill.variants)?skill.variants:[]
+        }))};
+    }
+    this.heldInspection={x,y,unit:unitData,tile:tileData};
+    // Reuse the existing temporary on-map HUD for visible unit long-holds.
+    // On release BattleInputController clears only this transient HUD; the
+    // detailed read-only inspector stays until explicitly closed.
+    if(unitData)window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:{x,y}}));
+    this.contextTab=unitData?'UNIT':'TILE';
+    this.setContextOpen(true);
+    return true;
+  }
+
   contextData(){
+    if(this.heldInspection)return{unit:this.heldInspection.unit,tile:this.heldInspection.tile};
     return{
       unit:this.runtime?.getInspectedUnitPresentation?.()||null,
       tile:this.runtime?.getInspectedTilePresentation?.()||null
@@ -228,10 +294,10 @@ export class BattleUI{
     if(open)this.contextTab=this.chooseContextTab(data,this.contextTab);
     this.context.classList.toggle("open",!!open);
     this.context.setAttribute("aria-hidden",String(!open));
-    q("infoToggle").classList.toggle("active",!!open);
+    if(!open)this.heldInspection=null;
     if(open){
       this.mapShell.classList.remove("open");this.logShell.classList.remove("active");
-      q("versusCoreHud")?.classList.remove("open");q("hudToggle")?.classList.remove("active");
+      // Do not hide the persistent Core / capture HUD when inspecting a tile.
     }
     this.renderContext();
     return !!open;
@@ -248,7 +314,6 @@ export class BattleUI{
 
   renderContext(){
     const data=this.contextData();
-    q("infoToggle").disabled=!data.unit&&!data.tile;
     if(!data.unit&&!data.tile){this.context.classList.remove("open");return}
 
     this.contextTab=this.chooseContextTab(data,this.contextTab);

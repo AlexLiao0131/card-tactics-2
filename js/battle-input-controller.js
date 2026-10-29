@@ -26,7 +26,9 @@ export class BattleInputController{
   }
   beginHold(event){
     this.clearHold();
-    if(event.pointerType!=="touch"&&event.pointerType!=="pen")return;
+    // The same hold recognizer serves unit and empty-tile inspection. On desktop
+    // holding the primary mouse button also opens the inspector; pan/pinch cancel it.
+    if(event.pointerType!=="touch"&&event.pointerType!=="pen"&&event.pointerType!=="mouse")return;
     const id=event.pointerId;
     this.holdPointerId=id;
     this.holdTimer=setTimeout(()=>{
@@ -35,11 +37,13 @@ export class BattleInputController{
       if(!pointer||pointer.moved||this.pointers.size!==1||this.gesture?.type!=="PAN")return;
       const tile=this.picker.pickCurrent();
       if(!tile)return;
-      const state=globalThis.CardTacticsRuntime?.getBattleSnapshot?.();
-      if(!state?.units?.some(unit=>unit.x===tile.x&&unit.y===tile.y))return;
       pointer.moved=true;
       this.holdActive=true;
-      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:tile}));
+      // Inspection is READ ONLY. Never call clickBattleTile here: during an
+      // attack/card phase it could accidentally resolve a real game action.
+      window.dispatchEvent(new CustomEvent("cardtactics:battle-inspect-hold",{detail:{x:tile.x,y:tile.y}}));
+      // BattleUI reuses the same snapshot and only exposes visible occupants;
+      // don't query the full presentation twice for one long press.
     },HUD_HOLD_MS);
   }
 
