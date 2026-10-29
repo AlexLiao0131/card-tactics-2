@@ -52,72 +52,34 @@
   function presentationUnitAt(x,y){return presentationWorld().units.find(u=>u.alive&&u.x===x&&u.y===y)||null;}
   function presentationCoreAt(x,y){return presentationWorld().cores.find(core=>core.x===x&&core.y===y)||null;}
   function checkMatchEnd(){return hallucinationSession?.active?false:objectiveController.checkMatchEnd();}
-  function sharedUnitState(unit){
-    if(!unit)return null;
-    return{
-      hp:Math.max(0,Number(unit.hp||0)),alive:unit.alive!==false,
-      mana:Number(unit.mana||0),maxMana:Number(unit.maxMana||0),
-      resources:cloneRuntime(unit.resources||{}),skillResources:cloneRuntime(unit.skillResources||{}),
-      effects:cloneRuntime(unit.effects||[]),grantedSkills:cloneRuntime(unit.grantedSkills||[]),
-      moved:!!unit.moved,acted:!!unit.acted,waited:!!unit.waited,itemInteractionUsed:Number(unit.itemInteractionUsed||0)
-    };
-  }
-  function sharedStateKey(state){return JSON.stringify(state||null);}
-  function applySharedUnitState(target,state){
-    if(!target||!state)return target;
-    target.hp=Math.max(0,Number(state.hp||0));target.alive=state.alive!==false;
-    target.mana=Number(state.mana||0);target.maxMana=Number(state.maxMana||0);
-    target.resources=cloneRuntime(state.resources||{});target.skillResources=cloneRuntime(state.skillResources||{});
-    target.effects=cloneRuntime(state.effects||[]);target.grantedSkills=cloneRuntime(state.grantedSkills||[]);
-    target.moved=!!state.moved;target.acted=!!state.acted;target.waited=!!state.waited;target.itemInteractionUsed=Number(state.itemInteractionUsed||0);
-    if(globalThis.EffectEngine?.syncModifiers)EffectEngine.syncModifiers(target);else UnitRuntimeEngine.syncMana(target);
-    return target;
-  }
-  function mirrorCounterpart(realUnit){
-    if(!hallucinationSession?.active||!realUnit)return null;
-    return units.find(unit=>!unit.hallucination&&unit.mirrorOfUnitId===realUnit.id)||null;
-  }
+  // The perception world is an isolated simulation. It owns its own HP, death,
+  // effects, positions, objects and terrain; none of those values may commit to
+  // the authoritative world. The only cross-world writes are explicit action
+  // costs and truly consumed inventory items.
   function realCounterpart(mirrorUnit){
     if(!hallucinationSession?.active||!mirrorUnit?.mirrorOfUnitId)return null;
     return hallucinationSession.real.units.find(unit=>unit.id===mirrorUnit.mirrorOfUnitId)||null;
+  }
+  function commitHallucinationSkillExpense(mirrorUnit,spent){
+    if(!spent||!hallucinationSession?.active||mirrorUnit?.hallucination)return false;
+    const realUnit=realCounterpart(mirrorUnit);
+    if(!realUnit)return false;
+    // Debit only costs reported by the official UnitRuntimeEngine. Do not copy
+    // the mirror's resource values: healing, buffs and recovered resources may
+    // exist only inside the perception simulation.
+    realUnit.mana=Math.max(0,Number(realUnit.mana||0)-Math.max(0,Number(spent.cost||0)));
+    for(const [key,payment] of Object.entries(spent.resources||{})){
+      const state=realUnit.resources?.[key];
+      if(!state)continue;
+      state.value=Math.max(0,Number(state.value||0)-Math.max(0,Number(payment?.cost||0)));
+    }
+    return true;
   }
   function hallucinationLivePayloadIds(){
     const ids=new Set();
     for(const unit of units||[])for(const key of ["inventory","cargo"])for(const payload of unit?.[key]||[])if(payload?.id)ids.add(payload.id);
     for(const payload of globalThis.ItemInventoryEngine?.battleGroundItems?.()||[])if(payload?.id)ids.add(payload.id);
     return ids;
-  }
-  function syncHallucinationBodies(){
-    const session=hallucinationSession;if(!session?.active)return false;
-    const livePayloadIds=hallucinationLivePayloadIds();
-    for(const mirrorUnit of units||[]){
-      if(!mirrorUnit||mirrorUnit.hallucination||!mirrorUnit.mirrorOfUnitId)continue;
-      const realUnit=realCounterpart(mirrorUnit);if(!realUnit)continue;
-      const previous=session.sharedStates?.get(realUnit.id)||sharedUnitState(realUnit),realState=sharedUnitState(realUnit),mirrorState=sharedUnitState(mirrorUnit);
-      const previousKey=sharedStateKey(previous),realKey=sharedStateKey(realState),mirrorKey=sharedStateKey(mirrorState),realChanged=realKey!==previousKey,mirrorChanged=mirrorKey!==previousKey;
-      let accepted=previous;
-      if(realChanged&&!mirrorChanged){
-        const hpBefore=Number(mirrorUnit.hp||0);applySharedUnitState(mirrorUnit,realState);accepted=realState;
-        if(Number(realState.hp)<hpBefore)globalThis.UnitAnimationEngine?.emitHit?.(mirrorUnit,{sourceId:null,skillId:null,damage:Math.max(0,hpBefore-Number(realState.hp)),hallucinationSync:true});
-      }else if(mirrorChanged&&!realChanged){
-        applySharedUnitState(realUnit,mirrorState);reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds);accepted=mirrorState;
-      }else if(realChanged&&mirrorChanged){
-        if(realKey===mirrorKey)accepted=realState;
-        else{
-          const hpBefore=Number(mirrorUnit.hp||0);applySharedUnitState(mirrorUnit,realState);accepted=realState;
-          if(Number(realState.hp)<hpBefore)globalThis.UnitAnimationEngine?.emitHit?.(mirrorUnit,{sourceId:null,skillId:null,damage:Math.max(0,hpBefore-Number(realState.hp)),hallucinationSync:true});
-        }
-      }
-      reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds);
-      session.sharedStates?.set(realUnit.id,cloneRuntime(accepted));
-    }
-    return true;
-  }
-  function syncRealUnitIntoHallucination(realUnit){
-    const mirror=mirrorCounterpart(realUnit);if(!mirror)return false;
-    const before=Number(mirror.hp||0),next=sharedUnitState(realUnit);applySharedUnitState(mirror,next);hallucinationSession.sharedStates?.set(realUnit.id,cloneRuntime(next));
-    if(Number(next.hp)<before)globalThis.UnitAnimationEngine?.emitHit?.(mirror,{sourceId:null,skillId:null,damage:Math.max(0,before-Number(next.hp)),hallucinationSync:true});
-    return true;
   }
   function visibleHostilesFor(team,state=currentWorld()){
     const observers=(state.units||[]).filter(unit=>unit?.alive&&unit.team===team&&!unit.hallucination);
@@ -153,12 +115,11 @@
     const real=currentWorld(),groundSnapshot=globalThis.ItemInventoryEngine?.battleGroundItems?.()||[];
     const mirror={map:cloneRuntime(real.map),stage:cloneRuntime(real.stage),stageState:cloneRuntime(real.stageState),environmentState:cloneRuntime(real.environmentState),cores:cloneRuntime(real.cores),units:real.units.map(unit=>cloneRuntime({...unit,_runtimeMap:null}))};
     for(const unit of mirror.units){unit._runtimeMap=mirror.map;unit.mirrorOfUnitId=unit.id;}
-    const sharedStates=new Map(real.units.map(unit=>[unit.id,sharedUnitState(unit)]));
     // Prepare the complete perception projection before switching the battle's
     // world references. An unfinished simulation must never become the active world.
     injectHallucinations(record,mirror);
     ({map,units,stage,stageState,environmentState,cores}=mirror);
-    hallucinationSession={active:true,team,real,groundSnapshot,record,deferredDefeats:new Map(),sharedStates};
+    hallucinationSession={active:true,team,real,groundSnapshot,record};
     record.turnsRemaining=Math.max(0,Number(record.turnsRemaining||1)-1);if(record.turnsRemaining<=0)pendingHallucinations.delete(team);else pendingHallucinations.set(team,record);
     UnitRuntimeEngine.syncLiveRoster(units);clearSelection();clearEnemyReaction();return true;
   }
@@ -170,10 +131,29 @@
   }
   function endHallucinationTurn(team){
     const session=hallucinationSession;if(!session?.active||session.team!==team)return false;
-    syncHallucinationBodies();
-    ({map,units,stage,stageState,environmentState,cores}=session.real);globalThis.ItemInventoryEngine?.restoreBattleGroundItems?.(session.groundSnapshot);hallucinationSession=null;UnitRuntimeEngine.syncLiveRoster(units);
-    for(const record of session.deferredDefeats?.values?.()||[]){const realUnit=units.find(unit=>unit.id===record.unitId);if(!realUnit||Number(realUnit.hp)>0)continue;const source=record.sourceId?units.find(unit=>unit.id===record.sourceId)||null:null;deathLifecycle.finalize(realUnit,source,record.cause);}
-    UnitRuntimeEngine.reconcileCompanions(units);clearSelection();clearEnemyReaction();return true;
+    const livePayloadIds=hallucinationLivePayloadIds();
+    // Transfer only action completion and real consumable expenditures made by
+    // the affected side. Simulated combat outcomes never leave the mirror world.
+    for(const mirrorUnit of units||[]){
+      if(!mirrorUnit?.mirrorOfUnitId||mirrorUnit.hallucination)continue;
+      const realUnit=realCounterpart(mirrorUnit);
+      if(!realUnit)continue;
+      if(mirrorUnit.team===session.team){
+        realUnit.moved=!!mirrorUnit.moved;
+        realUnit.acted=!!mirrorUnit.acted;
+        realUnit.waited=!!mirrorUnit.waited;
+        realUnit.itemInteractionUsed=Number(mirrorUnit.itemInteractionUsed||0);
+      }
+      reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds);
+    }
+    // Restore the original world references atomically. Mirror-only damage,
+    // defeat records, tiles, ground-item placement and Core changes are discarded.
+    ({map,units,stage,stageState,environmentState,cores}=session.real);
+    globalThis.ItemInventoryEngine?.restoreBattleGroundItems?.(session.groundSnapshot);
+    hallucinationSession=null;
+    UnitRuntimeEngine.syncLiveRoster(units);
+    UnitRuntimeEngine.reconcileCompanions(units);
+    clearSelection();clearEnemyReaction();return true;
   }
   function hallucinationActiveFor(team){return !!hallucinationSession?.active&&hallucinationSession.team===team;}
 
@@ -181,13 +161,17 @@
   function logPostEffect(entry){const {source,target,effect,result}=entry;if(!result)return;if(!result.applied){pushLog(`${target.character.name}｜${effect.type} 未生效${result.reason?`（${result.reason}）`:""}。`,"DETAIL");return;}const moved=result.steps?.length||0,visitCollisions=(r,mover=target)=>{for(const collision of r?.collisions||[]){environmentController.resolveCollisionRuntime(collision,{mover,source});if(collision.chain&&collision.surface?.unit)visitCollisions(collision.chain,collision.surface.unit);}};visitCollisions(result);pushLog(`${source.character.name} → ${target.character.name}：${effect.type==="PULL"?"拉近":"擊退"} ${moved} 格。`,"BATTLE");if(result.falls?.length){const drops=result.falls.map(f=>`Z${f.from}→H${f.to}`).join("、");pushLog(`${target.character.name} 墜落 ${drops}｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}。`,"BATTLE");}else pushLog(`${target.character.name} 強制位移完成｜無墜落傷害。`,"DETAIL");if(result.applied&&target.alive)enterTile(target);}
   function handleDefeated(unit,source,skillOrEffect){
     if(unit?.hallucination){unit.hp=0;unit.alive=false;return{hallucination:true};}
-    if(hallucinationSession?.active&&unit?.mirrorOfUnitId){hallucinationSession.deferredDefeats??=new Map();hallucinationSession.deferredDefeats.set(unit.mirrorOfUnitId,{unitId:unit.mirrorOfUnitId,sourceId:source?.mirrorOfUnitId||source?.id||null,cause:skillOrEffect?cloneRuntime(skillOrEffect):null});unit.hp=0;unit.alive=false;syncHallucinationBodies();return{deferred:true};}
-    const result=deathLifecycle.finalize(unit,source,skillOrEffect);if(hallucinationSession?.active&&hallucinationSession.real.units.includes(unit))syncRealUnitIntoHallucination(unit);return result;
+    if(hallucinationSession?.active&&unit?.mirrorOfUnitId){
+      unit.hp=0;unit.alive=false;
+      // No deferred real-world death: the original actor was never hit.
+      return{perceptionDefeat:true};
+    }
+    return deathLifecycle.finalize(unit,source,skillOrEffect);
   }
   function resolveCollisionRuntime(...args){return environmentController.resolveCollisionRuntime(...args);}
   function applyForcedMovement(...args){return environmentController.applyForcedMovement(...args);}
   function traverseUnitPath(...args){return environmentController.traverseUnitPath(...args);}
-  function damageUnitFlat(unit,damage,sourceName){if(!unit?.alive)return;unit.hp=Math.max(0,unit.hp-Math.max(0,Number(damage||0)));pushLog(`${sourceName} → ${unit.character.name}｜${damage} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;handleDefeated(unit,null,{type:"CARD_SPELL",name:sourceName});}if(hallucinationSession?.active){if(unit?.mirrorOfUnitId)syncHallucinationBodies();else if(hallucinationSession.real.units.includes(unit))syncRealUnitIntoHallucination(unit);}}
+  function damageUnitFlat(unit,damage,sourceName){if(!unit?.alive)return;unit.hp=Math.max(0,unit.hp-Math.max(0,Number(damage||0)));pushLog(`${sourceName} → ${unit.character.name}｜${damage} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;handleDefeated(unit,null,{type:"CARD_SPELL",name:sourceName});}}
   function createMap(){return MapDatabase.createMap(stage.mapId);}
   function grantInitialGeneratedCards(){if(!cardState?.zones?.hand||!globalThis.CardPhaseEngine?.grantGeneratedCards)return[];const ids=[];for(const unit of units||[]){if(!unit?.alive||unit.team!==TEAM.PLAYER)continue;ids.push(...(unit.character?.generatedCardsOnDeploy||[]));}return CardPhaseEngine.grantGeneratedCards(cardState,ids);}
   function createUnit(id,team,characterId,x,y){return UnitRuntimeEngine.create({id,team,characterId,x,y,map});}
@@ -210,10 +194,10 @@
   function onUnitCreated(unit){if(unit)EffectEngine.syncConditionalPassives([unit],environmentState);return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
-    if(result)window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
+    if(result){commitHallucinationSkillExpense(unit,result);window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
       unitId:unit?.id,unit:unit?.character?.name,team:unit?.team,skillId:skill?.id,skill:skill?.name,
       reason:`MP ${result.cost||0}; remaining ${result.remaining??"?"}; extra ${Object.keys(result.resources||{}).join(",")||"none"}`
-    });
+    });}
     return result;
   }function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
@@ -271,7 +255,7 @@
     return clickBattleTile(next.x,next.y);
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
-  function render(){if(hallucinationSession?.active)syncHallucinationBodies();renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
+  function render(){renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
   function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill);return;}}if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
   function renderTurnStatus(){if(matchResult){turnStatus.textContent=matchResult==="VICTORY"?`戰鬥結束｜VICTORY｜Round ${round}`:`戰鬥結束｜DEFEAT｜Round ${round}`;return;}const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;}
   function addActionButton(text,onClick,disabled=false){const button=document.createElement("button");button.textContent=text;button.className="action-button";button.disabled=disabled;button.onclick=onClick;skillBar.appendChild(button);}
