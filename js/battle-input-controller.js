@@ -16,12 +16,14 @@ export class BattleInputController{
     this.install();
   }
 
-  clearHold(){
+  clearHold({releaseHud=true}={}){
     if(this.holdTimer!==null)clearTimeout(this.holdTimer);
     this.holdTimer=null;this.holdPointerId=null;
     if(this.holdActive){
       this.holdActive=false;
-      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
+      // A recognized hold opens a persistent read-only inspector. Releasing
+      // that finger must NOT dismiss the original portrait/HP/MP HUD.
+      if(releaseHud)window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
     }
   }
   beginHold(event){
@@ -68,6 +70,9 @@ export class BattleInputController{
       const panPointer=touch||event.button===0;
       const rotatePointer=!touch&&event.button===1;
       if(!panPointer&&!rotatePointer)return;
+      // The next tactical canvas gesture dismisses the previous inspection,
+      // but the gesture itself still follows the original tap/pan/zoom rules.
+      window.dispatchEvent(new CustomEvent("cardtactics:battle-inspection-dismiss"));
       event.preventDefault();
       if(touch&&event.isPrimary===true&&this.pointers.size)this.resetPointers();
       this.pointers.set(event.pointerId,{x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,type:pointerTypeOf(event),moved:false,button:event.button});
@@ -129,7 +134,7 @@ export class BattleInputController{
     this.onPointerUp=event=>{
       const pointer=this.pointers.get(event.pointerId);if(!pointer)return;
       const consumed=this.holdActive&&this.holdPointerId===event.pointerId;
-      this.clearHold();
+      this.clearHold({releaseHud:!consumed});
       const wasMulti=multiGestureType(this.gesture)||this.pointers.size>1;
       const wasRotate=this.gesture?.type==="ROTATE_MOUSE";
       this.pointers.delete(event.pointerId);

@@ -17,6 +17,8 @@ export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.heldInspection=null; // Read-only snapshot of explicitly long-pressed tile.
+    this.inspectorHome=q("battleScreen");
+    this.inspectorHudNode=null;
     this.context=q("battleContextInspector");this.mapShell=q("mapInfoShell");this.logShell=q("battleLogShell");
     this.logPanel=q("battleLog");this.logTabs=q("battleLogTabs");this.endTurn=q("endTurn");
     this.statusUnitId=null;
@@ -43,6 +45,34 @@ export class BattleUI{
     q("contextClose").onclick=()=>this.setContextOpen(false);
     q("contextUnitTab").onclick=()=>this.setContextTab("UNIT");
     q("contextTileTab").onclick=()=>this.setContextTab("TILE");
+    // The existing UnitHudOverlay is the visual owner of portrait/HP/MP.
+    // Reparent the canonical inspector beneath that SAME HUD only while
+    // inspecting a visible unit; empty tiles use the original standalone panel.
+    if(!document.getElementById("unit-hud-inspection-layout")){
+      const style=document.createElement("style");style.id="unit-hud-inspection-layout";
+      style.textContent=`
+        .unit-hud-layer:has(.battle-context-inspector.open){overflow:visible;z-index:105}
+        .unit-hud.inspection-open{opacity:1!important;z-index:3}
+        .unit-hud .battle-context-inspector{
+          display:none;position:absolute;z-index:4;
+          left:calc(50% + var(--inspector-shift-x,0px));
+          right:auto;top:calc(100% + 6px);bottom:auto;
+          transform:translateX(-50%);
+          width:min(342px,calc(100vw - 20px));
+          max-height:min(46vh,350px);pointer-events:auto;
+          text-align:left;color:#e6eaf1;
+          border-color:rgba(214,184,120,.7)
+        }
+        .unit-hud .battle-context-inspector.open{display:block}
+        .unit-hud .battle-context-inspector.inspection-above{top:auto;bottom:calc(100% + 6px)}
+        .unit-hud .battle-context-inspector button{pointer-events:auto;touch-action:manipulation}
+        .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+        @media(max-width:700px){
+          .unit-hud .battle-context-inspector{max-height:42vh}
+          .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+        }`;
+      document.head.appendChild(style);
+    }
 
     q("mapToggle").onclick=()=>this.togglePanel(this.mapShell,"open");
     q("mapClose").onclick=()=>this.mapShell.classList.remove("open");
@@ -95,6 +125,9 @@ export class BattleUI{
       const pos=event.detail;
       if(!Number.isInteger(pos?.x)||!Number.isInteger(pos?.y))return;
       this.inspectHeldTile(pos.x,pos.y);
+    });
+    window.addEventListener("cardtactics:battle-inspection-dismiss",()=>{
+      if(this.heldInspection)this.setContextOpen(false);
     });
 
     this.render();
@@ -151,7 +184,7 @@ export class BattleUI{
   togglePanel(panel,cls){
     const open=panel.classList.toggle(cls);
     if(open){
-      if(panel!==this.context)this.context.classList.remove("open");
+      if(panel!==this.context)this.setContextOpen(false);
       if(panel!==this.mapShell)this.mapShell.classList.remove("open");
       if(panel!==this.logShell)this.logShell.classList.remove("active");
       // Core / capture status remains available without a toggle button.
@@ -161,6 +194,8 @@ export class BattleUI{
   render(){
     if(!this.runtime)return;
     const snapshot=this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
+    if(this.inspectorHudNode&&!this.inspectorHudNode.isConnected)
+      this.setContextOpen(false); // Defeated/removed unit: restore inspector DOM owner.
     const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");
     const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team==="PLAYER"&&!unit.finished);
     next.disabled=phase!=="PLAYER_TURN"||eligible.length===0;
@@ -250,11 +285,20 @@ export class BattleUI{
         move:Number(combat.move||0),x,y,
         terrain:globalThis.TERRAINS?.[tile.terrain]?.name||tile.terrain,
         elevation:Number(tile.elevation||0),
-        actionState:seen.acted?'已完成行動':seen.moved?'已移動':'可行動',
+        actionState:live.waited?'已待機':seen.acted?'已完成行動':seen.moved?'已移動':'可行動',
         stats:{atk:Number(combat.atk||0),def:Number(combat.def||0),
           matk:Number(combat.matk||0),mdef:Number(combat.mdef||0),
           hit:globalThis.BATTLE_RULES?.combatParams?Math.max(BATTLE_RULES.combatParams.minHit,Math.min(BATTLE_RULES.combatParams.maxHit,BATTLE_RULES.combatParams.baseHit+BattleEngine.accuracy(live.character,{}))):null,
+          // EVA in BattleEngine is a MODIFIER, not a raw dodge probability.
+          // Display both the modifier and an explicitly conditional reference:
+          // equal attacker/defender AGI, no skill/terrain/accuracy changes.
           eva:globalThis.BattleEngine?.evasion?.(live.character),
+          baseDodge:(()=>{
+            const p=globalThis.BATTLE_RULES?.combatParams;
+            const bonus=globalThis.BattleEngine?.evasion?.(live.character);
+            if(!p||!Number.isFinite(bonus))return null;
+            return 100-Math.max(p.minHit,Math.min(p.maxHit,p.baseHit-bonus));
+          })(),
           crit:globalThis.BattleEngine?.critChance?.(live.character,{}),
           spd:globalThis.BattleEngine?.actionSpeed?.(live.character,{})},
         skills:(globalThis.SkillDatabase?.list?.(ids)||[]).map(skill=>({
@@ -265,10 +309,11 @@ export class BattleUI{
         }))};
     }
     this.heldInspection={x,y,unit:unitData,tile:tileData};
-    // Reuse the existing temporary on-map HUD for visible unit long-holds.
-    // On release BattleInputController clears only this transient HUD; the
-    // detailed read-only inspector stays until explicitly closed.
-    if(unitData)window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:{x,y}}));
+    // The original portrait/HP/MP HUD persists after release. Acted/waited
+    // units are valid: snapshot.units includes them (finished is NOT filtered).
+    window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{
+      detail:unitData?{x,y}:null
+    }));
     this.contextTab=unitData?'UNIT':'TILE';
     this.setContextOpen(true);
     return true;
@@ -288,16 +333,46 @@ export class BattleUI{
     return data.unit?"UNIT":"TILE";
   }
 
+  // Reuse the one canonical inspector DOM. The original UnitHudOverlay keeps
+  // owning and updating its portrait, HP/MP bars, effects and screen projection.
+  mountInspector(unitId=null){
+    if(this.inspectorHudNode){
+      this.inspectorHudNode.classList.remove("inspection-open");
+      this.inspectorHudNode.style.removeProperty("--inspector-shift-x");
+      this.inspectorHudNode=null;
+    }
+    this.context.classList.remove("inspection-above");
+    if(this.context.parentElement!==this.inspectorHome)this.inspectorHome.appendChild(this.context);
+    const hud=unitId?this.renderer?.unitHud?.nodes?.get(unitId)?.node:null;
+    if(!hud||!hud.isConnected)return;
+    this.inspectorHudNode=hud;
+    hud.classList.add("inspection-open");
+    hud.appendChild(this.context);
+    // One layout read only on long-hold (never on every render frame).
+    const rect=hud.getBoundingClientRect(),bounds=this.inspectorHome.getBoundingClientRect();
+    const width=Math.min(342,Math.max(0,bounds.width-20));
+    const center=rect.left+rect.width/2;
+    const safeCenter=Math.min(bounds.right-width/2-10,Math.max(bounds.left+width/2+10,center));
+    hud.style.setProperty("--inspector-shift-x",`${Math.round(safeCenter-center)}px`);
+    const below=bounds.bottom-rect.bottom,above=rect.top-bounds.top;
+    this.context.classList.toggle("inspection-above",below<Math.min(bounds.height*.42,260)&&above>below);
+  }
+
   setContextOpen(open){
     const data=this.contextData();
     if(open&&!data.unit&&!data.tile)return false;
     if(open)this.contextTab=this.chooseContextTab(data,this.contextTab);
+    if(open){
+      this.mountInspector(this.heldInspection?.unit?.id||null);
+    }else{
+      this.mountInspector(null);
+      this.heldInspection=null;
+      window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
+    }
     this.context.classList.toggle("open",!!open);
     this.context.setAttribute("aria-hidden",String(!open));
-    if(!open)this.heldInspection=null;
     if(open){
       this.mapShell.classList.remove("open");this.logShell.classList.remove("active");
-      // Do not hide the persistent Core / capture HUD when inspecting a tile.
     }
     this.renderContext();
     return !!open;
@@ -330,10 +405,13 @@ export class BattleUI{
       q("contextUnitVitals").textContent=`HP ${u.hp}/${u.maxHp}　MP ${u.mana}/${u.maxMana}　MOVE ${u.move}`;
       const stats=[
         ["ATK",s.atk],["DEF",s.def],["MATK",s.matk],["MDEF",s.mdef],
-        ["HIT",`${s.hit??"-"}%`],["EVA",s.eva],["CRIT",`${s.crit??"-"}%`],["SPD",s.spd]
+        ["HIT",`${s.hit??"-"}%`],
+        ["基準閃避",s.baseDodge==null?"—":`${s.baseDodge}%`],
+        ["EVA修正",s.eva==null?"—":`${s.eva>=0?"+":""}${s.eva}`],
+        ["CRIT",`${s.crit??"-"}%`],["SPD",s.spd]
       ];
       q("contextUnitStats").innerHTML=stats.map(([name,value])=>`<div class="context-stat"><b>${name}</b><span>${esc(value??"-")}</span></div>`).join("");
-      q("contextUnitPosition").textContent=`狀態：${u.actionState}｜位置 (${u.x},${u.y})｜${u.terrain}｜高度 ${u.elevation}`;
+      q("contextUnitPosition").textContent=`狀態：${u.actionState}｜位置 (${u.x},${u.y})｜${u.terrain}｜高度 ${u.elevation}｜基準閃避僅以同 AGI、零命中加成為比較條件，實戰由雙方屬性及技能決定。`;
       q("contextUnitSkills").innerHTML=(u.skills||[]).length
         ?u.skills.map(skill=>`<div class="context-skill"><strong>${esc(skill.name)}</strong><small>${esc(skill.category)}｜射程 ${skill.range?.min??"-"}-${skill.range?.max??"-"}｜${esc(skill.resource||"")}${skill.variants?.length?`｜變化：${skill.variants.map(v=>esc(v.name)).join("／")}`:""}</small></div>`).join("")
         :`<div class="context-line">沒有可用技能資料。</div>`;
