@@ -56,3 +56,19 @@
   .context-hud-slot>.unit-hud{gap:7px;padding:8px}
   #battleScreen #contextUnitStats{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
+
+/* The active-combat forecast lives in the existing engagement panel. */
+.combat-forecast{display:grid;gap:5px;padding:10px;margin:6px 0 9px;
+  border:1px solid #526b82;border-radius:8px;background:#0a1725;
+  color:#e1ecf7;font-size:11px;line-height:1.35}
+.combat-forecast-heading{font-size:12px;font-weight:800;color:#f7dba1}
+.combat-forecast-numbers{font-variant-numeric:tabular-nums;font-weight:700}
+.combat-forecast-label{color:#c5d6e7;font-variant-numeric:tabular-nums}
+.combat-forecast-track{display:flex;overflow:hidden;width:100%;height:10px;
+  background:#29323f;border:1px solid #6a7787;border-radius:5px}
+.combat-forecast-current{height:100%;background:#55b46c}
+.combat-forecast-loss{height:100%;background:#d99953}
+.combat-forecast-choices{display:grid;gap:4px;margin-top:3px;color:#e3ebf6}
+.combat-forecast-choices>div{padding:4px 5px;border:1px solid #293c51;border-radius:4px}
+.combat-forecast-note{color:#a4b5c8;font-size:10px}
+@media(max-width:700px){.combat-forecast{padding:7px;font-size:10px;max-height:32dvh;overflow-y:auto}}
