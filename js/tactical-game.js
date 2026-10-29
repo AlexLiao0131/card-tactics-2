@@ -256,16 +256,73 @@
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
   function render(){renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
-  function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill);return;}}if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
+  function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else previewPlayerAttack(selected,target,selectedSkill);return;}}if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
   function renderTurnStatus(){if(matchResult){turnStatus.textContent=matchResult==="VICTORY"?`戰鬥結束｜VICTORY｜Round ${round}`:`戰鬥結束｜DEFEAT｜Round ${round}`;return;}const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;}
   function addActionButton(text,onClick,disabled=false){const button=document.createElement("button");button.textContent=text;button.className="action-button";button.disabled=disabled;button.onclick=onClick;skillBar.appendChild(button);}
   function addCommandPanelClose(){const button=document.createElement("button");button.type="button";button.className="battle-command-close";button.textContent="×";button.setAttribute("aria-label","關閉作戰選單");button.onclick=()=>{commandPanelCollapsed=true;render();};skillBar.appendChild(button);}
   function renderCollapsedCommandButton(){skillBar.classList.add("command-panel-collapsed");}
+  // Read-only attack forecast. The official TacticalEngine/BattleEngine remain
+  // the sole owners of terrain, facing, hit, crit and damage formulas. Forced
+  // outcomes are calculated on shallow unit copies, without RNG or mutation
+  // of live facing/HP, and without dispatching engagement animations.
+  function engagementForecast(attacker,defender,skill){
+    if(!attacker?.alive||!defender?.alive||!attacker.character||!defender.character||!skill)return null;
+    const effective=effectiveSkill(attacker,skill);
+    const estimate=(options)=>{const a={...attacker},d={...defender};TacticalEngine.faceToward(a,d);return TacticalEngine.resolve(map,a,d,effective,options).result;};
+    const normal=estimate({forceHit:true,disableCrit:true});
+    const critical=estimate({forceHit:true,forceCrit:true});
+    const hp=Math.max(0,Number(defender.hp||0)),maxHp=Math.max(1,Number(defender.character.combat?.hp||hp||1));
+    const pct=(n)=>Math.max(0,Math.min(100,Math.round(n)));
+    const guaranteed=normal.guaranteedHit===true;
+    const hit=guaranteed?100:pct(normal.hc),crit=pct(normal.cc);
+    const type=normal.type;
+    const baseDamage=Math.max(0,Number(normal.damage||0));
+    const critDamage=Math.max(0,Number(critical.damage||0));
+    const methodOptions=BattleResolution.defenseMethods(defender).map(method=>{
+      const rule=method.vs?.[type];
+      if(!rule)return{id:method.id,label:method.name,valid:false};
+      const blocked=method.method==='GUARD'&&effective?.weapon&&attacker.character.weapons?.[effective.weapon]?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&method.artifact!==true;
+      if(blocked)return{id:method.id,label:method.name,valid:false,bypassed:true};
+      const successRate=Number.isFinite(Number(rule.chance))?pct(Number(rule.chance)):100;
+      const reduction=method.method==='PARRY'?0:Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1;
+      const guardMultiplier=method.method==='GUARD'?Number(defender.character.modifiers?.guardMultiplier??1):1;
+      const damageIfBlocked=Math.max(0,Math.round(baseDamage*reduction*guardMultiplier));
+      return{id:method.id,label:method.name,valid:true,successRate,
+        damageIfBlocked,damageIfFailed:baseDamage,
+        hpAfterBlocked:Math.max(0,hp-damageIfBlocked)};
+    });
+    // ACTIVE_EVADE_PENALTY (=20) and graze are defined by BattleResolution.
+    // Both outcomes must stay separate: full hits, half-damage grazes and misses.
+    const evadeFull=pct(Math.max(0,normal.hc-20));
+    const evadeGraze=pct(Math.max(0,normal.hc)-evadeFull);
+    const evadeMiss=pct(100-evadeFull-evadeGraze);
+    return{attackerId:attacker.id,defenderId:defender.id,hp,maxHp,hit,crit,
+      normalDamage:baseDamage,criticalDamage:critDamage,
+      hpAfterNormal:Math.max(0,hp-baseDamage),hpAfterCritical:Math.max(0,hp-critDamage),
+      attackType:type,guaranteed,evade:{full:evadeFull,graze:evadeGraze,miss:evadeMiss,
+        grazeDamage:Math.round(baseDamage*.5)},defenseMethods:methodOptions,
+      note:'僅預測主攻命中與 HP；護盾、異常狀態、後續連鎖及支援行動依正式結算。'};
+  }
+  // Ordinary single-target attacks enter the existing confirmed engagement
+  // transaction even without an eligible support ally. Skill execution is
+  // unchanged: no mana, actions, damage or die rolls are consumed by preview.
+  function previewPlayerAttack(attacker,defender,skill){
+    if(skill?.utilityAction||skill?.effects||skill?.relationEffects||skill?.bloodAction||skill?.approach||targetType(skill)!=='SINGLE'){
+      prepareAttack(attacker,defender,skill);return;
+    }
+    if(!canUseSkill(attacker,skill)){prepareAttack(attacker,defender,skill);return;}
+    const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill})
+      .map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,environmentState))}))
+      .filter(candidate=>candidate.skills.length);
+    pendingEngagement={attacker,defender,skill:effectiveSkill(attacker,skill),candidates};
+    engagementFocusSerial++;
+    supportSelection=new Map();mode='support-select';render();
+  }
   function engagementOdds(attacker,defender,skill){if(!attacker?.character||!defender?.character||!skill)return null;const resolved=effectiveSkill(attacker,skill);const hit=Math.max(0,Math.min(100,Math.round(BattleEngine.hitChance(attacker.character,defender.character,resolved))));return{hit,evade:100-hit};}
   function engagementUnitPresentation(unit,attacker,defender,odds){const max=Math.max(1,Number(unit?.hallucination?unit.perceivedMaxHp??unit?.character?.combat?.hp??1:unit?.character?.combat?.hp||unit?.hp||1)),hp=Math.max(0,Number(unit?.hallucination?unit.perceivedHp??max:unit?.hp||0));return{id:unit.id,x:unit.x,y:unit.y,name:unit.character.name,shortName:shortName(unit.character.name),team:unit.team,hp,maxHp:max,hpPct:Math.max(0,Math.min(100,hp/max*100)),oddsLabel:!odds?"":unit===attacker?`命中率 ${odds.hit}%`:unit===defender?`迴避率 ${odds.evade}%`:""};}
-  function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack,odds=engagementOdds(attacker,defender,skill);const player=attacker.team===TEAM.PLAYER?attacker:defender.team===TEAM.PLAYER?defender:null;const enemy=player===attacker?defender:attacker;const model={mode,focusId:engagementFocusSerial,skillName:skill?.name||"交戰",
+  function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack,odds=engagementOdds(attacker,defender,skill),forecast=engagementForecast(attacker,defender,skill);const player=attacker.team===TEAM.PLAYER?attacker:defender.team===TEAM.PLAYER?defender:null;const enemy=player===attacker?defender:attacker;const model={mode,focusId:engagementFocusSerial,skillName:skill?.name||"交戰",
     attackerName:attacker?.character?.name||"敵方",defenderName:defender?.character?.name||"我方",
-    attackType:skill?.attackType||null,element:skill?.element||null,
+    attackType:skill?.attackType||null,element:skill?.element||null,forecast,
     attackerId:attacker?.id,defenderId:defender?.id,
     player:engagementUnitPresentation(player,attacker,defender,odds),
     enemy:engagementUnitPresentation(enemy,attacker,defender,odds),groups:[],actions:[]};const action=(id,label,disabled=false,payload=null)=>model.actions.push({id,label,disabled,payload});if(mode==="support-select"&&pendingEngagement){for(const {ally,skills} of pendingEngagement.candidates){model.groups.push({id:ally.id,title:`${ally.character.name}${ally.acted?"｜已完成主動行動":""}`,actions:[{id:"SUPPORT_NONE",label:"不支援",payload:{allyId:ally.id}},...skills.map(s=>({id:"SUPPORT_SKILL",label:`${supportSelection.get(ally.id)===s?"✓ ":""}${s.name}｜${resourceLabel(ally,s)}`,payload:{allyId:ally.id,skillId:s.id}}))]});}action("CONFIRM_ENGAGEMENT","開始交戰");action("BACK_SUPPORT","返回");return model;}if(!pendingEnemyAttack)return model;const prep=BattleResolution.prepareSingleTargetReaction({defender,attacker,canUseSkill});prep.counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(map,defender,attacker,s,environmentState));if(mode==="enemy-counter-select"){prep.counterSkills.forEach(s=>action("COUNTER_SKILL",`${s.name}｜射程 ${s.range.min}-${s.range.max}｜${resourceLabel(defender,s)}`,false,{skillId:s.id}));action("BACK_REACTION","返回");}else if(mode==="enemy-defense-select"){prep.defenseMethods.forEach(m=>action("DEFENSE_METHOD",`${m.name}｜${m.sourceName||m.method}`,false,{methodId:m.id}));action("BACK_REACTION","返回");}else if(mode==="enemy-guard-select"){guardCandidates().forEach(({guardian,profiles})=>action("GUARDIAN",`${guardian.character.name}｜${profiles.map(p=>p.name).join("／")}`,false,{guardianId:guardian.id}));action("BACK_GUARD","返回");}else if(mode==="enemy-guard-reaction"){const guardian=selectedGuardian;if(!guardian?.alive)return{...model,invalidGuardian:true};const guardianMethods=BattleResolution.guardProfiles(guardian);const counterSkills=BattleResolution.counterSkills({defender,attacker,canUseSkill}).filter(s=>TacticalEngine.canTarget(map,defender,attacker,s,environmentState));if(!selectedGuardInterception){guardianMethods.forEach(m=>action("GUARD_METHOD",`${m.name}｜${m.sourceName||m.method}`,false,{methodId:m.id}));action("BACK_GUARD_METHOD","返回");}else{action("GUARD_ACCEPT","援護承受｜原目標不反擊");counterSkills.forEach(s=>action("GUARD_COUNTER",`原目標反擊｜${s.name}｜${resourceLabel(defender,s)}`,false,{skillId:s.id}));action("BACK_GUARD_INTERCEPTION","返回防禦方式");}}else{const guards=guardCandidates();action("REACTION_COUNTER","反擊",prep.counterSkills.length===0);action("REACTION_DEFENSE","防禦",prep.defenseMethods.length===0);action("REACTION_EVADE","迴避");action("REACTION_GUARD","援護防禦",guards.length===0);}return model;}

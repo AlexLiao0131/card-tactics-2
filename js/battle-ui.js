@@ -385,6 +385,46 @@ export class BattleUI{
     if(this.logShell.classList.contains("active"))this.logPanel.scrollTop=this.logPanel.scrollHeight;
   }
 
+  // One shared preview card for offensive confirmation and enemy reactions.
+  // This is presentation only: it cannot spend a turn, roll dice or change HP.
+  renderCombatForecast(forecast,{isEnemyTurn=false,selection=null}={}){
+    if(!forecast)return null;
+    const card=document.createElement('section');card.className='combat-forecast';
+    const heading=document.createElement('div');heading.className='combat-forecast-heading';
+    heading.textContent=isEnemyTurn?'敵方攻擊預測':'我方主動攻擊預測';card.appendChild(heading);
+    const stats=document.createElement('div');stats.className='combat-forecast-numbers';
+    stats.textContent=`命中 ${forecast.hit}%　暴擊 ${forecast.crit}%　一般傷害 ${forecast.normalDamage}　暴擊傷害 ${forecast.criticalDamage}`;
+    card.appendChild(stats);
+    const title=document.createElement('div');title.className='combat-forecast-label';
+    title.textContent=`目標 HP ${forecast.hp}/${forecast.maxHp}　→　${forecast.hpAfterNormal}/${forecast.maxHp}（命中時）`;
+    card.appendChild(title);
+    const track=document.createElement('div');track.className='combat-forecast-track';
+    const current=document.createElement('div');current.className='combat-forecast-current';
+    const loss=document.createElement('div');loss.className='combat-forecast-loss';
+    current.style.width=`${100*forecast.hpAfterNormal/forecast.maxHp}%`;
+    loss.style.width=`${100*(forecast.hp-forecast.hpAfterNormal)/forecast.maxHp}%`;
+    track.append(current,loss);card.appendChild(track);
+    if(isEnemyTurn){
+      const choices=document.createElement('div');choices.className='combat-forecast-choices';
+      const normal=document.createElement('div');normal.textContent=`反擊／不防禦：敵方命中 ${forecast.hit}%`;
+      choices.appendChild(normal);
+      const dodge=document.createElement('div');
+      dodge.textContent=`主動迴避：全中 ${forecast.evade.full}%／擦傷 ${forecast.evade.graze}%／閃避 ${forecast.evade.miss}%（擦傷傷害 ${forecast.evade.grazeDamage}）`;
+      choices.appendChild(dodge);
+      for(const defense of forecast.defenseMethods||[]){
+        const el=document.createElement('div');
+        el.textContent=defense.valid
+          ?`${defense.label}：防禦成功 ${defense.successRate}%（命中時），成功承傷 ${defense.damageIfBlocked}，失敗承傷 ${defense.damageIfFailed}`
+          :`${defense.label}：${defense.bypassed?'攻擊無視此防禦':'對此攻擊類型無效'}`;
+        choices.appendChild(el);
+      }
+      card.appendChild(choices);
+    }
+    const foot=document.createElement('small');foot.className='combat-forecast-note';
+    foot.textContent=forecast.note;card.appendChild(foot);
+    return card;
+  }
+
   renderEngagement(){
     const model=this.runtime?.getEngagementPresentation?.();if(!model)return;
     const bar=q("skillBar");
@@ -397,6 +437,9 @@ export class BattleUI{
     const skill=document.createElement("span");
     skill.textContent=`使用技能：${model.skillName||"未知技能"}${model.attackType?`｜${model.attackType}`:""}`;
     incoming.append(actor,skill);bar.appendChild(incoming);
+    const forecast=this.renderCombatForecast(model.forecast,{isEnemyTurn:model.mode!=="support-select"});
+    if(forecast)bar.appendChild(forecast);
+
 
     for(const group of model.groups||[]){
       const wrap=document.createElement("div");wrap.className="support-choice";
