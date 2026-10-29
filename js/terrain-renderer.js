@@ -125,6 +125,7 @@ export class TerrainRenderer{
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
     this.grassSignature="";this.grassMesh=null;this.grassBlades=[];
+    this.grassInvalidation={checks:0,skipped:0,rebuilds:0,selectedClumps:0,dependencyTiles:0};
     this.grassTime=0;this.grassFrameTime=0;this.grassWasCalm=true;
     this.grassMaterial=new BABYLON.StandardMaterial("terrain-grass",scene);
     this.grassMaterial.diffuseColor=BABYLON.Color3.White();
@@ -178,17 +179,14 @@ export class TerrainRenderer{
     return texture;
   }
 
-  syncGrass(state,tiles){
-    this.grassWind=state?.presentation?.environment?.wind||{x:0,y:0,strength:0};
-    const signature=tiles.map(t=>[t.x,t.y,t.terrain,t.dryTerrain,t.material,t.elevation,t.waterDepth,t.waterSurfaceZ,t.snowDepth,t.iceThickness,t.soilMoisture,t.debrisMass,t.fogged,!!t.core,!!t.capturePoint,(t.effects||[]).join(",")].join(":")).join("|");
-    if(signature===this.grassSignature)return;
-    this.grassSignature=signature;
-    this.grassBlades=[];
-    if(!tiles.length){
-      this.grassMesh?.setEnabled(false);
-      return;
-    }
-    const byKey=new Map(tiles.map(t=>[keyOf(t.x,t.y),t])),candidates=[];
+  // Grass is owned by this terrain renderer, but its exact dependency domain
+  // is NOT the entire flooded 704-tile map. The clump budget and positions are
+  // deterministic; only the selected grass tiles and the two-cell neighbourhood
+  // sampled by the existing slope/shore/material resolver may change their
+  // geometry, eligibility or tint. No thresholds or source geometry change.
+  grassInputs(tiles){
+    const byKey=new Map(tiles.map(t=>[keyOf(t.x,t.y),t]));
+    const candidates=[];
     for(const tile of tiles){
       const terrain=this.surfaceResolver.baseTerrainOf(tile);
       if(!["PLAIN","FOREST"].includes(terrain)||tile.core||tile.capturePoint||
@@ -198,11 +196,45 @@ export class TerrainRenderer{
       const clumps=terrain==="FOREST"?5:3;
       for(let i=0;i<clumps;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
     }
-    // Distribute a fixed budget across the map, not just the first rows.
     candidates.sort((a,b)=>a.rank-b.rank);
+    const selected=candidates.slice(0,896);
+    const dependencies=new Set();
+    for(const {tile} of selected){
+      for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++)
+        dependencies.add(keyOf(tile.x+dx,tile.y+dy));
+    }
+    const inputs=[];
+    for(const tile of tiles){
+      if(!dependencies.has(keyOf(tile.x,tile.y)))continue;
+      inputs.push([tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,
+        tile.elevation,tile.waterDepth,tile.waterSurfaceZ,tile.snowDepth,
+        tile.iceThickness,tile.soilMoisture,tile.debrisMass,tile.river,
+        tile.flowX,tile.flowY,tile.flowSpeed]);
+    }
+    // The published terrain geometry registry remains the sole root-height
+    // authority. A new geometry publication always invalidates grass roots.
+    const signature=JSON.stringify([this.surfaceResolver.renderedSurfaceGeometryRevision,
+      selected.map(({tile,i})=>[tile.x,tile.y,i]),inputs]);
+    return{signature,selected,byKey,dependencyTiles:inputs.length};
+  }
+
+  syncGrass(state,tiles){
+    this.grassWind=state?.presentation?.environment?.wind||{x:0,y:0,strength:0};
+    const {signature,selected,byKey,dependencyTiles}=this.grassInputs(tiles);
+    this.grassInvalidation.checks++;
+    this.grassInvalidation.selectedClumps=selected.length;
+    this.grassInvalidation.dependencyTiles=dependencyTiles;
+    if(signature===this.grassSignature){this.grassInvalidation.skipped++;return;}
+    this.grassInvalidation.rebuilds++;
+    this.grassSignature=signature;
+    this.grassBlades=[];
+    if(!selected.length){
+      this.grassMesh?.setEnabled(false);
+      return;
+    }
     const positions=[],colors=[],indices=[];
     const variantCounts=[0,0,0],clumpsByTerrain={PLAIN:0,FOREST:0};
-    for(const {tile,i,rank} of candidates.slice(0,896)){
+    for(const {tile,i,rank} of selected){
       const random=salt=>textureNoise(tile.x*13+i,tile.y*13,8192,salt);
       const ox=(random(173)-.5)*.78,oz=(random(397)-.5)*.78;
       // Leave the tile centre legible for units and small props.
@@ -981,6 +1013,7 @@ export class TerrainRenderer{
       detailTextureSize:128,
       grassBlades:this.grassBlades.length,
       grassClumpLimit:896,
+      grassInvalidation:{...this.grassInvalidation},
       grassAnimationHz:30,
       materialMixSize:this.surfaceMaterial.mixTexture1.getSize(),
       polygonalSurface:true,
