@@ -24,6 +24,57 @@ const STATUS_PICTOGRAMS=Object.freeze({
   DEF_UP:{symbol:"▣",kind:"defense"},
   SPD_UP:{symbol:"»",kind:"speed"}
 });
+// HUD is a presentation consumer of the existing EquipmentDatabase and
+// VisualDatabase. The paths are stable PNG entry points, not generated assets.
+// Missing PNGs keep a simple typographic fallback without broken-image boxes.
+const EQUIPMENT_FALLBACK=Object.freeze({
+  "weapon-bow":"弓","weapon-sword":"劍","weapon-polearm":"槍",
+  "weapon-hammer":"錘","weapon-staff":"杖","weapon-knife":"刀",
+  "weapon-trident":"戟","weapon-greatsword":"巨","weapon-rapier":"刺",
+  "weapon-claw":"爪","weapon-club":"棍","weapon-weapon":"武",
+  "armor-light":"輕","armor-medium":"中","armor-heavy":"重",
+  "armor-none":"無","shield":"盾"
+});
+function weaponIconKind(weapon){
+  const declared=String(weapon?.weaponKind||"").toUpperCase();
+  if(declared)return declared;
+  // These two legacy equipment definitions have no weaponKind field.
+  if(weapon?.id==="forest_claw")return"CLAW";
+  if(weapon?.id==="training_club")return"CLUB";
+  return"WEAPON";
+}
+function equipmentIcons(unit){
+  // Never derive loadout from the UI snapshot or an older copy of the card.
+  const live=globalThis.UnitRuntimeEngine?.getLiveUnit?.(unit.id);
+  const character=live?.character||unit.character;
+  if(!character)return[];
+  const icons=[];
+  const weapons=Object.values(character.weapons||{}).filter(Boolean);
+  const seen=new Set();
+  for(const weapon of weapons){
+    if(seen.has(weapon.id))continue;
+    seen.add(weapon.id);
+    const key=`weapon-${weaponIconKind(weapon).toLowerCase()}`;
+    icons.push({key,name:weapon.name||"武器",label:EQUIPMENT_FALLBACK[key]||"武"});
+  }
+  const armor=character.armor;
+  if(armor){
+    const kind=String(armor.type||armor.types?.[0]||"NONE").toLowerCase();
+    const key=`armor-${["light","medium","heavy"].includes(kind)?kind:"none"}`;
+    icons.push({key,name:armor.name||"護甲",label:EQUIPMENT_FALLBACK[key]});
+  }
+  const guard=character.guard||character.equipment?.find?.(item=>
+    item?.defenseProfiles?.some?.(profile=>profile.method==="GUARD"));
+  if(guard)icons.push({key:"shield",name:guard.name||"盾牌",label:"盾"});
+  return icons;
+}
+function iconAsset(group,key){
+  const override=globalThis.VisualDatabase?.asset?.(group,key,"hudIcon");
+  if(override)return override;
+  const category=group==="equipment"?"equipment":"status";
+  return`assets/images/ui/icons/${category}/${key}.png`;
+}
+
 const STATUS_ICON_KEYS=Object.keys(STATUS_PICTOGRAMS);
 function statusPictogram(effect){
   const positive=effect?.classification==="POSITIVE";
@@ -68,6 +119,7 @@ export class UnitHudOverlay{
     this.nodes=new Map();
     this.hudUnitId=null;
     this.floats=[];
+    this.failedIcons=new Set();
 
     const battleScreen=document.getElementById("battleScreen");
     if(!battleScreen)throw new Error("UnitHudOverlay requires #battleScreen.");
@@ -106,6 +158,8 @@ export class UnitHudOverlay{
     const manaTrack=createElement("div","unit-hud-track unit-hud-mana-track");
     const manaFill=createElement("i","unit-hud-fill unit-hud-mana-fill");
     const resourceBox=createElement("div","unit-hud-resource-box");
+    const equipment=createElement("div","unit-hud-equipment");
+    equipment.setAttribute("aria-label","目前裝備");
     const statuses=createElement("div","unit-hud-statuses");
     statuses.setAttribute("aria-label","目前增益與異常狀態");
     const portrait=createElement("div","unit-hud-portrait");
@@ -123,12 +177,38 @@ export class UnitHudOverlay{
     track.appendChild(fill);
     manaRow.append(manaIcon,mana);
     manaTrack.appendChild(manaFill);
-    details.append(row,hpRow,track,manaRow,manaTrack,resourceBox,statuses);
+    details.append(row,hpRow,track,manaRow,manaTrack,resourceBox,equipment,statuses);
     node.append(portrait,details);
     this.root.appendChild(node);
-    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,resourceBox,statuses,image,fallback,portraitPath:undefined,key:""};
+    const hud={node,name,hp,fill,manaRow,mana,manaTrack,manaFill,resourceBox,equipment,statuses,image,fallback,portraitPath:undefined,key:""};
     this.nodes.set(unit.id,hud);
     return hud;
+  }
+
+  makeIcon(key,label,name,kind="equipment"){
+    const item=createElement("span",kind==="status"?"unit-hud-status":"unit-hud-equipment-slot");
+    const image=createElement("img","unit-hud-icon-image");
+    const fallback=createElement("span","unit-hud-icon-fallback");
+    const src=iconAsset(kind==="status"?"effects":"equipment",key);
+    image.alt="";image.draggable=false;image.hidden=true;
+    image.dataset.iconSource=src;
+    fallback.textContent=label;
+    item.title=name;item.setAttribute("role","img");item.setAttribute("aria-label",name);
+    image.onload=()=>{image.hidden=false;fallback.hidden=true;};
+    image.onerror=()=>{this.failedIcons.add(src);image.hidden=true;fallback.hidden=false;};
+    item.append(image,fallback);
+    return item;
+  }
+
+  // Only a held HUD requests its PNGs. Do not load 10+ missing PNGs per unit
+  // when a large army is initialized. The fallback is always available.
+  loadIcons(hud){
+    for(const image of hud.node.querySelectorAll("img[data-icon-source]")){
+      if(image.dataset.iconRequested==="1")continue;
+      image.dataset.iconRequested="1";
+      const src=image.dataset.iconSource;
+      if(src&&!this.failedIcons.has(src))image.src=new URL(src,document.baseURI).href;
+    }
   }
 
   updateContent(hud,unit){
@@ -150,7 +230,9 @@ export class UnitHudOverlay{
     }
     const indicators=globalThis.UnitAnimationEngine?.statusIndicators?.(unit)||[];
     const statusKey=indicators.map(effect=>`${effect.id}:${effect.classification}:${effect.name}:${effect.remaining??""}`).join("|");
-    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${statusKey}|${unit.team}|${unit.finished?1:0}`;
+    const equipped=equipmentIcons(unit);
+    const equipKey=equipped.map(icon=>`${icon.key}:${icon.name}`).join("|");
+    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}`;
     if(hud.key===key)return;
     hud.key=key;
     hud.name.textContent=String(unit.name||unit.id||"UNIT");
@@ -168,18 +250,17 @@ export class UnitHudOverlay{
       fill.style.background="#8d5bd6";
       track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
     }
+    hud.equipment.replaceChildren();
+    for(const item of equipped){
+      hud.equipment.appendChild(this.makeIcon(item.key,item.label,item.name));
+    }
+    hud.equipment.hidden=equipped.length===0;
     hud.statuses.replaceChildren();
     for(const effect of indicators){
       const graphic=statusPictogram(effect);
-      const chip=createElement("span","unit-hud-status");
-      chip.dataset.statusKind=graphic.kind;
-      chip.textContent=graphic.symbol;
-      // Only the icon is visible; naming and duration remain available as
-      // accessible metadata and can later accompany a dedicated PNG.
       const detail=effect.remaining==null?effect.name:`${effect.name}｜剩餘 ${effect.remaining} 回合`;
-      chip.title=detail;
-      chip.setAttribute("role","img");
-      chip.setAttribute("aria-label",detail);
+      const chip=this.makeIcon(graphic.kind,graphic.symbol,detail,"status");
+      chip.dataset.statusKind=graphic.kind;
       hud.statuses.appendChild(chip);
     }
     hud.statuses.hidden=indicators.length===0;
@@ -194,7 +275,10 @@ export class UnitHudOverlay{
       hud.node.hidden=id!==this.hudUnitId;
       // Loading a full-size card painting while hidden is deliberately lazy.
       // Once a long hold selects it, request the real portrait immediately.
-      if(id===this.hudUnitId&&hud.portraitPath)hud.image.loading="eager";
+      if(id===this.hudUnitId){
+        if(hud.portraitPath)hud.image.loading="eager";
+        this.loadIcons(hud);
+      }
     }
   }
 
@@ -296,6 +380,6 @@ export class UnitHudOverlay{
   diagnostics(){return{count:this.nodes.size,expandedUnitId:this.hudUnitId,activeFloats:this.floats.length};}
   dispose(){
     window.removeEventListener("cardtactics:unit-hud-hold",this.onHold);
-    this.root.remove();this.nodes.clear();this.units=[];this.hudUnitId=null;this.floats=[];
+    this.root.remove();this.nodes.clear();this.units=[];this.hudUnitId=null;this.floats=[];this.failedIcons.clear();
   }
 }

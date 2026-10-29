@@ -58,8 +58,8 @@ export class BattleUI{
           left:calc(50% + var(--inspector-shift-x,0px));
           right:auto;top:calc(100% + 6px);bottom:auto;
           transform:translateX(-50%);
-          width:min(342px,calc(100vw - 20px));
-          max-height:min(46vh,350px);pointer-events:auto;
+          width:min(282px,calc(100vw - 20px));
+          max-height:min(32vh,255px);pointer-events:auto;
           text-align:left;color:#e6eaf1;
           border-color:rgba(214,184,120,.7)
         }
@@ -67,8 +67,24 @@ export class BattleUI{
         .unit-hud .battle-context-inspector.inspection-above{top:auto;bottom:calc(100% + 6px)}
         .unit-hud .battle-context-inspector button{pointer-events:auto;touch-action:manipulation}
         .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+        .unit-hud .battle-context-inspector.inspection-compact #contextUnitName,
+        .unit-hud .battle-context-inspector.inspection-compact #contextUnitVitals,
+        .unit-hud .battle-context-inspector.inspection-compact #contextUnitPosition,
+        .unit-hud .battle-context-inspector.inspection-compact #contextUnitSkills,
+        .unit-hud .battle-context-inspector.inspection-compact .context-section-title{display:none}
+        .unit-hud-equipment{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+        .unit-hud-equipment[hidden]{display:none}
+        .unit-hud-equipment-slot{box-sizing:border-box;display:inline-flex;align-items:center;
+          justify-content:center;width:21px;height:21px;border:1px solid #7990a8;
+          border-radius:3px;background:rgba(22,32,45,.88);color:#dbe6f4}
+        .unit-hud-icon-image{width:100%;height:100%;object-fit:contain}
+        .unit-hud-icon-image[hidden],.unit-hud-icon-fallback[hidden]{display:none}
+        .unit-hud-icon-fallback{font-size:11px;font-weight:750;line-height:1}
+        .unit-hud-status:has(.unit-hud-icon-image){overflow:hidden}
+        .unit-hud-status .unit-hud-icon-fallback{font-size:12px}
+        .unit-hud .battle-context-inspector.inspection-compact .context-grid{gap:3px}
         @media(max-width:700px){
-          .unit-hud .battle-context-inspector{max-height:42vh}
+          .unit-hud .battle-context-inspector{max-height:30vh}
           .unit-hud .battle-context-inspector .context-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
         }`;
       document.head.appendChild(style);
@@ -349,7 +365,7 @@ export class BattleUI{
     hud.appendChild(this.context);
     // One layout read only on long-hold (never on every render frame).
     const rect=hud.getBoundingClientRect(),bounds=this.inspectorHome.getBoundingClientRect();
-    const width=Math.min(342,Math.max(0,bounds.width-20));
+    const width=Math.min(282,Math.max(0,bounds.width-20));
     const center=rect.left+rect.width/2;
     const safeCenter=Math.min(bounds.right-width/2-10,Math.max(bounds.left+width/2+10,center));
     hud.style.setProperty("--inspector-shift-x",`${Math.round(safeCenter-center)}px`);
@@ -368,6 +384,7 @@ export class BattleUI{
       this.heldInspection=null;
       window.dispatchEvent(new CustomEvent("cardtactics:unit-hud-hold",{detail:null}));
     }
+    this.context.classList.toggle("inspection-compact",!!open&&!!this.heldInspection?.unit);
     this.context.classList.toggle("open",!!open);
     this.context.setAttribute("aria-hidden",String(!open));
     if(open){
@@ -405,7 +422,7 @@ export class BattleUI{
       const stats=[
         ["ATK",s.atk],["DEF",s.def],["MATK",s.matk],["MDEF",s.mdef],
         ["HIT",`${s.hit??"-"}%`],
-        ["基準閃避",s.baseDodge==null?"—":`${s.baseDodge}%`],
+        ...(!this.heldInspection?.unit?[["基準閃避",s.baseDodge==null?"—":`${s.baseDodge}%`]]:[]),
         ["EVA修正",s.eva==null?"—":`${s.eva>=0?"+":""}${s.eva}`],
         ["CRIT",`${s.crit??"-"}%`],["SPD",s.spd]
       ];
