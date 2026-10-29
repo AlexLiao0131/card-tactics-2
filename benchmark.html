@@ -2,33 +2,40 @@
 <html lang="zh-Hant">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Card Tactics 2.0｜正式戰局效能測試</title></head>
 <body style="background:#07101c;color:#eaf1ff;font:14px system-ui;padding:18px">
-  <p id="bootMessage">正在驗證 8N-D 測試控制器及 8N-C 正式 Water／MapObject 版本…</p>
+  <p id="bootMessage">正在驗證 8N-E 敵方階段診斷及 8N-C 正式 Water／MapObject 版本…</p>
   <script type="module">
     try {
       // Use the real top-level game document and its one original Babylon scene.
       // Reject stale JS BEFORE allowing a costly full-game benchmark to start.
-      const token=`8ND-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
+      const token=`8NE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
       const url=path=>`${path}${path.includes('?')?'&':'?'}benchBoot=${encodeURIComponent(token)}`;
       const controllerUrl=url('./js/full-game-benchmark.js');
       const waterUrl=url('./js/water-renderer.js');
       const mapObjectsUrl=url('./js/map-object-renderer.js');
       const mainUrl=url('./js/main.js');
-      const [gameReply,controllerReply,waterReply,mapObjectsReply,mainReply]=await Promise.all([
+      const enemyAiUrl=url('./js/tactical-enemy-controller.js');
+      const battleUiUrl=url('./js/battle-ui.js');
+      const battleInputUrl=url('./js/battle-input-controller.js');
+      const [gameReply,controllerReply,waterReply,mapObjectsReply,mainReply,aiReply,uiReply,inputReply]=await Promise.all([
         fetch(url('./index.html'),{cache:'no-store'}),
         fetch(controllerUrl,{cache:'no-store'}),
         fetch(waterUrl,{cache:'no-store'}),
         fetch(mapObjectsUrl,{cache:'no-store'}),
-        fetch(mainUrl,{cache:'no-store'})
+        fetch(mainUrl,{cache:'no-store'}),
+        fetch(enemyAiUrl,{cache:'no-store'}),
+        fetch(battleUiUrl,{cache:'no-store'}),
+        fetch(battleInputUrl,{cache:'no-store'})
       ]);
       if(!gameReply.ok)throw new Error(`index.html HTTP ${gameReply.status}`);
       if(!controllerReply.ok)throw new Error(`full-game-benchmark.js HTTP ${controllerReply.status}`);
       if(!waterReply.ok)throw new Error(`water-renderer.js HTTP ${waterReply.status}`);
       if(!mapObjectsReply.ok)throw new Error(`map-object-renderer.js HTTP ${mapObjectsReply.status}`);
       if(!mainReply.ok)throw new Error(`main.js HTTP ${mainReply.status}`);
-      const [original,controllerCode,waterCode,mapObjectsCode,mainCode]=await Promise.all([
+      if(!aiReply.ok||!uiReply.ok||!inputReply.ok)throw new Error('8N-E AI/UI 檔案尚未提供');
+      const [original,controllerCode,waterCode,mapObjectsCode,mainCode,aiCode,uiCode,inputCode]=await Promise.all([
         gameReply.text(),controllerReply.text(),waterReply.text(),mapObjectsReply.text(),mainReply.text()
       ]);
-      const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_D_TEST_DRIVER['"]/.test(controllerCode)
+      const controllerReady=/diagnosticRevision\s*:\s*['"]STAGE_8N_E_ENEMY_PHASE_EVIDENCE['"]/.test(controllerCode)
         &&controllerCode.includes('eventLoopObservations')
         &&controllerCode.includes('TREE_BUSH_WIND_UPDATE_AND_UPLOAD')
         &&controllerCode.includes('CARD_TACTICS_2_MANUAL_PLAY_PERF')
@@ -43,12 +50,15 @@
         &&mapObjectsCode.includes('directPositionUploads');
       const mainReady=mainCode.includes('const BOOT_REVISION=Date.now()')
         &&mainCode.includes('versioned(path)');
-      if(!controllerReady||!waterReady||!mapObjectsReady||!mainReady){
+      const aiReady=aiCode.includes('enemyAI.chooseAttack')&&aiCode.includes('enemyAI.traverseUnitStep');
+      const uiReady=uiCode.includes('inspectHeldTile(x,y)')&&inputCode.includes('cardtactics:battle-inspect-hold')
+        &&!original.includes('id="infoToggle"')&&!original.includes('id="hudToggle"');
+      if(!controllerReady||!waterReady||!mapObjectsReady||!mainReady||!aiReady||!uiReady){
         const which=[!controllerReady?'full-game-benchmark.js':'',
           !waterReady?'water-renderer.js':'',
           !mapObjectsReady?'map-object-renderer.js':'',
-          !mainReady?'main.js':''].filter(Boolean).join('、');
-        throw new Error(`GitHub Pages 尚未提供完整 8N-D 測試器或 8N-C 遊戲程式（${which}）。本次測試已停止，以免產生舊版本的錯誤診斷。`);
+          !mainReady?'main.js':'',!aiReady?'tactical-enemy-controller.js':'',!uiReady?'HUD/長按檢視':''].filter(Boolean).join('、');
+        throw new Error(`GitHub Pages 尚未提供完整 8N-E 測試器或 8N-C 遊戲程式（${which}）。本次測試已停止，以免產生舊版本的錯誤診斷。`);
       }
       if(!original.includes('</body>')||!original.includes('</head>'))
         throw new Error('正式 index.html 缺少 head/body 結尾');
@@ -62,7 +72,9 @@
       // limited to the benchmark document and does not touch normal index.html.
       const importMap=JSON.stringify({imports:{
         './js/water-renderer.js':waterUrl,
-        './js/map-object-renderer.js':mapObjectsUrl
+        './js/map-object-renderer.js':mapObjectsUrl,
+        './js/battle-ui.js':battleUiUrl,
+        './js/battle-input-controller.js':battleInputUrl
       }});
       const importMapTag='<script type="importmap">'+importMap+'<'+'/script>';
       const freshMainTag=`<script type="module" src="${mainUrl}"><`+'/script>';
