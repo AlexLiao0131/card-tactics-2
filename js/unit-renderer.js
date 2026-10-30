@@ -1882,6 +1882,10 @@ export class UnitRenderer{
   }
 
   disposeEntry(id){
+    // Presentation ownership includes queued actions, even when the unit has
+    // never had a drawable entry (e.g. an enemy hidden by fog/night).
+    this.animationQueues.delete(id);
+    this.activeAnimations.delete(id);
     const entry=this.entries.get(id);
     if(!entry)return;
     entry.dispose?.();
@@ -1892,8 +1896,6 @@ export class UnitRenderer{
     this.entries.delete(id);
     this.figureBuildStats.entriesDisposed++;
     this.meshes.delete(id);
-    this.animationQueues.delete(id);
-    this.activeAnimations.delete(id);
   }
 
   setVisibility(entry,value){
@@ -1943,10 +1945,19 @@ export class UnitRenderer{
     entry.texture.uOffset=col/columns;entry.texture.vOffset=row/rows;
   }
 
-  enqueueEvents(events=[]){
+  enqueueEvents(events=[],visibleIds=new Set(),previouslyRenderedIds=new Set()){
+    // Events are facts about gameplay, NOT an animation history for later
+    // discovery. Only play actions for units already visible in the preceding
+    // published scene and still visible now. A newly revealed unit starts at
+    // its current snapshot pose; it must not replay its unseen enemy turn.
+    // Visible deaths are the exception: their unit has already left the alive
+    // snapshot, but the last visible figure must finish its death animation.
     for(const event of events||[]){
       if(event?.type!=="UNIT_ANIMATION"||!event.unitId)continue;
-      const id=String(event.unitId),queue=this.animationQueues.get(id)||[];
+      const id=String(event.unitId);
+      if(!previouslyRenderedIds.has(id))continue;
+      if(!visibleIds.has(id)&&event.state!=="DEATH")continue;
+      const queue=this.animationQueues.get(id)||[];
       if(event.state==="DEATH")queue.splice(0);
       queue.push({...event});
       this.animationQueues.set(id,queue);
@@ -2552,11 +2563,21 @@ export class UnitRenderer{
   }
 
   sync(state,events=[]){
-    this.enqueueEvents(events);
-    const visible=new Set();
+    // Snapshot.units is already filtered by TacticalEngine's authoritative
+    // viewer visibility. Never inspect the unfiltered game-state roster here.
+    const visible=new Set((state?.units||[]).map(unit=>String(unit.id)));
+    const previouslyRendered=new Set([...this.entries.keys()].map(String));
+    this.enqueueEvents(events,visible,previouslyRendered);
+    // Purge pending and active animations for disappeared units, including
+    // units that never had a mesh. Preserve only visible deaths in progress.
+    for(const id of new Set([...this.animationQueues.keys(),...this.activeAnimations.keys()])){
+      const wasRendered=previouslyRendered.has(id);
+      if(wasRendered&&(visible.has(id)||this.hasDeathPending(id)))continue;
+      this.animationQueues.delete(id);
+      this.activeAnimations.delete(id);
+    }
 
     for(const unit of state?.units||[]){
-      visible.add(String(unit.id));
       const definition=this.battleVisual(unit),signature=this.visualSignature(unit,definition);
       let entry=this.entries.get(unit.id);
       if(entry?.signature!==signature){this.disposeEntry(unit.id);entry=null;}
