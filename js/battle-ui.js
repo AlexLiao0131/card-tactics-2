@@ -405,7 +405,10 @@ export class BattleUI{
     loss.style.width=`${100*(forecast.hp-forecast.hpAfterNormal)/forecast.maxHp}%`;
     track.append(current,loss);card.appendChild(track);
     if(isEnemyTurn){
-      const choices=document.createElement('div');choices.className='combat-forecast-choices';
+      // Keep the full decision breakdown accessible without forcing the
+      // response buttons into uneven grid cells or an oversized preview card.
+      const choices=document.createElement('details');choices.className='combat-forecast-choices';
+      const summary=document.createElement('summary');summary.textContent='詳細反應判定';choices.appendChild(summary);
       const normal=document.createElement('div');normal.textContent=`反擊／不防禦：敵方命中 ${forecast.hit}%`;
       choices.appendChild(normal);
       const dodge=document.createElement('div');

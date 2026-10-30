@@ -822,7 +822,8 @@ export class EnvironmentRenderer{
       for(let i=0;i<3;i++)existing[i]=Math.min(1.65,existing[i]+Math.max(0,Number(color?.[i]??1))*energy*daylightFactor);
       map.set(key,existing);
     };
-    for(const source of state?.presentation?.environment?.lightSources||[]){
+    const publishedLights=state?.presentation?.environment?.lightSources||[];
+    for(const source of publishedLights){
       if(source.visible===false)continue;
       const color=lightColor(source.color,[1,.46,.14]);
       const intensity=Math.max(0,Math.min(3,Number(source.intensity??1)));
@@ -837,6 +838,24 @@ export class EnvironmentRenderer{
         for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
           const d=Math.hypot(dx,dy);if(d>r)continue;
           stamp(source.x+dx,source.y+dy,color,intensity*.28*(1-d/Math.max(1,r+1)));
+        }
+      }
+    }
+    // Forest Language reveals actual cells via TacticalEngine. At night make
+    // those already-observed cells as readable as an allied unit's own tile,
+    // using this existing surface-only radiance field. This does not create
+    // PointLights, reveal unreached tiles, or change enemy/gameplay sight.
+    if(night){
+      const alliedTileLight=publishedLights.find(source=>
+        source.source==="UNIT_TILE_LIGHT"&&Number(source.intensity)>.5);
+      if(alliedTileLight){
+        const tint=lightColor(alliedTileLight.color,[.57,.78,1]);
+        const energy=Number(alliedTileLight.intensity)*.63;
+        for(const tile of state?.map?.tiles||[]){
+          if(tile.plantObserved!==true||tile.atmosphericVisible!==true)continue;
+          const key=`${tile.x},${tile.y}`,current=map.get(key)||[0,0,0];
+          for(let i=0;i<3;i++)current[i]=Math.max(current[i],tint[i]*energy);
+          map.set(key,current);
         }
       }
     }
