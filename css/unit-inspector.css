@@ -69,6 +69,8 @@
 .combat-forecast-current{height:100%;background:#55b46c}
 .combat-forecast-loss{height:100%;background:#d99953}
 .combat-forecast-choices{display:grid;gap:4px;margin-top:3px;color:#e3ebf6}
+.combat-forecast-choices>summary{cursor:pointer;padding:4px 5px;color:#f7dba1;font-weight:700;list-style-position:inside}
+.combat-forecast-choices:not([open])>div{display:none}
 .combat-forecast-choices>div{padding:4px 5px;border:1px solid #293c51;border-radius:4px}
 .combat-forecast-note{color:#a4b5c8;font-size:10px}
 @media(max-width:700px){.combat-forecast{padding:7px;font-size:10px;max-height:32dvh;overflow-y:auto}}

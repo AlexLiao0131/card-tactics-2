@@ -83,6 +83,18 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
 .skillbar.engagement-overlay,.skillbar.enemy-reaction-panel{left:50%;top:50%;transform:translate(-50%,-50%);width:min(620px,calc(100vw - 20px));max-height:min(68vh,520px);padding:10px}
 .skillbar.engagement-overlay:not(:empty),.skillbar.enemy-reaction-panel:not(:empty){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .skillbar.engagement-overlay>strong,.skillbar.enemy-reaction-panel>strong{grid-column:1/-1;font-size:12px}
+/* Enemy reactions are a compact right-side vertical choice list, not a
+   mixed-height two-column card grid. Every actionable row gets equal space. */
+.skillbar.enemy-reaction-panel{left:auto;right:10px;top:50%;transform:translateY(-50%);width:min(265px,calc(100vw - 20px));max-height:min(76dvh,560px);overflow-y:auto}
+.skillbar.enemy-reaction-panel:not(:empty){display:flex;flex-direction:column;align-items:stretch;gap:6px}
+.skillbar.enemy-reaction-panel>strong{padding:0 2px;font-size:12px}
+.skillbar.enemy-reaction-panel>button{flex:0 0 auto;width:100%;min-height:42px;padding:9px 8px;font-size:12px;text-align:center;white-space:normal;line-height:1.3}
+.skillbar.enemy-reaction-panel .engagement-threat{flex:0 0 auto;margin:0;padding:6px 8px;gap:2px}
+.skillbar.enemy-reaction-panel .combat-forecast{flex:0 0 auto;margin:0;padding:7px 8px;gap:3px;min-width:0;max-height:none;overflow:visible}
+@media(max-width:700px){
+ .skillbar.enemy-reaction-panel{right:6px;width:min(236px,calc(100vw - 12px));max-height:min(78dvh,530px);padding:7px}
+ .skillbar.enemy-reaction-panel>button{min-height:40px;font-size:11px;padding:8px 6px}
+}
 .skillbar .support-choice{grid-column:1/-1;padding:6px;border:1px solid #ffffff18;border-radius:7px;background:#0b121caa}
 .skillbar .support-choice>div:first-child{margin-bottom:5px;font-size:10px;color:#d9e3ed;font-weight:800}
 
