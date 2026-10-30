@@ -1,14 +1,14 @@
 export const SKILLS={
-  bow_shot:{id:"bow_shot",name:"弓箭射擊",category:"ATTACK",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"INHERIT",speed:0,target:"ENEMY",support:true,affixes:[]},
-  black_slash:{id:"black_slash",name:"黑劍斬擊",category:"ATTACK",weapon:"black_sword",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
-  shadow_step:{id:"shadow_step",name:"幽影步",category:"SPECIAL",power:0,manaCost:16,range:{min:1,max:4},target:"TILE",targetType:"AOE",shape:"W_STEP",moveToTarget:true,ignorePath:true,support:false,affixes:[]},
+  bow_shot:{id:"bow_shot",name:"弓箭射擊",description:"莉維亞引弦凝神，以精準箭術追擊遠處敵人。若長弓受到火焰或雷霆祝福，下一次離弦的箭矢也將釋放元素之力。",category:"ATTACK",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"INHERIT",speed:0,target:"ENEMY",support:true,affixes:[]},
+  black_slash:{id:"black_slash",name:"黑劍斬擊",description:"黑劍劃破敵人防線，沉穩而凌厲。若劍鋒已受火或雷元素祝福，斬擊將一併釋放那股力量。",category:"ATTACK",weapon:"black_sword",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
+  shadow_step:{id:"shadow_step",name:"幽影步",description:"莉維亞借暗影掩護身形，踏過尋常步伐難以跨越的距離，在戰場上迅速轉移位置。",category:"SPECIAL",power:0,manaCost:16,range:{min:1,max:4},target:"TILE",targetType:"AOE",shape:"W_STEP",moveToTarget:true,ignorePath:true,support:false,affixes:[]},
   nether_slash:{id:"nether_slash",name:"幽冥斬擊",category:"SPECIAL",weapon:"black_sword",power:1.25,manaCost:20,range:{min:1,max:3},attackType:"SLASH",element:"DARK",speed:5,target:"ENEMY",support:false,affixes:["SPACE_RIFT"],
-    description:"沿 W 軸裂隙斬擊射程內已發現敵人，無視中間地形阻擋與高度落差，但仍依正常命中、格擋、迴避及反擊判定。可在移動後施放，施放後結束行動。黑劍附魔時追加火／雷傷害。"},
+    description:"莉維亞以黑劍劃開幽冥帷幕，劍芒穿過阻隔，直取已察覺的敵影。敵人仍可閃避、格擋、招架或反擊；斬出此劍後，她將結束行動。若黑劍已獲火焰或雷霆祝福，幽冥之力也會挾帶元素一同襲來。"},
   elemental_enchant:{id:"elemental_enchant",name:"元素附魔",category:"MAGIC",power:1,manaCost:18,range:{min:0,max:4},target:"ALLY",targetType:"SINGLE",support:false,
-    description:"為自己或友軍指定的劍或弓附加火／雷元素。附魔成功後可使用自己的指定武器立即攻擊，或取消攻擊進入待機。友軍附魔保留至指定武器下一次真正發動攻擊；MISS、格擋與招架仍消耗附魔。",
+    description:"莉維亞喚醒火焰或雷霆，將祝福附在自己或戰友的劍與弓上。祝福會停留在指定兵刃，直到下一次真正出手；即使一擊落空或被敵人擋下，也會隨攻擊消散。若為自己的武器附魔，可順勢攻擊或收招待機。火之箭矢命中後引發爆裂，雷之攻擊則能讓相連水域迸發電光，波及所有接觸者。",
     utilityAction:{type:"ENCHANT_WEAPON"},enchantment:{power:1,weaponKinds:["SWORD","BOW"],
       onBowImpact:{FIRE:{radius:1,aoeDamage:45,environmentForces:["FIRE","EXPLOSION"]}}},
-    variants:[{id:"ENCHANT_FIRE",name:"火元素",element:"FIRE"},{id:"ENCHANT_THUNDER",name:"雷元素",element:"THUNDER"}]},
+    variants:[{id:"ENCHANT_FIRE",name:"火元素",element:"FIRE",description:"將灼熱烈焰封入劍鋒或箭矢。弓箭命中後，火勢會隨爆裂擴散至周遭地形與單位。"},{id:"ENCHANT_THUNDER",name:"雷元素",element:"THUNDER",description:"以奔雷祝福劍與弓。雷霆觸及相連水域時，電光會向外傳導，不分敵我。"}]},
   slash:{id:"slash",name:"制式斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
   heavy_slash:{id:"heavy_slash",name:"重裝斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:-5,target:"ENEMY",support:false,affixes:[]},
   claw:{id:"claw",name:"利爪攻擊",category:"ATTACK",weapon:"claw",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:5,target:"ENEMY",support:false,affixes:[]},
@@ -141,7 +141,28 @@ export const SkillDatabase=(()=>{
   function getPassive(id){return PASSIVES[id]||null}
   function passiveList(ids){return(ids||[]).map(getPassive).filter(Boolean)}
   function passiveDefenseProfiles(ids){const profiles=[];for(const passive of passiveList(ids))for(const profile of passive.defenseProfiles||[])profiles.push({...profile,sourceId:passive.id,sourceName:passive.name,sourceType:"PASSIVE"});return profiles}
-  return{get,list,getPassive,passiveList,passiveDefenseProfiles}
+  // Skill text is read-only metadata. Combat numbers always come from the original skill entry.
+  function inspect(skill){
+    if(!skill)return null;
+    const base=SKILLS[skill.baseSkillId]||SKILLS[skill.id]||skill;
+    const active={...base,...skill};
+    const range=active.range||base.range;
+    const element={FIRE:"火",THUNDER:"雷",DARK:"暗",WATER:"水",LIGHT:"光",HOLY:"聖",NATURE:"自然"}[active.element];
+    const relation={ALLY:"友軍",ENEMY:"敵軍",SELF:"自身",TILE:"地格"}[active.target];
+    const costs=[];
+    if(Number(active.manaCost)>0)costs.push(`魔力 ${active.manaCost}`);
+    for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${key} ${value}`);
+    const mechanics=[];
+    if(range)mechanics.push(`射程 ${range.min}–${range.max}`);
+    if(relation)mechanics.push(`目標 ${relation}`);
+    if(element)mechanics.push(`屬性 ${element}`);
+    if(costs.length)mechanics.push(`消耗 ${costs.join("、")}`);
+    if(active.support===true)mechanics.push("可支援攻擊");
+    const description=String(active.description||base.description||
+      (active.target==="ENEMY"?`以「${active.name}」向敵人發動攻勢。`:active.target==="ALLY"?`以「${active.name}」支援隊友。`:active.target==="SELF"?`以「${active.name}」強化自身。`:`施展「${active.name}」，按照技能所指定的目標與效果行動。`));
+    return{title:active.name||base.name,description,mechanics};
+  }
+  return{get,list,getPassive,passiveList,passiveDefenseProfiles,inspect}
 })();
 globalThis.SKILLS=SKILLS;
 globalThis.PASSIVES=PASSIVES;
