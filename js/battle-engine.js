@@ -52,6 +52,19 @@ export const BattleEngine=(()=>{
     }
     return{attackClass:cls,multiplier,applied};
   }
+  // Pure elemental component of a weapon enchantment. It has no hit/critical
+  // RNG and does not modify HP: the owning attack resolves those once.
+  // Damage uses the existing MAGIC armor/element affinity table and damage
+  // mitigation; the spell source MATK is captured when enchantment is cast.
+  function elementalEnchantmentDamage({matk,bonusPower,element,defender,critical=false,attackClass:originAttackClass}={}){
+    if(!defender||!Number.isFinite(Number(matk))||!Number.isFinite(Number(bonusPower)))return 0;
+    const et=match(R.elemental,element,defender?.armor?.element),pt=physicalMatch("MAGIC",defender);
+    const tier=clamp(pt+et,-2,2),raw=Math.max(1,Number(matk)*Number(bonusPower)-Number(defender.combat?.mdef||0)*.5);
+    const sourceSkill={attackType:"MAGIC",attackClass:originAttackClass,element};
+    const passiveTaken=passiveDamageTakenMultiplier(defender,null,sourceSkill,"MAGIC");
+    const taken=Number(defender?.modifiers?.damageTakenMultiplier??1)*passiveTaken.multiplier;
+    return Math.round(raw*R.mult[tier]*taken*(critical?1.5:1));
+  }
   function calculate(a,d,s,opt={}){
     const w=a.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,el=s.element==="INHERIT"?w?.element:s.element,basePt=physicalMatch(type,d),rawEt=match(R.elemental,el,d.armor.element),ignoreElementResistance=rawEt<0&&passives(a).some(p=>p.ignoreElementResistance===true),et=ignoreElementResistance?0:rawEt,aid=aff(w,"PHYSICAL_DEFENSE_IGNORE"),aia=aff(w,"IGNORE_ARMOR_DISADVANTAGE"),parry=hasDefenderAffix(d,"ARTIFACT_PARRY")&&(aid||aia);let ignore=aid&&!parry,armorDisadvIgnored=aia&&!parry,pt=basePt;if(armorDisadvIgnored&&pt<0)pt=0;const tierRaw=pt+et,tier=clamp(tierRaw,-2,2),m=R.mult[tier],magic=type==="MAGIC",offenseStat=String(s?.offenseStat||(magic?"MATK":"ATK")).toUpperCase(),defenseStat=String(s?.defenseStat||(magic?"MDEF":"DEF")).toUpperCase(),off=Number(a.combat[offenseStat.toLowerCase()]??(magic?a.combat.matk:a.combat.atk)),defBase=Number(d.combat[defenseStat.toLowerCase()]??(magic?d.combat.mdef:d.combat.def)),def=defenseStat==="DEF"&&ignore?0:defBase,raw=Math.max(1,off*s.power-def*.5),hc=hitChance(a,d,s),cc=critChance(a,s),spd=actionSpeed(a,s,d),traitM=traitMultiplier(d,s),passiveTaken=passiveDamageTakenMultiplier(d,w,s,type,opt);
     const guaranteed=aff(w,"GUARANTEED_HIT")||aff(s,"GUARANTEED_HIT"),hitRoll=opt.forceMiss||opt.forceHit||guaranteed?null:Math.random()*100;
@@ -59,7 +72,7 @@ export const BattleEngine=(()=>{
     const critRoll=hit&&!opt.forceCrit&&!opt.disableCrit?Math.random()*100:null,crit=hit&&(opt.forceCrit?true:(!opt.disableCrit&&critRoll<cc)),damageTakenM=Number(d?.modifiers?.damageTakenMultiplier??1)*passiveTaken.multiplier,damage=hit?Math.round(raw*m*traitM*damageTakenM*(crit?1.5:1)):0;
     return{weapon:w,type,el,basePt,pt,rawEt,et,ignoreElementResistance,tierRaw,tier,m,ignore,armorDisadvIgnored,artifactParry:parry,offenseStat,defenseStat,off,def,raw,hc,cc,spd,traitMultiplier:traitM,attackClass:passiveTaken.attackClass,passiveDamageTakenMultiplier:passiveTaken.multiplier,passiveDamageTakenRules:passiveTaken.applied,damageTakenMultiplier:damageTakenM,accuracy:accuracy(a,s),evasion:evasion(d),hitRoll,critRoll,guaranteedHit:guaranteed,hit,crit,damage,hpAfter:Math.max(0,d.combat.hp-damage)}
   }
-  return{getSkill,calculate,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
+  return{getSkill,calculate,elementalEnchantmentDamage,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
 })();
 globalThis.BATTLE_RULES=BATTLE_RULES;
 globalThis.BattleEngine=BattleEngine;

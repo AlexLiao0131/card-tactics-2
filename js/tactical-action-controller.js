@@ -2,7 +2,7 @@
   "use strict";
 
   function create(ctx){
-    let pendingMove=null,pendingTransport=null;
+    let pendingMove=null,pendingTransport=null,pendingEnchantment=null,enchantmentFollowup=null;
     const MAP_TRANSIT_ACTIONS=new Set(["TELEPORT_TO_TILE","WORMHOLE_TRANSIT"]);
 
     function state(){return ctx.actionState();}
@@ -317,7 +317,12 @@
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
       const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-Number(target.core.defense||30)));
-      ctx.damageCore(target.core.owner,raw,`${unit.character.name}【${skill.name}】`);
+      const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(unit,skill.weapon)||null;
+      // Core uses its existing single defense field (it has no armor element,
+      // MDEF, parry or shield). Do not route it through a fake unit battle.
+      const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
+      ctx.damageCore(target.core.owner,raw+bonus,`${unit.character.name}【${skill.name}】`);
+      if(enchantment)resolveEnchantmentImpact({actor:unit,skill,enchantment,target,result:{hit:true}});
       commitPendingMove(unit);
       unit.moved=true;unit.acted=true;unit.waited=true;
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
@@ -376,9 +381,132 @@
       });
     }
 
+    function enchantableWeaponSlots(unit,skill){
+      const allowed=new Set(skill?.enchantment?.weaponKinds||[]);
+      return Object.entries(unit?.character?.weapons||{}).filter(([,weapon])=>allowed.has(weapon?.weaponKind)).map(([slot,weapon])=>({slot,name:weapon.name||slot}));
+    }
+    function commitEnchantment(weaponSlot){
+      const p=pendingEnchantment;
+      if(!p||!p.attacker?.alive||!p.target?.alive||p.attacker.acted||!p.slots.some(w=>w.slot===weaponSlot))return false;
+      const {attacker,target,skill}=p,s=state();
+      if(!TacticalEngine.canTarget(s.map,attacker,target,skill,s.environmentState)||!ctx.canUseSkill(attacker,skill))return false;
+      const matkSnapshot=Number(attacker.character.combat.matk);
+      const spent=ctx.consumeSkill(attacker,skill);
+      if(!spent)return false;
+      const effect={type:"WEAPON_ENCHANT",id:`WEAPON_ENCHANT:${weaponSlot}`,name:`${skill.element==="THUNDER"?"雷":"火"}元素附魔`,classification:"POSITIVE",weaponSlot,element:skill.element,
+        matkSnapshot,bonusPower:Number(skill.enchantment.power),
+        bowImpact:skill.enchantment?.onBowImpact?.[skill.element]||null,sourceSkillId:skill.id};
+      const applied=EffectEngine.apply({source:attacker,target,effect});
+      if(!applied?.applied)throw new Error("Weapon enchantment state could not be applied after skill resource commit.");
+      ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${target.character.name}【${p.slots.find(w=>w.slot===weaponSlot).name}】 ${effect.element}｜下次攻擊生效。`,"BATTLE");
+      pendingEnchantment=null;
+      if(attacker.id!==target.id)return finishActiveSkill(attacker);
+      // This is the remaining attack portion of the caster's own action.
+      // It is neither a second turn nor a free extra attack.
+      enchantmentFollowup={unitId:attacker.id,weaponSlot};
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("enchant-followup");ctx.render();return true;
+    }
+    function cancelEnchantmentSelection(){
+      if(!pendingEnchantment)return false;
+      pendingEnchantment=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("special-menu");ctx.render();return true;
+    }
+    function cancelEnchantmentFollowup(){
+      const followup=enchantmentFollowup,unit=state().selected;
+      if(!followup||unit?.id!==followup.unitId)return false;
+      enchantmentFollowup=null;return finishActiveSkill(unit);
+    }
+    function resolveEnchantmentImpacts(entries){
+      const {map,environmentState}=state();
+      if(!environmentState||!entries?.length)return 0;
+      const contact=globalThis.EnvironmentContactEngine,profile=contact?.PROFILE;
+      if(!contact?.contacts||!profile)return 0;
+      const events=[],firePositions=new Set();
+      // The resolution actor's real target (including interception) owns its
+      // direct hit. It is excluded only from this weapon's electric pulse.
+      const directTargets=new Set(entries.filter(e=>e?.result?.hit&&e?.target?.id)
+        .map(e=>String(e.target.id)));
+      const explosions=[];
+      for(const entry of entries){
+        const enchant=entry?.enchantment,target=entry?.target;
+        if(!enchant||!entry.result?.hit||!target||target.hallucination===true)continue;
+        const origin=TacticalEngine.tile(map,target.x,target.y);
+        if(!origin)continue;
+        const weapon=entry.actor?.character?.weapons?.[entry.skill?.weapon];
+        // Original FIRE_ARROW_AOE data: impact-radius, flat splash and
+        // FIRE+EXPLOSION forces are owned by SkillDatabase, not guessed here.
+        const explosion=enchant.element==="FIRE"&&weapon?.weaponKind==="BOW"?enchant.bowImpact:null;
+        if(explosion){
+          // A confirmed hit is an actual collision with the airborne or ground
+          // target. The resulting blast is not another weapon attack, so it
+          // cannot roll a second hit or consume a second enchantment.
+          const area=ctx.aoeTiles(origin,Number(explosion.radius));
+          explosions.push({center:origin,area,rule:explosion,source:entry.actor});
+          continue;
+        }
+        const force=enchant.element==="FIRE"?"FIRE":enchant.element==="THUNDER"?"THUNDER":null;
+        if(!force)continue;
+        // The ground or water must actually intersect the weapon impact.
+        // The contact body remains valid even after lethal direct damage.
+        const body={...target,alive:true};
+        const surface=contact.contacts(body,origin,profile.SURFACE);
+        const water=contact.contacts(body,origin,profile.WATER_VOLUME);
+        const tornado=EnvironmentEngine.effectAt(environmentState,target.x,target.y)
+          .some(e=>e.type===EnvironmentEngine.EFFECT.TORNADO&&e.element==="WATER");
+        const column=tornado&&contact.contacts(body,origin,profile.AIR_COLUMN);
+        if(!surface&&!water&&!column)continue;
+        events.push(...EnvironmentEngine.apply({map,state:environmentState,x:target.x,y:target.y,forces:[force]}));
+        if(force==="FIRE")firePositions.add(`${target.x},${target.y}`);
+      }
+      // Apply the old fire-arrow AREA forces over its actual blast area,
+      // not merely at the arrow's center cell. Every affected unit, friend or
+      // foe, receives the original flat splash damage, once per blast.
+      for(const explosion of explosions){
+        for(const tile of explosion.area){
+          events.push(...EnvironmentEngine.apply({map,state:environmentState,x:tile.x,y:tile.y,
+            forces:explosion.rule.environmentForces}));
+          firePositions.add(`${tile.x},${tile.y}`);
+        }
+      }
+      for(const explosion of explosions){
+        for(const tile of explosion.area){
+          const unit=ctx.unitAt(tile.x,tile.y);
+          if(unit)ctx.damageUnitFlat(unit,explosion.rule.aoeDamage,"火附魔箭・爆裂");
+        }
+        ctx.pushLog(`${explosion.source?.character?.name||"附魔弓手"}｜火附魔箭爆裂 (${explosion.center.x},${explosion.center.y})。`,"BATTLE");
+      }
+      // One pulse registry for all electric propagation cells of a single
+      // attack. It must not leak into subsequent independent lightning events.
+      const pulseIds=[...directTargets];
+      for(const event of events.filter(e=>e.type==="ELECTRIC_CONDUCTION")){
+        for(const tile of event.tiles||[]){
+          for(const effect of EnvironmentEngine.effectAt(environmentState,tile.x,tile.y)){
+            if(effect.type===EnvironmentEngine.EFFECT.ELECTRIFIED)effect.damagedUnitIds=pulseIds;
+          }
+        }
+      }
+      if(events.length){
+        events.forEach(ctx.logEnvironmentEvent);
+        ctx.resolveEnvironmentEvents?.(events,{reason:"附魔武器環境連鎖"});
+      }
+      for(const key of firePositions){
+        const [x,y]=key.split(',').map(Number);
+        if(!EnvironmentEngine.effectAt(environmentState,x,y).some(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING))continue;
+        for(const unit of state().units.filter(u=>u?.alive&&u.x===x&&u.y===y))
+          ctx.applyEnvironmentHazardToUnit(unit,{reason:"附魔引燃地形",includeElectric:false,includeBoiling:false,includeFire:true});
+      }
+      return events.length+explosions.length;
+    }
+    function resolveEnchantmentImpact(entry){return resolveEnchantmentImpacts([entry]);}
     function executeUtilitySkill(attacker,target,skill){
       const {map,units}=state(),action=skill?.utilityAction;if(!action)return skillFailure(attacker,skill,"NO_UTILITY_ACTION",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+      if(action.type==="ENCHANT_WEAPON"){
+        if(!target?.alive||target.team!==attacker.team||!TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState))return skillFailure(attacker,skill,"ENCHANT_TARGET_INVALID",target);
+        const slots=enchantableWeaponSlots(target,skill);
+        if(!slots.length)return skillFailure(attacker,skill,"ENCHANT_NO_ELIGIBLE_WEAPON",target);
+        pendingEnchantment={attacker,target,skill,slots};
+        ctx.setMode("enchant-weapon-select");ctx.render();return true;
+      }
       if(action.type==="SET_VERTICAL_MODE"){
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
@@ -547,6 +675,10 @@
         return finishActiveSkill(attacker);
       }
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
+      // A LINE sword strike is one attack event regardless of how many units
+      // are crossed. A committed strike spends exactly one weapon enchant.
+      const enchantment=skill.shape==="LINE"?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
+      const enchantImpacts=[];
       const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
         affected.forEach(tile=>{
@@ -555,12 +687,18 @@
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          if(enchantment){
+            const extra=BattleResolution.enchantmentMagicDamage(attacker,occupant,enchantment,result.crit,skill);
+            result.damage+=extra;result.enchantmentDamage=extra;
+            enchantImpacts.push({enchantment,result,target:occupant});
+          }
           const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
           occupant.hp=Math.max(0,occupant.hp-shield.damage);
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
           else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
         });
+        if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
       if(skill.areaDamage?.mode==="MAGIC_POWER"){
         affected.forEach(tile=>{
@@ -638,6 +776,7 @@
     }
 
     function backFromTargeting(){
+      if(enchantmentFollowup){ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("enchant-followup");ctx.render();return true;}
       const {selectedSkill}=state();
       if(!selectedSkill)return false;
       if(pendingTransport&&selectedSkill?.utilityAction?.type==="RELEASE_CARRIED"){
@@ -655,6 +794,7 @@
     }
 
     function finishActiveSkill(attacker){
+      if(enchantmentFollowup?.unitId===attacker.id)enchantmentFollowup=null;
       commitPendingMove(attacker);
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
@@ -779,19 +919,22 @@
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
       commitPendingMove(attacker);
+      if(enchantmentFollowup?.unitId===attacker.id)enchantmentFollowup=null;
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.clearEngagement();ctx.setMode("inspect");
       if(ctx.checkMatchEnd()){ctx.render();return;}
       if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();
     }
 
-    function reset(){pendingMove=null;pendingTransport=null;}
+    function reset(){pendingMove=null;pendingTransport=null;pendingEnchantment=null;enchantmentFollowup=null;}
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,
       attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
+      enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
+      commitEnchantment,cancelEnchantmentSelection,cancelEnchantmentFollowup,resolveEnchantmentImpact,resolveEnchantmentImpacts,
       selectedSupportActions,confirmEngagement,executeEngagement
     });
   }

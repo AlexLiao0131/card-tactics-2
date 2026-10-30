@@ -119,6 +119,17 @@ export const EffectEngine=(()=>{
     const grant={skillId,sourceUnitId:source?.id||null,remaining:duration==null?null:Number(duration),replaceGroup};
     (target.grantedSkills||(target.grantedSkills=[])).push(grant);return grant;
   }
+  // Weapon enchantments belong to the unit's regular effect state, keyed by
+  // the equipped weapon SLOT (not the global equipment template or card).
+  function weaponEnchantment(unit,weaponSlot){
+    return state(unit).find(effect=>effect.type==="WEAPON_ENCHANT"&&effect.weaponSlot===weaponSlot)||null;
+  }
+  function consumeWeaponEnchantment(unit,weaponSlot){
+    const effect=weaponEnchantment(unit,weaponSlot);
+    if(!effect)return null;
+    unit.effects=state(unit).filter(entry=>entry!==effect);
+    return{...effect};
+  }
   function copyableSkills(target){
     return SkillDatabase.list(target?.character?.skills||[]).filter(s=>s.copyable!==false&&s.category!=="PASSIVE");
   }
@@ -127,6 +138,10 @@ export const EffectEngine=(()=>{
     if(effect.targetFilter&&!targetMatches(source,target,effect.targetFilter))return{applied:false,reason:"TARGET_FILTER"};
     const guardedBy=consumeNegativeEffectGuard(target,effect);
     if(guardedBy)return{applied:false,reason:"NEGATIVE_EFFECT_GUARD",blockedBy:guardedBy.id||guardedBy.name||"GUARD"};
+    if(effect.type==="WEAPON_ENCHANT"){
+      if(!effect.weaponSlot||!["FIRE","THUNDER"].includes(effect.element)||!Number.isFinite(effect.matkSnapshot)||!Number.isFinite(effect.bonusPower))return{applied:false,reason:"INVALID_WEAPON_ENCHANT"};
+      return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    }
     if(effect.type==="HEAL")return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
     if(effect.type==="HEAL_OVER_TIME"||effect.type==="DAMAGE_OVER_TIME")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="SHIELD"){
@@ -251,6 +266,6 @@ export const EffectEngine=(()=>{
     return discovered;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

@@ -81,6 +81,37 @@ export const BattleResolution=(()=>{
     return applied;
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
+  // One elemental component owned by BattleEngine, sharing the attack's
+  // already-resolved hit/crit/guard/shield rather than rolling another attack.
+  function enchantmentMagicDamage(actor,target,enchant,critical,skill){
+    if(!enchant||!target?.character||!actor?.character||!skill)return 0;
+    const weapon=actor.character.weapons?.[skill.weapon];
+    const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
+    const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
+    return BattleEngine.elementalEnchantmentDamage({matk:enchant.matkSnapshot,
+      bonusPower:enchant.bonusPower,element:enchant.element,defender:target.character,
+      critical,attackClass:sourceClass});
+  }
+  // Preview uses the same component calculator as committed attacks; neither
+  // read-only forecasts nor selection may consume an enchantment charge.
+  function previewEnchantmentBonus(actor,target,skill,{critical=false,defenseMultiplier=1,grazeMultiplier=1}={}){
+    const enchant=globalThis.EffectEngine?.weaponEnchantment?.(actor,skill?.weapon);
+    if(!enchant)return 0;
+    return Math.round(enchantmentMagicDamage(actor,target,enchant,critical,skill)*defenseMultiplier*grazeMultiplier);
+  }
+  function withEnchantment(resolved,actor,target,enchant,skill){
+    if(!enchant)return resolved;
+    const base=resolved.result;
+    let extra=0;
+    if(base.hit){
+      let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
+      const defense=resolved.defense;
+      if(defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
+      extra=Math.round(enchantmentMagicDamage(actor,target,enchant,base.crit,skill)*multiplier);
+    }
+    return{...resolved,enchantment:enchant,result:{...base,damage:base.damage+extra,
+      weaponDamage:base.damage,enchantmentDamage:extra,enchantmentElement:enchant.element}};
+  }
   function execute(c,hooks={}){
     const queue=buildQueue(c),results=[];
     for(const a of queue){
@@ -88,7 +119,9 @@ export const BattleResolution=(()=>{
       if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
       const action={...a,skill};
-      const resolved=resolveAction(c,action),baseResult=resolved.result;
+      // Consume only after the action is known to execute; misses still spend it.
+      const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
+      const resolved=withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),baseResult=resolved.result;
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
       hooks.consumeSkill?.(action.actor,skill);
       const hallucinationHit=action.target?.hallucination===true&&baseResult.hit,shield=hallucinationHit?{damage:Math.max(1,Number(action.target.hp||1)),absorbed:0,shieldHp:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(action.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
@@ -121,13 +154,13 @@ export const BattleResolution=(()=>{
       if(action.actor.alive&&globalThis.EffectEngine){
         for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
       }
-      const e={...action,resolved:{...resolved,result},result,hpAfter:action.target.hp};
+      const e={...action,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp};
       e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     return{context:c,queue,results,postEngagement:post};
   }
   function resolve(options,hooks={}){const actions=[...(options.actions||[])];if(options.reaction?.type==="COUNTER"&&options.reaction.skill)actions.push(createCounterAction(options.target,options.initiator,options.reaction.skill));return execute(createContext({...options,actions}),hooks)}
-  return{createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
+  return{enchantmentMagicDamage,previewEnchantmentBonus,createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 })();
 globalThis.BattleResolution=BattleResolution;

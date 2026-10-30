@@ -2,17 +2,13 @@ export const SKILLS={
   bow_shot:{id:"bow_shot",name:"弓箭射擊",category:"ATTACK",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"INHERIT",speed:0,target:"ENEMY",support:true,affixes:[]},
   black_slash:{id:"black_slash",name:"黑劍斬擊",category:"ATTACK",weapon:"black_sword",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
   shadow_step:{id:"shadow_step",name:"幽影步",category:"SPECIAL",power:0,manaCost:16,range:{min:1,max:4},target:"TILE",targetType:"AOE",shape:"W_STEP",moveToTarget:true,ignorePath:true,support:false,affixes:[]},
-  nether_slash:{id:"nether_slash",name:"幽冥斬擊",category:"SPECIAL",weapon:"black_sword",power:1.25,manaCost:20,range:{min:1,max:3},attackType:"SLASH",element:"DARK",speed:5,target:"ENEMY",support:false,affixes:["SPACE_RIFT"]},
-  thunder_enchant:{id:"thunder_enchant",name:"雷元素附魔",category:"MAGIC",weapon:"kahns_bow",power:1,manaCost:18,range:{min:1,max:4},attackType:"SHOT",element:"THUNDER",speed:0,target:"ENEMY",targetType:"SINGLE",support:false,affixes:[],variants:[
-    {id:"THUNDER_ARROW_SINGLE",name:"雷箭・單體",weapon:"kahns_bow",power:1.05,range:{min:2,max:4},attackType:"SHOT",element:"THUNDER",target:"ENEMY",targetType:"SINGLE"},
-    {id:"THUNDER_ARROW_AOE",name:"雷箭・環境傳導",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"THUNDER",target:"TILE",targetType:"AOE",radius:1,environmentRequirement:"CONDUCTIVE",environmentForces:["THUNDER"],aoeDamage:55},
-    {id:"THUNDER_SWORD",name:"雷劍",weapon:"black_sword",power:1.1,range:{min:1,max:1},attackType:"SLASH",element:"THUNDER",target:"ENEMY",targetType:"SINGLE"}
-  ]},
-  fire_enchant:{id:"fire_enchant",name:"火元素附魔",category:"MAGIC",weapon:"kahns_bow",power:1,manaCost:18,range:{min:1,max:4},attackType:"SHOT",element:"FIRE",speed:0,target:"ENEMY",targetType:"SINGLE",support:false,affixes:[],variants:[
-    {id:"FIRE_ARROW_SINGLE",name:"火箭・單體",weapon:"kahns_bow",power:1.05,range:{min:2,max:4},attackType:"SHOT",element:"FIRE",target:"ENEMY",targetType:"SINGLE",statusEffects:[{type:"BURN",chance:100}]},
-    {id:"FIRE_ARROW_AOE",name:"火箭・爆裂",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"FIRE",target:"TILE",targetType:"AOE",radius:1,environmentForces:["FIRE","EXPLOSION"],aoeDamage:45},
-    {id:"FIRE_SWORD",name:"火劍",weapon:"black_sword",power:1.1,range:{min:1,max:1},attackType:"SLASH",element:"FIRE",target:"ENEMY",targetType:"SINGLE",statusEffects:[{type:"BURN",chance:100}]}
-  ]},
+  nether_slash:{id:"nether_slash",name:"幽冥斬擊",category:"SPECIAL",weapon:"black_sword",power:1.25,manaCost:20,range:{min:1,max:3},attackType:"SLASH",element:"DARK",speed:5,target:"ENEMY",support:false,affixes:["SPACE_RIFT"],
+    description:"沿 W 軸裂隙斬擊射程內已發現敵人，無視中間地形阻擋與高度落差，但仍依正常命中、格擋、迴避及反擊判定。可在移動後施放，施放後結束行動。黑劍附魔時追加火／雷傷害。"},
+  elemental_enchant:{id:"elemental_enchant",name:"元素附魔",category:"MAGIC",power:1,manaCost:18,range:{min:0,max:4},target:"ALLY",targetType:"SINGLE",support:false,
+    description:"為自己或友軍指定的劍或弓附加火／雷元素。附魔成功後可使用自己的指定武器立即攻擊，或取消攻擊進入待機。友軍附魔保留至指定武器下一次真正發動攻擊；MISS、格擋與招架仍消耗附魔。",
+    utilityAction:{type:"ENCHANT_WEAPON"},enchantment:{power:1,weaponKinds:["SWORD","BOW"],
+      onBowImpact:{FIRE:{radius:1,aoeDamage:45,environmentForces:["FIRE","EXPLOSION"]}}},
+    variants:[{id:"ENCHANT_FIRE",name:"火元素",element:"FIRE"},{id:"ENCHANT_THUNDER",name:"雷元素",element:"THUNDER"}]},
   slash:{id:"slash",name:"制式斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
   heavy_slash:{id:"heavy_slash",name:"重裝斬擊",category:"ATTACK",weapon:"sword",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:-5,target:"ENEMY",support:false,affixes:[]},
   claw:{id:"claw",name:"利爪攻擊",category:"ATTACK",weapon:"claw",power:1,range:{min:1,max:1},attackType:"INHERIT",element:"INHERIT",speed:5,target:"ENEMY",support:false,affixes:[]},

@@ -125,6 +125,7 @@ export const TacticalEngine=(()=>{
   }
   function verticalTargetAllowed(m,u,target,s){
     if(!target?.character||s?.target==="SELF"||attackDelivery(u,s)==="RANGED")return true;
+    if(s?.affixes?.includes("SPACE_RIFT"))return true;
     if(!globalThis.VerticalMobilityEngine?.verticalSpan)return true;
     const from=tile(m,u.x,u.y),to=tile(m,target.x,target.y);if(!from||!to)return false;
     const a=VerticalMobilityEngine.verticalSpan(u,from),b=VerticalMobilityEngine.verticalSpan(target,to);
@@ -326,6 +327,9 @@ export const TacticalEngine=(()=>{
   }
   function hasLineOfSight(m,u,target,s,environmentState=null){
     if(!m||!u||!target)return false;
+    // W-axis spatial cuts do not travel through intervening terrain.
+    // Encounter discovery remains with the team visibility/stealth systems.
+    if(s?.affixes?.includes("SPACE_RIFT"))return true;
     if(s?.targeting?.mode==="INDIRECT_OBSERVED")return !!indirectObservationSource(m,u,target,s,environmentState);
     const companionVision=hasCompanionVision(m,u,target,s,environmentState);
     if(s?.requiresCompanionVision&&!companionVision)return false;
