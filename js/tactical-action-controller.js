@@ -348,7 +348,40 @@
       return null;
     }
 
+    // A weapon-enchanted attack can deliberately target the terrain without
+    // fabricating a missed unit projectile's collision point.
+    function enchantedTerrainTargetTiles(attacker,skill){
+      const enchant=globalThis.EffectEngine?.weaponEnchantment?.(attacker,skill?.weapon);
+      if(!attacker?.alive||attacker.acted||!enchant||!skill?.weapon||skill.utilityAction||skill.target!=="ENEMY")return[];
+      const {map,units,environmentState}=state(),range=TacticalEngine.range(skill);
+      if(!map||!range)return[];
+      return map.tiles.filter(tile=>{
+        const distance=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
+        if(distance<range.min||distance>range.max)return false;
+        if(!TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState)||
+           !TacticalEngine.hasLineOfSight(map,attacker,tile,skill,environmentState))return false;
+        return enchant.element!=="THUNDER"||EnvironmentEngine.isConductive(map,environmentState,tile.x,tile.y);
+      });
+    }
+    function executeEnchantedTerrainAttack(attacker,center,skill){
+      if(!skill?.terrainTargeting||!ctx.canUseSkill(attacker,skill)||
+         !enchantedTerrainTargetTiles(attacker,skill).includes(center))
+        return skillFailure(attacker,skill,"ENCHANT_TERRAIN_TARGET_INVALID",center);
+      const enchant=globalThis.EffectEngine?.weaponEnchantment?.(attacker,skill.weapon);
+      if(!enchant)return skillFailure(attacker,skill,"ENCHANT_NOT_ACTIVE",center);
+      const attack=ctx.effectiveSkill(attacker,skill);
+      if(!ctx.consumeSkill(attacker,attack))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+      globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+      TacticalEngine.faceToward(attacker,center);
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP"});
+      const consumed=EffectEngine.consumeWeaponEnchantment(attacker,skill.weapon);
+      resolveEnchantmentImpact({actor:attacker,skill:attack,enchantment:consumed,
+        target:center,terrainImpact:true,result:{hit:true}});
+      ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}，以附魔武器擊向地格 (${center.x},${center.y})。`,"BATTLE");
+      return finishActiveSkill(attacker);
+    }
     function mapTargetTiles(attacker,skill){
+      if(skill?.terrainTargeting)return enchantedTerrainTargetTiles(attacker,skill);
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
       const known=tile=>skill?.ignoreFogOfWar===true||skill?.requiresVision===false||
@@ -383,7 +416,39 @@
 
     function enchantableWeaponSlots(unit,skill){
       const allowed=new Set(skill?.enchantment?.weaponKinds||[]);
-      return Object.entries(unit?.character?.weapons||{}).filter(([,weapon])=>allowed.has(weapon?.weaponKind)).map(([slot,weapon])=>({slot,name:weapon.name||slot}));
+      return Object.entries(unit?.character?.weapons||{}).filter(([,weapon])=>allowed.has(weapon?.weaponKind))
+        .map(([slot,weapon])=>({slot,name:weapon.name||slot,kind:weapon.weaponKind}));
+    }
+    // Eligibility depends on the caster's rules, not the recipient's action
+    // state. A living ally who has MOVED, ACTED or WAITED remains enchantable.
+    function enchantmentCandidates(attacker,skill){
+      const {map,units,environmentState}=state();
+      if(!attacker?.alive||attacker.acted||!map||!skill)return[];
+      const allies=units.filter(unit=>unit?.alive&&unit.team===attacker.team&&
+        TacticalEngine.canTarget(map,attacker,unit,skill,environmentState));
+      allies.sort((a,b)=>Number(b.id===attacker.id)-Number(a.id===attacker.id)||
+        Math.abs(a.x-attacker.x)+Math.abs(a.y-attacker.y)-
+        Math.abs(b.x-attacker.x)-Math.abs(b.y-attacker.y)||String(a.id).localeCompare(String(b.id)));
+      return allies.flatMap(target=>enchantableWeaponSlots(target,skill).map(weapon=>({target,weapon})));
+    }
+    function beginEnchantment(attacker,skill){
+      if(!attacker?.alive||attacker.acted||skill?.utilityAction?.type!=="ENCHANT_WEAPON"||
+         !ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT");
+      const candidates=enchantmentCandidates(attacker,skill);
+      if(!candidates.length)return skillFailure(attacker,skill,"ENCHANT_NO_ELIGIBLE_WEAPON");
+      pendingEnchantment={attacker,skill,candidates,target:null,slots:[]};
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);
+      ctx.setMode("enchant-weapon-select");ctx.render();return true;
+    }
+    function commitCandidateEnchantment(targetId,weaponSlot){
+      const pending=pendingEnchantment;
+      if(!pending)return false;
+      // Validate the current target and actual weapon before charging mana.
+      const choice=enchantmentCandidates(pending.attacker,pending.skill).find(entry=>
+        String(entry.target.id)===String(targetId)&&entry.weapon.slot===weaponSlot);
+      if(!choice)return skillFailure(pending.attacker,pending.skill,"ENCHANT_TARGET_INVALID");
+      pending.target=choice.target;pending.slots=[choice.weapon];
+      return commitEnchantment(weaponSlot);
     }
     function commitEnchantment(weaponSlot){
       const p=pendingEnchantment;
@@ -419,7 +484,6 @@
       const {map,environmentState}=state();
       if(!environmentState||!entries?.length)return 0;
       const contact=globalThis.EnvironmentContactEngine,profile=contact?.PROFILE;
-      if(!contact?.contacts||!profile)return 0;
       const events=[],firePositions=new Set();
       // The resolution actor's real target (including interception) owns its
       // direct hit. It is excluded only from this weapon's electric pulse.
@@ -445,7 +509,13 @@
         }
         const force=enchant.element==="FIRE"?"FIRE":enchant.element==="THUNDER"?"THUNDER":null;
         if(!force)continue;
+        if(entry.terrainImpact===true){
+          events.push(...EnvironmentEngine.apply({map,state:environmentState,x:origin.x,y:origin.y,forces:[force]}));
+          if(force==="FIRE")firePositions.add(`${origin.x},${origin.y}`);
+          continue;
+        }
         // The ground or water must actually intersect the weapon impact.
+        if(!contact?.contacts||!profile)continue;
         // The contact body remains valid even after lethal direct damage.
         const body={...target,alive:true};
         const surface=contact.contacts(body,origin,profile.SURFACE);
@@ -500,13 +570,7 @@
     function executeUtilitySkill(attacker,target,skill){
       const {map,units}=state(),action=skill?.utilityAction;if(!action)return skillFailure(attacker,skill,"NO_UTILITY_ACTION",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
-      if(action.type==="ENCHANT_WEAPON"){
-        if(!target?.alive||target.team!==attacker.team||!TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState))return skillFailure(attacker,skill,"ENCHANT_TARGET_INVALID",target);
-        const slots=enchantableWeaponSlots(target,skill);
-        if(!slots.length)return skillFailure(attacker,skill,"ENCHANT_NO_ELIGIBLE_WEAPON",target);
-        pendingEnchantment={attacker,target,skill,slots};
-        ctx.setMode("enchant-weapon-select");ctx.render();return true;
-      }
+      if(action.type==="ENCHANT_WEAPON")return beginEnchantment(attacker,skill);
       if(action.type==="SET_VERTICAL_MODE"){
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
@@ -661,6 +725,7 @@
 
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
+      if(skill?.terrainTargeting)return executeEnchantedTerrainAttack(attacker,center,skill);
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
       const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
@@ -934,7 +999,9 @@
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
-      commitEnchantment,cancelEnchantmentSelection,cancelEnchantmentFollowup,resolveEnchantmentImpact,resolveEnchantmentImpacts,
+      beginEnchantment,enchantmentCandidates,commitCandidateEnchantment,
+      commitEnchantment,cancelEnchantmentSelection,cancelEnchantmentFollowup,
+      enchantedTerrainTargetTiles,resolveEnchantmentImpact,resolveEnchantmentImpacts,
       selectedSupportActions,confirmEngagement,executeEngagement
     });
   }

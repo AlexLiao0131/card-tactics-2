@@ -1,3 +1,4 @@
+import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 (()=>{
   const ICON={PLAIN:"",MUD:"≋",FOREST:"🌲",HIGH_GROUND:"▲",WATER:"≈",WALL:"■"};
   const TEAM={PLAYER:"P",ENEMY:"E",NEUTRAL:"N"};
@@ -184,6 +185,7 @@
     const requestedStageId=window.CardTacticsBattleSetup?.stageId||"prototype_battle";
     const setup=BattleSetupEngine.create({stageId:requestedStageId,battleSetup:window.CardTacticsBattleSetup,TEAM});
     ({stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,unitSerial}=setup);
+    enchantIdentityById.clear();enchantIdentityCounters.clear();releaseEnchantmentMarkers();
     EffectEngine.syncConditionalPassives(units,environmentState);
     logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
@@ -192,6 +194,24 @@
   function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){return environmentController.enterTile(...args);}
   function stageEvent(event){if(!stageState)return;StageEngine.run(stageState,event,{units,log:text=>pushLog(text),spawn:spawnFromScript,onObjectiveChanged:(active,action)=>{const target=String(action.target||"").toUpperCase();const label=action.objectives?"勝敗條件":target==="VICTORY"?"勝利條件":target==="DEFEAT"?"失敗條件":"勝敗條件";pushLog(`${label}已更新。`,"SYSTEM");}});}
   function shortName(name){return name.replace(/（.*?）/g,"").slice(0,4);}
+  // Stable per-battle identity: a unit retains its ordinal even if it moves,
+  // finishes its turn, is defeated or leaves the current enchantment range.
+  const enchantIdentityById=new Map(),enchantIdentityCounters=new Map();
+  const ENCHANT_DIGITS=["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
+  function registerEnchantIdentity(unit){
+    if(!unit||enchantIdentityById.has(unit.id))return;
+    const type=String(unit.character?.name||unit.characterId||"友軍");
+    const next=(enchantIdentityCounters.get(type)||0)+1;
+    enchantIdentityCounters.set(type,next);enchantIdentityById.set(unit.id,{type,ordinal:next});
+  }
+  function enchantIdentity(unit){
+    // Allocate by roster order, never by distance or an availability-filtered list.
+    for(const entry of units||[])if(entry.team===TEAM.PLAYER)registerEnchantIdentity(entry);
+    const identity=enchantIdentityById.get(unit.id);
+    const ordinal=identity?.ordinal||1;
+    return{ordinal,mark:ENCHANT_DIGITS[ordinal-1]||`#${ordinal}`,
+      name:identity?.type||unit.character?.name||"友軍"};
+  }
   function onUnitCreated(unit){if(unit)EffectEngine.syncConditionalPassives([unit],environmentState);return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
@@ -203,7 +223,7 @@
   }function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
-  function clearSelection(){commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;clearEngagement();mode="idle";}
+  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;clearEngagement();mode="idle";}
   function resolveWeatherEvents(...args){return environmentController.resolveWeatherEvents(...args);}
   function beginPlayerTurn(){endHallucinationTurn(TEAM.ENEMY);if(checkMatchEnd()){render();return;}round++;phase=PHASE.PLAYER;resetActions(TEAM.PLAYER);clearSelection();clearEnemyReaction();pushLog(`Round ${round}｜我方回合開始。`,"SYSTEM");
     // Weather and real water contact settle before unit DOTs tick: a newly
@@ -257,7 +277,17 @@
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
   function render(){renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
-  function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else previewPlayerAttack(selected,target,selectedSkill);return;}}if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
+  function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;
+    if(mode==="enchant-weapon-select"){
+      const pending=actionController?.enchantmentSelection?.();
+      if(pending&&unit&&pending.candidates.some(entry=>entry.target.id===unit.id)){
+        focusEnchantmentRecipient(unit.id);return;
+      }
+      // Prevent selecting a different actor, movement or attacks while this
+      // read-only enchantment choice is open.
+      return;
+    }
+    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else previewPlayerAttack(selected,target,selectedSkill);return;}}if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
   function renderTurnStatus(){if(matchResult){turnStatus.textContent=matchResult==="VICTORY"?`戰鬥結束｜VICTORY｜Round ${round}`:`戰鬥結束｜DEFEAT｜Round ${round}`;return;}const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;}
   // The skill selector owns one reusable read-only inspector, rather than a tooltip per button.
   // Use the same hold threshold as BattleInputController's battlefield inspector.
@@ -274,20 +304,24 @@
     if(skillHold?.timer!==null&&skillHold?.timer!==undefined)clearTimeout(skillHold.timer);
     skillHold=null;skillInspector.hidden=true;skillInspector.replaceChildren();
   }
-  function showSkillInspection(button,skill){
+  function showSkillInspection(button,skill,point){
     const detail=SkillDatabase.inspect(skill);if(!detail)return;
     const title=document.createElement("strong");title.textContent=detail.title;
     title.style.cssText="display:block;color:#f3dba5;font-size:15px;margin-bottom:7px;";
     const body=document.createElement("div");body.textContent=detail.description;
-    body.style.cssText="font-size:13px;color:#e2e8ef;max-height:34vh;overflow:hidden;";
+    body.style.cssText="font-size:13px;color:#e2e8ef;white-space:pre-wrap;";
     const stats=document.createElement("small");stats.textContent=detail.mechanics.join(" ｜ ");
     stats.style.cssText="display:block;margin-top:9px;color:#a9bdcf;font-size:11px;";
     skillInspector.replaceChildren(title,body,stats);skillInspector.hidden=false;
-    const rect=button.getBoundingClientRect(),width=skillInspector.getBoundingClientRect().width;
-    const left=rect.left-width-9>=8?rect.left-width-9:Math.min(window.innerWidth-width-8,rect.right+9);
-    const maxTop=Math.max(8,window.innerHeight-skillInspector.getBoundingClientRect().height-8);
-    skillInspector.style.left=`${Math.max(8,left)}px`;
-    skillInspector.style.top=`${Math.min(maxTop,Math.max(8,rect.top))}px`;
+    const rect=button.getBoundingClientRect();
+    const x=Number(point?.x??rect.left+rect.width/2),y=Number(point?.y??rect.top);
+    const width=skillInspector.getBoundingClientRect().width;
+    const available=Math.max(40,y-22);
+    skillInspector.style.maxHeight=`${available}px`;
+    skillInspector.style.overflowY="auto";
+    const height=skillInspector.getBoundingClientRect().height;
+    skillInspector.style.left=`${Math.min(Math.max(8,x-width/2),Math.max(8,window.innerWidth-width-8))}px`;
+    skillInspector.style.top=`${Math.max(4,y-height-14)}px`;
   }
   skillBar.addEventListener("pointerdown",event=>{
     if(event.button!==0&&event.pointerType!=="touch")return;
@@ -299,7 +333,7 @@
     skillHold=record;
     record.timer=setTimeout(()=>{
       if(skillHold!==record||!button.isConnected)return;
-      record.timer=null;skillHoldConsumedClick=button;showSkillInspection(button,skill);
+      record.timer=null;skillHoldConsumedClick=button;showSkillInspection(button,skill,record);
     },SKILL_HOLD_MS);
   });
   window.addEventListener("pointermove",event=>{
@@ -323,6 +357,106 @@
     const button=event.target.closest?.("button");
     if(button&&inspectableSkillButtons.has(button))event.preventDefault();
   });
+  // The enchantment menu uses the authoritative roster for selection, and
+  // the existing Babylon draw clock only for projecting small HTML markers.
+  // No gameplay effects, separate renderer or independent animation loop.
+  let focusedEnchantRecipientId=null,enchantMarkerObserver=null,enchantMarkerScene=null;
+  const enchantMarkerRoot=document.createElement("div");
+  enchantMarkerRoot.className="enchantment-recipient-markers";
+  enchantMarkerRoot.style.cssText="position:fixed;inset:0;z-index:119;pointer-events:none;overflow:hidden;";
+  document.body.appendChild(enchantMarkerRoot);
+  const enchantMarkerButtons=new Map();
+  let enchantMenuCandidates=[];
+  function enchantRecipientGroups(pending){
+    const groups=new Map();
+    for(const entry of pending?.candidates||[]){
+      if(!groups.has(entry.target.id))groups.set(entry.target.id,{target:entry.target,weapons:[]});
+      groups.get(entry.target.id).weapons.push(entry.weapon);
+    }
+    return [...groups.values()];
+  }
+  function focusEnchantmentRecipient(id){
+    const pending=actionController?.enchantmentSelection?.();
+    if(!pending||!pending.candidates.some(entry=>entry.target.id===id))return false;
+    const changed=String(focusedEnchantRecipientId)!==String(id);
+    focusedEnchantRecipientId=id;
+    const focus=String(id);
+    for(const [key,button]of enchantMarkerButtons){
+      const active=key===focus;
+      button.style.opacity=active?"1":".55";
+      button.style.borderColor=active?"#fff0a0":"#6f9bb8";
+      button.style.boxShadow=active?"0 0 0 3px #ffd565aa,0 0 20px #ffe785":"0 2px 10px #000e";
+      button.setAttribute("aria-pressed",String(active));
+    }
+    for(const row of skillBar.querySelectorAll("[data-enchant-recipient]")){
+      row.style.borderColor=row.dataset.enchantRecipient===focus?"#ffe197":"#42566a";
+      row.style.background=row.dataset.enchantRecipient===focus?"#304157":"#132130";
+    }
+    if(changed){
+      const header=[...skillBar.querySelectorAll("button[data-enchant-recipient]")]
+        .find(row=>row.dataset.enchantRecipient===focus);
+      header?.scrollIntoView?.({block:"nearest",inline:"nearest"});
+    }
+    return true;
+  }
+  function updateEnchantmentMarkerPositions(){
+    if(mode!=="enchant-weapon-select"||!enchantMenuCandidates.length)return;
+    const renderer=globalThis.CardTacticsRenderer;
+    if(!renderer?.scene||!renderer?.camera?.camera||!renderer.engine)return;
+    const camera=renderer.camera.camera,engine=renderer.engine;
+    const viewport=camera.viewport.toGlobal(engine.getRenderWidth(),engine.getRenderHeight());
+    const transform=renderer.scene.getTransformMatrix(),rect=renderer.canvas.getBoundingClientRect();
+    const sx=rect.width/Math.max(1,engine.getRenderWidth()),sy=rect.height/Math.max(1,engine.getRenderHeight());
+    for(const group of enchantMenuCandidates){
+      const button=enchantMarkerButtons.get(String(group.target.id));if(!button)continue;
+      const unit=group.target;
+      if(!unit?.alive){button.hidden=true;continue;}
+      const tile=TacticalEngine.tile(map,unit.x,unit.y),base=Number(unit.renderZ??unit.z??tile?.elevation??0);
+      const world=new BABYLON.Vector3(Number(unit.x)*TILE_SIZE,base*ELEVATION_HEIGHT+UNIT_VISUAL_HEIGHT+.35,Number(unit.y)*TILE_SIZE);
+      const point=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),transform,viewport);
+      if(point.z<0||point.z>1){button.hidden=true;continue;}
+      const x=rect.left+point.x*sx,y=rect.top+point.y*sy;
+      button.hidden=x<rect.left-14||x>rect.right+14||y<rect.top-14||y>rect.bottom+14;
+      if(!button.hidden){button.style.left=`${x}px`;button.style.top=`${y}px`;}
+    }
+  }
+  function releaseEnchantmentMarkers(){
+    if(enchantMarkerObserver&&enchantMarkerScene)
+      enchantMarkerScene.onAfterRenderObservable.remove(enchantMarkerObserver);
+    enchantMarkerObserver=null;enchantMarkerScene=null;
+    enchantMarkerButtons.clear();enchantMarkerRoot.replaceChildren();enchantMenuCandidates=[];
+    focusedEnchantRecipientId=null;
+  }
+  function syncEnchantmentMarkers(pending){
+    if(!pending){releaseEnchantmentMarkers();return;}
+    const groups=enchantRecipientGroups(pending);
+    enchantMenuCandidates=groups;
+    const desired=new Set(groups.map(group=>String(group.target.id)));
+    for(const [key,button]of enchantMarkerButtons){if(!desired.has(key)){button.remove();enchantMarkerButtons.delete(key);}}
+    for(const group of groups){
+      const key=String(group.target.id);
+      if(enchantMarkerButtons.has(key))continue;
+      const identity=enchantIdentity(group.target),self=group.target.id===pending.attacker.id;
+      const marker=document.createElement("button");marker.type="button";
+      marker.className="enchant-recipient-marker";
+      marker.textContent=self?"自己":identity.mark;
+      marker.title=`${self?"自己":`${identity.name} ${identity.mark}`}｜點選查看附魔武器`;
+      marker.setAttribute("aria-label",marker.title);
+      marker.style.cssText="position:fixed;transform:translate(-50%,-100%);min-width:30px;height:30px;z-index:120;border:2px solid #6f9bb8;border-radius:50%;color:#fff3ca;background:#10283ce8;font:bold 14px system-ui;pointer-events:auto;touch-action:manipulation;padding:2px 5px;white-space:nowrap;";
+      marker.addEventListener("pointerdown",event=>event.stopPropagation());
+      marker.addEventListener("click",event=>{event.stopPropagation();focusEnchantmentRecipient(group.target.id);});
+      enchantMarkerButtons.set(key,marker);enchantMarkerRoot.appendChild(marker);
+    }
+    const renderer=globalThis.CardTacticsRenderer;
+    if(renderer?.scene&&enchantMarkerScene!==renderer.scene){
+      if(enchantMarkerObserver&&enchantMarkerScene)enchantMarkerScene.onAfterRenderObservable.remove(enchantMarkerObserver);
+      enchantMarkerScene=renderer.scene;
+      enchantMarkerObserver=enchantMarkerScene.onAfterRenderObservable.add(updateEnchantmentMarkerPositions);
+    }
+    if(!desired.has(String(focusedEnchantRecipientId)))focusedEnchantRecipientId=String(pending.attacker.id);
+    focusEnchantmentRecipient(focusedEnchantRecipientId);
+    updateEnchantmentMarkerPositions();
+  }
   function addActionButton(text,onClick,disabled=false,skill=null){
     const button=document.createElement("button");button.textContent=text;button.className="action-button";
     if(skill){
@@ -414,6 +548,7 @@
   function transferBattleItem(unit,payloadId,targetId){const entry=itemEntries(unit).find(x=>x.payload.id===payloadId),target=units.find(x=>x.id===targetId&&x.alive),result=ItemRuntimeEngine.transfer(unit,target,payloadId);pushLog(result?.ok?`${unit.character.name} 將「${entry?.item?.name||"道具"}」交給 ${target?.character?.name||"友軍"}。`:`${unit.character.name} 無法轉交道具。`,result?.ok?"SYSTEM":"DETAIL");render();}
 
   function renderPanel(){
+    if(mode!=="enchant-weapon-select"&&enchantMenuCandidates.length)releaseEnchantmentMarkers();
     dismissSkillInspection();skillBar.innerHTML="";skillBar.classList.remove("enemy-reaction-panel","command-panel-collapsed","engagement-overlay");
     if(matchResult||phase===PHASE.CARD)return;
     if(phase===PHASE.ENEMY){if(pendingEnemyAttack&&targetType(pendingEnemyAttack.skill)==="SINGLE"){commandPanelCollapsed=false;skillBar.classList.add("enemy-reaction-panel");const model=engagementPresentation();if(model?.invalidGuardian){selectedGuardian=null;selectedGuardInterception=null;mode="enemy-reaction";render();return;}window.TacticalUIController?.renderEngagement?.();}return;}
@@ -444,29 +579,58 @@
     if(mode==="enchant-weapon-select"){
       const pending=actionController.enchantmentSelection();
       if(!pending||pending.attacker.id!==selected.id)return;
-      addActionButton("選擇附魔武器",()=>{},true);
-      pending.slots.forEach(weapon=>addActionButton(`附魔｜${weapon.name}`,()=>actionController.commitEnchantment(weapon.slot)));
-      addActionButton("返回（尚未扣 MP）",()=>actionController.cancelEnchantmentSelection());return;
+      addActionButton("選擇友軍與武器（尚未扣 MP）",()=>{},true);
+      syncEnchantmentMarkers(pending);
+      for(const {target,weapons} of enchantRecipientGroups(pending)){
+        const self=target.id===pending.attacker.id,identity=enchantIdentity(target);
+        const label=self?"自己":`${identity.name} ${identity.mark}`;
+        const header=addActionButton(label,()=>focusEnchantmentRecipient(target.id));
+        header.dataset.enchantRecipient=String(target.id);
+        header.style.cssText+=";text-align:left;border:1px solid #42566a;background:#132130;font-weight:bold;";
+        const portrait=globalThis.VisualDatabase?.characterHudPortrait?.(target.character?.id||target.characterId);
+        if(portrait){
+          const img=document.createElement("img");img.src=new URL(portrait,document.baseURI).href;
+          img.alt="";img.loading="lazy";
+          img.style.cssText="width:26px;height:26px;object-fit:cover;object-position:50% 17%;border-radius:5px;float:left;margin-right:7px;";
+          header.prepend(img);
+        }
+        for(const weapon of weapons){
+          const btn=addActionButton(`　${weapon.kind==="BOW"?"🏹":"⚔"} ${weapon.name}｜確認附魔`,()=>
+            actionController.commitCandidateEnchantment(target.id,weapon.slot),false,pending.skill);
+          btn.dataset.enchantRecipient=String(target.id);
+          btn.addEventListener("pointerenter",()=>focusEnchantmentRecipient(target.id));
+        }
+      }
+      focusEnchantmentRecipient(focusedEnchantRecipientId);
+      addActionButton("取消附魔（未消耗 MP）",()=>actionController.cancelEnchantmentSelection());return;
     }
     if(mode==="enchant-followup"){
       const followup=actionController.enchantmentFollowup();
       if(!followup||followup.unitId!==selected.id)return;
       const skills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills)
         .filter(skill=>skill.weapon===followup.weaponSlot&&skill.target==="ENEMY"&&!skill.utilityAction&&(skill.targetType||"SINGLE")==="SINGLE");
-      skills.forEach(skill=>addActionButton(`立即攻擊｜${skill.name}`,()=>{
-        if(!canUseSkill(selected,skill))return;
-        selectedSkill=skill;selectedSkillVariant=null;mode="attack";render();
-      },!canUseSkill(selected,skill),skill));
-      addActionButton("取消攻擊並待機",()=>actionController.cancelEnchantmentFollowup());return;
+      skills.forEach(skill=>{
+        addActionButton(`攻擊單位｜${skill.name}`,()=>{
+          if(!canUseSkill(selected,skill))return;
+          selectedSkill=skill;selectedSkillVariant=null;mode="attack";render();
+        },!canUseSkill(selected,skill),skill);
+        addActionButton(`攻擊地圖｜${skill.name}`,()=>{
+          if(!canUseSkill(selected,skill))return;
+          selectedSkill={...skill,terrainTargeting:true};selectedSkillVariant=null;mode="map-target";render();
+        },!canUseSkill(selected,skill),skill);
+      });
+      addActionButton("取消攻擊並待機（保留附魔）",()=>actionController.cancelEnchantmentFollowup());return;
     }
     const allSkills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills);const isSpecial=skill=>skill.category!=="ATTACK";const shownSkills=mode==="special-menu"?allSkills.filter(isSpecial):mode==="attack-menu"?allSkills.filter(skill=>!isSpecial(skill)):[];
-    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=resolvedSkill(parent,variant);mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
+    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=resolvedSkill(parent,variant);if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){addCommandPanelClose();pendingCopySkill.options.forEach(skill=>addActionButton(skill.name,()=>{EffectEngine.grantSkill(pendingCopySkill.attacker,skill.id,{source:pendingCopySkill.target,duration:pendingCopySkill.duration,replaceGroup:"BLOOD_COPY"});pushLog(`${pendingCopySkill.attacker.character.name} 從血液中複製了「${skill.name}」。`,"BATTLE");const actor=pendingCopySkill.attacker;pendingCopySkill=null;finishActiveSkill(actor);}));return;}
-    if(mode==="attack-menu"||mode==="special-menu"){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(`${skill.name}｜射程 ${range.min}-${range.max}｜${resourceLabel(selected,skill)}`,()=>{selectedSkill=skill;selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode="command";render();});return;}
+    if(mode==="attack-menu"||mode==="special-menu"){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(`${skill.name}｜射程 ${range.min}-${range.max}｜${resourceLabel(selected,skill)}`,()=>{selectedSkill=skill;selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);if(globalThis.EffectEngine?.weaponEnchantment?.(selected,skill.weapon)&&skill.target==="ENEMY"&&!skill.utilityAction){
+        addActionButton(`攻擊地圖｜${skill.name}`,()=>{selectedSkill={...skill,terrainTargeting:true};selectedSkillVariant=null;mode="map-target";render();},!usable,skill);
+      }});addActionButton("返回",()=>{selectedSkill=null;mode="command";render();});return;}
     if((mode==="map-target"||mode==="attack")&&selectedSkill){
       if(actionController.enchantmentFollowup()?.unitId===selected.id){
         addActionButton("返回攻擊選擇",backFromTargeting);
-        addActionButton("取消攻擊並待機",()=>actionController.cancelEnchantmentFollowup());
+        addActionButton("取消攻擊並待機（保留附魔）",()=>actionController.cancelEnchantmentFollowup());
       }else addActionButton("取消施放",backFromTargeting);
       return;
     }
@@ -531,6 +695,11 @@
   function debugSpawnCharacterCard(cardId,owner="ENEMY",x=0,y=0){const card=CardDatabase.get(cardId);if(!CardDatabase.isCharacter(card))return false;x=Number(x);y=Number(y);const tile=TacticalEngine.tile(map,x,y);if(!tile||unitAt(x,y))return false;const requested=String(owner).toUpperCase(),team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;const prefix=team===TEAM.PLAYER?"tp":team===TEAM.NEUTRAL?"tn":"te";let id;do{id=`${prefix}${unitSerial++}`;}while(units.some(unit=>unit.id===id));const unit=UnitRuntimeEngine.createFromCard({id,team,card,x,y,map});if(!unit)return false;unit.cardId=card.id;unit.deployedRound=round;unit.moved=false;unit.acted=false;unit.waited=false;units.push(unit);onUnitCreated(unit);applyEnvironmentHazardToUnit(unit,{reason:"Battle Test Console 生成",waterTrigger:"ENTER"});pushLog(`TEST｜${team===TEAM.PLAYER?"我方":team===TEAM.NEUTRAL?"中立":"敵方"}生成「${card.name}」於 (${x},${y})。`,"SYSTEM");return debugEmit();}
   function debugMoveUnit(unitId,x,y){const unit=units.find(candidate=>candidate.id===unitId&&candidate.alive);x=Number(x);y=Number(y);const tile=TacticalEngine.tile(map,x,y),occupant=unitAt(x,y);if(!unit||!tile||(occupant&&occupant.id!==unit.id))return false;unit.x=x;unit.y=y;if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);else unit.z=Number(TacticalEngine.elevation(tile)||0);pushLog(`TEST｜${unit.character.name} 移動至 (${x},${y})。`,"SYSTEM");return debugEmit();}
   function debugState(){return{moonlight:environmentState?.moonlight||"PARTIAL",timeOfDay:environmentState?.timeOfDay||"DAY",weather:environmentState?.weather||"CLEAR",weatherTurnsRemaining:environmentState?.weatherTurnsRemaining??null,climate:globalThis.EnvironmentEngine?.climateSnapshot?.(environmentState)??null,environmentSteps:debugEnvironmentSteps,round,wind:globalThis.EnvironmentEngine?.climateSnapshot?.(environmentState)?.wind||null,map:{width:map?.width||0,height:map?.height||0},units:(units||[]).filter(unit=>unit.alive).map(unit=>({id:unit.id,name:unit.character?.name||unit.id,team:unit.team,x:unit.x,y:unit.y,z:unit.z,stealthed:!!globalThis.EffectEngine?.isStealthed?.(unit),items:globalThis.ItemRuntimeEngine?.list?.(unit).map(entry=>entry.item.id)||[]}))};}
-  window.CardTacticsRuntime={getCardState:()=>cardState,getEnemyCardState:()=>enemyCardState,getEnemyPresentation:()=>({...enemyView}),getBattleMap:()=>presentationWorld().map,getBattleSnapshot:()=>presentationController.battleSnapshot(),clickBattleTile,getStage:()=>presentationWorld().stage,getCores:()=>presentationWorld().cores.map(core=>({...core})),getPhase:()=>phase,getPendingCard:()=>pendingCard,getBattleLog:(type=null)=>({active:logState.active,entries:BattleLog.list(logState,type||logState.active).map(entry=>({...entry}))}),getEngagementPresentation:engagementPresentation,handleEngagementUIAction,setBattleLogTab:type=>{BattleLog.setActive(logState,type);window.dispatchEvent(new CustomEvent("cardtactics:log"));},getActionMenuAnchor:()=>phase===PHASE.PLAYER&&selected&&!commandPanelCollapsed&&mode!=="support-select"?{x:selected.x,y:selected.y}:null,getInspectedUnitPresentation:()=>{const s=presentationWorld(),unit=inspectedTile?s.units.find(candidate=>candidate.alive&&candidate.x===inspectedTile.x&&candidate.y===inspectedTile.y):selected;return presentationController.unitPresentation(unit||selected);},getInspectedTilePresentation:()=>{const w=presentationWorld(),tile=inspectedTile?TacticalEngine.tile(w.map,inspectedTile.x,inspectedTile.y):null;return tile?TileInspectionPresentation.create({map:w.map,environmentState:w.environmentState,tile}):null;},playCard:cardId=>cardPhaseController.select(cardId),canPlayCard:cardId=>cardPhaseController.canResolve(CardDatabase.get(cardId)),hasPlayableCard:()=>cardPhaseController.hasPlayableCard(),maybeAutoEndCardPhase:()=>cardPhaseController.maybeAutoEnd(),endCardPhase:()=>cardPhaseController.end(),cancelCard:()=>cardPhaseController.cancel(),endPlayerTurn,selectNextAvailableUnit,refresh:render,resetBattle,isHallucinated:()=>!!hallucinationSession?.active,debug:Object.freeze({state:debugState,setWeather:debugSetWeather,setTimeOfDay:debugSetTimeOfDay,setMoonlight:debugSetMoonlight,advanceEnvironmentTurns:debugAdvanceEnvironmentTurns,setWind:debugSetWind,applyEnvironmentForce:debugApplyEnvironmentForce,clearTileEffects:debugClearTileEffects,giveCard:debugGiveCard,spawnCharacterCard:debugSpawnCharacterCard,moveUnit:debugMoveUnit,hallucination:()=>hallucinationSession?{active:true,team:hallucinationSession.team,pending:[...pendingHallucinations.keys()]}:{active:false,pending:[...pendingHallucinations.keys()]}})};
+  window.CardTacticsRuntime={getCardState:()=>cardState,getEnchantmentSelection:()=>{
+    const pending=actionController?.enchantmentSelection?.();
+    return pending?{casterId:pending.attacker.id,focusedRecipientId:focusedEnchantRecipientId,
+      candidates:enchantRecipientGroups(pending).map(({target,weapons})=>({unitId:target.id,...enchantIdentity(target),
+        weaponSlots:weapons.map(weapon=>weapon.slot),waited:!!target.waited}))}:null;
+  },getEnemyCardState:()=>enemyCardState,getEnemyPresentation:()=>({...enemyView}),getBattleMap:()=>presentationWorld().map,getBattleSnapshot:()=>presentationController.battleSnapshot(),clickBattleTile,getStage:()=>presentationWorld().stage,getCores:()=>presentationWorld().cores.map(core=>({...core})),getPhase:()=>phase,getPendingCard:()=>pendingCard,getBattleLog:(type=null)=>({active:logState.active,entries:BattleLog.list(logState,type||logState.active).map(entry=>({...entry}))}),getEngagementPresentation:engagementPresentation,handleEngagementUIAction,setBattleLogTab:type=>{BattleLog.setActive(logState,type);window.dispatchEvent(new CustomEvent("cardtactics:log"));},getActionMenuAnchor:()=>phase===PHASE.PLAYER&&selected&&!commandPanelCollapsed&&mode!=="support-select"?{x:selected.x,y:selected.y}:null,getInspectedUnitPresentation:()=>{const s=presentationWorld(),unit=inspectedTile?s.units.find(candidate=>candidate.alive&&candidate.x===inspectedTile.x&&candidate.y===inspectedTile.y):selected;return presentationController.unitPresentation(unit||selected);},getInspectedTilePresentation:()=>{const w=presentationWorld(),tile=inspectedTile?TacticalEngine.tile(w.map,inspectedTile.x,inspectedTile.y):null;return tile?TileInspectionPresentation.create({map:w.map,environmentState:w.environmentState,tile}):null;},playCard:cardId=>cardPhaseController.select(cardId),canPlayCard:cardId=>cardPhaseController.canResolve(CardDatabase.get(cardId)),hasPlayableCard:()=>cardPhaseController.hasPlayableCard(),maybeAutoEndCardPhase:()=>cardPhaseController.maybeAutoEnd(),endCardPhase:()=>cardPhaseController.end(),cancelCard:()=>cardPhaseController.cancel(),endPlayerTurn,selectNextAvailableUnit,refresh:render,resetBattle,isHallucinated:()=>!!hallucinationSession?.active,debug:Object.freeze({state:debugState,setWeather:debugSetWeather,setTimeOfDay:debugSetTimeOfDay,setMoonlight:debugSetMoonlight,advanceEnvironmentTurns:debugAdvanceEnvironmentTurns,setWind:debugSetWind,applyEnvironmentForce:debugApplyEnvironmentForce,clearTileEffects:debugClearTileEffects,giveCard:debugGiveCard,spawnCharacterCard:debugSpawnCharacterCard,moveUnit:debugMoveUnit,hallucination:()=>hallucinationSession?{active:true,team:hallucinationSession.team,pending:[...pendingHallucinations.keys()]}:{active:false,pending:[...pendingHallucinations.keys()]}})};
   resetBattle();
 })();
