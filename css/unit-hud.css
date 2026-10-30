@@ -109,7 +109,10 @@
   font-size:20px;font-weight:900;line-height:1;letter-spacing:.4px;
   text-shadow:0 1px 3px #000,1px 2px 5px #000;pointer-events:none;
   user-select:none;-webkit-user-select:none;will-change:transform,opacity}
-.unit-float-damage{color:#ff5259}
+.unit-float-damage,.unit-float-physical-damage{color:#f7f7fa}
+.unit-float-magic-damage{color:#ffd35b}
+.unit-float-physical-critical{color:#ffffff;font-size:28px;letter-spacing:.8px}
+.unit-float-magic-critical{color:#ffe35b;font-size:28px;letter-spacing:.8px}
 .unit-float-heal{color:#56ed86}
 .unit-float-status{color:#ffca78;font-size:15px}
 @media(max-width:700px){
@@ -157,14 +160,14 @@
 .unit-hud-status[data-status-kind="defense"]{background:#233b58;border-color:#6d9cda;color:#d0e4ff}
 .unit-hud-status[data-status-kind="regen"]{background:#1f4631;border-color:#80c18d;color:#c9ffd7}
 .unit-hud-status[data-status-kind="stealth"]{background:#343257;border-color:#8984cf;color:#e0dcff}
-.unit-float-critical{color:#ffcf38;font-size:28px;letter-spacing:.8px;
+.unit-float-critical{color:#ffffff;font-size:28px;letter-spacing:.8px;
   text-shadow:0 1px 2px #3b2500,0 2px 4px #000,0 0 12px #d68100}
 @media(max-width:700px){
   .unit-hud-vital-row{min-height:17px;font-size:10px}
   .unit-hud-orb{flex-basis:16px;width:16px;height:16px}
   .unit-hud-mana-row{font-size:10px}
   .unit-hud-status{flex-basis:14px;width:14px;height:14px;font-size:11px}
-  .unit-float-critical{font-size:25px}
+  .unit-float-critical,.unit-float-physical-critical,.unit-float-magic-critical{font-size:25px}
 }
 
 /* Resolved tactical outcomes and DOT ticks share the transient float owner. */
