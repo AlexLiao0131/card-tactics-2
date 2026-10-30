@@ -130,6 +130,12 @@ export const EffectEngine=(()=>{
     unit.effects=state(unit).filter(entry=>entry!==effect);
     return{...effect};
   }
+  function interruptChannel(unit,reason="ACTION"){
+    if(!unit?.effects)return[];
+    const removed=unit.effects.filter(e=>e.type==="HEALING_CHANNEL");
+    if(removed.length)unit.effects=unit.effects.filter(e=>e.type!=="HEALING_CHANNEL");
+    return removed.map(effect=>({id:effect.id,reason}));
+  }
   function copyableSkills(target){
     return SkillDatabase.list(target?.character?.skills||[]).filter(s=>s.copyable!==false&&s.category!=="PASSIVE");
   }
@@ -143,13 +149,17 @@ export const EffectEngine=(()=>{
       return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     }
     if(effect.type==="HEAL")return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
+    if(effect.type==="HEALING_CHANNEL"){
+      if(!effect.id||!Number.isFinite(Number(effect.radius))||!Number.isFinite(Number(effect.amount))||!Number.isFinite(Number(effect.duration))||effect.duration<1)return{applied:false,reason:"INVALID_CHANNEL"};
+      return{applied:true,type:effect.type,effect:addEffect(target,{...effect,classification:"POSITIVE"},source)};
+    }
     if(effect.type==="HEAL_OVER_TIME"||effect.type==="DAMAGE_OVER_TIME")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="SHIELD"){
       const amount=Math.max(0,Math.round(Number(effect.amount||0))),entry=addEffect(target,{...effect,shieldHp:amount,maxShieldHp:amount},source);
       return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
     }
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
-    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m);return{applied:true,type:effect.type,amount,multiplier:m};}
+    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m);if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="DRAIN"){
@@ -167,9 +177,21 @@ export const EffectEngine=(()=>{
     const rel=relation(source,target),selected=effects.filter(e=>!e.relation||e.relation===rel);
     return selected.map(effect=>apply({source,target,effect}));
   }
-  function tick(unit){
+  function tick(unit,{units=[]}={}){
     const events=[];
     for(const effect of [...state(unit)]){
+      if(effect.type==="HEALING_CHANNEL"){
+        const radius=Math.max(0,Number(effect.radius||0));
+        const healed=[];
+        for(const ally of units){
+          if(!ally?.alive||ally.team!==unit.team)continue;
+          if(Math.abs(ally.x-unit.x)+Math.abs(ally.y-unit.y)>radius)continue;
+          const amount=heal(ally,effect.amount);
+          if(amount>0)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(ally,amount);
+          healed.push({unitId:ally.id,amount});
+        }
+        events.push({type:"HEALING_CHANNEL",effectId:effect.id,healed});
+      }
       if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
       if(effect.type==="DAMAGE_OVER_TIME"){const amount=damage(unit,effect.amount);globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
       if(effect.remaining!=null)effect.remaining--;
@@ -266,6 +288,6 @@ export const EffectEngine=(()=>{
     return discovered;
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

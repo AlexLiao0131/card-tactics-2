@@ -66,7 +66,7 @@ export const PostEngagementEngine=(()=>{
           if(hit?.alive)damageUnit(hit,Math.max(1,Math.round(damage*.5)));
         }
         let objectDamage=0,objectDestroyed=false;
-        if(surface.kind==="OBJECT"&&surface.destructible&&surface.object){objectDamage=Math.max(1,damage);surface.object.durability=Math.max(0,Number(surface.object.durability??surface.maxDurability)-objectDamage);objectDestroyed=surface.object.durability<=0;if(objectDestroyed)surface.object.destroyed=true}
+        if(surface.kind==="OBJECT"&&surface.destructible&&surface.object){objectDamage=Math.max(1,damage);surface.object.durability=Math.max(0,Number(surface.object.durability??surface.maxDurability)-objectDamage);objectDestroyed=surface.object.durability<=0;if(objectDestroyed){surface.object.destroyed=true;map.plantObservationRevision=Number(map.plantObservationRevision||0)+1;}}
         const collision={kind:surface.kind,x:nx,y:ny,surface,damage,transferred:transfer,chain,objectDamage,objectDestroyed,stopped:!objectDestroyed};
         collisions.push(collision);onCollision?.(collision,{mover:target,source,effect,depth:_depth});
         if(objectDestroyed&&target.alive){

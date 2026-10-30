@@ -112,6 +112,45 @@ export const BattleResolution=(()=>{
     return{...resolved,enchantment:enchant,result:{...base,damage:base.damage+extra,
       weaponDamage:base.damage,enchantmentDamage:extra,enchantmentElement:enchant.element}};
   }
+  function inherentMagicDamage(actor,target,skill,critical){
+    const weapon=actor?.character?.weapons?.[skill?.weapon];
+    const inherent=weapon?.inherentMagic;
+    if(!inherent||!target?.character)return 0;
+    const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
+    const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
+    return BattleEngine.elementalEnchantmentDamage({
+      matk:Number(actor.character.combat?.matk||0),bonusPower:inherent.power,
+      element:inherent.element,defender:target.character,critical,attackClass:sourceClass
+    });
+  }
+  function previewInherentBonus(actor,target,skill,{critical=false,defenseMultiplier=1,grazeMultiplier=1}={}){
+    return Math.round(inherentMagicDamage(actor,target,skill,critical)*defenseMultiplier*grazeMultiplier);
+  }
+  function withInherentMagic(resolved,actor,target,skill){
+    const inherent=actor?.character?.weapons?.[skill?.weapon]?.inherentMagic;
+    if(!inherent)return resolved;
+    const base=resolved.result;
+    let extra=0;
+    if(base.hit){
+      let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
+      const defense=resolved.defense;
+      if(defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
+      extra=Math.round(inherentMagicDamage(actor,target,skill,base.crit)*multiplier);
+    }
+    return {...resolved,result:{...base,weaponDamage:base.weaponDamage??base.damage,
+      damage:base.damage+extra,inherentMagicDamage:extra,inherentMagicElement:inherent.element}};
+  }
+  function splitActualHpLoss(base,hpLoss){
+    const actual=Math.max(0,Math.round(Number(hpLoss||0)));
+    const baseComponent=Math.max(0,Number(base.weaponDamage??base.damage??0));
+    const weapon=base.type==="MAGIC"?0:baseComponent;
+    const spell=base.type==="MAGIC"?baseComponent:0;
+    const enchant=Math.max(0,Number(base.enchantmentDamage||0));
+    const inherent=Math.max(0,Number(base.inherentMagicDamage||0));
+    const total=weapon+spell+enchant+inherent;
+    const physical=total>0?Math.max(0,Math.min(actual,Math.round(actual*weapon/total))):actual;
+    return{physical,magic:actual-physical};
+  }
   function execute(c,hooks={}){
     const queue=buildQueue(c),results=[];
     for(const a of queue){
@@ -121,14 +160,19 @@ export const BattleResolution=(()=>{
       const action={...a,skill};
       // Consume only after the action is known to execute; misses still spend it.
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
-      const resolved=withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),baseResult=resolved.result;
+      globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
+      globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
+      const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),action.actor,action.target,skill),baseResult=resolved.result;
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
       hooks.consumeSkill?.(action.actor,skill);
       const hallucinationHit=action.target?.hallucination===true&&baseResult.hit,shield=hallucinationHit?{damage:Math.max(1,Number(action.target.hp||1)),absorbed:0,shieldHp:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(action.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
       const hpBefore=Math.max(0,Number(action.target.hp||0));
       action.target.hp=Math.max(0,action.target.hp-result.damage);
+      const components=splitActualHpLoss(baseResult,hpBefore-action.target.hp);
+      result.physicalHpDamage=components.physical;
+      result.magicHpDamage=components.magic;
       globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{
-        damage:hpBefore-action.target.hp,critical:result.crit===true
+        damage:hpBefore-action.target.hp,critical:result.crit===true,components
       });
       const defense=resolved.defense;
       // One resolved judgement, not a separate per-frame damage guess.
@@ -161,6 +205,6 @@ export const BattleResolution=(()=>{
     return{context:c,queue,results,postEngagement:post};
   }
   function resolve(options,hooks={}){const actions=[...(options.actions||[])];if(options.reaction?.type==="COUNTER"&&options.reaction.skill)actions.push(createCounterAction(options.target,options.initiator,options.reaction.skill));return execute(createContext({...options,actions}),hooks)}
-  return{enchantmentMagicDamage,previewEnchantmentBonus,createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
+  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 })();
 globalThis.BattleResolution=BattleResolution;

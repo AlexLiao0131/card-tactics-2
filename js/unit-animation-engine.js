@@ -164,17 +164,21 @@ export const UnitAnimationEngine=(()=>{
     return emit(target,STATE.HURT,detail);
   }
 
-  function emitResolvedHit(target,{damage=0,critical=false}={}){
+  function emitResolvedHit(target,{damage=0,critical=false,components=null}={}){
     if(!target?.id)return null;
     const actual=Math.max(0,Math.round(Number(damage)||0));
     if(!actual)return null;
     const id=String(target.id);
-    // Presentation never reveals a hidden opponent: only the last visible
-    // snapshot may own a floating combat number (also on lethal hits).
     const previouslyVisible=previousUnits.get(id);
     if(!previouslyVisible)return null;
     resolvedDamage.set(id,(resolvedDamage.get(id)||0)+actual);
-    return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true});
+    if(!components)return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true});
+    const physical=Math.max(0,Math.round(Number(components.physical||0)));
+    const magic=Math.max(0,actual-physical);
+    const out=[];
+    if(physical)out.push(emitFloat(previouslyVisible,critical?"PHYSICAL_CRITICAL":"PHYSICAL_DAMAGE",physical,{afterDeath:true}));
+    if(magic)out.push(emitFloat(previouslyVisible,critical?"MAGIC_CRITICAL":"MAGIC_DAMAGE",magic,{afterDeath:true}));
+    return out;
   }
 
   // Combat outcomes are reported by BattleResolution, never guessed from HP.

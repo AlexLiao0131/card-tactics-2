@@ -326,7 +326,10 @@ export class UnitHudOverlay{
       if(!living.has(String(event.unitId))&&!event.afterDeath)continue;
       const outcomes={MISS:"miss",DODGE:"dodge",BLOCK:"block",PARRY:"parry",GRAZE:"graze"};
       const kind=outcomes[event.kind]||
-        (event.kind==="DOT"?"dot":event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":event.kind==="CRITICAL"?"critical":"damage");
+        (event.kind==="DOT"?"dot":event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":
+        event.kind==="PHYSICAL_CRITICAL"?"physical-critical":event.kind==="MAGIC_CRITICAL"?"magic-critical":
+        event.kind==="MAGIC_DAMAGE"?"magic-damage":event.kind==="PHYSICAL_DAMAGE"?"physical-damage":
+        event.kind==="CRITICAL"?"critical":"damage");
       const text=outcomes[event.kind]?event.kind:
         kind==="dot"?`${String(event.label||"持續傷害")} -${Math.round(Number(event.value)||0)}`:
         kind==="heal"?`+${Math.round(Number(event.value)||0)}`:
@@ -336,7 +339,7 @@ export class UnitHudOverlay{
       node.textContent=text;
       this.root.appendChild(node);
       const stack=Math.min(3,this.floats.filter(item=>item.unitId===event.unitId&&now-item.start<260).length);
-      this.floats.push({node,unitId:event.unitId,x:event.x,y:event.y,
+      this.floats.push({node,kind,unitId:event.unitId,x:event.x,y:event.y,
         renderZ:event.renderZ,afterDeath:!!event.afterDeath,start:now,stack,
         lifetime:kind==="status"?1400:kind==="critical"?1250:kind==="dot"?1350:1100});
     }
@@ -388,7 +391,7 @@ export class UnitHudOverlay{
         Number(item.y)*TILE_SIZE);
       const projected=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),transform,viewport);
       if(projected.z<0||projected.z>1){item.node.hidden=true;retained.push(item);continue;}
-      const x=offsetX+projected.x*scaleX,y=offsetY+projected.y*scaleY;
+      const lateral=item.kind==="magic-damage"||item.kind==="magic-critical"?18:item.kind==="physical-damage"||item.kind==="physical-critical"?-18:0;const x=offsetX+projected.x*scaleX+lateral,y=offsetY+projected.y*scaleY;
       item.node.hidden=x<-100||x>rootRect.width+100||y<-100||y>rootRect.height+100;
       item.node.style.opacity=String(Math.min(1,(1-progress)*2));
       item.node.style.transform=`translate3d(${Math.round(x)}px,${Math.round(y-12-48*progress-item.stack*16)}px,0) translate(-50%,-100%)`;

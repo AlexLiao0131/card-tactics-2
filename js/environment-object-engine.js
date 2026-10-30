@@ -116,11 +116,12 @@ export const EnvironmentObjectEngine=(()=>{
     let id=`${prefix}_${x}_${y}`,n=1;while(used.has(id))id=`${prefix}_${x}_${y}_${n++}`;return id;
   }
 
+  function touchPlantObservation(map){if(map)map.plantObservationRevision=Number(map.plantObservationRevision||0)+1;}
   function spawn(map,{type,x,y,id=null,...overrides}={}){
     const canonical=normalizeType(type),base=profile(canonical);if(!map||!base)return null;
     map.objects??=[];
     const object=hydrate({id:id||nextId(map,canonical.toLowerCase(),x,y),type:canonical,x:Number(x),y:Number(y),...overrides});
-    map.objects.push(object);sortObjects(map);return object;
+    map.objects.push(object);sortObjects(map);touchPlantObservation(map);return object;
   }
 
   function seedTerrainObjects(map,{seed=null}={}){
@@ -156,6 +157,7 @@ export const EnvironmentObjectEngine=(()=>{
   function initializeMap(map,{seed=null}={}){
     if(!map)return map;map.objects??=[];
     map.objects.forEach(hydrate);
+    touchPlantObservation(map);
     seedTerrainObjects(map,{seed});
     sortObjects(map);
     return map;
@@ -180,11 +182,11 @@ export const EnvironmentObjectEngine=(()=>{
     if(!object||object.destroyed)return null;const from=normalizeType(object.type);
     setType(object,nextType);
     events.push({type:"ENV_OBJECT_TRANSFORMED",objectId:object.id,x:object.x,y:object.y,from,to:object.type,reason});
-    sortObjects(map);return object;
+    sortObjects(map);touchPlantObservation(map);return object;
   }
 
   function destroy(map,object,{events=[],reason="DESTROYED",debris=0}={}){
-    if(!object||object.destroyed)return false;object.destroyed=true;
+    if(!object||object.destroyed)return false;object.destroyed=true;touchPlantObservation(map);
     const type=normalizeType(object.type);
     const tile=globalThis.HydrologyEngine?.tileAt?.(map,object.x,object.y)||map?.tiles?.find(t=>t.x===object.x&&t.y===object.y);
     if(tile&&debris>0)tile.debrisMass=clean(Number(tile.debrisMass||0)+debris);
@@ -255,7 +257,7 @@ export const EnvironmentObjectEngine=(()=>{
   function moveObject(map,object,x,y,{events=[],reason="MOVED"}={}){
     if(!object||object.destroyed)return false;const from={x:object.x,y:object.y};object.x=Number(x);object.y=Number(y);
     events.push({type:"ENV_OBJECT_MOVED",objectId:object.id,objectType:normalizeType(object.type),from,to:{x:object.x,y:object.y},reason});
-    sortObjects(map);return true;
+    sortObjects(map);touchPlantObservation(map);return true;
   }
 
   function carriedObjects(map,carrierId=null){
@@ -267,14 +269,14 @@ export const EnvironmentObjectEngine=(()=>{
     if(!map||!object||object.destroyed||!carrierId)return null;hydrate(object);
     const previous=object.carriedBy?String(object.carriedBy):null,next=String(carrierId);if(previous===next)return object;if(previous==null){object.carriedBlocksMovement=object.blocksMovement===true;object.blocksMovement=false;}object.carriedBy=next;
     events.push({type:"ENV_OBJECT_CARRIED",objectId:object.id,objectType:normalizeType(object.type),carrierId:object.carriedBy,previousCarrierId:previous,x:object.x,y:object.y,reason});
-    sortObjects(map);return object;
+    sortObjects(map);touchPlantObservation(map);return object;
   }
 
   function releaseObject(map,object,x,y,{events=[],reason="RELEASED"}={}){
     if(!map||!object||object.destroyed)return null;hydrate(object);
     const carrierId=object.carriedBy?String(object.carriedBy):null;object.x=Number(x);object.y=Number(y);delete object.carriedBy;if(object.carriedBlocksMovement!=null){object.blocksMovement=object.carriedBlocksMovement===true;delete object.carriedBlocksMovement;}
     events.push({type:"ENV_OBJECT_RELEASED",objectId:object.id,objectType:normalizeType(object.type),carrierId,x:object.x,y:object.y,reason});
-    sortObjects(map);return object;
+    sortObjects(map);touchPlantObservation(map);return object;
   }
 
   function applyDamage(map,object,amount,{events=[],reason="DAMAGE",fire=false}={}){

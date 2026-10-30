@@ -312,6 +312,7 @@
       if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return skillFailure(unit,skill,"TARGET_OR_TURN_INVALID",target);
       if(target.kind!=="CORE")return skillFailure(unit,skill,"TARGET_NOT_CORE",target);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
+      EffectEngine.interruptChannel(unit,"CORE_ATTACK");
       skill=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,skill);
       TacticalEngine.faceToward(unit,target);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
@@ -321,7 +322,9 @@
       // Core uses its existing single defense field (it has no armor element,
       // MDEF, parry or shield). Do not route it through a fake unit battle.
       const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
-      ctx.damageCore(target.core.owner,raw+bonus,`${unit.character.name}【${skill.name}】`);
+      const inherent=unit.character.weapons?.[skill.weapon]?.inherentMagic;
+      const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.power||0)-Number(target.core.defense||30))):0;
+      ctx.damageCore(target.core.owner,raw+bonus+inherentBonus,`${unit.character.name}【${skill.name}】`);
       if(enchantment)resolveEnchantmentImpact({actor:unit,skill,enchantment,target,result:{hit:true}});
       commitPendingMove(unit);
       unit.moved=true;unit.acted=true;unit.waited=true;
@@ -372,6 +375,7 @@
       const attack=ctx.effectiveSkill(attacker,skill);
       if(!ctx.consumeSkill(attacker,attack))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+      EffectEngine.interruptChannel(attacker,"TERRAIN_ATTACK");
       TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP"});
       const consumed=EffectEngine.consumeWeaponEnchantment(attacker,skill.weapon);
@@ -415,8 +419,8 @@
     }
 
     function enchantableWeaponSlots(unit,skill){
-      const allowed=new Set(skill?.enchantment?.weaponKinds||[]);
-      return Object.entries(unit?.character?.weapons||{}).filter(([,weapon])=>allowed.has(weapon?.weaponKind))
+      return Object.entries(unit?.character?.weapons||{}).filter(([,weapon])=>
+        EquipmentDatabase.canEnchantWeapon(weapon,skill?.enchantment))
         .map(([slot,weapon])=>({slot,name:weapon.name||slot,kind:weapon.weaponKind}));
     }
     // Eligibility depends on the caster's rules, not the recipient's action
@@ -731,6 +735,7 @@
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+      EffectEngine.interruptChannel(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
@@ -758,7 +763,10 @@
             enchantImpacts.push({enchantment,result,target:occupant});
           }
           const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
+          const hpBefore=Math.max(0,Number(occupant.hp||0));
           occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          const hpLoss=hpBefore-occupant.hp;
+          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
           else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
@@ -772,7 +780,10 @@
           const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
           const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          const hpBefore=Math.max(0,Number(occupant.hp||0));
           const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          const hpLoss=hpBefore-occupant.hp;
+          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
         });
@@ -879,6 +890,7 @@
       if(!window.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+      EffectEngine.interruptChannel(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
       TacticalEngine.faceToward(attacker,target);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
@@ -890,9 +902,9 @@
             const attackSkill={...skill,power:Number(effect.power||1),attackType:"MAGIC",element:effect.element||"NONE",traitMultipliers:effect.traitMultipliers||{},weapon:effect.weapon||skill.weapon};
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
             const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
-            let dealt=0,absorbed=0;
+            const hpBefore=Math.max(0,Number(target.hp||0));let dealt=0,absorbed=0;
             if(result.hit){const shield=target.hallucination===true?{damage:Math.max(1,Number(target.hp||1)),absorbed:0}:EffectEngine.resolveIncomingDamage(target,result.damage);dealt=shield.damage;absorbed=shield.absorbed;target.hp=Math.max(0,target.hp-dealt);if(target.hp===0)target.alive=false;}
-            results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});
+            results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:Math.min(hpBefore,Number(dealt||0)),critical:result.crit===true,components:{physical:0}});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
             else if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(dealt||0)});
@@ -936,6 +948,16 @@
       return true;
     }
 
+    function executeChannelSkill(attacker,skill){
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",attacker);
+      const rule=skill.channel;
+      const result=EffectEngine.apply({source:attacker,target:attacker,effect:rule});
+      if(!result?.applied)return skillFailure(attacker,skill,"CHANNEL_REJECTED",attacker);
+      ctx.consumeSkill(attacker,skill);
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
+      ctx.pushLog(`${attacker.character.name} 開始吟唱「${skill.name}」，最多持續 ${rule.duration} 回合；移動或交戰時中斷。`,"BATTLE");
+      return finishActiveSkill(attacker);
+    }
     function prepareAttack(attacker,defender,skill){
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
@@ -943,6 +965,7 @@
         skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
       if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
+      if(skill.channel){executeChannelSkill(attacker,skill);return;}
       if(skill.effects||skill.relationEffects||skill.bloodAction){executeEffectSkill(attacker,defender,skill);return;}
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
