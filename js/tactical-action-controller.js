@@ -172,9 +172,23 @@
       return TacticalEngine.canTarget(map,{...unit,x:origin.x,y:origin.y},target,skill,environmentState);
     }
 
+    function bloodShadowLanding(unit,target){
+      const {map,units,environmentState}=state();
+      if(!unit?.alive||!target?.alive||unit.team===target.team)return null;
+      if(!TacticalEngine.teamCanSee(map,units,unit.team,target,environmentState))return null;
+      const back={N:{x:0,y:1},S:{x:0,y:-1},E:{x:-1,y:0},W:{x:1,y:0}}[TacticalEngine.ensureFacing(target)];
+      if(!back)return null;
+      const tile=TacticalEngine.tile(map,target.x+back.x,target.y+back.y);
+      if(!tile||!TacticalEngine.canOccupyTerrain(unit,tile)||TacticalEngine.isBlockedByObject(map,tile.x,tile.y,unit))return null;
+      if(units.some(other=>other.id!==unit.id&&other.alive&&other.occupiesTile!==false&&other.x===tile.x&&other.y===tile.y))return null;
+      const dist=Math.abs(unit.x-tile.x)+Math.abs(unit.y-tile.y);
+      if(dist>Number(unit.character.combat?.move||0))return null;
+      return tile;
+    }
     function attackPlanForTarget(unit,target,skill){
       const {map,units,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
+      if(skill.bloodShadow)return bloodShadowLanding(unit,target)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
       if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill.utilityAction?.type))return pickupPlan(unit,target,skill);
       if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
 
@@ -202,6 +216,7 @@
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
         if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
         
+        if(skill?.bloodShadow)return !!bloodShadowLanding(unit,target);
         return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       });
     }
@@ -313,7 +328,10 @@
       if(target.kind!=="CORE")return skillFailure(unit,skill,"TARGET_NOT_CORE",target);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
       EffectEngine.interruptChannel(unit,"CORE_ATTACK");
-      skill=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,skill);
+      skill=ctx.effectiveSkill(unit,skill);
+      UnitRuntimeEngine.beginBloodTransaction(unit);
+      if(!ctx.consumeSkill(unit,skill)){UnitRuntimeEngine.endBloodTransaction(unit);return false;}
+      const bloodMult=UnitRuntimeEngine.attackEnhancement(unit,skill);
       TacticalEngine.faceToward(unit,target);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
       const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
@@ -324,7 +342,10 @@
       const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
       const inherent=unit.character.weapons?.[skill.weapon]?.inherentMagic;
       const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.power||0)-Number(target.core.defense||30))):0;
-      ctx.damageCore(target.core.owner,raw+bonus+inherentBonus,`${unit.character.name}【${skill.name}】`);
+      const coreHpBefore=Math.max(0,Number(target.core?.hp||0));
+      ctx.damageCore(target.core.owner,Math.round((raw+bonus+inherentBonus)*bloodMult),`${unit.character.name}【${skill.name}】`);
+      if(UnitRuntimeEngine.bloodUser(unit))UnitRuntimeEngine.changeBlood(unit,Math.max(0,coreHpBefore-Number(target.core?.hp||0)));
+      UnitRuntimeEngine.endBloodTransaction(unit);
       if(enchantment)resolveEnchantmentImpact({actor:unit,skill,enchantment,target,result:{hit:true}});
       commitPendingMove(unit);
       unit.moved=true;unit.acted=true;unit.waited=true;
@@ -736,13 +757,16 @@
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
-      skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+      skill=ctx.effectiveSkill(attacker,skill);
+      UnitRuntimeEngine.beginBloodTransaction(attacker);
+      if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+      const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
       if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
         const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
         ctx.pushLog(`${attacker.character.name} 在 (${center.x},${center.y}) 設置「${trap?.name||skill.name}」。`,"BATTLE");
-        return finishActiveSkill(attacker);
+        UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
       }
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       // A LINE sword strike is one attack event regardless of how many units
@@ -762,9 +786,9 @@
             result.damage+=extra;result.enchantmentDamage=extra;
             enchantImpacts.push({enchantment,result,target:occupant});
           }
-          const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};
+          result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker});
           const hpLoss=hpBefore-occupant.hp;
           if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
@@ -780,8 +804,9 @@
           const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
           const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const hallucinationHit=occupant.hallucination===true&&result.hit,shield=hallucinationHit?{damage:Math.max(1,Number(occupant.hp||1)),absorbed:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(occupant,result.damage):{damage:result.damage,absorbed:0};occupant.hp=Math.max(0,occupant.hp-shield.damage);
+          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker});
           const hpLoss=hpBefore-occupant.hp;
           if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
@@ -789,7 +814,12 @@
         });
       }
       if(skill.aoeDamage){
-        affected.forEach(tile=>{const occupant=ctx.unitAt(tile.x,tile.y);if(occupant)ctx.damageUnitFlat(occupant,skill.aoeDamage,skill.name);});
+        affected.forEach(tile=>{
+          const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
+          const dealt=EffectEngine.applyDamage(occupant,Math.round(Number(skill.aoeDamage)*bloodMult),{source:attacker}).hpLoss;
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${dealt} 傷害。`,"BATTLE");
+          if(occupant.hp<=0){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
+        });
       }
       applyMapEffects(attacker,affected,skill);
       const environmentEvents=[];
@@ -836,6 +866,7 @@
           ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} ${moveResult.completed?`移動至 (${attacker.x},${attacker.y})`:"移動途中受到環境影響而中斷"}。`,"BATTLE");
         }
       }
+      UnitRuntimeEngine.endBloodTransaction(attacker);
       if(ctx.checkMatchEnd()){ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.render();return true;}
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
@@ -891,7 +922,34 @@
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
-      skill=ctx.effectiveSkill(attacker,skill);ctx.consumeSkill(attacker,skill);
+      skill=ctx.effectiveSkill(attacker,skill);
+      if(skill.bloodBurst){
+        const centers=EffectEngine.bloodBurstCenters(attacker,state().units);
+        if(!centers.length)return skillFailure(attacker,skill,"NO_BLEEDING_ENEMIES",target);
+        UnitRuntimeEngine.beginBloodTransaction(attacker);
+        if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+        const mult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
+        const {units}=state(),radius=Number(skill.range?.max||0);
+        let hits=0,total=0;
+        for(const center of centers){
+          for(const victim of units){
+            if(!victim.alive||victim.team===attacker.team||Math.abs(victim.x-center.x)+Math.abs(victim.y-center.y)>radius)continue;
+            const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y)});
+            if(!roll.hit)continue;
+            const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker});
+            total+=outcome.hpLoss;hits++;
+            if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true});
+            if(victim.hp<=0){victim.alive=false;ctx.handleDefeated(victim,attacker,skill);}
+          }
+        }
+        UnitRuntimeEngine.endBloodTransaction(attacker);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"AOE"});
+        ctx.pushLog(`${attacker.character.name} 血爆｜${centers.length} 個流血爆點｜命中 ${hits} 次｜實際HP傷害 ${total}。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      UnitRuntimeEngine.beginBloodTransaction(attacker);
+      if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+      const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,target);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];
@@ -903,7 +961,7 @@
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
             const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
             const hpBefore=Math.max(0,Number(target.hp||0));let dealt=0,absorbed=0;
-            if(result.hit){const shield=target.hallucination===true?{damage:Math.max(1,Number(target.hp||1)),absorbed:0}:EffectEngine.resolveIncomingDamage(target,result.damage);dealt=shield.damage;absorbed=shield.absorbed;target.hp=Math.max(0,target.hp-dealt);if(target.hp===0)target.alive=false;}
+            if(result.hit){const shield=EffectEngine.applyDamage(target,target.hallucination===true?hpBefore:Math.round(result.damage*bloodMult),{source:attacker});dealt=shield.damage;absorbed=shield.absorbed;if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:Math.min(hpBefore,Number(dealt||0)),critical:result.crit===true,components:{physical:0}});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
@@ -916,21 +974,7 @@
         for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);}
       }
       applyPassiveSkillTriggers(attacker,target,skill);
-      if(skill.bloodAction){
-        const b=skill.bloodAction,bonus=b.bonusAgainstEffect,bonusActive=bonus?.id&&EffectEngine.hasEffect(target,bonus.id),drainAmount=Math.round(Number(b.damage||0)*(bonusActive?Number(bonus.multiplier||1):1));
-        const drain=EffectEngine.apply({source:attacker,target,effect:{type:"DRAIN",amount:drainAmount,healRatio:b.healRatio}});results.push(drain);
-        const passive=b.restoreFromPassive?SkillDatabase.getPassive(b.restoreFromPassive):null,restoration=passive?.bloodRestoration||null,restoreValues=b.restoresGenome||restoration?.values||null,restoreDuration=Number(b.duration||restoration?.duration||0);
-        if(restoreValues)EffectEngine.apply({source:attacker,target:attacker,effect:{type:"ATTRIBUTE_OVERRIDE",id:"BLOOD_GENOME_RESTORATION",classification:"POSITIVE",duration:restoreDuration,values:restoreValues}});
-        const manaRestore=EffectEngine.apply({source:attacker,target:attacker,effect:{type:"RESTORE_MANA",amount:Math.round(Number(drain.damage||0)*Number(b.manaRatio||0))}});results.push(manaRestore);
-        ctx.pushLog(`${attacker.character.name} 吸取 ${target.character.name} 的血${bonusActive?"｜流血目標吸血強化":""}｜${drain.damage||0} 傷害｜自癒 ${drain.healed||0} HP｜回復 ${manaRestore.amount||0} MP${restoreValues?"｜病患：暫時恢復 5V":""}。`,"BATTLE");
-        if(!target.alive)ctx.handleDefeated(target,attacker,skill);
-        else if(Number(drain.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(drain.damage||0)});
-        if(b.copySkill){
-          const options=EffectEngine.copyableSkills(target);
-          if(options.length){ctx.setPendingCopySkill({attacker,target,options,duration:b.copyDuration});ctx.setMode("copy-skill-select");ctx.render();return true;}
-        }
-      }
-      return finishActiveSkill(attacker);
+      UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
     }
 
     function approachForSkill(attacker,defender,skill){
@@ -964,9 +1008,22 @@
       if(skill.approach&&!approachForSkill(attacker,defender,skill)){
         skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
+      if(skill.bloodShadow){
+        const landing=bloodShadowLanding(attacker,defender);
+        if(!landing)return skillFailure(attacker,skill,"NO_LEGAL_REAR_CELL",defender);
+        if(!pendingMove||pendingMove.unitId!==attacker.id)beginPendingMove(attacker);
+        attacker.x=landing.x;attacker.y=landing.y;
+        if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
+        else attacker.z=Number(TacticalEngine.elevation(landing)||0);
+        TacticalEngine.faceToward(attacker,defender);
+        ctx.enterTile(attacker);
+        if(!attacker.alive)return finishActiveSkill(attacker);
+        ctx.pushLog(`${attacker.character.name} 血影瞬襲至 ${defender.character.name} 背後。`,"BATTLE");
+        return executeEngagement(attacker,defender,ctx.effectiveSkill(attacker,skill),[]);
+      }
       if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
       if(skill.channel){executeChannelSkill(attacker,skill);return;}
-      if(skill.effects||skill.relationEffects||skill.bloodAction){executeEffectSkill(attacker,defender,skill);return;}
+      if(skill.effects||skill.relationEffects||skill.bloodBurst){executeEffectSkill(attacker,defender,skill);return;}
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
@@ -1006,6 +1063,23 @@
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
+      if(skill.bloodShadow){
+        const attack=engagement.results.find(entry=>entry.actor.id===attacker.id&&entry.skill.bloodShadow);
+        const drained=Math.max(0,Number(attack?.result?.damage||0));
+        if(drained>0){
+          const healed=EffectEngine.heal(attacker,drained);
+          const mana=UnitRuntimeEngine.restoreMana(attacker,Math.round(drained*.5));
+          ctx.pushLog(`${attacker.character.name} 吸血 ${drained}｜回復 ${healed} HP、${mana} MP。`,"BATTLE");
+          const options=EffectEngine.copyableSkills(defender,attacker);
+          if(options.length){
+            if(attacker.team===ctx.TEAM.PLAYER){
+              ctx.setPendingCopySkill({attacker,target:defender,options});
+              ctx.setMode("copy-skill-select");ctx.render();return true;
+            }
+            EffectEngine.rememberBloodSkill(attacker,options[0].id,defender);
+          }
+        }
+      }
       commitPendingMove(attacker);
       if(enchantmentFollowup?.unitId===attacker.id)enchantmentFollowup=null;
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
@@ -1017,7 +1091,7 @@
     function reset(){pendingMove=null;pendingTransport=null;pendingEnchantment=null;enchantmentFollowup=null;}
 
     return Object.freeze({
-      reset,pendingMove:()=>pendingMove,
+      reset,pendingMove:()=>pendingMove,bloodShadowLanding,
       attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,

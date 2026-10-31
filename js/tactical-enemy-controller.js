@@ -61,10 +61,13 @@
 
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
         measured("enemyAI.targetVisibility",()=>TacticalEngine.actorCanTrackTarget(ctx.map(),ctx.state().units,actor,target,ctx.actionState?.().environmentState||null,ctx.state()))&&
-        measured("enemyAI.targetRangeLOS",()=>TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null))
+        measured("enemyAI.targetRangeLOS",()=>skill.bloodShadow?
+          !!ctx.bloodShadowLanding?.(actor,target):TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null))
       );
 
       const chooseAttack=actor=>{
+        const burst=ctx.skillList(actor).find(skill=>skill.bloodBurst&&ctx.canUseSkill(actor,skill));
+        if(burst)return{attacker:actor,defender:actor,skill:burst};
         for(const skill of singleSkills(actor)){
           const targets=targetsForSkill(actor,skill);
           if(targets.length){
@@ -147,6 +150,14 @@
       };
 
       const requestAttack=attack=>{
+        if(attack.skill?.bloodBurst||attack.skill?.bloodShadow){
+          showStep("ATTACK",`AI｜${attack.attacker.character.name} 使用 ${attack.skill.name}`,{unitId:attack.attacker.id});
+          afterStep(()=>{
+            if(attack.skill.bloodBurst)ctx.performBloodBurst?.(attack.attacker,attack.skill);
+            else ctx.performBloodShadow?.(attack.attacker,attack.defender,attack.skill);
+            afterStep(continuePhase,350);
+          },400);return;
+        }
         if(attack.defender?.kind==="CORE"){
           showStep("ATTACK",`AI 決策｜${attack.attacker.character.name} → ${attack.defender.core?.name||"CORE"}｜${attack.skill.name}`,{unitId:attack.attacker.id});
           afterStep(()=>{

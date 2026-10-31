@@ -245,7 +245,7 @@ export class UnitHudOverlay{
       const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
       label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;
       fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;
-      fill.style.background="#8d5bd6";
+      fill.style.background=id==="blood"?"#c32d48":"#8d5bd6";
       track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
     }
     hud.equipment.replaceChildren();

@@ -12,18 +12,44 @@ export const EffectEngine=(()=>{
   function heal(unit,amount){const before=unit.hp;unit.hp=Math.min(maxHp(unit),unit.hp+Math.max(0,Math.round(Number(amount||0))));return unit.hp-before;}
   function hasEffect(unit,id){return state(unit).some(effect=>effect.id===id||effect.type===id)}
   function shieldHp(unit){return state(unit).filter(effect=>effect.type==="SHIELD").reduce((sum,effect)=>sum+Math.max(0,Number(effect.shieldHp||0)),0)}
-  function resolveIncomingDamage(unit,amount){
-    let remaining=Math.max(0,Math.round(Number(amount||0))),absorbed=0;
-    if(!unit||remaining<=0)return{damage:remaining,absorbed,shieldHp:shieldHp(unit)};
+  // The single HP-loss result owns shield absorption and blood gain. Presentation must never create damage twice.
+  function resolveIncomingDamage(unit,amount,{kind="EXTERNAL"}={}){
+    let remaining=Math.max(0,Math.round(Number(amount||0))),absorbed=0,bloodAbsorbed=0;
+    if(!unit||remaining<=0)return{damage:remaining,absorbed,bloodAbsorbed,shieldHp:shieldHp(unit)};
     for(const effect of state(unit)){
       if(effect.type!=="SHIELD"||remaining<=0)continue;
       const available=Math.max(0,Number(effect.shieldHp||0));if(available<=0)continue;
       const blocked=Math.min(available,remaining);effect.shieldHp=available-blocked;remaining-=blocked;absorbed+=blocked;
     }
     unit.effects=state(unit).filter(effect=>effect.type!=="SHIELD"||Number(effect.shieldHp||0)>0);
-    return{damage:remaining,absorbed,shieldHp:shieldHp(unit)};
+    const runtime=globalThis.UnitRuntimeEngine;
+    if(kind!=="INTERNAL"&&remaining>0&&unit._bloodAwakened&&runtime?.bloodUser?.(unit)){
+      bloodAbsorbed=Math.min(remaining,runtime.bloodValue(unit));
+      runtime.changeBlood(unit,-bloodAbsorbed);remaining-=bloodAbsorbed;absorbed+=bloodAbsorbed;
+    }
+    return{damage:remaining,absorbed,bloodAbsorbed,shieldHp:shieldHp(unit)};
   }
-  function damage(unit,amount){const resolved=resolveIncomingDamage(unit,amount),before=unit.hp;unit.hp=Math.max(0,unit.hp-resolved.damage);if(unit.hp<=0)unit.alive=false;return before-unit.hp;}
+  function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT"}={}){
+    const hpBefore=Math.max(0,Number(target?.hp||0));
+    if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
+    const shield=resolveIncomingDamage(target,amount,{kind});
+    target.hp=Math.max(0,hpBefore-shield.damage);
+    const hpLoss=hpBefore-target.hp;
+    if(source?.alive&&source.team!==target.team&&globalThis.UnitRuntimeEngine?.bloodUser?.(source)&&hpLoss>0){
+      const credit=charge==="BLEED"?hpLoss/2:charge==="DIRECT"?hpLoss:0;
+      if(credit>0)UnitRuntimeEngine.changeBlood(source,credit);
+    }
+    return{...shield,hpLoss,damage:hpLoss};
+  }
+  function damage(unit,amount,options){const result=applyDamage(unit,amount,options);if(unit?.hp<=0)unit.alive=false;return result.hpLoss;}
+  function bloodBurstCenters(source,units){
+    const skill=globalThis.SkillDatabase?.get?.("seraphina_blood_burst");
+    const max=Math.max(0,Number(skill?.range?.max||0));
+    return(units||[]).filter(target=>target?.alive&&target.team!==source?.team&&
+      Math.abs(target.x-source.x)+Math.abs(target.y-source.y)<=max&&hasEffect(target,"BLEEDING")&&
+      (!source?._runtimeMap||!globalThis.TacticalEngine?.teamCanSee||
+        TacticalEngine.teamCanSee(source._runtimeMap,units,source.team,target,globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null)));
+  }
   function targetMatches(source,target,filter={}){
     if(filter.relation&&filter.relation!==relation(source,target))return false;
     if(filter.faction&&target?.character?.faction!==filter.faction)return false;
@@ -96,6 +122,10 @@ export const EffectEngine=(()=>{
       if(m.damageTakenMultiplier!=null)damageTakenMultiplier*=Number(m.damageTakenMultiplier);
       if(m.guardMultiplier!=null)guardMultiplier*=Number(m.guardMultiplier);
     }
+    if(unit._bloodAwakened){
+      const restored=SkillDatabase.getPassive("PATIENT")?.bloodRestoration?.values||{};
+      for(const [key,value] of Object.entries(restored))unit.character.attributes[key]=Number(value);
+    }
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
     window.UnitRuntimeEngine?.syncMana?.(unit);
@@ -136,8 +166,26 @@ export const EffectEngine=(()=>{
     if(removed.length)unit.effects=unit.effects.filter(e=>e.type!=="HEALING_CHANNEL");
     return removed.map(effect=>({id:effect.id,reason}));
   }
-  function copyableSkills(target){
-    return SkillDatabase.list(target?.character?.skills||[]).filter(s=>s.copyable!==false&&s.category!=="PASSIVE");
+  function copyableSkills(target,source=null){
+    const known=new Set((source?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>g.skillId));
+    const excludes=new Set(["CARRY_ALLY","CARRY_ENEMY","RELEASE_CARRIED","SET_VERTICAL_MODE","STEAL_CARD","ENCHANT_WEAPON"]);
+    return SkillDatabase.list(target?.character?.skills||[]).filter(skill=>{
+      if(skill.copyable===false||skill.category==="PASSIVE"||known.has(skill.id))return false;
+      if(skill.id?.startsWith("seraphina_")||skill.bloodShadow||skill.bloodBurst)return false;
+      if((skill.variants||[]).some(v=>excludes.has(v.utilityAction?.type)))return false;
+      if(excludes.has(skill.utilityAction?.type))return false;
+      if(globalThis.UnitRuntimeEngine?.bloodMemoryCost?.(skill)>100)return false;
+      if(skill.targeting?.requiresObservationNetwork){
+        const networks=SkillDatabase.passiveList(source?.character?.passives||[]).flatMap(passive=>passive.observationNetworks||[]);
+        if(!networks.some(network=>network.tag===skill.targeting.requiresObservationNetwork))return false;
+      }
+      return true;
+    });
+  }
+  function rememberBloodSkill(unit,skillId,source){
+    if(!unit||!SkillDatabase.get(skillId)||(unit.grantedSkills||[]).some(g=>g.bloodMemory&&g.skillId===skillId))return null;
+    const grant={skillId,sourceUnitId:source?.id||null,remaining:null,bloodMemory:true};
+    (unit.grantedSkills||(unit.grantedSkills=[])).push(grant);return grant;
   }
   function apply({source,target,effect,chooseSkill}={}){
     if(!target||!effect)return{applied:false,reason:"INVALID_TARGET"};
@@ -159,11 +207,11 @@ export const EffectEngine=(()=>{
       return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
     }
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
-    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m);if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
+    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="DRAIN"){
-      const dealt=damage(target,effect.amount),restored=heal(source,dealt*Number(effect.healRatio??1));
+      const dealt=damage(target,effect.amount,{source,charge:"DIRECT"}),restored=heal(source,dealt*Number(effect.healRatio??1));
       return{applied:true,type:effect.type,damage:dealt,healed:restored};
     }
     if(effect.type==="COPY_SKILL"){
@@ -193,7 +241,7 @@ export const EffectEngine=(()=>{
         events.push({type:"HEALING_CHANNEL",effectId:effect.id,healed});
       }
       if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
-      if(effect.type==="DAMAGE_OVER_TIME"){const amount=damage(unit,effect.amount);globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
+      if(effect.type==="DAMAGE_OVER_TIME"){const source=units.find(u=>u.id===effect.sourceUnitId)||null;const internal=effect.id==="BLEEDING"||/POISON|TOXIN|SUFFOCAT|DROWN/.test(String(effect.id||""));const amount=damage(unit,effect.amount,{source,kind:internal?"INTERNAL":"EXTERNAL",charge:effect.id==="BLEEDING"?"BLEED":"NONE"});globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
       if(effect.remaining!=null)effect.remaining--;
     }
     unit.effects=unit.effects.filter(e=>e.remaining==null||e.remaining>0);
@@ -287,7 +335,8 @@ export const EffectEngine=(()=>{
     }
     return discovered;
   }
-  function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).map(g=>g.skillId)];}
-  return{interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
+  function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
+  return{applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

@@ -29,10 +29,10 @@ export const FallEngine=(()=>{
     const rawDamage=fallDamageFor(target,drop);
     const protection=rawDamage>0?globalThis.ItemRuntimeEngine?.resolveTrigger?.(target,"FALL_DAMAGE",{damage:rawDamage,drop,fromZ,landingZ}):null;
     const damage=protection?.preventDamage?0:rawDamage;
-    if(damage>0)applyDamage?.(target,damage);
+    const actualDamage=damage>0?(applyDamage?.(target,damage)??damage):0;
     target.z=landingZ;
     if(vertical)VerticalMobilityEngine.syncUnit(target,tile);
-    return {fromZ:Number(fromZ),toZ:Number(target.z),drop,damage,rawDamage,damaging:damage>0,preventedByItem:protection?.preventDamage?protection.item?.id||null:null,verticalMode:target.verticalState?.mode||null};
+    return {fromZ:Number(fromZ),toZ:Number(target.z),drop,damage:actualDamage,rawDamage,damaging:actualDamage>0,preventedByItem:protection?.preventDamage?protection.item?.id||null:null,verticalMode:target.verticalState?.mode||null};
   }
   return Object.freeze({
     FALL_THRESHOLD,FALL_DAMAGE_PER_LEVEL,

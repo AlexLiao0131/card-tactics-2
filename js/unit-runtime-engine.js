@@ -49,6 +49,42 @@ export const UnitRuntimeEngine=(()=>{
     for(const[key,value]of Object.entries(skill?.resourceCosts||{})){const cost=Math.max(0,Number(value||0));if(cost>0)out[key]=cost;}
     return out;
   }
+  // Blood is an ordinary extra resource; a 5V awakening is a state transition, not a timed buff.
+  const bloodUser=u=>!!u?.character?.resourceRules?.blood;
+  function bloodValue(unit){syncResources(unit);return Math.max(0,Number(unit?.resources?.blood?.value||0))}
+  function reconcileBlood(unit){
+    if(!bloodUser(unit))return;
+    const amount=bloodValue(unit),was=!!unit._bloodAwakened;
+    if(amount>=Number(unit.resources.blood.max))unit._bloodAwakened=true;
+    else if(amount<=0&&!(unit._bloodTransactionDepth>0))unit._bloodAwakened=false;
+    if(was!==!!unit._bloodAwakened)globalThis.EffectEngine?.syncModifiers?.(unit);
+  }
+  function changeBlood(unit,delta){
+    if(!bloodUser(unit)||!Number.isFinite(Number(delta)))return 0;
+    const before=bloodValue(unit),r=unit.resources.blood;
+    r.value=Math.min(r.max,Math.max(0,before+Number(delta)));
+    reconcileBlood(unit);
+    return r.value-before;
+  }
+  function beginBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=(unit._bloodTransactionDepth||0)+1}
+  function endBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=Math.max(0,(unit._bloodTransactionDepth||0)-1);reconcileBlood(unit)}
+  function attackEnhancement(unit,skill){
+    if(!bloodUser(unit)||!unit._bloodAwakened||!skill||!(skill.attackType||skill.category==="ATTACK"))return 1;
+    const spent=Math.min(15,bloodValue(unit));changeBlood(unit,-spent);
+    return 1+spent/100;
+  }
+  function isBloodMemory(unit,skill){return bloodUser(unit)&&!!skill?.id&&(unit.grantedSkills||[]).some(g=>g.skillId===skill.id&&g.bloodMemory===true)}
+  function bloodMemoryCost(skill){return manaCost(skill)+Object.values(resourceCosts(skill)).reduce((sum,v)=>sum+v,0)}
+  function skillForUnit(unit,skill){
+    if(!skill||skill._bloodMemory||!isBloodMemory(unit,skill))return skill;
+    if(skill.weapon&&!unit.character.weapons?.[skill.weapon]){
+      const reference=unit.character.weapons?.rapier||{};
+      unit.character.weapons??={};
+      unit.character.weapons[skill.weapon]={...reference,affixes:[],inherentMagic:null,attackType:skill.attackType||reference.attackType,weaponKind:skill.weapon.toUpperCase()};
+    }
+    return {...skill,manaCost:0,resourceCosts:{blood:bloodMemoryCost(skill)},_bloodMemory:true,
+      description:`【血術重現】原技能消耗合計 ${bloodMemoryCost(skill)} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
+  }
   function createSkillResources(){return{}}
   // Initial deployment uses the stage's actual opposing Core, not a fixed
   // compass direction. The tactical facing state remains the sole authority:
@@ -79,7 +115,7 @@ export const UnitRuntimeEngine=(()=>{
       for(const effect of passive.openingEffects||[])unit.effects.push(clone(effect));
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
-    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});
+    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});reconcileBlood(unit);
     const target=initialFacingTarget(team,cores??globalThis.CardTacticsRuntime?.getCores?.());
     if(target)TacticalEngine.faceToward(unit,target);
     else TacticalEngine.ensureFacing(unit);
@@ -107,14 +143,18 @@ export const UnitRuntimeEngine=(()=>{
   function despawnCompanionsForOwner(owner){if(!owner?.id||!globalThis.CompanionDatabase?.despawnForOwner)return[];return CompanionDatabase.despawnForOwner(owner,[...liveUnits.values()])}
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
-  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;syncMana(u);syncResources(u,{applyRecovery:true});})}
+  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;syncMana(u);syncResources(u,{applyRecovery:true});reconcileBlood(u);})}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){
+    skill=skillForUnit(unit,skill);
     syncMana(unit);syncResources(unit);
     const extras=resourceCosts(skill);
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill){
+    if(isBloodMemory(unit,skill)&&!unit._bloodAwakened)return false;
+    skill=skillForUnit(unit,skill);
+    if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits()).length)return false;
     if(skill?.approach&&unit?.moved)return false;
     const req=skill?.requirements||{};
     if(req.carrying===true&&!unit?.carryingUnitId)return false;
@@ -128,16 +168,19 @@ export const UnitRuntimeEngine=(()=>{
   }
   function consumeSkill(unit,skill){
     if(!canUseSkill(unit,skill))return null;
+    skill=skillForUnit(unit,skill);
     const mana=manaCost(skill);unit.mana=Math.max(0,unit.mana-mana);
-    const spent={};for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);spent[key]={cost,remaining:state.value,max:state.max};}
+    const spent={};for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){
+    skill=skillForUnit(unit,skill);
     syncMana(unit);syncResources(unit);const labels=[],mana=manaCost(skill);if(mana>0)labels.push(`MP ${mana}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
   }
   function applyResourceScaling(unit,skill){
+    skill=skillForUnit(unit,skill);
     if(!skill||skill._resourceScaled)return skill;
     let multiplier=1;
     if(skill.category==="MAGIC"||skill.attackType==="MAGIC"){
@@ -152,6 +195,7 @@ export const UnitRuntimeEngine=(()=>{
   }
   function targetType(skill){return skill?.targetType||"SINGLE"}
   function getLiveUnit(id){return liveUnits.get(id)||null}
+  function knownUnits(){return [...liveUnits.values()]}
   function rotateFacing(id,steps=1){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.rotateFacing(unit,steps)}
   function setFacing(id,facing){const unit=getLiveUnit(id);if(!unit?.alive)return null;return TacticalEngine.setFacing(unit,facing)}
   function flightControl(id){
@@ -179,6 +223,6 @@ export const UnitRuntimeEngine=(()=>{
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

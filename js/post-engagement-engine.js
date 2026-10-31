@@ -5,7 +5,7 @@ export const PostEngagementEngine=(()=>{
   const syncGroundZ=(map,unit)=>FallEngine.syncGroundZ(map,unit);
   const isAirborneState=state=>window.TrajectoryEngine?.isAirborneState?.(state)??(state==="AIRBORNE"||state==="FALLING");
   function direction(source,target,type){let dx=Math.sign(target.x-source.x),dy=Math.sign(target.y-source.y);if(dx&&dy){if(Math.abs(target.x-source.x)>=Math.abs(target.y-source.y))dy=0;else dx=0;}if(type==="PULL"){dx=-dx;dy=-dy}return{dx,dy}}
-  function damageUnit(unit,amount){const d=Math.max(0,Math.round(Number(amount||0)));if(d&&unit?.alive){unit.hp=Math.max(0,unit.hp-d);if(unit.hp===0)unit.alive=false}return d}
+  function damageUnit(unit,amount){if(!unit?.alive)return 0;const d=globalThis.EffectEngine?.applyDamage?.(unit,amount,{kind:"EXTERNAL"})?.hpLoss??0;if(unit.hp===0)unit.alive=false;return d}
   const fallDamage=drop=>FallEngine.fallDamage(drop);
   const resolveLanding=args=>FallEngine.resolveLanding({...args,applyDamage:damageUnit});
   function gridOccupant(units,x,y,target){return CollisionEngine.occupantAt?.(units,x,y,{excludeId:target?.id})||(units||[]).find(u=>u?.alive&&u.id!==target?.id&&u.x===x&&u.y===y)||null}

@@ -64,6 +64,7 @@ export const BattleResolution=(()=>{
     // Taking an adjacent attack never cancels the target's stealth status.
     // Individual observers must succeed at probabilistic contact detection.
     if(a.role!=="INITIATOR")TacticalEngine.faceToward(a.actor,a.target);
+    if(a.skill?.bloodShadow)return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill,{forceHit:true});
     if(!isPrimaryIncomingAction(c,a))return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
     if(c.reaction?.type==="EVADE")return resolveEvade(c.map,a.actor,a.target,a.skill);
@@ -157,17 +158,25 @@ export const BattleResolution=(()=>{
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
       if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
+      const bloodRuntime=globalThis.UnitRuntimeEngine;bloodRuntime?.beginBloodTransaction?.(a.actor);
+      const spent=hooks.consumeSkill?.(a.actor,skill);
+      if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
+      const bloodDamageMultiplier=bloodRuntime?.attackEnhancement?.(a.actor,skill)||1;
       const action={...a,skill};
       // Consume only after the action is known to execute; misses still spend it.
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
-      const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),action.actor,action.target,skill),baseResult=resolved.result;
+      const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),action.actor,action.target,skill);
+      const original=resolved.result;
+      const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
+      const baseResult={...original,damage:original.hit?Math.round(Number(original.damage||0)*bloodDamageMultiplier*bleedingBonus):0};
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
-      hooks.consumeSkill?.(action.actor,skill);
-      const hallucinationHit=action.target?.hallucination===true&&baseResult.hit,shield=hallucinationHit?{damage:Math.max(1,Number(action.target.hp||1)),absorbed:0,shieldHp:0}:globalThis.EffectEngine?.resolveIncomingDamage?EffectEngine.resolveIncomingDamage(action.target,baseResult.damage):{damage:baseResult.damage,absorbed:0,shieldHp:0},result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
+      const hallucinationHit=action.target?.hallucination===true&&baseResult.hit;
       const hpBefore=Math.max(0,Number(action.target.hp||0));
-      action.target.hp=Math.max(0,action.target.hp-result.damage);
+      const shield=hallucinationHit?globalThis.EffectEngine?.applyDamage(action.target,hpBefore,{source:action.actor}):
+        globalThis.EffectEngine?.applyDamage?.(action.target,baseResult.damage,{source:action.actor})||{damage:0,absorbed:0,shieldHp:0};
+      const result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
       const components=splitActualHpLoss(baseResult,hpBefore-action.target.hp);
       result.physicalHpDamage=components.physical;
       result.magicHpDamage=components.magic;
@@ -199,7 +208,7 @@ export const BattleResolution=(()=>{
         for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
       }
       const e={...action,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp};
-      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
+      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);bloodRuntime?.endBloodTransaction?.(action.actor);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     return{context:c,queue,results,postEngagement:post};
