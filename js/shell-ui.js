@@ -4,7 +4,7 @@ export class ShellUI{
     this.runtime=runtime;this.renderer=renderer;this.screens=[...document.querySelectorAll(".game-screen")];
     this.deck=[...globalThis.DeckEngine.getActive()];this.activeGroup=globalThis.PackDatabase.list()[0]?.id||null;
     this.deckReturn="menuScreen";this.deckCanDeploy=false;this.activeShopPack=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})?.[0]?.id||null;
-    this.shopMode="PACK";this.prepSelectedKey=null;this.cardInspector=null;this.cardInspectorOrigin=null;
+    this.shopMode="PACK";this.geminiWanted=false;this.startingBattle=false;this.prepSelectedKey=null;this.cardInspector=null;this.cardInspectorOrigin=null;
   }
   show(id){if(id!=="deckScreen"&&id!=="shopScreen")this.closeCardPreview({restoreFocus:false});this.screens.forEach(s=>s.classList.toggle("active",s.id===id));if(id==="battleScreen")requestAnimationFrame(()=>{this.renderer.resize();this.renderer.resetView();window.dispatchEvent(new CustomEvent("cardtactics:battle-screen-enter"))});}
   validDeck(){const result=globalThis.DeckEngine.validate(this.deck);if(!result.valid){alert(result.errors.join("\n"));return false;}return true;}
@@ -12,7 +12,12 @@ export class ShellUI{
     globalThis.CardTacticsHeroCard?.ensureStyles?.();
     $("pressStart").onclick=()=>this.show("menuScreen");$("menuCampaign").onclick=()=>this.show("campaignScreen");$("menuVersus").onclick=()=>{this.updateVersusMeta();this.show("versusScreen")};$("menuCards").onclick=()=>this.openDeck({from:"menuScreen",deploy:false});$("menuShop").onclick=()=>{this.renderShop();this.show("shopScreen")};$("menuSave").onclick=()=>this.show("saveScreen");$("menuSettings").onclick=()=>this.show("settingsScreen");
     document.querySelectorAll("[data-back]").forEach(b=>b.onclick=()=>this.show(b.dataset.back));
-    $("campaignPrototype").onclick=()=>this.openDeck({from:"campaignScreen",deploy:true});$("versusAi").onclick=()=>this.openDeck({from:"versusScreen",deploy:true});$("versusMapSize").onchange=()=>this.updateVersusMeta();
+    $("campaignPrototype").onclick=()=>{this.geminiWanted=false;this.openDeck({from:"campaignScreen",deploy:true})};
+    $("versusAi").onclick=()=>{this.geminiWanted=false;this.openDeck({from:"versusScreen",deploy:true})};
+    const geminiButton=document.createElement("button");geminiButton.id="versusGemini";geminiButton.type="button";geminiButton.className="primary-button";
+    geminiButton.textContent="VS Gemini｜AI 指揮官";geminiButton.onclick=()=>{this.geminiWanted=true;this.openDeck({from:"versusScreen",deploy:true})};
+    $("versusAi").insertAdjacentElement("afterend",geminiButton);
+    $("versusMapSize").onchange=()=>this.updateVersusMeta();
     $("deckBack").onclick=()=>this.show(this.deckReturn);
     $("autoDeck").onclick=()=>this.replaceDeck(globalThis.DeckEngine.autoBuild(this.activeGroup));
     $("applyDeck").onclick=()=>{if(!this.validDeck())return;globalThis.DeckEngine.setActive(this.deck);this.renderDeck()};
@@ -121,11 +126,19 @@ export class ShellUI{
     const stash=ItemInventoryEngine.stash();$("prepStash").innerHTML=ItemDatabase.list().map(item=>{const have=Number(stash[item.id]||0),available=ItemInventoryEngine.availableCount(item.id),disabled=!selected||available<=0;return`<button class="prep-stash-row" type="button" data-prep-item="${item.id}" ${disabled?"disabled":""}><strong>${item.name}</strong><span>持有 ${have}｜可配置 ${available}</span><small>${item.description}</small></button>`}).join("");
     document.querySelectorAll("[data-prep-item]").forEach(b=>b.onclick=()=>{if(!selected)return;const slots=ItemInventoryEngine.slotCountForCard(selected.card),prep=ItemInventoryEngine.preparation(selected.key,slots),slot=prep.slots.findIndex(id=>!id);if(slot<0){alert("這個角色的道具欄已滿。");return}if(ItemInventoryEngine.equip(selected.key,slot,b.dataset.prepItem,slots))this.renderPreparation()});
   }
-  startBattle(){
-    if(!this.validDeck())return;
+  async startBattle(){
+    if(this.startingBattle||!this.validDeck())return;
+    this.startingBattle=true;
     const versus=this.deckReturn==="versusScreen",itemLoadouts=ItemInventoryEngine.loadoutsForDeck(this.deck);
     globalThis.CardTacticsBattleSetup={stageId:versus?"versus_core_battle":"prototype_battle",deck:[...this.deck],itemLoadouts,...(versus?{mapSize:$("versusMapSize").value||"MEDIUM",seed:globalThis.MapGenerator.randomSeed()}: {})};
-    ItemInventoryEngine.beginBattle(itemLoadouts);this.runtime.resetBattle();this.show("battleScreen");
+    try{
+      if(this.geminiWanted&&versus){
+        // Preparation completes BEFORE the authoritative battle is created.
+        // The player's deck/item choices remain unchanged.
+        await this.runtime.prepareGeminiMatch();
+      }else this.runtime.clearGeminiMatch();
+      ItemInventoryEngine.beginBattle(itemLoadouts);this.runtime.resetBattle();this.show("battleScreen");
+    }finally{this.startingBattle=false;}
   }
   updateVersusMeta(){const p=globalThis.MapGenerator?.preset?.($("versusMapSize").value);$("versusMapMeta").textContent=p?`${p.label}｜${p.width} × ${p.height}｜對戰專用程序生成地圖`:""}
   renderShop(){document.querySelectorAll("[data-shop-mode]").forEach(b=>b.classList.toggle("active",b.dataset.shopMode===this.shopMode));if(this.shopMode==="ITEM"){this.renderItemShop();return}this.renderPackShop();}

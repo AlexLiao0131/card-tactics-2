@@ -209,8 +209,15 @@ export const BattleSetupEngine=(()=>{
       handSize:Number(stage.cardRules?.handSize||5)
     });
 
+    // Same validated deck authority used by the player. AI is never allowed to
+    // mutate the deck after BattleSetupEngine has created its own card zones.
+    const requestedEnemyDeck=Array.isArray(battleSetup?.enemyDeck)?battleSetup.enemyDeck:(stage.enemyDeck||[]);
+    if(Array.isArray(battleSetup?.enemyDeck)){
+      const validation=DeckEngine.validate(requestedEnemyDeck);
+      if(!validation.valid)throw new Error(`敵方整備牌組不合法：${validation.errors.join(" ")}`);
+    }
     const enemyCardState=CardPhaseEngine.create({
-      deck:stage.enemyDeck||[],
+      deck:requestedEnemyDeck,
       startingCrystals:Number(stage.enemyCardRules?.startingCrystals||stage.cardRules?.startingCrystals||4),
       maxCrystals:Number(stage.enemyCardRules?.maxCrystals||stage.cardRules?.maxCrystals||10),
       crystalGrowth:Number(stage.enemyCardRules?.crystalGrowth||stage.cardRules?.crystalGrowth||1),
