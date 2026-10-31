@@ -124,8 +124,10 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
       };
       start.onclick=async()=>{
         if(completed||start.disabled)return;
-        const token=key.value.trim();
-        if(token.length<16){setStatus("請輸入 Cloudflare 設定的 GAME_ACCESS_TOKEN（至少 16 字元）。",true);return;}
+        // Cloudflare authenticates against the *exact* configured Secret.
+        // No minimum length is enforced by the Worker; reject only an empty input.
+        const token=key.value;
+        if(token.length===0){setStatus("請輸入你在 Cloudflare 設定的 GAME_ACCESS_TOKEN。",true);return;}
         // Make the status visible immediately on a phone; keyboard dismissal
         // must not wait for the network, which may take several seconds.
         key.blur();start.disabled=true;start.textContent="Gemini 整備中…";
