@@ -33,22 +33,27 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     const session=geminiSession;
     if(!session?.token)return null;
     const requestSerial=++geminiSerial;
+    session.lastError=null;
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),18000);
     try{
-      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),18000);
-      try{
-        const response=await fetch(`${GEMINI_WORKER}${endpoint}`,{
-          method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.token}`},
-          body:JSON.stringify({...payload,battle_id:session.battleId,revision:requestSerial}),signal:controller.signal
-        });
-        const data=await response.json();
-        if(geminiSession!==session) return null;
-        if(!response.ok)throw Error(String(data.error||`HTTP_${response.status}`));
-        return data;
-      }finally{clearTimeout(timeout);}
+      const response=await fetch(`${GEMINI_WORKER}${endpoint}`,{
+        method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.token}`},
+        body:JSON.stringify({...payload,battle_id:session.battleId,revision:requestSerial}),signal:controller.signal
+      });
+      let data=null;
+      try{data=await response.json();}catch{throw Error(`HTTP_${response.status}_INVALID_JSON`);}
+      if(geminiSession!==session)return null;
+      if(!response.ok)throw Error(String(data?.error||`HTTP_${response.status}`));
+      if(data?.battle_id!==session.battleId||data?.revision!==requestSerial)throw Error("RESPONSE_MISMATCH");
+      return data;
     }catch(error){
-      if(session===geminiSession){session.lastError=String(error?.message||"NETWORK_ERROR").slice(0,80);}
+      if(session===geminiSession){
+        session.lastError=error?.name==="AbortError"?"REQUEST_TIMEOUT":
+          error instanceof TypeError?"NETWORK_OR_CORS_ERROR":String(error?.message||"NETWORK_ERROR").slice(0,100);
+      }
       return null;
-    }
+    }finally{clearTimeout(timeout);}
   }
   async function geminiDecide({phase,legalActions,snapshot,roundNumber}){
     if(!geminiSession?.enabled||!legalActions?.length)return null;
@@ -73,35 +78,85 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   }
   function geminiPreparationScreen(){
     return new Promise(resolve=>{
-    const cover=document.createElement("div");
-    cover.style.cssText="position:fixed;inset:0;z-index:99999;background:rgba(6,12,24,.94);display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;color:#fff;font:16px system-ui,sans-serif";
-    const panel=document.createElement("section");
-    panel.style.cssText="max-width:420px;width:100%;background:#18233a;border:1px solid #465474;border-radius:16px;padding:24px;box-sizing:border-box;display:grid;gap:13px";
-    const title=document.createElement("h2");title.textContent="Gemini 對戰｜敵方選牌整備";title.style.cssText="margin:0;font-size:20px";
-    const help=document.createElement("p");help.textContent="在這裡輸入 Cloudflare 的 GAME_ACCESS_TOKEN。金鑰只保留在這次遊戲的記憶體，不會存進 GitHub 或瀏覽器儲存空間。";help.style.margin="0";
-    const key=document.createElement("input");key.type="password";key.placeholder="GAME_ACCESS_TOKEN";key.autocomplete="off";key.spellcheck=false;key.style.cssText="width:100%;padding:12px;border-radius:8px;box-sizing:border-box;font-size:16px";
-    const status=document.createElement("p");status.textContent="Gemini 將先組成 20 張合法牌組，再開始對戰。";status.style.cssText="font-size:14px;color:#cbd5e1;margin:0";
-    const start=document.createElement("button");start.type="button";start.textContent="讓 Gemini 整備並開戰";start.style.cssText="padding:13px;border-radius:8px;background:#517df7;color:white;border:0;font-size:16px";
-    const offline=document.createElement("button");offline.type="button";offline.textContent="改玩原本電腦 AI";offline.style.cssText="padding:10px;border:1px solid #8997b1;border-radius:8px;background:transparent;color:white";
-    const close=()=>{key.value="";cover.remove();};
-    offline.onclick=()=>{geminiSession=null;if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;close();resolve("offline");};
-    start.onclick=async()=>{
-      if(key.value.length<16){status.textContent="請輸入你設定的 GAME_ACCESS_TOKEN（至少 16 字元）。";return;}
-      start.disabled=true;status.textContent="Gemini 正在挑選 20 張牌（尚未開始對戰）…";
-      const battleId=matchId();geminiSession={token:key.value,battleId,enabled:true,lastError:null};
-      const allowed=Object.values(globalThis.CARDS||{}).filter(card=>CardDatabase.canPersist(card)&&
-        (CardDatabase.isCharacter(card)||(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER")))
-        .map(card=>({id:card.id,name:card.name,cost:Number(card.cost||0),kind:card.unitType==="HERO"?"HERO":CardDatabase.isCharacter(card)?"UNIT":"SPELL"}));
-      const reply=await geminiRequest("/v1/prepare",{phase:"ENEMY_DECK",cards:allowed,stage:window.CardTacticsBattleSetup?.stageId||"versus_core_battle"});
-      const selected=reply?.deck,valid=DeckEngine.validate(selected||[]);
-      if(!valid.valid||selected.some(id=>!allowed.some(a=>a.id===id))){
-        status.textContent=`整備失敗：${geminiSession?.lastError||"未取得合法 20 張牌組"}。請確認 Cloudflare Worker 已更新、Secret 與限流設定。`;
-        geminiSession=null;start.disabled=false;return;
-      }
-      window.CardTacticsBattleSetup??={};window.CardTacticsBattleSetup.enemyDeck=[...valid.deck];
-      close();resolve("gemini");
-    };
-    panel.append(title,help,key,start,offline,status);cover.append(panel);document.body.append(cover);
+      const cover=document.createElement("div");
+      cover.style.cssText="position:fixed;inset:0;z-index:99999;background:rgba(6,12,24,.94);display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;color:#fff;font:16px system-ui,sans-serif;overflow-y:auto";
+      const panel=document.createElement("section");
+      panel.setAttribute("role","dialog");panel.setAttribute("aria-modal","true");panel.setAttribute("aria-label","Gemini 對戰敵方選牌整備");
+      panel.style.cssText="max-width:420px;width:100%;max-height:calc(100dvh - 24px);overflow-y:auto;background:#18233a;border:1px solid #465474;border-radius:16px;padding:20px;box-sizing:border-box;display:grid;gap:12px";
+      const title=document.createElement("h2");title.textContent="Gemini 對戰｜敵方選牌整備";title.style.cssText="margin:0;font-size:20px";
+      const help=document.createElement("p");help.textContent="輸入 Cloudflare 的 GAME_ACCESS_TOKEN，並非 Google API Key。密碼只保留在這場對戰的瀏覽器記憶體中。";help.style.cssText="font-size:14px;line-height:1.5;margin:0";
+      const key=document.createElement("input");key.type="password";key.placeholder="GAME_ACCESS_TOKEN";key.autocomplete="off";key.autocapitalize="off";key.spellcheck=false;
+      key.setAttribute("aria-label","Cloudflare GAME_ACCESS_TOKEN");
+      key.style.cssText="width:100%;padding:12px;border-radius:8px;box-sizing:border-box;font-size:16px;min-height:48px";
+      const status=document.createElement("p");status.textContent="準備就緒。點下方按鈕後，這裡會顯示連線狀態。";
+      status.setAttribute("role","status");status.setAttribute("aria-live","polite");
+      status.style.cssText="font-size:14px;line-height:1.5;color:#e2e8f0;margin:0;min-height:42px;padding:10px;border-radius:8px;background:#27364e;overflow-wrap:anywhere";
+      const start=document.createElement("button");start.type="button";start.textContent="讓 Gemini 整備並開戰";
+      start.style.cssText="padding:13px;border-radius:8px;background:#517df7;color:white;border:0;font-size:16px;min-height:48px;touch-action:manipulation;cursor:pointer";
+      const offline=document.createElement("button");offline.type="button";offline.textContent="改玩原本電腦 AI";
+      offline.style.cssText="padding:10px;border:1px solid #8997b1;border-radius:8px;background:transparent;color:white;min-height:44px;touch-action:manipulation";
+      let completed=false;
+      const setStatus=(message,error=false)=>{status.textContent=message;status.style.color=error?"#fecaca":"#e2e8f0";};
+      const close=()=>{completed=true;key.value="";cover.remove();};
+      const errorDescription=code=>({
+        NOT_FOUND:"Cloudflare Worker 尚未更新至支援選牌的版本。請先更新後端 worker.mjs，並確認自動部署成功。",
+        METHOD_NOT_ALLOWED:"Worker 的選牌 API 不接受此請求，請確認後端版本。",
+        UNAUTHORIZED:"通行密碼與 Cloudflare 的 GAME_ACCESS_TOKEN 不一致。請重新輸入；不是 Google API Key。",
+        SERVER_NOT_CONFIGURED:"Cloudflare 缺少 GEMINI_API_KEY 或 GAME_ACCESS_TOKEN Secret。",
+        ORIGIN_DENIED:"Cloudflare 的 ALLOWED_ORIGIN 與遊戲網域不一致。",
+        RATE_LIMITER_NOT_CONFIGURED:"Cloudflare 未建立 AI_RATE_LIMITER 限流綁定，請核對 wrangler.toml 與部署設定。",
+        REQUEST_LIMIT:"Cloudflare 限流已達上限，請稍後再試。",
+        MODEL_QUOTA:"Google Gemini API 已超過目前配額，請確認 AI Studio 的使用額度。",
+        MODEL_UNAVAILABLE:"Google Gemini API 呼叫失敗，請檢查模型可用性與 Cloudflare 的 Worker 日誌。",
+        INVALID_MODEL_RESPONSE:"Gemini 沒有回傳有效資料，可以再試一次。",
+        INVALID_DECK:"Gemini 回傳的牌組不合法，可以再試一次。",
+        DUPLICATE_HERO:"Gemini 的牌組包含重複英雄，可以再試一次。",
+        INVALID_DECISION_REQUEST:"遊戲與 Worker 的整備請求格式不一致，請確認兩端都已更新。",
+        REQUEST_TIMEOUT:"Gemini 整備連線逾時。可以再試一次，不需要重新開始整備。",
+        NETWORK_OR_CORS_ERROR:"無法連線到 Cloudflare，或跨來源授權被阻擋。請確認網路與 Worker 的 ALLOWED_ORIGIN。",
+        RESPONSE_MISMATCH:"Worker 回傳的對戰識別資料不一致，已拒絕套用這次結果。"
+      })[code]||`後端回覆錯誤：${code||"沒有取得合法牌組"}。請查看 Cloudflare Worker 日誌。`;
+      offline.onclick=()=>{
+        if(completed)return;
+        geminiSession=null;
+        if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;
+        close();resolve("offline");
+      };
+      start.onclick=async()=>{
+        if(completed||start.disabled)return;
+        const token=key.value.trim();
+        if(token.length<16){setStatus("請輸入 Cloudflare 設定的 GAME_ACCESS_TOKEN（至少 16 字元）。",true);return;}
+        // Make the status visible immediately on a phone; keyboard dismissal
+        // must not wait for the network, which may take several seconds.
+        key.blur();start.disabled=true;start.textContent="Gemini 整備中…";
+        setStatus("已收到指令，正在向 Cloudflare 送出選牌要求。請看這裡的連線結果。" );
+        try{
+          const battleId=matchId();
+          const session={token,battleId,enabled:true,lastError:null};
+          geminiSession=session;
+          const allowed=Object.values(globalThis.CARDS||{}).filter(card=>CardDatabase.canPersist(card)&&
+            (CardDatabase.isCharacter(card)||(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER")))
+            .map(card=>({id:card.id,name:card.name,cost:Number(card.cost||0),kind:card.unitType==="HERO"?"HERO":CardDatabase.isCharacter(card)?"UNIT":"SPELL"}));
+          if(!allowed.length)throw Error("合法卡池為空，請檢查卡牌資料庫。");
+          const reply=await geminiRequest("/v1/prepare",{phase:"ENEMY_DECK",cards:allowed,stage:window.CardTacticsBattleSetup?.stageId||"versus_core_battle"});
+          if(completed)return;
+          if(!reply){setStatus(`整備失敗：${errorDescription(session.lastError)}`,true);return;}
+          const selected=reply.deck;
+          const valid=DeckEngine.validate(Array.isArray(selected)?selected:[]);
+          if(!valid.valid||!selected.every(id=>allowed.some(card=>card.id===id))){
+            setStatus("Gemini 傳回的 20 張牌組不符合 DeckEngine 的合法規則，已阻止開戰。",true);return;
+          }
+          window.CardTacticsBattleSetup??={};window.CardTacticsBattleSetup.enemyDeck=[...valid.deck];
+          setStatus("Gemini 已完成敵方 20 張選牌，正在建立戰場。");
+          close();resolve("gemini");
+        }catch(error){
+          if(!completed)setStatus(`整備發生程式錯誤：${String(error?.message||error).slice(0,160)}`,true);
+        }finally{
+          if(!completed){geminiSession=null;start.disabled=false;start.textContent="重新讓 Gemini 整備並開戰";}
+        }
+      };
+      panel.append(title,help,key,status,start,offline);
+      cover.append(panel);document.body.append(cover);
     });
   }
 

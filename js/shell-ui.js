@@ -133,11 +133,17 @@ export class ShellUI{
     globalThis.CardTacticsBattleSetup={stageId:versus?"versus_core_battle":"prototype_battle",deck:[...this.deck],itemLoadouts,...(versus?{mapSize:$("versusMapSize").value||"MEDIUM",seed:globalThis.MapGenerator.randomSeed()}: {})};
     try{
       if(this.geminiWanted&&versus){
-        // Preparation completes BEFORE the authoritative battle is created.
-        // The player's deck/item choices remain unchanged.
-        await this.runtime.prepareGeminiMatch();
+        // Gemini deck selection must finish BEFORE BattleSetupEngine builds Game State.
+        // The modal owns retry and offline cancellation; this caller never guesses a deck.
+        const preparation=await this.runtime.prepareGeminiMatch();
+        if(preparation!=="gemini"&&preparation!=="offline")return;
       }else this.runtime.clearGeminiMatch();
-      ItemInventoryEngine.beginBattle(itemLoadouts);this.runtime.resetBattle();this.show("battleScreen");
+      ItemInventoryEngine.beginBattle(itemLoadouts);
+      this.runtime.resetBattle();
+      this.show("battleScreen");
+    }catch(error){
+      // An unexpected initialization failure must never become a silent click.
+      alert(`無法開始對戰：${String(error?.message||error).slice(0,180)}`);
     }finally{this.startingBattle=false;}
   }
   updateVersusMeta(){const p=globalThis.MapGenerator?.preset?.($("versusMapSize").value);$("versusMapMeta").textContent=p?`${p.label}｜${p.width} × ${p.height}｜對戰專用程序生成地圖`:""}
