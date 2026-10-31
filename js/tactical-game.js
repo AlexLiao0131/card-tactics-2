@@ -27,6 +27,18 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   // Gemini is opt-in, with a user-entered bearer token kept only in this page's
   // runtime memory. Never commit secrets into GitHub Pages, localStorage, or logs.
   const GEMINI_WORKER="https://card-tactics-gemini-ai.as315012.workers.dev";
+  // Preparation can involve model discovery and long structured generation.
+  // Keep a separate, shorter waiting budget for each tactical decision.
+  // Client budgets exceed the Worker's own deadline to allow response delivery.
+  const GEMINI_REQUEST_TIMEOUT_MS=Object.freeze({
+    ENEMY_DECK:125000,
+    ENEMY_MULLIGAN:85000,
+    ENEMY_DECISION:70000
+  });
+  const geminiTimeoutFor=(endpoint,phase)=>
+    endpoint==="/v1/prepare" ?
+      (phase==="ENEMY_DECK" ? GEMINI_REQUEST_TIMEOUT_MS.ENEMY_DECK : GEMINI_REQUEST_TIMEOUT_MS.ENEMY_MULLIGAN) :
+      GEMINI_REQUEST_TIMEOUT_MS.ENEMY_DECISION;
   let geminiSession=null,geminiSerial=0;
   const matchId=()=>"match_"+Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,"0")).join("");
   async function geminiRequest(endpoint,payload){
@@ -35,7 +47,10 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     const requestSerial=++geminiSerial;
     session.lastError=null;
     const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),18000);
+    const timeoutMs=geminiTimeoutFor(endpoint,payload?.phase);
+    const timeout=setTimeout(()=>controller.abort(),timeoutMs);
+    session.inflight??=new Set();
+    session.inflight.add(controller);
     try{
       const response=await fetch(`${GEMINI_WORKER}${endpoint}`,{
         method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.token}`},
@@ -53,7 +68,10 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
           error instanceof TypeError?"NETWORK_OR_CORS_ERROR":String(error?.message||"NETWORK_ERROR").slice(0,100);
       }
       return null;
-    }finally{clearTimeout(timeout);}
+    }finally{
+      clearTimeout(timeout);
+      session.inflight?.delete(controller);
+    }
   }
   async function geminiDecide({phase,legalActions,snapshot,roundNumber}){
     if(!geminiSession?.enabled||!legalActions?.length)return null;
@@ -112,12 +130,16 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
         INVALID_DECK:"Gemini 回傳的牌組不合法，可以再試一次。",
         DUPLICATE_HERO:"Gemini 的牌組包含重複英雄，可以再試一次。",
         INVALID_DECISION_REQUEST:"遊戲與 Worker 的整備請求格式不一致，請確認兩端都已更新。",
-        REQUEST_TIMEOUT:"Gemini 整備連線逾時。可以再試一次，不需要重新開始整備。",
+        REQUEST_TIMEOUT:"這次請求已超過等待上限，可能是 Google 生成過慢；請查看 Cloudflare Worker 日誌。可再次整備，不需要換密碼。",
+        MODEL_TIMEOUT:"Google 模型生成逾時（Worker 已停止重試）。可以重新整備。",
+        MODEL_DISCOVERY_TIMEOUT:"Google 模型清單查詢逾時。可以重新整備。",
+        REQUEST_BUDGET_EXCEEDED:"Worker 已用完本次請求的總等待時間。可以重新整備。",
         NETWORK_OR_CORS_ERROR:"無法連線到 Cloudflare，或跨來源授權被阻擋。請確認網路與 Worker 的 ALLOWED_ORIGIN。",
         RESPONSE_MISMATCH:"Worker 回傳的對戰識別資料不一致，已拒絕套用這次結果。"
       })[code]||`後端回覆錯誤：${code||"沒有取得合法牌組"}。請查看 Cloudflare Worker 日誌。`;
       offline.onclick=()=>{
         if(completed)return;
+        for(const pending of geminiSession?.inflight||[])pending.abort();
         geminiSession=null;
         if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;
         close();resolve("offline");
@@ -131,7 +153,13 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
         // Make the status visible immediately on a phone; keyboard dismissal
         // must not wait for the network, which may take several seconds.
         key.blur();start.disabled=true;start.textContent="Gemini 整備中…";
-        setStatus("已收到指令，正在向 Cloudflare 送出選牌要求。請看這裡的連線結果。" );
+        setStatus("已收到指令。首次整備可能需要較長時間，請看這裡的連線結果。");
+        const startedAt=Date.now();
+        const progressTimer=setInterval(()=>{
+          if(completed)return;
+          const seconds=Math.floor((Date.now()-startedAt)/1000);
+          setStatus(`Gemini 正在選擇 20 張牌｜已等待 ${seconds} 秒（最長約 2 分鐘）。`);
+        },1000);
         try{
           const battleId=matchId();
           const session={token,battleId,enabled:true,lastError:null};
@@ -154,6 +182,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
         }catch(error){
           if(!completed)setStatus(`整備發生程式錯誤：${String(error?.message||error).slice(0,160)}`,true);
         }finally{
+          clearInterval(progressTimer);
           if(!completed){geminiSession=null;start.disabled=false;start.textContent="重新讓 Gemini 整備並開戰";}
         }
       };
