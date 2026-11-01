@@ -1011,14 +1011,29 @@
       if(skill.bloodShadow){
         const landing=bloodShadowLanding(attacker,defender);
         if(!landing)return skillFailure(attacker,skill,"NO_LEGAL_REAR_CELL",defender);
+        // One authoritative rear-cell transit, before the attack resolution.
+        // The destination is always validated by bloodShadowLanding; a unit
+        // already standing on that cell may strike without changing position.
+        const origin={x:attacker.x,y:attacker.y,z:attacker.z};
+        const relocated=origin.x!==landing.x||origin.y!==landing.y;
         if(!pendingMove||pendingMove.unitId!==attacker.id)beginPendingMove(attacker);
         attacker.x=landing.x;attacker.y=landing.y;
         if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
         else attacker.z=Number(TacticalEngine.elevation(landing)||0);
         TacticalEngine.faceToward(attacker,defender);
+        // Present a true teleport instead of treating the sudden coordinate
+        // change as an ordinary walking animation. This is presentation-only.
+        if(relocated)globalThis.UnitAnimationEngine?.emitMove?.(attacker,{from:origin,kind:"TELEPORT"});
+        window.CardTacticsDiagnostics?.gameAction?.("BLOOD_SHADOW_TRANSIT",{
+          unitId:attacker.id,targetId:defender.id,
+          from:{x:origin.x,y:origin.y},to:{x:attacker.x,y:attacker.y},
+          distance:Math.abs(origin.x-attacker.x)+Math.abs(origin.y-attacker.y),relocated
+        });
         ctx.enterTile(attacker);
         if(!attacker.alive)return finishActiveSkill(attacker);
-        ctx.pushLog(`${attacker.character.name} 血影瞬襲至 ${defender.character.name} 背後。`,"BATTLE");
+        ctx.pushLog(relocated
+          ?`${attacker.character.name} 血影瞬襲至 ${defender.character.name} 背後 (${origin.x},${origin.y}) → (${attacker.x},${attacker.y})。`
+          :`${attacker.character.name} 已位於 ${defender.character.name} 背後，原地施展血影瞬襲。`,"BATTLE");
         return executeEngagement(attacker,defender,ctx.effectiveSkill(attacker,skill),[]);
       }
       if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
@@ -1073,6 +1088,10 @@
           const options=EffectEngine.copyableSkills(defender,attacker);
           if(options.length){
             if(attacker.team===ctx.TEAM.PLAYER){
+              // The blood-shadow teleport and damage are already committed.
+              // Only the optional memory choice remains; cancelling a pending
+              // ordinary move must not roll back a completed blood drain.
+              commitPendingMove(attacker);
               ctx.setPendingCopySkill({attacker,target:defender,options});
               ctx.setMode("copy-skill-select");ctx.render();return true;
             }

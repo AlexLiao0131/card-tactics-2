@@ -2301,6 +2301,14 @@ export class UnitRenderer{
   applyWalk(entry,unit,event,progress,definition={}){
     const points=event.path||[];
     if(points.length<2)return;
+    if(String(event?.kind||"").toUpperCase()==="TELEPORT"){
+      // Instant relocation is never interpolated through intervening terrain.
+      // The combat position has already been committed by the gameplay engine.
+      const point=clamp01(progress)<.5?points[0]:points[points.length-1];
+      entry.root.position.copyFrom(this.positionFor(entry,point));
+      entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
+      return;
+    }
     const scaled=clamp01(progress)*(points.length-1),index=Math.min(points.length-2,Math.floor(scaled)),local=scaled-index;
     const a=points[index],b=points[index+1];
     const point={x:lerp(a.x,b.x,local),y:lerp(a.y,b.y,local),z:lerp(a.z,b.z,local)};
