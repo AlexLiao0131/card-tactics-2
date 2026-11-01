@@ -3119,7 +3119,8 @@ export class WaterRenderer{
         ?this.changedSurfaceTileKeys(nextTileInputs,{geometryOnly:true}):dirtyKeys;
       const presentation=this.surfaceResolver.presentationWaterSurfaces(tiles,this.sheetFlowNetwork,
         (tile,x,z)=>this.waterLevelAtWorld(tile,x,z,allMap),
-        {previous:previousPresentation,dirtyKeys:polygonDirtyKeys,previousNetwork:oldNetwork});
+        {previous:previousPresentation,dirtyKeys:polygonDirtyKeys,previousNetwork:oldNetwork,
+          storedWaterlineEpsilon:EPSILON});
       const resolvedTiles=tiles.filter(tile=>dirtyKeys.has(keyOf(tile.x,tile.y))).length;
       const polygonResolvedTiles=tiles.filter(tile=>polygonDirtyKeys.has(keyOf(tile.x,tile.y))).length;
       this.surfaceSolveStats={totalTiles:tiles.length,resolvedTiles,

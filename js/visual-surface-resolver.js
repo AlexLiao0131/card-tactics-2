@@ -321,6 +321,63 @@ export class VisualSurfaceResolver{
       mode:"PUBLISHED_DQ_INTERSECTION"}));
   }
 
+  // D's hydraulic surface can vary within a published terrain triangle:
+  // WaterRenderer blends neighbouring stored-water levels in world space,
+  // while the terrain triangle is planar. A three-corner wetness test alone
+  // cannot see a dry ridge or wet hollow inside that triangle. Resolve the
+  // non-linear intersection in the SAME published terrain geometry, without
+  // introducing microcell water storage or changing any hydrology values.
+  clipPublishedStoredWaterTriangle(triangle,waterAt,{heightTolerance=STORED_WATER_DEPTH_EPSILON*ELEVATION_HEIGHT}={}){
+    if(!Array.isArray(triangle)||triangle.length!==3)return[];
+    // The hydrology engine's EXISTING minimum stored-water depth is also the
+    // smallest D height meaningful to this visual intersection. This is a
+    // convergence criterion, not a newly chosen tile subdivision level.
+    const sampled=new Map();
+    const sample=point=>{
+      const key=`${point.x}:${point.y}:${point.z}`;
+      if(sampled.has(key))return sampled.get(key);
+      const clearance=Number(waterAt(point))-Number(point.y);
+      sampled.set(key,clearance);
+      return clearance;
+    };
+    const middle=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:(a.z+b.z)/2});
+    const result=[];
+    const visit=(a,b,c)=>{
+      const ab=middle(a,b),bc=middle(b,c),ca=middle(c,a);
+      // Stop at the actual representable geometry limit instead of imposing
+      // a guessed number of refinement iterations.
+      const splittable=[ab,bc,ca].every((p,i)=>{
+        const first=[a,b,c][i],last=[b,c,a][i];
+        return (p.x!==first.x||p.z!==first.z)&&
+          (p.x!==last.x||p.z!==last.z)&&
+          (Math.fround(p.x)!==Math.fround(first.x)||Math.fround(p.z)!==Math.fround(first.z))&&
+          (Math.fround(p.x)!==Math.fround(last.x)||Math.fround(p.z)!==Math.fround(last.z));
+      });
+      const fa=sample(a),fb=sample(b),fc=sample(c);
+      const fm=[sample(ab),sample(bc),sample(ca)];
+      const centroid={x:(a.x+b.x+c.x)/3,y:(a.y+b.y+c.y)/3,z:(a.z+b.z+c.z)/3};
+      const fcenter=sample(centroid);
+      const linear=[(fa+fb)/2,(fb+fc)/2,(fc+fa)/2,(fa+fb+fc)/3];
+      const actual=[...fm,fcenter];
+      const departure=Math.max(...actual.map((f,i)=>Math.abs(f-linear[i])));
+      const signsConflict=departure>heightTolerance&&actual.some((f,i)=>(f>0)!==(linear[i]>0));
+      // A uniformly wet/dry triangle needs no refinement when the maximal
+      // sampled departure cannot move its linear shoreline across zero.
+      const clearanceMargin=Math.min(Math.abs(fa),Math.abs(fb),Math.abs(fc));
+      const allSame=[fb,fc].every(f=>(f>0)===(fa>0));
+      const needsIntersection=signsConflict||(!allSame&&departure>heightTolerance)||
+        (allSame&&departure>clearanceMargin);
+      if(splittable&&needsIntersection){
+        visit(a,ab,ca);visit(ab,b,bc);visit(ca,bc,c);visit(ab,bc,ca);
+        return;
+      }
+      const polygon=this.clipPublishedWaterTriangle([a,b,c],waterAt);
+      if(polygon.length>=3)result.push(polygon);
+    };
+    visit(...triangle);
+    return result;
+  }
+
   // Clip Q's footprint analytically against the REAL terrain triangles. The
   // previous Q solver sampled an implicit wet mask only at terrain vertices;
   // a narrow channel could miss every vertex, or a broad vertex hit could
@@ -449,7 +506,7 @@ export class VisualSurfaceResolver{
   // no fictitious retained water volume is integrated per gameplay square.
   // D/Q boundaries inherit the exact D waterline at the common rock/terrain
   // edge, rather than stitching separately constructed polygons afterwards.
-  presentationWaterSurfaces(tiles,network,storedLevelAtWorld,{previous=null,dirtyKeys=null,previousNetwork=null}={}){
+  presentationWaterSurfaces(tiles,network,storedLevelAtWorld,{previous=null,dirtyKeys=null,previousNetwork=null,storedWaterlineEpsilon=STORED_WATER_DEPTH_EPSILON}={}){
     const result=new Map();
     const all=new Map((tiles||[]).map(tile=>[this.keyOf(tile.x,tile.y),tile]));
     const qPathCache=new Map(); // one published-geometry route per actual Q edge per solve
@@ -598,6 +655,16 @@ export class VisualSurfaceResolver{
         }
         return Math.max(0,depth);
       };
+      const localStoredWaterLevels=stored?Array.from({length:9},(_,index)=>{
+        const candidate=all.get(this.keyOf(Number(tile.x)+(index%3)-1,
+          Number(tile.y)+Math.floor(index/3)-1));
+        return candidate&&hasStoredWaterDepth(candidate)
+          ?(candidate.waterSurfaceZ==null
+            ?elevationOf(candidate)+waterDepthOf(candidate):Number(candidate.waterSurfaceZ))*ELEVATION_HEIGHT
+          :null;
+      }).filter(Number.isFinite):[];
+      const dLevelMin=Math.min(...localStoredWaterLevels);
+      const dLevelMax=Math.max(...localStoredWaterLevels);
       const waterAt=stored
         ?point=>{
           const dWaterY=Number(storedLevelAtWorld(tile,point.x,point.z))*ELEVATION_HEIGHT;
@@ -705,17 +772,28 @@ export class VisualSurfaceResolver{
       // Stored D preserves its exact published-waterline clipping. Q is cut
       // by its true terrain-routed corridor; no midpoint sampling or guessed
       // multi-level refinement of square tiles can broaden its footprint.
+      // Preserve the existing D/Q shoulder sampling footprint at real
+      // transport ports. The new D shoreline check applies *inside* those
+      // same published subtriangles, rather than replacing their topology.
       const refine=stored&&transportPorts.length>0;
       const mid=(a,b)=>({x:(a.x+b.x)*.5,y:(a.y+b.y)*.5,z:(a.z+b.z)*.5});
       for(let i=0;i<geometry.triangles.length;i++){
         const triangle=geometry.triangles[i];
-        const triangles=stored
-          ?refine?(()=>{const[a,b,c]=triangle,ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);
-            return[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]];})():[triangle]
-          :[];
-        const clipped=stored
-          ?triangles.map(part=>this.clipPublishedWaterTriangle(part,waterAt))
-          :this.clipPublishedQCorridors(triangle,flowSegments,waterAt);
+        const pieces=stored&&refine?(()=>{
+          const[a,b,c]=triangle,ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);
+          return[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]];
+        })():[triangle];
+        // The interpolated D surface is a positive-weight combination of
+        // nearby stored levels. Its min/max bounds are exact safety tests;
+        // skip expensive interior sampling for wholly flooded/dry triangles.
+        const clipped=stored?pieces.flatMap(part=>{
+          const terrainMin=Math.min(...part.map(p=>p.y));
+          const terrainMax=Math.max(...part.map(p=>p.y));
+          if(dLevelMin>terrainMax)return[this.clipPublishedWaterTriangle(part,waterAt)];
+          if(dLevelMax<=terrainMin&&!transportPorts.length)return[];
+          return this.clipPublishedStoredWaterTriangle(part,waterAt,
+            {heightTolerance:storedWaterlineEpsilon*ELEVATION_HEIGHT});
+        }):this.clipPublishedQCorridors(triangle,flowSegments,waterAt);
         for(const polygon of clipped){
           if(polygon.length<3)continue;
           polygon.triangleIndex=i;
