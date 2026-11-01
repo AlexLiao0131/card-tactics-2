@@ -214,6 +214,7 @@
         if(target.team!==unit.team&&skill?.ignoreFogOfWar!==true&&
            !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
+        if(skill?.utilityAction?.type==="STEAL_LOOT"&&!globalThis.RewardEngine?.stealable?.(unit,target))return false;
         if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
         
         if(skill?.bloodShadow)return !!bloodShadowLanding(unit,target);
@@ -607,16 +608,18 @@
       if(action.type==="ENTER_STEALTH"){
         ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
         globalThis.EffectEngine?.resolveProximityReveal?.(attacker,units);
-        ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，再次進入潛行。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，進入潛行。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
-      if(action.type==="STEAL_CARD"){
-        if(!target?.character||target.team===attacker.team)return false;
-        const {own,other}=runtimeCardStates(attacker),hand=other?.zones?.hand;
+      if(action.type==="STEAL_LOOT"){
+        if(!target?.character||!globalThis.RewardEngine?.stealable?.(attacker,target))
+          return skillFailure(attacker,skill,"NO_STEALABLE_LOOT",target);
+        const result=RewardEngine.stealLoot(attacker,target);
+        if(!result.ok)return skillFailure(attacker,skill,result.reason,target);
         globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
-        if(!own?.zones?.hand||!Array.isArray(hand)||!hand.length){ctx.pushLog(`${attacker.character.name} 使用偷竊，但對方手牌已空。`,"BATTLE");return finishActiveSkill(attacker);}
-        const index=Math.floor(Math.random()*hand.length),cardId=hand.splice(index,1)[0];own.zones.hand.push(cardId);
-        ctx.pushLog(`${attacker.character.name} 偷走對方一張手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅限本場戰鬥。`,"BATTLE");
+        const itemName=result.itemId?ItemDatabase.get(result.itemId)?.name||result.itemId:null;
+        const detail=[result.gold?`${result.gold} 金幣`:null,itemName?`道具「${itemName}」`:null].filter(Boolean).join("及");
+        ctx.pushLog(`${attacker.character.name} 從 ${target.character.name} 偷得${detail}｜同一目標不可再次偷竊。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
       if(action.type==="SCHEDULE_TURN_SIMULATION"){
@@ -768,6 +771,14 @@
         if(mode==="HEALING")UnitRuntimeEngine.changeFaith(attacker,max/2-UnitRuntimeEngine.faithValue(attacker));
         return finishActiveSkill(attacker);
       }
+      if(skill?.smokeField){
+        if(!ctx.canUseSkill(attacker,skill)||!ctx.sanctuaryTiles(center,skill.radius).length)return skillFailure(attacker,skill,"SMOKE_FIELD_INVALID",center);
+        if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+        EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"SELF"});
+        ctx.activateSmoke(attacker,skill);
+        return finishActiveSkill(attacker);
+      }
       const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
@@ -797,19 +808,29 @@
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
-          if(enchantment){
-            const extra=BattleResolution.enchantmentMagicDamage(attacker,occupant,enchantment,result.crit,skill);
-            result.damage+=extra;result.enchantmentDamage=extra;
-            enchantImpacts.push({enchantment,result,target:occupant});
-          }
-          result.damage=Math.round(result.damage*bloodMult);
+          // LINE follows the same physical / elemental damage ownership as
+          // BattleResolution. Different types cannot share one shield pass or
+          // a critical roll merely because they originate from one strike.
+          const magicalCrit=!!enchantment&&Math.random()*100<BattleEngine.critChance(attacker.character,skill);
+          const bonus=enchantment?BattleResolution.enchantmentMagicDamage(attacker,occupant,enchantment,magicalCrit,skill):0;
+          const base=Math.max(0,Number(result.damage||0));
+          result.enchantmentDamage=bonus;
+          result.magicCrit=magicalCrit;
+          if(enchantment)enchantImpacts.push({enchantment,result,target:occupant});
+          const physicalRaw=result.type==="MAGIC"?0:Math.round(base*bloodMult);
+          const magicRaw=(result.type==="MAGIC"?Math.round(base*bloodMult):0)+Math.round(bonus*bloodMult);
+          result.damage=physicalRaw+magicRaw;
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
-          const hpLoss=hpBefore-occupant.hp;
-          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
+          const physical=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:physicalRaw,{source:attacker,damageType:"PHYSICAL"});
+          const magic=EffectEngine.applyDamage(occupant,occupant.hallucination?0:magicRaw,{source:attacker,damageType:"MAGIC"});
+          const hpLoss=Number(physical.hpLoss||0)+Number(magic.hpLoss||0),absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
+          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,
+            components:{physical:physical.hpLoss,magic:magic.hpLoss},
+            criticalComponents:{physical:result.type!=="MAGIC"&&result.crit===true,magic:result.type==="MAGIC"&&result.crit===true||magicalCrit},
+            element:result.el||skill.element,componentElements:{physical:result.type==="MAGIC"?null:result.el||skill.element,magic:enchantment?.element||(result.type==="MAGIC"?result.el||skill.element:null)},skillId:skill.id});
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${hpLoss} 傷害${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
-          else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
+          else if(hpLoss>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
         });
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
@@ -824,7 +845,7 @@
           const hpBefore=Math.max(0,Number(occupant.hp||0));
           const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
           const hpLoss=hpBefore-occupant.hp;
-          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
+          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss),element:skill.element,skillId:skill.id});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
         });
@@ -954,7 +975,7 @@
             if(!roll.hit)continue;
             const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker});
             total+=outcome.hpLoss;hits++;
-            if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true});
+            if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true,components:{physical:outcome.hpLoss,magic:0},criticalComponents:{physical:roll.crit===true,magic:false},element:skill.element,skillId:skill.id});
             if(victim.hp<=0){victim.alive=false;ctx.handleDefeated(victim,attacker,skill);}
           }
         }
@@ -1024,6 +1045,7 @@
     function prepareAttack(attacker,defender,skill){
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
+      if((skill.sanctuary||skill.smokeField)&&skill.target==="SELF")return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
       if(skill.approach&&!approachForSkill(attacker,defender,skill)){
         skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
@@ -1107,7 +1129,7 @@
         const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true});
         const damage=Math.round(roll.damage*multiplier),result=EffectEngine.applyDamage(target,damage,{source:attacker,damageType:"MAGIC"});
         globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:result.hpLoss,
-          components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true}});
+          components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true},element:"HOLY",skillId:skill.id});
         ctx.pushLog(`${attacker.character.name}｜裁決十字聖光 → ${target.character.name}｜${result.hpLoss} 神聖傷害${roll.crit?"｜爆擊":""}。`,"BATTLE");
         if(target.hp<=0){target.alive=false;ctx.handleDefeated(target,attacker,skill);}
       }

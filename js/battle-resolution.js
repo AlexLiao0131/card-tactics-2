@@ -193,53 +193,65 @@ export const BattleResolution=(()=>{
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
-      const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),action.actor,action.target,skill);
-      const original=resolved.result;
-      const sealMultiplier=a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,a.target)||1;
-      const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
-      const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
-      globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
-      const hallucinationHit=action.target?.hallucination===true&&original.hit;
-      const hpBefore=Math.max(0,Number(action.target.hp||0));
-      let absorbed=0,physLoss=0,magicLoss=0;
-      if(original.hit){
-        // One attack event: each damage type passes through the official shield/immunity engine.
-        const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
-        const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC"})||{hpLoss:0,absorbed:0};
-        absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
-        physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
+      // Multi-contact weapons resolve independent hit/crit/damage rolls inside a
+      // single committed action. Counter/support selection and resource cost
+      // remain one per action, not one per blade.
+      const hitCount=Math.max(1,Math.floor(Number(skill.hitCount||1)));
+      for(let hitIndex=0;hitIndex<hitCount&&action.target.alive;hitIndex++){
+        const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,hitIndex===0?enchantment:null,skill),action.actor,action.target,skill);
+        const original=resolved.result;
+        const sealMultiplier=a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,a.target)||1;
+        const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
+        const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
+        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
+        const hallucinationHit=action.target?.hallucination===true&&original.hit;
+        const hpBefore=Math.max(0,Number(action.target.hp||0));
+        let absorbed=0,physLoss=0,magicLoss=0;
+        if(original.hit){
+          // One attack event: each damage type passes through the official shield/immunity engine.
+          const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
+          const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC"})||{hpLoss:0,absorbed:0};
+          absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
+          physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
+        }
+        const physicalCrit=original.type!=="MAGIC"&&(original.physicalCrit??original.crit)===true;
+        const magicCrit=original.type==="MAGIC"&&original.crit===true||original.magicCrit===true;
+        const result={...original,damage:physLoss+magicLoss,shieldAbsorbed:absorbed,
+          physicalHpDamage:physLoss,magicHpDamage:magicLoss,
+          physicalCrit,magicCrit,crit:physicalCrit||magicCrit,
+          criticalComponents:{physical:physicalCrit,magic:magicCrit},hallucinationBroken:hallucinationHit};
+        globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{damage:result.damage,critical:result.crit,
+          components:{physical:physLoss,magic:magicLoss},criticalComponents:result.criticalComponents,
+          element:original.el||skill.element,componentElements:{
+            physical:original.type==="MAGIC"?null:original.el||skill.element,
+            magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id});
+        if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
+        else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1)
+          globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
+        else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
+        const markTarget=(c.interception&&a.role==="INITIATOR"?c.originalTarget:a.target);
+        if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
+        if(result.hit){
+          if(!followup&&a.role==="INITIATOR"&&Number(skill.holyPowerOnHit||0)>0)
+            bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
+          if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,a.target);
+        }
+        if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
+        else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
+        if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
+        const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
+        const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
+          vengeanceMultiplier:sealMultiplier};
+        e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
+        if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
+          queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
+        }
       }
-      const physicalCrit=original.type!=="MAGIC"&&(original.physicalCrit??original.crit)===true;
-      const magicCrit=original.type==="MAGIC"&&original.crit===true||original.magicCrit===true;
-      const result={...original,damage:physLoss+magicLoss,shieldAbsorbed:absorbed,
-        physicalHpDamage:physLoss,magicHpDamage:magicLoss,
-        physicalCrit,magicCrit,crit:physicalCrit||magicCrit,
-        criticalComponents:{physical:physicalCrit,magic:magicCrit},hallucinationBroken:hallucinationHit};
-      globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{damage:result.damage,critical:result.crit,
-        components:{physical:physLoss,magic:magicLoss},criticalComponents:result.criticalComponents});
-      if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
-      else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1)
-        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
-      else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
-      const markTarget=(c.interception&&a.role==="INITIATOR"?c.originalTarget:a.target);
-      if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
-      if(result.hit){
-        if(!followup&&a.role==="INITIATOR"&&Number(skill.holyPowerOnHit||0)>0)
-          bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
-        if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,a.target);
-      }
-      if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
-      else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
-      if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
-      if(action.actor.alive&&globalThis.EffectEngine&&!followup)for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
-      const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
-      const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
-        vengeanceMultiplier:sealMultiplier};
-      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
-      if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
-        queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
-      }
-      bloodRuntime?.endBloodTransaction?.(action.actor);
+      // Once per committed action even if the first contact defeated the target.
+      if(action.actor.alive&&globalThis.EffectEngine&&!followup)
+        for(const effect of skill?.afterUseEffects||[])
+          EffectEngine.apply({source:action.actor,target:action.actor,effect});
+      bloodRuntime?.endBloodTransaction?.(a.actor);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     return{context:c,queue,results,postEngagement:post};

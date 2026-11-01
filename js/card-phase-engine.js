@@ -34,7 +34,7 @@ export const CardPhaseEngine=(()=>{
     return drawn;
   }
   function keepOpeningHand(state){if(!state?.mulliganAvailable||state.mulliganDone)return false;state.mulliganAvailable=false;state.mulliganDone=true;return true;}
-  function canPlay(state,card){return !!state.active&&!!card&&state.zones.hand.includes(card.id)&&state.crystals>=Number(card.cost||0);}
+  function canPlay(state,card){return !!state.active&&!!card&&typeof card.cost==="number"&&Number.isFinite(card.cost)&&card.cost>=0&&state.zones.hand.includes(card.id)&&state.crystals>=card.cost;}
   function commit(state,card){if(!canPlay(state,card))return false;if(!DeckEngine.removeFromHand(state.zones,card.id))return false;state.crystals-=Number(card.cost||0);state.played.push(card.id);state.lastGeneratedCards=[];if(CardDatabase.isCharacter(card))grantGeneratedCards(state,LoadoutDatabase.generatedCardsForCard(card));if(CardDatabase.isSpell(card))DeckEngine.toDiscard(state.zones,card.id);return true;}
   function characterDefeated(state,cardId){if(cardId)DeckEngine.toGraveyard(state.zones,cardId);}
   function resolveTurnEndEffects(state,{units=[],team="P"}={}){const results=[];for(const unit of units){if(!unit?.alive||unit.team!==team)continue;for(const passive of SkillDatabase.passiveList(unit.character?.passives)){const effect=passive.turnEndEffect;if(effect?.type!=="DRAW")continue;const drawn=DeckEngine.draw(state.zones,Math.max(0,Number(effect.count||0)));results.push({sourceId:passive.id,sourceName:passive.name,unitId:unit.id,drawn});}}return results;}

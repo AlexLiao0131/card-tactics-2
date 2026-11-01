@@ -20,7 +20,7 @@ export const EffectEngine=(()=>{
       if(existing){if(overheal>Number(existing.shieldHp||0)){existing.shieldHp=overheal;existing.maxShieldHp=Math.max(Number(existing.maxShieldHp||0),overheal);shieldGranted=overheal;} }
       else {addEffect(target,{type:"SHIELD",id:overflowShield.id,name:overflowShield.name,classification:"POSITIVE",shieldHp:overheal,maxShieldHp:overheal,overhealSourceId:source?.id||null,overhealAbsorbed:0,overhealShield:true},source);shieldGranted=overheal;}
     }
-    if(restored)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(target,restored);
+    if(restored)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(target,restored,{critical,skillId:skill?.id||"saint_hero_heal"});
     return{applied:true,type:"HEAL",amount:restored,requested,overheal,shieldGranted,critical};
   }
   function hasEffect(unit,id){return state(unit).some(effect=>effect.id===id||effect.type===id)}
@@ -270,7 +270,7 @@ export const EffectEngine=(()=>{
       return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
     }
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
-    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
+    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="HP_LINK")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER"){

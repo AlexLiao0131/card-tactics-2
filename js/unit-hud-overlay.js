@@ -339,13 +339,13 @@ export class UnitHudOverlay{
       if(!living.has(String(event.unitId))&&!event.afterDeath)continue;
       const outcomes={MISS:"miss",DODGE:"dodge",BLOCK:"block",PARRY:"parry",GRAZE:"graze"};
       const kind=outcomes[event.kind]||
-        (event.kind==="DOT"?"dot":event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":
+        (event.kind==="DOT"?"dot":event.kind==="HEAL_CRITICAL"?"heal-critical":event.kind==="HEAL"?"heal":event.kind==="STATUS"?"status":
         event.kind==="PHYSICAL_CRITICAL"?"physical-critical":event.kind==="MAGIC_CRITICAL"?"magic-critical":
         event.kind==="MAGIC_DAMAGE"?"magic-damage":event.kind==="PHYSICAL_DAMAGE"?"physical-damage":
         event.kind==="CRITICAL"?"critical":"damage");
       const text=outcomes[event.kind]?event.kind:
         kind==="dot"?`${String(event.label||"持續傷害")} -${Math.round(Number(event.value)||0)}`:
-        kind==="heal"?`+${Math.round(Number(event.value)||0)}`:
+        (kind==="heal"||kind==="heal-critical")?`+${Math.round(Number(event.value)||0)}`:
         kind==="status"?String(event.value||""):`-${Math.round(Number(event.value)||0)}`;
       if(!text||text==="+0"||text==="-0")continue;
       const node=createElement("span",`unit-float-text unit-float-${kind}`);

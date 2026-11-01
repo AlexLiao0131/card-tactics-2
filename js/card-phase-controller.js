@@ -28,6 +28,7 @@ function create(ctx){
     if(CardDatabase.isCharacter(card))return hasDeploymentTile(s);
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="WEATHER")return true;
+    if(card.effect?.type==="STEAL_HAND")return (s.enemyCardState?.zones?.hand?.length||0)>0;
     // An owned living Core or held point can anchor defensive magic even before
     // any unit is deployed. Target legality is rechecked at resolveAt().
     return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0&&
@@ -59,6 +60,17 @@ function create(ctx){
     const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return cardFailure(CardDatabase.get(cardId),"NOT_CARD_PHASE");const card=CardDatabase.get(cardId);if(!canResolve(card))return cardFailure(card,"CARD_NOT_PLAYABLE_RESOURCE_OR_TARGET");
     if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
+    if(card.effect?.type==="STEAL_HAND"){
+      const opponent=s.enemyCardState?.zones?.hand;
+      if(!Array.isArray(opponent)||opponent.length===0)return cardFailure(card,"ENEMY_HAND_EMPTY");
+      if(!CardPhaseEngine.commit(s.cardState,card))return cardFailure(card,"CARD_NOT_PAYABLE");
+      const cardId=opponent.splice(Math.floor(Math.random()*opponent.length),1)[0];
+      s.cardState.zones.hand.push(cardId);
+      ctx.pushLog(`施放「${card.name}」｜消耗 ${card.cost} 水晶，取得敵方手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅本場戰鬥可用。`,"BATTLE");
+      ctx.setPendingCard(null);ctx.checkMatchEnd();
+      if(!maybeAutoEnd()){ctx.render();ctx.emitState();}
+      return true;
+    }
     if(card.effect?.type==="WEATHER"){
       if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false,source:"CARD"}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }

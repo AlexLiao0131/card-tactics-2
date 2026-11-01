@@ -23,7 +23,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   let hallucinationSession=null;
   const pendingHallucinations=new Map();
   let hallucinationSerial=0;
-  let sanctuaries=[],sanctuarySerial=0;
+  let sanctuaries=[],sanctuarySerial=0,smokeFields=[],smokeSerial=0;
   const sanctuaryKey=(x,y)=>`${x},${y}`;
   function sanctuaryTiles(center,radius){
     const origin=TacticalEngine.tile(map,center.x,center.y);
@@ -46,6 +46,37 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
       }
     }
     return result;
+  }
+  // Battle smoke is a stationary terrain field, not a permanent unit buff.
+  // Reuse the sanctuary's terrain-aware flood fill for identical cliff blocking.
+  function syncSmokeCover(unit){
+    if(!unit?.alive||!globalThis.EffectEngine)return false;
+    const covered=smokeFields.some(field=>field.team===unit.team&&field.cells.has(sanctuaryKey(unit.x,unit.y)));
+    const existing=EffectEngine.state(unit).some(effect=>effect.id==="SMOKE_COVER"&&effect.type==="STEALTH");
+    if(!covered&&existing){
+      unit.effects=EffectEngine.state(unit).filter(effect=>effect.id!=="SMOKE_COVER");
+      EffectEngine.syncModifiers(unit);return true;
+    }
+    if(covered&&!existing){
+      EffectEngine.applyStealth(unit,{id:"SMOKE_COVER",source:unit});
+      EffectEngine.resolveProximityReveal(unit,units);
+      return true;
+    }
+    return false;
+  }
+  function activateSmoke(caster,skill){
+    const center={x:caster.x,y:caster.y},cells=sanctuaryTiles(center,skill.radius);
+    if(!cells.length)return null;
+    const field={id:`cat-smoke-${++smokeSerial}`,team:caster.team,casterId:caster.id,
+      center,cells:new Set(cells.map(tile=>sanctuaryKey(tile.x,tile.y))),expiresRound:round+skill.smokeField.duration};
+    smokeFields.push(field);
+    units.forEach(syncSmokeCover);
+    pushLog(`${caster.character.name} 投出煙霧彈｜範圍 ${cells.length} 格｜維持 ${skill.smokeField.duration} 回合。`,"BATTLE");
+    return field;
+  }
+  function expireSmoke(){
+    const active=smokeFields.filter(field=>round<field.expiresRound);
+    if(active.length!==smokeFields.length){smokeFields=active;units.forEach(syncSmokeCover);}
   }
   function sanctuaryProtects(unit){
     if(!unit?.alive)return false;
@@ -360,7 +391,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   function currentWorld(){return{map,units,stage,stageState,environmentState,cores};}
   function realWorld(){return hallucinationSession?.real||currentWorld();}
   function presentationWorld(){return hallucinationSession?.active&&hallucinationSession.team===TEAM.ENEMY?hallucinationSession.real:currentWorld();}
-  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===hallucinationSession?.real?null:selected,selectedSkill:w===hallucinationSession?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,renderRevision};}
+  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===hallucinationSession?.real?null:selected,selectedSkill:w===hallucinationSession?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,renderRevision};}
   function presentationUnitAt(x,y){return presentationWorld().units.find(u=>u.alive&&u.x===x&&u.y===y)||null;}
   function presentationCoreAt(x,y){return presentationWorld().cores.find(core=>core.x===x&&core.y===y)||null;}
   function checkMatchEnd(){return hallucinationSession?.active?false:objectiveController.checkMatchEnd();}
@@ -485,7 +516,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   function traverseUnitPath(...args){
     const unit=args[0],before=unit?{x:unit.x,y:unit.y}:null;
     const result=environmentController.traverseUnitPath(...args);
-    if(unit&&before&&(unit.x!==before.x||unit.y!==before.y))EffectEngine.interruptChannel(unit,"MOVE");
+    if(unit&&before&&(unit.x!==before.x||unit.y!==before.y)){EffectEngine.interruptChannel(unit,"MOVE");syncSmokeCover(unit);}
     return result;
   }
   function damageUnitFlat(unit,damage,sourceName){if(!unit?.alive)return;const dealt=EffectEngine.applyDamage(unit,Math.max(0,Number(damage||0)),{kind:"EXTERNAL"}).hpLoss;pushLog(`${sourceName} → ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;handleDefeated(unit,null,{type:"CARD_SPELL",name:sourceName});}}
@@ -495,7 +526,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
 
   function resetBattle(){
     debugEnvironmentSteps=0;
-    sanctuaries=[];sanctuarySerial=0;
+    sanctuaries=[];sanctuarySerial=0;smokeFields=[];smokeSerial=0;
     enemyController?.reset?.();actionController?.reset?.();hallucinationSession=null;pendingHallucinations.clear();
     globalThis.ItemInventoryEngine?.beginBattle?.(window.CardTacticsBattleSetup?.itemLoadouts||{});
     const requestedStageId=window.CardTacticsBattleSetup?.stageId||"prototype_battle";
@@ -507,7 +538,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   }
   function unitAt(x,y){return units.find(u=>u.alive&&u.x===x&&u.y===y);}
   function spawnFromScript(action){const requested=String(action.team||"ENEMY").toUpperCase();const team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;if(unitAt(action.x,action.y))return null;const character=CHARACTERS[action.characterId];if(!character)return null;const prefix=team===TEAM.PLAYER?"p":team===TEAM.NEUTRAL?"n":"e";let n=0,id;do{id=`${prefix}s${n++}`;}while(units.some(u=>u.id===id));const unit=createUnit(id,team,action.characterId,action.x,action.y);units.push(unit);onUnitCreated(unit);pushLog(`${character.name} 出現在 (${action.x},${action.y})。`);return unit;}
-  function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){return environmentController.enterTile(...args);}
+  function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){const result=environmentController.enterTile(...args);if(args[0])syncSmokeCover(args[0]);return result;}
   function stageEvent(event){if(!stageState)return;StageEngine.run(stageState,event,{units,log:text=>pushLog(text),spawn:spawnFromScript,onObjectiveChanged:(active,action)=>{const target=String(action.target||"").toUpperCase();const label=action.objectives?"勝敗條件":target==="VICTORY"?"勝利條件":target==="DEFEAT"?"失敗條件":"勝敗條件";pushLog(`${label}已更新。`,"SYSTEM");}});}
   function shortName(name){return name.replace(/（.*?）/g,"").slice(0,4);}
   // Stable per-battle identity: a unit retains its ordinal even if it moves,
@@ -528,7 +559,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     return{ordinal,mark:ENCHANT_DIGITS[ordinal-1]||`#${ordinal}`,
       name:identity?.type||unit.character?.name||"友軍"};
   }
-  function onUnitCreated(unit){if(unit)EffectEngine.syncConditionalPassives([unit],environmentState);return unit;}
+  function onUnitCreated(unit){if(unit){EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);}return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
     if(result){commitHallucinationSkillExpense(unit,result);window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
@@ -541,7 +572,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
   function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;clearEngagement();mode="idle";}
   function resolveWeatherEvents(...args){return environmentController.resolveWeatherEvents(...args);}
-  function beginPlayerTurn(){endHallucinationTurn(TEAM.ENEMY);if(checkMatchEnd()){render();return;}round++;phase=PHASE.PLAYER;resetActions(TEAM.PLAYER);clearSelection();clearEnemyReaction();pushLog(`Round ${round}｜我方回合開始。`,"SYSTEM");
+  function beginPlayerTurn(){endHallucinationTurn(TEAM.ENEMY);if(checkMatchEnd()){render();return;}round++;phase=PHASE.PLAYER;expireSmoke();resetActions(TEAM.PLAYER);clearSelection();clearEnemyReaction();pushLog(`Round ${round}｜我方回合開始。`,"SYSTEM");
     // Weather and real water contact settle before unit DOTs tick: a newly
     // delivered rainfall pulse can cool BURN before it inflicts its next tick.
     if(environmentState){applyEnvironmentHazards({reason:"回合開始仍處於燃燒區"});if(checkMatchEnd()){render();return;}}
@@ -550,7 +581,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     stageEvent({type:"ROUND_START",round,team:"PLAYER"});
     if(environmentState){EnvironmentEngine.tick(environmentState);resolveWeatherEvents();if(checkMatchEnd()){render();return;}}
     beginHallucinationTurn(TEAM.PLAYER);cardPhaseController.begin();}
-  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
   function runEnemyPhase(){tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
   function endPlayerTurn({automatic=false}={}){if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
@@ -995,7 +1026,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   if(!window.BattleCoreCaptureController?.create)throw new Error("BattleCoreCaptureController is not loaded.");coreCaptureController=window.BattleCoreCaptureController.create({TEAM,state:()=>({stage,units,cores}),pushLog,checkMatchEnd,commitPendingMove:unit=>commitPendingMove(unit),stageEvent,onCaptureComplete:()=>{mode="inspect";if(!maybeAutoEndPlayerTurn()){window.dispatchEvent(new CustomEvent("cardtactics:state"));render();}}});
   if(!window.BattleEnvironmentController?.create)throw new Error("BattleEnvironmentController is not loaded.");environmentController=window.BattleEnvironmentController.create({TEAM,state:()=>({map,units,environmentState}),living,pushLog,handleDefeated,stageEvent,damageUnitFlat});
   if(!window.TacticalEnemyController?.create)throw new Error("TacticalEnemyController is not loaded.");enemyController=window.TacticalEnemyController.create(battleContext);
-  if(!window.CardPhaseController?.create)throw new Error("CardPhaseController is not loaded.");cardPhaseController=window.CardPhaseController.create({TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,cardState,pendingCard,environmentState}),setPhase:value=>{phase=value;},getPendingCard:()=>pendingCard,setPendingCard:value=>{pendingCard=value;},clearSelection,pushLog,render,emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),onUnitCreated,resetActions,maybeAutoEndPlayerTurn,unitAt,createUnit:(id,team,characterId,x,y)=>createUnit(id,team,characterId,x,y),nextUnitId:()=>`pc${unitSerial++}`,aoeTiles,applyForcedMovement,damageUnitFlat,applyEnvironmentHazardToUnit,resolveEnvironmentEvents,logEnvironmentEvent,checkMatchEnd,handleDefeated});
+  if(!window.CardPhaseController?.create)throw new Error("CardPhaseController is not loaded.");cardPhaseController=window.CardPhaseController.create({TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,cardState,enemyCardState,pendingCard,environmentState}),setPhase:value=>{phase=value;},getPendingCard:()=>pendingCard,setPendingCard:value=>{pendingCard=value;},clearSelection,pushLog,render,emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),onUnitCreated,resetActions,maybeAutoEndPlayerTurn,unitAt,createUnit:(id,team,characterId,x,y)=>createUnit(id,team,characterId,x,y),nextUnitId:()=>`pc${unitSerial++}`,aoeTiles,applyForcedMovement,damageUnitFlat,applyEnvironmentHazardToUnit,resolveEnvironmentEvents,logEnvironmentEvent,checkMatchEnd,handleDefeated});
 
   function debugEmit(){render();window.dispatchEvent(new CustomEvent("cardtactics:state"));return true;}
   function debugSetWeather(weather,duration=5,{applyPulse=true}={}){

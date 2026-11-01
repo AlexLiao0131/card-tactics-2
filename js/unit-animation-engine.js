@@ -68,10 +68,10 @@ export const UnitAnimationEngine=(()=>{
     return[...positive,...negative];
   }
   const floatPosition=unit=>({unitId:unit.id,x:Number(unit.x||0),y:Number(unit.y||0),renderZ:Number(unit.renderZ??unit.z??0)});
-  function emitFloat(unit,kind,value,{afterDeath=false}={}){
+  function emitFloat(unit,kind,value,{afterDeath=false,element=null,skillId=null}={}){
     if(!unit?.id||!Number.isFinite(Number(value))&&kind!=="STATUS")return null;
     if(kind!=="STATUS"&&Number(value)<=0)return null;
-    return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(unit),kind,value,afterDeath});
+    return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(unit),kind,value,afterDeath,element,skillId});
   }
 
   function normalizeState(value){
@@ -164,7 +164,7 @@ export const UnitAnimationEngine=(()=>{
     return emit(target,STATE.HURT,detail);
   }
 
-  function emitResolvedHit(target,{damage=0,critical=false,components=null,criticalComponents=null}={}){
+  function emitResolvedHit(target,{damage=0,critical=false,components=null,criticalComponents=null,element=null,componentElements=null,skillId=null}={}){
     if(!target?.id)return null;
     const actual=Math.max(0,Math.round(Number(damage)||0));
     if(!actual)return null;
@@ -172,12 +172,12 @@ export const UnitAnimationEngine=(()=>{
     const previouslyVisible=previousUnits.get(id);
     if(!previouslyVisible)return null;
     resolvedDamage.set(id,(resolvedDamage.get(id)||0)+actual);
-    if(!components)return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true});
+    if(!components)return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true,element,skillId});
     const physical=Math.max(0,Math.round(Number(components.physical||0)));
     const magic=Math.max(0,actual-physical);
     const out=[];
-    if(physical)out.push(emitFloat(previouslyVisible,(criticalComponents?.physical??critical)?"PHYSICAL_CRITICAL":"PHYSICAL_DAMAGE",physical,{afterDeath:true}));
-    if(magic)out.push(emitFloat(previouslyVisible,(criticalComponents?.magic??critical)?"MAGIC_CRITICAL":"MAGIC_DAMAGE",magic,{afterDeath:true}));
+    if(physical)out.push(emitFloat(previouslyVisible,(criticalComponents?.physical??critical)?"PHYSICAL_CRITICAL":"PHYSICAL_DAMAGE",physical,{afterDeath:true,element:componentElements?.physical??element,skillId}));
+    if(magic)out.push(emitFloat(previouslyVisible,(criticalComponents?.magic??critical)?"MAGIC_CRITICAL":"MAGIC_DAMAGE",magic,{afterDeath:true,element:componentElements?.magic??element,skillId}));
     return out;
   }
 
@@ -200,13 +200,13 @@ export const UnitAnimationEngine=(()=>{
     return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(prior),kind:"DOT",value:actual,label:name,afterDeath:true});
   }
 
-  function emitHealingOverTime(unit,amount){
+  function emitHealingOverTime(unit,amount,{critical=false,skillId=null}={}){
     const actual=Math.max(0,Math.round(Number(amount)||0));
     if(!actual||!unit?.id)return null;
     const id=String(unit.id),prior=previousUnits.get(id);
     if(!prior)return null;
     resolvedHealing.set(id,(resolvedHealing.get(id)||0)+actual);
-    return emitFloat(prior,"HEAL",actual);
+    return emitFloat(prior,critical?"HEAL_CRITICAL":"HEAL",actual,{skillId});
   }
 
   function emitDeath(unit,detail={}){
