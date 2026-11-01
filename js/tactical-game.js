@@ -642,7 +642,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
       // read-only enchantment choice is open.
       return;
     }
-    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else previewPlayerAttack(selected,target,selectedSkill);return;}
+    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill,{confirmOrdinaryAttack:true});return;}
       // A weapon's enchanted hit selects either a legal enemy (above) or a
       // legal terrain collision (here) inside the SAME attack aim mode.
       // No separate "single target / conduction" or map attack menu exists.
@@ -881,21 +881,9 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
         grazeDamage:Math.round(Number(normal.damage||0)*.5)+BattleResolution.previewEnchantmentBonus(attacker,defender,effective,{grazeMultiplier:.5})+BattleResolution.previewInherentBonus(attacker,defender,effective,{grazeMultiplier:.5})},defenseMethods:methodOptions,
       note:'主攻一次命中；物理／附魔各自爆擊。正常／物理爆擊／附魔爆擊／雙爆預測由正式公式計算；護盾、後續連鎖依實際結算。'};
   }
-  // Ordinary single-target attacks enter the existing confirmed engagement
-  // transaction even without an eligible support ally. Skill execution is
-  // unchanged: no mana, actions, damage or die rolls are consumed by preview.
-  function previewPlayerAttack(attacker,defender,skill){
-    if(skill?.utilityAction||skill?.effects||skill?.relationEffects||skill?.bloodAction||skill?.approach||targetType(skill)!=='SINGLE'){
-      prepareAttack(attacker,defender,skill);return;
-    }
-    if(!canUseSkill(attacker,skill)){prepareAttack(attacker,defender,skill);return;}
-    const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill})
-      .map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,environmentState))}))
-      .filter(candidate=>candidate.skills.length);
-    pendingEngagement={attacker,defender,skill:effectiveSkill(attacker,skill),candidates};
-    engagementFocusSerial++;
-    supportSelection=new Map();mode='support-select';render();
-  }
+  // The battlefield UI only supplies the chosen target. All action routing,
+  // including engagement confirmation and pre-attack relocation, belongs to
+  // TacticalActionController.prepareAttack. Do not classify skill mechanics here.
   function engagementOdds(attacker,defender,skill){if(!attacker?.character||!defender?.character||!skill)return null;const resolved=effectiveSkill(attacker,skill);const hit=Math.max(0,Math.min(100,Math.round(BattleEngine.hitChance(attacker.character,defender.character,resolved))));return{hit,evade:100-hit};}
   function engagementUnitPresentation(unit,attacker,defender,odds){const max=Math.max(1,Number(unit?.hallucination?unit.perceivedMaxHp??unit?.character?.combat?.hp??1:unit?.character?.combat?.hp||unit?.hp||1)),hp=Math.max(0,Number(unit?.hallucination?unit.perceivedHp??max:unit?.hp||0));return{id:unit.id,x:unit.x,y:unit.y,name:unit.character.name,shortName:shortName(unit.character.name),team:unit.team,hp,maxHp:max,hpPct:Math.max(0,Math.min(100,hp/max*100)),oddsLabel:!odds?"":unit===attacker?`命中率 ${odds.hit}%`:unit===defender?`迴避率 ${odds.evade}%`:""};}
   function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack,odds=engagementOdds(attacker,defender,skill),forecast=engagementForecast(attacker,defender,skill);const player=attacker.team===TEAM.PLAYER?attacker:defender.team===TEAM.PLAYER?defender:null;const enemy=player===attacker?defender:attacker;const model={mode,focusId:engagementFocusSerial,skillName:skill?.name||"交戰",

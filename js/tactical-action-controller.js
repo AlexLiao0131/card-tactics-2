@@ -1042,7 +1042,7 @@
       ctx.pushLog(`${attacker.character.name} 開始吟唱「${skill.name}」，最多持續 ${rule.duration} 回合；移動或交戰時中斷。`,"BATTLE");
       return finishActiveSkill(attacker);
     }
-    function prepareAttack(attacker,defender,skill){
+    function prepareAttack(attacker,defender,skill,{confirmOrdinaryAttack=false}={}){
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
       if((skill.sanctuary||skill.smokeField)&&skill.target==="SELF")return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
@@ -1088,14 +1088,15 @@
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
       const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill:ctx.canUseSkill}).map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))})).filter(candidate=>candidate.skills.length);
-      // When no ally can support, resolve the selected single-target attack
-      // immediately. The support-confirmation flow only has work when there
-      // are actual support candidates; otherwise it appears to do nothing.
-      if(!candidates.length){executeEngagement(attacker,defender,skill,[]);return;}
+      // Player selection confirms every ordinary unit attack (even without
+      // support). Other callers keep the existing immediate-no-support path.
+      // A skill requiring pre-engagement mutation has already been handled
+      // above, before this confirmation branch: no UI-level skill exceptions.
+      if(!confirmOrdinaryAttack&&!candidates.length){executeEngagement(attacker,defender,skill,[]);return;}
       ctx.setPendingEngagement({attacker,defender,skill,candidates});
       ctx.setSupportSelection(new Map());
       ctx.setMode("support-select");
-      ctx.pushLog(`可選支援：${candidates.map(x=>x.ally.character.name).join("、")}`);
+      if(candidates.length)ctx.pushLog(`可選支援：${candidates.map(x=>x.ally.character.name).join("、")}`);
       ctx.render();
     }
 
