@@ -321,6 +321,127 @@ export class VisualSurfaceResolver{
       mode:"PUBLISHED_DQ_INTERSECTION"}));
   }
 
+  // Clip Q's footprint analytically against the REAL terrain triangles. The
+  // previous Q solver sampled an implicit wet mask only at terrain vertices;
+  // a narrow channel could miss every vertex, or a broad vertex hit could
+  // fill the rest of a triangle into a square-shaped patch. Neither doubling
+  // the triangle count nor fading its alpha fixes that topology mismatch.
+  // These are pure world-XZ polygon operations, never new hydrology storage.
+  clipQPolygon(poly,edgeA,edgeB,keepInside=true){
+    if(poly.length<3)return[];
+    const side=point=>(edgeB.x-edgeA.x)*(point.z-edgeA.z)-
+      (edgeB.z-edgeA.z)*(point.x-edgeA.x);
+    const output=[];
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length];
+      const da=side(a)*(keepInside?1:-1),db=side(b)*(keepInside?1:-1);
+      const insideA=da>=-EPSILON,insideB=db>=-EPSILON;
+      if(insideA)output.push(a);
+      if(insideA!==insideB){
+        const t=da/(da-db);
+        output.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,
+          z:a.z+(b.z-a.z)*t});
+      }
+    }
+    return output;
+  }
+
+  // The cutter is a convex, counter-clockwise transport corridor. Return
+  // disjoint convex remnants OUTSIDE it. This keeps overlapping incoming and
+  // outgoing Q edges in one watertight surface without double-drawing water.
+  subtractQCorridor(subject,cutter){
+    let remaining=subject;
+    const outside=[];
+    for(let i=0;i<cutter.length&&remaining.length>=3;i++){
+      const a=cutter[i],b=cutter[(i+1)%cutter.length];
+      const fragment=this.clipQPolygon(remaining,a,b,false);
+      if(fragment.length>=3)outside.push(fragment);
+      remaining=this.clipQPolygon(remaining,a,b,true);
+    }
+    return outside;
+  }
+
+  // Reuse transportSurfacePath's published-microterrain route for the SAME
+  // Q surface already owned by presentationWaterSurfaces. Real cliff edges
+  // terminate at their registered lip/foot; terminal river ports terminate
+  // at the published map boundary. No imaginary cross-cliff slope is added.
+  qTransportSegments(tile,ports,all,pathCache){
+    const center={x:Number(tile.x)*TILE_SIZE,z:Number(tile.y)*TILE_SIZE};
+    const minX=(Number(tile.x)-.5)*TILE_SIZE,maxX=(Number(tile.x)+.5)*TILE_SIZE;
+    const minZ=(Number(tile.y)-.5)*TILE_SIZE,maxZ=(Number(tile.y)+.5)*TILE_SIZE;
+    const segments=[];
+    for(const port of ports){
+      const record=port.record;
+      let path;
+      if(port.boundaryExtension||record.cascade){
+        path=[center,{x:port.x,z:port.z}];
+      }else{
+        if(!pathCache.has(record.id)){
+          const from=all.get(record.fromKey),to=all.get(record.toKey);
+          pathCache.set(record.id,from&&to?this.transportSurfacePath({from,to}):[]);
+        }
+        path=pathCache.get(record.id);
+      }
+      if(!path||path.length<2)continue;
+      // Width is derived from the existing 3x3 hydrology cross-section and
+      // recorded edge discharge, bounded by the already-authored riverbank.
+      // This replaces the arbitrary tile-centre radius, not the flow rate.
+      const from=all.get(record.fromKey);
+      const hydraulicWidth=this.transportHalfWidth({from,edgeDischarge:record.q});
+      const width=Math.min(hydraulicWidth,port.width);
+      if(width<=EPSILON)continue;
+      for(let i=1;i<path.length;i++){
+        const a=path[i-1],b=path[i];
+        const dx=b.x-a.x,dz=b.z-a.z,length=Math.hypot(dx,dz);
+        if(length<=EPSILON)continue;
+        if(Math.max(a.x,b.x)+width<minX||Math.min(a.x,b.x)-width>maxX||
+           Math.max(a.z,b.z)+width<minZ||Math.min(a.z,b.z)-width>maxZ)continue;
+        const nx=-dz/length*width,nz=dx/length*width;
+        const polygon=[{x:a.x-nx,z:a.z-nz},{x:b.x-nx,z:b.z-nz},
+          {x:b.x+nx,z:b.z+nz},{x:a.x+nx,z:a.z+nz}];
+        segments.push({a,b,port,width,polygon,
+          minX:Math.min(a.x,b.x)-width,maxX:Math.max(a.x,b.x)+width,
+          minZ:Math.min(a.z,b.z)-width,maxZ:Math.max(a.z,b.z)+width});
+      }
+    }
+    return segments;
+  }
+
+  // Intersect each corridor with the exact published triangular terrain and
+  // subtract previous corridors to form a non-overlapping union. Fan vertices
+  // include a geometric interior point, so a wet path passing between all
+  // terrain-mesh vertices is not mistakenly discarded as dry. There is no
+  // guessed subdivision level, tile quad, alternative surface or alpha trick.
+  clipPublishedQCorridors(triangle,segments,waterAt){
+    const assigned=[],polygons=[];
+    const tMinX=Math.min(...triangle.map(p=>p.x)),tMaxX=Math.max(...triangle.map(p=>p.x));
+    const tMinZ=Math.min(...triangle.map(p=>p.z)),tMaxZ=Math.max(...triangle.map(p=>p.z));
+    for(const corridor of segments){
+      if(tMaxX<corridor.minX-EPSILON||tMinX>corridor.maxX+EPSILON||
+         tMaxZ<corridor.minZ-EPSILON||tMinZ>corridor.maxZ+EPSILON)continue;
+      let pieces=[triangle];
+      for(let i=0;i<corridor.polygon.length;i++){
+        const a=corridor.polygon[i],b=corridor.polygon[(i+1)%corridor.polygon.length];
+        pieces=pieces.map(poly=>this.clipQPolygon(poly,a,b,true)).filter(poly=>poly.length>=3);
+      }
+      for(const prior of assigned)pieces=pieces.flatMap(poly=>this.subtractQCorridor(poly,prior));
+      for(const piece of pieces){
+        const area=Math.abs(piece.reduce((sum,p,i)=>{
+          const n=piece[(i+1)%piece.length];return sum+p.x*n.z-p.z*n.x;
+        },0));
+        if(area<=EPSILON)continue;
+        assigned.push(piece);
+        const middle={x:average(piece.map(p=>p.x)),y:average(piece.map(p=>p.y)),
+          z:average(piece.map(p=>p.z))};
+        for(let i=0;i<piece.length;i++){
+          const polygon=this.clipPublishedWaterTriangle([middle,piece[i],piece[(i+1)%piece.length]],waterAt);
+          if(polygon.length>=3)polygons.push(polygon);
+        }
+      }
+    }
+    return polygons;
+  }
+
   // One presentation solve, one published terrain triangulation, one clipper.
   // Hydraulic rate cannot uniquely determine a free surface. For Q-only we
   // explicitly approximate a shallow moving film. Its spread depends on rate,
@@ -331,6 +452,7 @@ export class VisualSurfaceResolver{
   presentationWaterSurfaces(tiles,network,storedLevelAtWorld,{previous=null,dirtyKeys=null,previousNetwork=null}={}){
     const result=new Map();
     const all=new Map((tiles||[]).map(tile=>[this.keyOf(tile.x,tile.y),tile]));
+    const qPathCache=new Map(); // one published-geometry route per actual Q edge per solve
     const widthFromRate=q=>TILE_SIZE*(.21+.19*clamp01(Math.log1p(q)/Math.log(32)));
     const filmHeight=(q,speed)=>ELEVATION_HEIGHT*(.033+.067*clamp01(Math.log1p(q)/Math.log(32)))
       /Math.sqrt(Math.max(.5,Math.min(2.5,Number(speed)||1)));
@@ -450,41 +572,32 @@ export class VisualSurfaceResolver{
       // connection. Cascade mesh continues to own the vertical rock face.
       if(!stored&&!ports.length)continue;
       const center={x:Number(tile.x)*TILE_SIZE,z:Number(tile.y)*TILE_SIZE};
-      // A real Q transfer may cross a published cliff even when the D free
-      // surface falls below a rugged lip. Preserve D everywhere already wet;
-      // only the actual outgoing cascade corridor gains a shallow transport
-      // film to reach the rock. This is presentation, not stored waterDepth.
-      // D keeps the existing free surface. Only a real river Q corridor (or
-      // registered cascade) can bridge a DRY strip of a stored river tile,
-      // and only where the authored bed remains exposed.
       const transportPorts=stored?ports.filter(port=>port.boundaryExtension||
         (tile.river===true&&port.neighbor?.river===true)||
         (port.record.cascade&&port.record.fromKey===key&&
           this.getRenderedCliffGeometry(tile,{dx:port.dx,dy:port.dz}))):[];
+      const flowSegments=this.qTransportSegments(tile,stored?transportPorts:ports,all,qPathCache);
       const flowFilmAt=(point,wetPorts)=>{
-          let depth=0;
-          for(const port of wetPorts){
-            const vx=port.x-center.x,vz=port.z-center.z,length2=vx*vx+vz*vz;
-            if(length2<=EPSILON)continue;
-            const t=clamp01(((point.x-center.x)*vx+(point.z-center.z)*vz)/length2);
-            const px=center.x+vx*t,pz=center.z+vz*t;
-            const distance=Math.hypot(point.x-px,point.z-pz);
-            const coverage=Math.max(0,1-(distance/port.width)**2);
-            if(coverage<=0)continue;
-            // Prefer the published local channel bed to a raised microbank.
-            // Thus the footprint is an actual wet-terrain intersection, not
-            // a rectangular band simply floating above every terrain ridge.
-            const channelBed=this.publishedSurfacePoint(tile,px,pz)?.y??Number(point.y);
-            const bankRise=Math.max(0,Number(point.y)-channelBed);
-            // A Q-only river cannot visually overrun a real bank. Overtopping
-            // belongs to conserved D, not the transport-film approximation.
-            const bankY=Number(tile.channelBankElevation)*ELEVATION_HEIGHT;
-            if(tile.river===true&&Number.isFinite(bankY)&&
-               bankY>channelBed+EPSILON&&Number(point.y)>bankY+EPSILON)continue;
-            depth=Math.max(depth,port.height*coverage-bankRise);
-          }
-          return Math.max(0,depth);
-        };
+        let depth=0;
+        for(const segment of flowSegments){
+          if(!wetPorts.includes(segment.port))continue;
+          const {a,b,port,width}=segment;
+          const vx=b.x-a.x,vz=b.z-a.z,length2=vx*vx+vz*vz;
+          if(length2<=EPSILON)continue;
+          const t=clamp01(((point.x-a.x)*vx+(point.z-a.z)*vz)/length2);
+          const px=a.x+vx*t,pz=a.z+vz*t;
+          const distance=Math.hypot(point.x-px,point.z-pz);
+          const coverage=Math.max(0,1-(distance/width)**2);
+          if(coverage<=0)continue;
+          const channelBed=this.publishedSurfacePoint(tile,px,pz)?.y??Number(point.y);
+          const bankRise=Math.max(0,Number(point.y)-channelBed);
+          const bankY=Number(tile.channelBankElevation)*ELEVATION_HEIGHT;
+          if(tile.river===true&&Number.isFinite(bankY)&&
+             bankY>channelBed+EPSILON&&Number(point.y)>bankY+EPSILON)continue;
+          depth=Math.max(depth,port.height*coverage-bankRise);
+        }
+        return Math.max(0,depth);
+      };
       const waterAt=stored
         ?point=>{
           const dWaterY=Number(storedLevelAtWorld(tile,point.x,point.z))*ELEVATION_HEIGHT;
@@ -589,21 +702,21 @@ export class VisualSurfaceResolver{
       }
       const polygons=[];
       let wetArea=0,maxDepth=0,clippedPoints=0;
-      // The published terrain has only 18 triangles per tile. A narrow Q
-      // channel can pass BETWEEN all of a triangle's original vertices;
-      // vertex-only clipping then marks a visibly flowing segment as dry.
-      // Sample its existing triangle planes at edge midpoints (not a new
-      // terrain approximation). D-only surfaces keep their exact old mesh.
-      const refine=!stored||transportPorts.length>0;
+      // Stored D preserves its exact published-waterline clipping. Q is cut
+      // by its true terrain-routed corridor; no midpoint sampling or guessed
+      // multi-level refinement of square tiles can broaden its footprint.
+      const refine=stored&&transportPorts.length>0;
       const mid=(a,b)=>({x:(a.x+b.x)*.5,y:(a.y+b.y)*.5,z:(a.z+b.z)*.5});
       for(let i=0;i<geometry.triangles.length;i++){
         const triangle=geometry.triangles[i];
-        const triangles=refine?(()=>{
-          const [a,b,c]=triangle,ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);
-          return[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]];
-        })():[triangle];
-        for(const part of triangles){
-          const polygon=this.clipPublishedWaterTriangle(part,waterAt);
+        const triangles=stored
+          ?refine?(()=>{const[a,b,c]=triangle,ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);
+            return[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]];})():[triangle]
+          :[];
+        const clipped=stored
+          ?triangles.map(part=>this.clipPublishedWaterTriangle(part,waterAt))
+          :this.clipPublishedQCorridors(triangle,flowSegments,waterAt);
+        for(const polygon of clipped){
           if(polygon.length<3)continue;
           polygon.triangleIndex=i;
           polygons.push(polygon);

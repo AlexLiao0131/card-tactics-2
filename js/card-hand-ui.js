@@ -141,7 +141,7 @@ function heroDetailedInformation(card,{unit=null}={}){
   const skills=ids.map(id=>{try{return globalThis.SkillDatabase?.get?.(id)||{id,name:id}}catch(_error){return{id,name:id}}});
   const skillList=skills.map(s=>`<li class="hero-info-skill"><details><summary>${esc(s.name||s.id)}<span>${esc(s.category||"SKILL")}</span></summary>${skillExplanation(s,{resourceRules:c.resourceRules||{}})}</details></li>`).join("");
   const resourceRules=heroExtraResources(c);
-  const resourceBasics=resourceRules.map(rule=>`<div class="hero-info-value hero-info-resource"><span>${esc(rule.label)}</span><strong>${esc(rule.initial)}/${esc(rule.max)}</strong></div>`).join("");
+  const resourceBasics=resourceRules.map(rule=>`<div class="hero-info-value hero-info-resource" data-resource="${esc(rule.id)}"><span>${esc(rule.label)}</span><strong>${esc(rule.initial)}/${esc(rule.max)}</strong></div>`).join("");
   const resourceGuides=resourceRules.map(rule=>{
     const lines=[`初始 ${rule.initial}／上限 ${rule.max}`];
     lines.push(rule.naturalRecovery===0?"每回合不會自然恢復":`每回合自然恢復 ${rule.naturalRecovery}`);
@@ -150,7 +150,7 @@ function heroDetailedInformation(card,{unit=null}={}){
     if(Number.isFinite(cap)&&cap>0)lines.push(`此資源越低，魔法技能威力加成最高 ${Math.round(cap*100)}%`);
     return `<li><strong>${esc(rule.label)}</strong><small>${esc(lines.join("；"))}</small></li>`;
   }).join("");
-  const resources=unit?Object.entries(unit.resources||{}).map(([key,resource])=>`<div class="hero-info-value"><span>${esc(resource.label||key.toUpperCase())}</span><strong>${esc(resource.value??0)}/${esc(resource.max??0)}</strong></div>`).join(""):"";
+  const resources=unit?Object.entries(unit.resources||{}).map(([key,resource])=>`<div class="hero-info-value hero-info-resource" data-resource="${esc(key)}"><span>${esc(resource.label||key.toUpperCase())}</span><strong>${esc(resource.value??0)}/${esc(resource.max??0)}</strong></div>`).join(""):"";
   const liveInfo=unit?`<h4>戰場即時狀態</h4><div class="hero-info-value-list"><div class="hero-info-value"><span>目前 HP</span><strong>${esc(unit.hp)}/${esc(combat.hp??unit.hp)}</strong></div><div class="hero-info-value"><span>目前 MP</span><strong>${esc(unit.mana??0)}/${esc(unit.maxMana??0)}</strong></div>${resources}</div><p class="hero-info-action">${esc(unit.acted?(unit.waited?"已待機":"已完成主動行動"):unit.moved?"已移動／尚可行動":"尚未行動")}｜位置（${esc(unit.x)}, ${esc(unit.y)}）</p>`:"";
   const cost=card.cost==null?"":`<div class="hero-info-value"><span>水晶</span><strong>${esc(card.cost)}</strong></div>`;
   const introduction=c.lore?.introduction||c.lore?.summary||c.lore?.notes||m.introduction;
@@ -191,7 +191,7 @@ export function heroCardFace(card,{variant="hand"}={}){
   if(!isHeroCard(card))return"";
   const model=heroDisplay(card),src=esc(model.artwork),name=esc(card.name);
   const icon=heroRoleIcon(model.character?.archetype);
-  const resourceLine=model.extraResources.map(resource=>`<span class="hero-card__resource" title="${esc(resource.label)} 初始值">${esc(resource.label)} ${esc(resource.initial)}/${esc(resource.max)}</span>`).join("");
+  const resourceLine=model.extraResources.map(resource=>`<span class="hero-card__resource" data-resource="${esc(resource.id)}" title="${esc(resource.label)} 初始值">${esc(resource.label)} ${esc(resource.initial)}/${esc(resource.max)}</span>`).join("");
   return `<span class="hero-card hero-card--${esc(variant)}${resourceLine?" hero-card--has-resources":""}" data-hero-card="${esc(card.id)}" aria-label="${name}，消耗 ${esc(card.cost)} 水晶，HP ${esc(model.hp)}，MP ${esc(model.mp)}">
     <span class="hero-card__background" aria-hidden="true"></span>
     <span class="hero-card__art"><span class="hero-card__missing">立繪待上傳</span><img class="hero-card__figure" src="${src}" alt="" draggable="false" loading="lazy"></span>
