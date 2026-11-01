@@ -57,14 +57,12 @@ try{
   const runtime=globalThis.CardTacticsRuntime;
   if(!runtime)throw new Error("CardTacticsRuntime failed to initialize.");
 
-  loadingStep="BabylonRenderer";
-  const renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),{onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
-  globalThis.CardTacticsRenderer=renderer;
-
-  const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
+  // Non-battle screens must not initialize WebGL, shadows, water geometry or
+  // battlefield presentation. The first battle entry owns that lifecycle.
+  let renderer=null;
   const cardUI=new CardHandUI();cardUI.bind(runtime);
-  const shell=new ShellUI(runtime,renderer);shell.bind();
-  const unitControlUI=new UnitControlUI();unitControlUI.bind(runtime);
+  const shell=new ShellUI(runtime,null);
+  const unitControlUI=new UnitControlUI();
 
   loadingStep="battle-test-console.js";
   await load("./battle-test-console.js");
@@ -72,7 +70,7 @@ try{
   // One presentation publication owner, one snapshot per Babylon draw.
   // Game events only invalidate the presentation. Existing gameplay and
   // animation events keep their original sequence and are never throttled.
-  let presentationDirty=true,lastObservedSnapshot=renderer.lastState;
+  let presentationDirty=true,lastObservedSnapshot=null;
   let signalsPending=0;
   const presentationStats={signals:0,commits:0,snapshots:0,coalescedSignals:0,
     lastSnapshotMs:0,lastAnimationMs:0,lastUiMs:0,lastSignalsPerCommit:0};
@@ -153,17 +151,42 @@ try{
     presentationStats.signals++;
     signalsPending++;
     presentationDirty=true;
-    renderer.presentationFrameSync=publishFrame;
+    if(renderer)renderer.presentationFrameSync=publishFrame;
   }
 
   window.addEventListener("cardtactics:battle-render",invalidatePresentation);
   window.addEventListener("cardtactics:state",invalidatePresentation);
   window.addEventListener("cardtactics:battle-screen-enter",()=>{
+    if(!renderer){
+      // Instantiate the original renderer exactly once, in the existing
+      // battle-screen lifecycle. All official UI classes retain their owners.
+      try{
+        loadingStep="BabylonRenderer";
+        renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),
+          {onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
+        globalThis.CardTacticsRenderer=renderer;
+        shell.renderer=renderer;
+        const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
+        unitControlUI.bind(runtime);
+      }catch(error){
+        const message=String(error?.message||error);
+        bootStatus.textContent=`啟動失敗｜${loadingStep}｜${message}`;
+        bootStatus.style.color="#ff9b9b";
+        shell.show("bootScreen");
+        globalThis.CardTacticsDiagnostics?.push?.("BOOT_FAILURE",
+          {step:loadingStep,name:error?.name||"Error",message});
+        console.error("Card Tactics battle startup failed",error);
+        return;
+      }
+    }
     renderer.resize();
     invalidatePresentation();
   });
-  // Initial publication uses the same owner, without another RAF loop.
-  publishFrame();
+  // Wire screen events before exposing the title screen to clicks. The first
+  // battle creates WebGL only when the already-registered event fires.
+  loadingStep="shell-ui";
+  shell.bind();
+  // Before the first battle, there is no scene and nothing to publish.
   // Next updates are consumed by Babylon just before its scene render.
 }catch(error){
   const name=error?.name||"Error",message=error?.message||String(error);

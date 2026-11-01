@@ -168,6 +168,10 @@ export class BabylonRenderer{
       renderTotal:0,renderPeak:0,shadowTotal:0,shadowPeak:0};
     this.lastDrawCallsCounter=null;
     this.engine.runRenderLoop(()=>{
+      // This same renderer only draws when the battle screen is active.
+      // Title, deck preparation and other menu screens have no scene rendering,
+      // GPU uploads or animation updates, including after returning from battle.
+      if(!this.canvas.parentElement?.classList.contains("active"))return;
       const frameStart=performance.now();
       // The one Babylon render clock also owns snapshot -> scene publication.
       // This prevents a separate UI requestAnimationFrame from drawing stale

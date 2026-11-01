@@ -6,7 +6,12 @@ export class ShellUI{
     this.deckReturn="menuScreen";this.deckCanDeploy=false;this.activeShopPack=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})?.[0]?.id||null;
     this.shopMode="PACK";this.geminiWanted=false;this.startingBattle=false;this.prepSelectedKey=null;this.cardInspector=null;this.cardInspectorOrigin=null;
   }
-  show(id){if(id!=="deckScreen"&&id!=="shopScreen")this.closeCardPreview({restoreFocus:false});this.screens.forEach(s=>s.classList.toggle("active",s.id===id));if(id==="battleScreen")requestAnimationFrame(()=>{this.renderer.resize();this.renderer.resetView();window.dispatchEvent(new CustomEvent("cardtactics:battle-screen-enter"))});}
+  show(id){if(id!=="deckScreen"&&id!=="shopScreen")this.closeCardPreview({restoreFocus:false});this.screens.forEach(s=>s.classList.toggle("active",s.id===id));if(id==="battleScreen")requestAnimationFrame(()=>{
+      if(!$("battleScreen")?.classList.contains("active"))return;
+      // Scene startup is lazy; the registered event creates it on first entry.
+      if(this.renderer){this.renderer.resize();this.renderer.resetView();}
+      window.dispatchEvent(new CustomEvent("cardtactics:battle-screen-enter"));
+    });}
   validDeck(){const result=globalThis.DeckEngine.validate(this.deck);if(!result.valid){alert(result.errors.join("\n"));return false;}return true;}
   bind(){
     globalThis.CardTacticsHeroCard?.ensureStyles?.();
