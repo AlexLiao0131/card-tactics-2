@@ -114,6 +114,7 @@
 .unit-float-physical-critical{color:#ffffff;font-size:28px;letter-spacing:.8px}
 .unit-float-magic-critical{color:#ffe35b;font-size:28px;letter-spacing:.8px}
 .unit-float-heal{color:#56ed86}
+.unit-float-heal-critical{color:#56ed86;font-size:28px;letter-spacing:.8px}
 .unit-float-status{color:#ffca78;font-size:15px}
 @media(max-width:700px){
  .unit-hud:not([hidden]){width:165px;gap:6px}
@@ -167,7 +168,7 @@
   .unit-hud-orb{flex-basis:16px;width:16px;height:16px}
   .unit-hud-mana-row{font-size:10px}
   .unit-hud-status{flex-basis:14px;width:14px;height:14px;font-size:11px}
-  .unit-float-critical,.unit-float-physical-critical,.unit-float-magic-critical{font-size:25px}
+  .unit-float-critical,.unit-float-physical-critical,.unit-float-magic-critical,.unit-float-heal-critical{font-size:25px}
 }
 
 /* Resolved tactical outcomes and DOT ticks share the transient float owner. */
