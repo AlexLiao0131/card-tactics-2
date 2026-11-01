@@ -174,8 +174,8 @@ export const BattleResolution=(()=>{
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
       const hallucinationHit=action.target?.hallucination===true&&baseResult.hit;
       const hpBefore=Math.max(0,Number(action.target.hp||0));
-      const shield=hallucinationHit?globalThis.EffectEngine?.applyDamage(action.target,hpBefore,{source:action.actor}):
-        globalThis.EffectEngine?.applyDamage?.(action.target,baseResult.damage,{source:action.actor})||{damage:0,absorbed:0,shieldHp:0};
+      const shield=hallucinationHit?globalThis.EffectEngine?.applyDamage(action.target,hpBefore,{source:action.actor,damageType:baseResult.type==="MAGIC"?"MAGIC":"PHYSICAL"}):
+        globalThis.EffectEngine?.applyDamage?.(action.target,baseResult.damage,{source:action.actor,damageType:baseResult.type==="MAGIC"?"MAGIC":"PHYSICAL"})||{damage:0,absorbed:0,shieldHp:0};
       const result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
       const components=splitActualHpLoss(baseResult,hpBefore-action.target.hp);
       result.physicalHpDamage=components.physical;
@@ -207,7 +207,9 @@ export const BattleResolution=(()=>{
       if(action.actor.alive&&globalThis.EffectEngine){
         for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
       }
-      const e={...action,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp};
+      const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
+      if(refund>0)globalThis.CardTacticsDiagnostics?.push?.("SAINT_CRIT_REFUND",{unitId:action.actor.id,skillId:skill.id,refunded:refund});
+      const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp};
       e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);bloodRuntime?.endBloodTransaction?.(action.actor);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};

@@ -23,6 +23,72 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   let hallucinationSession=null;
   const pendingHallucinations=new Map();
   let hallucinationSerial=0;
+  let sanctuaries=[],sanctuarySerial=0;
+  const sanctuaryKey=(x,y)=>`${x},${y}`;
+  function sanctuaryTiles(center,radius){
+    const origin=TacticalEngine.tile(map,center.x,center.y);
+    if(!origin||origin.terrain==="WALL")return[];
+    const limit=Math.max(0,Number(radius||0)),seen=new Set([sanctuaryKey(origin.x,origin.y)]),queue=[origin],result=[];
+    for(let i=0;i<queue.length;i++){
+      const current=queue[i],distance=Math.abs(current.x-origin.x)+Math.abs(current.y-origin.y);
+      if(distance>limit)continue;
+      result.push(current);
+      if(distance===limit)continue;
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const next=TacticalEngine.tile(map,current.x+dx,current.y+dy);
+        if(!next||next.terrain==="WALL")continue;
+        const key=sanctuaryKey(next.x,next.y);
+        if(seen.has(key)||Math.abs(next.x-origin.x)+Math.abs(next.y-origin.y)>limit)continue;
+        // Use authoritative terrain elevation, never a screen-space mesh height.
+        // A discontinuity of more than one terrain level is a blocking cliff.
+        if(Math.abs(TacticalEngine.elevation(current)-TacticalEngine.elevation(next))>1)continue;
+        seen.add(key);queue.push(next);
+      }
+    }
+    return result;
+  }
+  function sanctuaryProtects(unit){
+    if(!unit?.alive)return false;
+    const key=sanctuaryKey(unit.x,unit.y);
+    return sanctuaries.some(field=>field.mode==="HEALING"&&field.team===unit.team&&field.cells.has(key));
+  }
+  function pulseSanctuary(field){
+    const skill=SkillDatabase.get(field.skillId),source=units.find(unit=>unit.id===field.casterId)||null;
+    for(const unit of units){
+      if(!unit.alive||!field.cells.has(sanctuaryKey(unit.x,unit.y)))continue;
+      if(field.mode==="HEALING"&&unit.team===field.team){
+        const healed=EffectEngine.saintHealing({source,target:unit,amount:skill.sanctuary.healing.amount}).amount;
+        const dispelled=EffectEngine.apply({source,target:unit,effect:{type:"DISPEL",classification:"POSITIVE"}}).removed||0;
+        pushLog(`聖域・庇護 → ${unit.character.name}｜治療 ${healed}、淨化 ${dispelled}。`,"BATTLE");
+      }else if(field.mode==="PUNISHMENT"&&unit.team!==field.team){
+        const judgement=skill.sanctuary.punishment;
+        const outcome=EffectEngine.apply({source,target:unit,effect:{type:"MAGIC_DAMAGE",amount:judgement.amount,element:judgement.element,traitMultipliers:judgement.traitMultipliers}});
+        pushLog(`聖域・懲戒 → ${unit.character.name}｜${outcome.amount||0} 神聖傷害。`,"BATTLE");
+        if(unit.hp<=0){unit.alive=false;handleDefeated(unit,source,skill);}
+      }
+    }
+  }
+  function activateSanctuary(caster,center,skill,mode){
+    const covered=sanctuaryTiles(center,skill.radius);
+    if(!covered.length)return null;
+    const field={id:`saint-sanctuary-${++sanctuarySerial}`,casterId:caster.id,team:caster.team,
+      skillId:skill.id,mode,center:{x:center.x,y:center.y},cells:new Set(covered.map(t=>sanctuaryKey(t.x,t.y))),
+      nextRound:round+1,ticksRemaining:skill.sanctuary.duration-1,expiresRound:round+skill.sanctuary.duration};
+    sanctuaries.push(field);pulseSanctuary(field);
+    pushLog(`${caster.character.name} 放出${mode==="HEALING"?"庇護":"懲戒"}聖域｜中心 (${center.x},${center.y})｜範圍 ${covered.length} 格｜剩下 ${field.ticksRemaining} 次。`,"BATTLE");
+    return field;
+  }
+  function tickSanctuaries(team){
+    const active=[];
+    for(const field of sanctuaries){
+      if(field.team===team&&round>=field.expiresRound)continue;
+      if(field.team===team&&field.ticksRemaining>0&&round>=field.nextRound){
+        pulseSanctuary(field);field.ticksRemaining--;field.nextRound=round+1;
+      }
+      active.push(field);
+    }
+    sanctuaries=active;
+  }
 
   // Gemini is opt-in, with a user-entered bearer token kept only in this page's
   // runtime memory. Never commit secrets into GitHub Pages, localStorage, or logs.
@@ -429,6 +495,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
 
   function resetBattle(){
     debugEnvironmentSteps=0;
+    sanctuaries=[];sanctuarySerial=0;
     enemyController?.reset?.();actionController?.reset?.();hallucinationSession=null;pendingHallucinations.clear();
     globalThis.ItemInventoryEngine?.beginBattle?.(window.CardTacticsBattleSetup?.itemLoadouts||{});
     const requestedStageId=window.CardTacticsBattleSetup?.stageId||"prototype_battle";
@@ -479,15 +546,16 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     // delivered rainfall pulse can cool BURN before it inflicts its next tick.
     if(environmentState){applyEnvironmentHazards({reason:"回合開始仍處於燃燒區"});if(checkMatchEnd()){render();return;}}
     if(window.EffectEngine)units.filter(u=>u.alive).forEach(u=>EffectEngine.tick(u,{units}));
+    tickSanctuaries(TEAM.PLAYER);
     stageEvent({type:"ROUND_START",round,team:"PLAYER"});
     if(environmentState){EnvironmentEngine.tick(environmentState);resolveWeatherEvents();if(checkMatchEnd()){render();return;}}
     beginHallucinationTurn(TEAM.PLAYER);cardPhaseController.begin();}
-  function createBattleContext(){return{geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
-  function runEnemyPhase(){beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
+  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function runEnemyPhase(){tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
   function endPlayerTurn({automatic=false}={}){if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
   function finishUnit(unit,reason,{waited=false}={}){unit.moved=true;unit.acted=true;unit.waited=waited;selectedSkill=null;clearEngagement();mode="inspect";pushLog(`${unit.character.name} ${reason}`);maybeAutoEndPlayerTurn();}
-  function logBattleAction(entry){const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
+  function logBattleAction(entry){const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}if(entry.refundedMana>0)pushLog(`${actor.character.name}｜聖痕・暴擊返還 ${entry.refundedMana} MP。`,"BATTLE");environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
   function executeEnemyAttack(reaction=null,interception=null){if(!pendingEnemyAttack)return;const {attacker,defender,skill}=pendingEnemyAttack;const guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:null;if(guardian)pushLog(`${guardian.character.name} 援護 ${defender.character.name}，承接 ${attacker.character.name} 的攻擊。`,"BATTLE");BattleResolution.resolve({map,units,initiator:attacker,target:defender,skill,actions:[],reaction,interception},{canUseSkill,consumeSkill,onDefeated:handleDefeated,onAction:logBattleAction,onPostEffect:logPostEffect});attacker.moved=true;attacker.acted=true;attacker.waited=true;clearEnemyReaction();mode="idle";if(checkMatchEnd()){render();return;}render();enemyController?.continuePhase();}
   function guardCandidates(){if(!pendingEnemyAttack)return[];const {defender}=pendingEnemyAttack;return BattleResolution.guardCandidates({map,units,target:defender});}
   function chooseGuardian(guardian){selectedGuardian=guardian;selectedGuardInterception=null;pendingReactionType=null;mode="enemy-guard-reaction";render();}
@@ -967,7 +1035,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   function debugSpawnCharacterCard(cardId,owner="ENEMY",x=0,y=0){const card=CardDatabase.get(cardId);if(!CardDatabase.isCharacter(card))return false;x=Number(x);y=Number(y);const tile=TacticalEngine.tile(map,x,y);if(!tile||unitAt(x,y))return false;const requested=String(owner).toUpperCase(),team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;const prefix=team===TEAM.PLAYER?"tp":team===TEAM.NEUTRAL?"tn":"te";let id;do{id=`${prefix}${unitSerial++}`;}while(units.some(unit=>unit.id===id));const unit=UnitRuntimeEngine.createFromCard({id,team,card,x,y,map});if(!unit)return false;unit.cardId=card.id;unit.deployedRound=round;unit.moved=false;unit.acted=false;unit.waited=false;units.push(unit);onUnitCreated(unit);applyEnvironmentHazardToUnit(unit,{reason:"Battle Test Console 生成",waterTrigger:"ENTER"});pushLog(`TEST｜${team===TEAM.PLAYER?"我方":team===TEAM.NEUTRAL?"中立":"敵方"}生成「${card.name}」於 (${x},${y})。`,"SYSTEM");return debugEmit();}
   function debugMoveUnit(unitId,x,y){const unit=units.find(candidate=>candidate.id===unitId&&candidate.alive);x=Number(x);y=Number(y);const tile=TacticalEngine.tile(map,x,y),occupant=unitAt(x,y);if(!unit||!tile||(occupant&&occupant.id!==unit.id))return false;unit.x=x;unit.y=y;if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);else unit.z=Number(TacticalEngine.elevation(tile)||0);pushLog(`TEST｜${unit.character.name} 移動至 (${x},${y})。`,"SYSTEM");return debugEmit();}
   function debugState(){return{moonlight:environmentState?.moonlight||"PARTIAL",timeOfDay:environmentState?.timeOfDay||"DAY",weather:environmentState?.weather||"CLEAR",weatherTurnsRemaining:environmentState?.weatherTurnsRemaining??null,climate:globalThis.EnvironmentEngine?.climateSnapshot?.(environmentState)??null,environmentSteps:debugEnvironmentSteps,round,wind:globalThis.EnvironmentEngine?.climateSnapshot?.(environmentState)?.wind||null,map:{width:map?.width||0,height:map?.height||0},units:(units||[]).filter(unit=>unit.alive).map(unit=>({id:unit.id,name:unit.character?.name||unit.id,team:unit.team,x:unit.x,y:unit.y,z:unit.z,stealthed:!!globalThis.EffectEngine?.isStealthed?.(unit),items:globalThis.ItemRuntimeEngine?.list?.(unit).map(entry=>entry.item.id)||[]}))};}
-  window.CardTacticsRuntime={getCardState:()=>cardState,getEnchantmentSelection:()=>{
+  window.CardTacticsRuntime={sanctuaryProtects,getSanctuaries:()=>sanctuaries.map(f=>({id:f.id,center:{...f.center},mode:f.mode,team:f.team,ticksRemaining:f.ticksRemaining})),getCardState:()=>cardState,getEnchantmentSelection:()=>{
     const pending=actionController?.enchantmentSelection?.();
     return pending?{casterId:pending.attacker.id,focusedRecipientId:focusedEnchantRecipientId,
       candidates:enchantRecipientGroups(pending).map(({target,weapons})=>({unitId:target.id,...enchantIdentity(target),

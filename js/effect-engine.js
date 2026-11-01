@@ -10,6 +10,19 @@ export const EffectEngine=(()=>{
   }
   function maxHp(unit){return Math.max(1,Number(unit?.character?.combat?.hp||unit?.hp||1));}
   function heal(unit,amount){const before=unit.hp;unit.hp=Math.min(maxHp(unit),unit.hp+Math.max(0,Math.round(Number(amount||0))));return unit.hp-before;}
+  function saintHealing({source,target,amount,overflowShield=null,skill=null,critical=false}={}){
+    const requested=Math.max(0,Math.round(Number(amount||0)*(critical?1.5:1)));
+    const restored=heal(target,requested),overheal=Math.max(0,requested-restored);
+    if(restored&&source?.alive)globalThis.UnitRuntimeEngine?.changeFaith?.(source,restored);
+    let shieldGranted=0;
+    if(overheal&&overflowShield){
+      const existing=state(target).find(e=>e.type==="SHIELD"&&e.id===overflowShield.id);
+      if(existing){if(overheal>Number(existing.shieldHp||0)){existing.shieldHp=overheal;existing.maxShieldHp=Math.max(Number(existing.maxShieldHp||0),overheal);shieldGranted=overheal;} }
+      else {addEffect(target,{type:"SHIELD",id:overflowShield.id,name:overflowShield.name,classification:"POSITIVE",shieldHp:overheal,maxShieldHp:overheal,overhealSourceId:source?.id||null,overhealAbsorbed:0,overhealShield:true},source);shieldGranted=overheal;}
+    }
+    if(restored)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(target,restored);
+    return{applied:true,type:"HEAL",amount:restored,requested,overheal,shieldGranted,critical};
+  }
   function hasEffect(unit,id){return state(unit).some(effect=>effect.id===id||effect.type===id)}
   function shieldHp(unit){return state(unit).filter(effect=>effect.type==="SHIELD").reduce((sum,effect)=>sum+Math.max(0,Number(effect.shieldHp||0)),0)}
   // The single HP-loss result owns shield absorption and blood gain. Presentation must never create damage twice.
@@ -17,9 +30,16 @@ export const EffectEngine=(()=>{
     let remaining=Math.max(0,Math.round(Number(amount||0))),absorbed=0,bloodAbsorbed=0;
     if(!unit||remaining<=0)return{damage:remaining,absorbed,bloodAbsorbed,shieldHp:shieldHp(unit)};
     for(const effect of state(unit)){
-      if(effect.type!=="SHIELD"||remaining<=0)continue;
+      if(effect.type!=="SHIELD"||remaining<=0||(kind==="INTERNAL"&&effect.overhealShield))continue;
       const available=Math.max(0,Number(effect.shieldHp||0));if(available<=0)continue;
       const blocked=Math.min(available,remaining);effect.shieldHp=available-blocked;remaining-=blocked;absorbed+=blocked;
+      if(effect.overhealShield){
+        effect.overhealAbsorbed=Number(effect.overhealAbsorbed||0)+blocked;
+        if(effect.shieldHp<=0){
+          const caster=globalThis.UnitRuntimeEngine?.getLiveUnit?.(effect.overhealSourceId||effect.sourceUnitId);
+          if(caster)UnitRuntimeEngine.changeFaith(caster,effect.overhealAbsorbed);
+        }
+      }
     }
     unit.effects=state(unit).filter(effect=>effect.type!=="SHIELD"||Number(effect.shieldHp||0)>0);
     const runtime=globalThis.UnitRuntimeEngine;
@@ -29,12 +49,15 @@ export const EffectEngine=(()=>{
     }
     return{damage:remaining,absorbed,bloodAbsorbed,shieldHp:shieldHp(unit)};
   }
-  function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT"}={}){
+  function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT",damageType="PHYSICAL"}={}){
     const hpBefore=Math.max(0,Number(target?.hp||0));
     if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
+    if(damageType==="MAGIC"&&kind!=="INTERNAL"&&globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))
+      return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),sanctuaryImmune:true};
     const shield=resolveIncomingDamage(target,amount,{kind});
     target.hp=Math.max(0,hpBefore-shield.damage);
     const hpLoss=hpBefore-target.hp;
+    if(hpLoss&&source?.alive&&source.team!==target.team)globalThis.UnitRuntimeEngine?.changeFaith?.(source,-hpLoss);
     if(source?.alive&&source.team!==target.team&&globalThis.UnitRuntimeEngine?.bloodUser?.(source)&&hpLoss>0){
       const credit=charge==="BLEED"?hpLoss/2:charge==="DIRECT"?hpLoss:0;
       if(credit>0)UnitRuntimeEngine.changeBlood(source,credit);
@@ -97,6 +120,7 @@ export const EffectEngine=(()=>{
   }
   function consumeNegativeEffectGuard(target,effect){
     if(effect?.classification!=="NEGATIVE"||["DAMAGE","MAGIC_DAMAGE","DRAIN"].includes(effect?.type))return null;
+    if(globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))return{id:"SAINT_SANCTUARY_WARD",name:"聖域・庇護"};
     const guard=state(target).find(e=>e.classification==="POSITIVE"&&Number(e?.negativeEffectGuard?.charges||0)>0);
     if(!guard)return null;
     guard.negativeEffectGuard.charges=Math.max(0,Number(guard.negativeEffectGuard.charges||0)-1);
@@ -196,7 +220,14 @@ export const EffectEngine=(()=>{
       if(!effect.weaponSlot||!["FIRE","THUNDER"].includes(effect.element)||!Number.isFinite(effect.matkSnapshot)||!Number.isFinite(effect.bonusPower))return{applied:false,reason:"INVALID_WEAPON_ENCHANT"};
       return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     }
-    if(effect.type==="HEAL")return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
+    if(effect.type==="HEAL"){
+      if(effect.saintHealing){
+        const critical=!!source?.character?.passives?.includes("STIGMATA")&&
+          Math.random()*100<BattleEngine.critChance(source.character,SkillDatabase.get("saint_hero_heal"));
+        return saintHealing({source,target,amount:effect.amount,overflowShield:effect.overflowShield,critical});
+      }
+      return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
+    }
     if(effect.type==="HEALING_CHANNEL"){
       if(!effect.id||!Number.isFinite(Number(effect.radius))||!Number.isFinite(Number(effect.amount))||!Number.isFinite(Number(effect.duration))||effect.duration<1)return{applied:false,reason:"INVALID_CHANNEL"};
       return{applied:true,type:effect.type,effect:addEffect(target,{...effect,classification:"POSITIVE"},source)};
@@ -207,7 +238,7 @@ export const EffectEngine=(()=>{
       return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
     }
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
-    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
+    if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="DRAIN"){
@@ -337,6 +368,6 @@ export const EffectEngine=(()=>{
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

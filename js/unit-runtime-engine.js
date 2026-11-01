@@ -85,6 +85,21 @@ export const UnitRuntimeEngine=(()=>{
     return {...skill,manaCost:0,resourceCosts:{blood:bloodMemoryCost(skill)},_bloodMemory:true,
       description:`【血術重現】原技能消耗合計 ${bloodMemoryCost(skill)} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
   }
+  const faithUser=unit=>!!unit?.character?.resourceRules?.faith;
+  function faithValue(unit){syncResources(unit);return faithUser(unit)?Number(unit.resources.faith.value):null;}
+  function changeFaith(unit,delta){
+    if(!faithUser(unit)||!Number.isFinite(Number(delta)))return 0;
+    syncResources(unit);const resource=unit.resources.faith,before=resource.value;
+    resource.value=Math.max(0,Math.min(resource.max,before+Number(delta)));
+    return resource.value-before;
+  }
+  function criticalManaRefund(unit,skill,spent,critical){
+    if(!critical||!spent||!unit?.alive)return 0;
+    const rule=SkillDatabase.passiveList(unit.character?.passives||[]).map(p=>p.criticalManaRefund)
+      .find(r=>r?.skillIds?.includes(skill?.id));
+    if(!rule)return 0;
+    return restoreMana(unit,Number(spent.cost||0)*Number(rule.ratio||0));
+  }
   function createSkillResources(){return{}}
   // Initial deployment uses the stage's actual opposing Core, not a fixed
   // compass direction. The tactical facing state remains the sole authority:
@@ -147,15 +162,21 @@ export const UnitRuntimeEngine=(()=>{
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){
     skill=skillForUnit(unit,skill);
+    if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);
     const extras=resourceCosts(skill);
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill){
+    if(skill?.sanctuary){
+      const value=faithValue(unit),maximum=unit?.resources?.faith?.max;
+      if(value===null||(value!==0&&value!==maximum))return false;
+    }
     if(isBloodMemory(unit,skill)&&!unit._bloodAwakened)return false;
     skill=skillForUnit(unit,skill);
     if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits()).length)return false;
     if(skill?.approach&&unit?.moved)return false;
+    if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const req=skill?.requirements||{};
     if(req.carrying===true&&!unit?.carryingUnitId)return false;
     if(req.notCarrying===true&&!!unit?.carryingUnitId)return false;
@@ -169,12 +190,14 @@ export const UnitRuntimeEngine=(()=>{
   function consumeSkill(unit,skill){
     if(!canUseSkill(unit,skill))return null;
     skill=skillForUnit(unit,skill);
+    if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const mana=manaCost(skill);unit.mana=Math.max(0,unit.mana-mana);
     const spent={};for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){
     skill=skillForUnit(unit,skill);
+    if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);const labels=[],mana=manaCost(skill);if(mana>0)labels.push(`MP ${mana}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
@@ -223,6 +246,6 @@ export const UnitRuntimeEngine=(()=>{
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({knownUnits,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

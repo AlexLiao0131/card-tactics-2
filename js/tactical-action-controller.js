@@ -752,6 +752,20 @@
       const {map,environmentState}=state();
       if(skill?.terrainTargeting)return executeEnchantedTerrainAttack(attacker,center,skill);
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
+      if(skill?.sanctuary){
+        const faith=UnitRuntimeEngine.faithValue(attacker),max=attacker.resources?.faith?.max;
+        if(!ctx.canUseSkill(attacker,skill)||faith===null||(faith!==0&&faith!==max))return skillFailure(attacker,skill,"FAITH_NOT_AT_EXTREME",center);
+        if(!ctx.sanctuaryTiles(center,skill.radius).length)return skillFailure(attacker,skill,"SANCTUARY_BLOCKED",center);
+        const mode=faith===max?"HEALING":"PUNISHMENT";
+        const spent=ctx.consumeSkill(attacker,skill);
+        if(!spent)return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+        EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+        TacticalEngine.faceToward(attacker,center);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+        ctx.activateSanctuary(attacker,center,skill,mode);
+        if(mode==="HEALING")UnitRuntimeEngine.changeFaith(attacker,max/2-UnitRuntimeEngine.faithValue(attacker));
+        return finishActiveSkill(attacker);
+      }
       const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
@@ -788,7 +802,7 @@
           }
           result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker});
+          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
           const hpLoss=hpBefore-occupant.hp;
           if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
@@ -806,7 +820,7 @@
           const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
           result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker});
+          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
           const hpLoss=hpBefore-occupant.hp;
           if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss)});
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
@@ -911,7 +925,7 @@
 
     function logAppliedEffect(skill,target,effect,result){
       if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");return;}
-      if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} HP｜HP ${target.hp}。`,"BATTLE");
+      if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜${result.critical?"治療暴擊｜":""}回復 ${result.amount||0} HP${result.shieldGranted?`｜獲得聖護 ${result.shieldGranted}`:""}｜HP ${target.hp}。`,"BATTLE");
       else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
       else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
       else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
@@ -948,11 +962,12 @@
         return finishActiveSkill(attacker);
       }
       UnitRuntimeEngine.beginBloodTransaction(attacker);
-      if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+      const spent=ctx.consumeSkill(attacker,skill);
+      if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,target);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-      const results=[];
+      const results=[];let healedCrit=false;
       if(Array.isArray(skill.relationEffects)){
         const rel=EffectEngine.relation(attacker,target);
         for(const effect of skill.relationEffects.filter(e=>e.relation===rel)){
@@ -961,19 +976,21 @@
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
             const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
             const hpBefore=Math.max(0,Number(target.hp||0));let dealt=0,absorbed=0;
-            if(result.hit){const shield=EffectEngine.applyDamage(target,target.hallucination===true?hpBefore:Math.round(result.damage*bloodMult),{source:attacker});dealt=shield.damage;absorbed=shield.absorbed;if(target.hp===0)target.alive=false;}
+            if(result.hit){const shield=EffectEngine.applyDamage(target,target.hallucination===true?hpBefore:Math.round(result.damage*bloodMult),{source:attacker,damageType:"MAGIC"});dealt=shield.damage;absorbed=shield.absorbed;if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:Math.min(hpBefore,Number(dealt||0)),critical:result.crit===true,components:{physical:0}});
             ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
             else if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(dealt||0)});
           }else{
-            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);
+            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,effect,r);
           }
         }
       }else if(Array.isArray(skill.effects)){
-        for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);logAppliedEffect(skill,target,effect,r);}
+        for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,effect,r);}
       }
       applyPassiveSkillTriggers(attacker,target,skill);
+      const refunded=UnitRuntimeEngine.criticalManaRefund(attacker,skill,spent,healedCrit);
+      if(refunded>0)ctx.pushLog(`${attacker.character.name}｜${skill.name} 治療暴擊，聖痕返還 ${refunded} MP。`,"BATTLE");
       UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
     }
 
