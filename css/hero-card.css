@@ -373,3 +373,8 @@
 .hero-skill-variants-title { display: block; padding: 3px 12px; color: #e9c67a; }
 .hero-info-help,.hero-info-action { color: #d7c9b0; font-size: 12px; line-height: 1.5; }
 .hero-info-content { touch-action: pan-y; }
+
+/* One resource semantic palette, not one purple default for all heroes. */
+.hero-card__resource[data-resource="faith"],.hero-info-resource[data-resource="faith"] span{color:#b78318}
+.hero-card__resource[data-resource="blood"],.hero-info-resource[data-resource="blood"] span{color:#c32d48}
+.hero-card__resource[data-resource="sanity"],.hero-info-resource[data-resource="sanity"] span{color:#8d5bd6}

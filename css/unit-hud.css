@@ -183,3 +183,8 @@
 .engagement-threat strong{font-size:13px;color:#fff5d9}
 .engagement-threat span{color:#fbd6a8}
 @media(max-width:700px){.engagement-threat{font-size:11px;padding:5px 7px}.engagement-threat strong{font-size:12px}}
+
+/* Official resource identities: faith is gold, Sanity purple, blood red. */
+.unit-hud-resource .unit-hud-fill{background:#8d5bd6}
+.unit-hud-resource[data-resource="faith"] .unit-hud-fill{background:#e4b448}
+.unit-hud-resource[data-resource="blood"] .unit-hud-fill{background:#c32d48}
