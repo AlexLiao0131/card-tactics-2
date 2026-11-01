@@ -334,17 +334,19 @@
       const bloodMult=UnitRuntimeEngine.attackEnhancement(unit,skill);
       TacticalEngine.faceToward(unit,target);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
-      const stat=skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
-      const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-Number(target.core.defense||30)));
+      const stat=String(skill.offenseStat||"").toUpperCase()==="ATK"?Number(unit.character.combat.atk||0):skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
+      const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-(skill.pureHoly?0:Number(target.core.defense||30))));
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(unit,skill.weapon)||null;
       // Core uses its existing single defense field (it has no armor element,
       // MDEF, parry or shield). Do not route it through a fake unit battle.
       const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
-      const inherent=unit.character.weapons?.[skill.weapon]?.inherentMagic;
-      const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.power||0)-Number(target.core.defense||30))):0;
+      const inherent=skill.skipInherentMagic?null:unit.character.weapons?.[skill.weapon]?.inherentMagic;
+      const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.powerFromSkill?skill.power:inherent.power||0)-(inherent.unresistable?0:Number(target.core.defense||30)))):0;
       const coreHpBefore=Math.max(0,Number(target.core?.hp||0));
       ctx.damageCore(target.core.owner,Math.round((raw+bonus+inherentBonus)*bloodMult),`${unit.character.name}【${skill.name}】`);
-      if(UnitRuntimeEngine.bloodUser(unit))UnitRuntimeEngine.changeBlood(unit,Math.max(0,coreHpBefore-Number(target.core?.hp||0)));
+      const coreDamage=Math.max(0,coreHpBefore-Number(target.core?.hp||0));
+      if(coreDamage>0&&Number(skill.holyPowerOnHit||0)>0)UnitRuntimeEngine.changeHolyPower(unit,skill.holyPowerOnHit);
+      if(UnitRuntimeEngine.bloodUser(unit))UnitRuntimeEngine.changeBlood(unit,coreDamage);
       UnitRuntimeEngine.endBloodTransaction(unit);
       if(enchantment)resolveEnchantmentImpact({actor:unit,skill,enchantment,target,result:{hit:true}});
       commitPendingMove(unit);
@@ -1025,6 +1027,10 @@
       if(skill.approach&&!approachForSkill(attacker,defender,skill)){
         skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
+      // The approach and impact are one committed transaction. The target is
+      // selected from the original 2–4 cell range, but the sword or guard
+      // resolves after relocation at the official adjacency distance.
+      if(skill.approach)skill={...skill,range:{min:1,max:1},approach:null,approachCommitted:true};
       if(skill.bloodShadow){
         const landing=bloodShadowLanding(attacker,defender);
         if(!landing)return skillFailure(attacker,skill,"NO_LEGAL_REAR_CELL",defender);
@@ -1087,6 +1093,26 @@
       executeEngagement(attacker,defender,skill,selectedSupportActions());
     }
 
+    function resolveVerdictCross(attacker,defender,skill,engagement){
+      const primary=engagement.results.find(e=>e.role==="INITIATOR"&&e.actor.id===attacker.id);
+      if(!primary?.result?.hit||!skill.verdictCross||!defender?.character)return;
+      const {units}=state(),radius=Number(skill.verdictCross.radius),power=Number(skill.verdictCross.blastPower);
+      const center={x:defender.x,y:defender.y};
+      const blast={...skill,attackType:"MAGIC",offenseStat:"ATK",pureHoly:true,power,skipInherentMagic:true};
+      const multiplier=Number(primary.vengeanceMultiplier||1);
+      for(const target of units){
+        if(!target?.alive||target.team===attacker.team)continue;
+        const dx=Math.abs(target.x-center.x),dy=Math.abs(target.y-center.y);
+        if(!((dx===0&&dy<=radius)||(dy===0&&dx<=radius)))continue;
+        const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true});
+        const damage=Math.round(roll.damage*multiplier),result=EffectEngine.applyDamage(target,damage,{source:attacker,damageType:"MAGIC"});
+        globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:result.hpLoss,
+          components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true}});
+        ctx.pushLog(`${attacker.character.name}｜裁決十字聖光 → ${target.character.name}｜${result.hpLoss} 神聖傷害${roll.crit?"｜爆擊":""}。`,"BATTLE");
+        if(target.hp<=0){target.alive=false;ctx.handleDefeated(target,attacker,skill);}
+      }
+    }
+
     function executeEngagement(attacker,defender,skill,actions){
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
@@ -1095,6 +1121,7 @@
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
+      if(skill.verdictCross)resolveVerdictCross(attacker,defender,skill,engagement);
       if(skill.bloodShadow){
         const attack=engagement.results.find(entry=>entry.actor.id===attacker.id&&entry.skill.bloodShadow);
         const drained=Math.max(0,Number(attack?.result?.damage||0));

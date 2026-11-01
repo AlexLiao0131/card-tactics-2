@@ -23,7 +23,7 @@ export const DisplacementEngine=(()=>{
   }
   function immuneTo(target,type){
     const character=target?.character||target||{};
-    return (globalThis.SkillDatabase?.passiveList?.(character.passives)||[]).some(passive=>(passive?.immunities||[]).includes(type));
+    return globalThis.EffectEngine?.isInvulnerable?.(target)===true||(globalThis.SkillDatabase?.passiveList?.(character.passives)||[]).some(passive=>(passive?.immunities||[]).includes(type));
   }
   function resolve(effect={},target){
     const r=resistance(target),force=effect.force||{},resistAxes=effect.resistAxes||{};

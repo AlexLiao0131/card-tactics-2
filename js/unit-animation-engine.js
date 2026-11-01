@@ -164,7 +164,7 @@ export const UnitAnimationEngine=(()=>{
     return emit(target,STATE.HURT,detail);
   }
 
-  function emitResolvedHit(target,{damage=0,critical=false,components=null}={}){
+  function emitResolvedHit(target,{damage=0,critical=false,components=null,criticalComponents=null}={}){
     if(!target?.id)return null;
     const actual=Math.max(0,Math.round(Number(damage)||0));
     if(!actual)return null;
@@ -176,8 +176,8 @@ export const UnitAnimationEngine=(()=>{
     const physical=Math.max(0,Math.round(Number(components.physical||0)));
     const magic=Math.max(0,actual-physical);
     const out=[];
-    if(physical)out.push(emitFloat(previouslyVisible,critical?"PHYSICAL_CRITICAL":"PHYSICAL_DAMAGE",physical,{afterDeath:true}));
-    if(magic)out.push(emitFloat(previouslyVisible,critical?"MAGIC_CRITICAL":"MAGIC_DAMAGE",magic,{afterDeath:true}));
+    if(physical)out.push(emitFloat(previouslyVisible,(criticalComponents?.physical??critical)?"PHYSICAL_CRITICAL":"PHYSICAL_DAMAGE",physical,{afterDeath:true}));
+    if(magic)out.push(emitFloat(previouslyVisible,(criticalComponents?.magic??critical)?"MAGIC_CRITICAL":"MAGIC_DAMAGE",magic,{afterDeath:true}));
     return out;
   }
 

@@ -85,6 +85,12 @@ export const UnitRuntimeEngine=(()=>{
     return {...skill,manaCost:0,resourceCosts:{blood:bloodMemoryCost(skill)},_bloodMemory:true,
       description:`【血術重現】原技能消耗合計 ${bloodMemoryCost(skill)} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
   }
+  function changeHolyPower(unit,delta){
+    if(!unit?.character?.resourceRules?.holyPower||!Number.isFinite(Number(delta)))return 0;
+    syncResources(unit);const r=unit.resources.holyPower,before=r.value;
+    r.value=Math.max(0,Math.min(r.max,before+Number(delta)));
+    return r.value-before;
+  }
   const faithUser=unit=>!!unit?.character?.resourceRules?.faith;
   function faithValue(unit){syncResources(unit);return faithUser(unit)?Number(unit.resources.faith.value):null;}
   function changeFaith(unit,delta){
@@ -246,6 +252,6 @@ export const UnitRuntimeEngine=(()=>{
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({knownUnits,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 })();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

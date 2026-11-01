@@ -24,6 +24,36 @@ export const EffectEngine=(()=>{
     return{applied:true,type:"HEAL",amount:restored,requested,overheal,shieldGranted,critical};
   }
   function hasEffect(unit,id){return state(unit).some(effect=>effect.id===id||effect.type===id)}
+  function isInvulnerable(unit){return !!unit?.alive&&state(unit).some(effect=>effect.invulnerable===true);}
+  function linkedGuardian(target,units=[]){
+    const link=state(target).find(e=>e.type==="HP_LINK"&&e.sourceUnitId);
+    if(!link)return null;
+    const guardian=(units||[]).find(u=>u.id===link.sourceUnitId)||globalThis.UnitRuntimeEngine?.getLiveUnit?.(link.sourceUnitId);
+    return guardian?.alive&&guardian.team===target.team?guardian:null;
+  }
+  function vengeanceRule(unit){return globalThis.SkillDatabase?.passiveList?.(unit?.character?.passives||[]).find(p=>p?.seal)?.seal||null;}
+  function markVengeance(protectedUnit,attacker,interceptor=null){
+    if(!attacker?.alive)return false;
+    const candidates=[protectedUnit,interceptor,linkedGuardian(protectedUnit)].filter(Boolean);
+    const owner=candidates.find(u=>u.alive&&u.team!==attacker.team&&vengeanceRule(u));
+    if(!owner)return false;
+    const rule=vengeanceRule(owner),id=`${rule.id}:${owner.id}`;
+    addEffect(attacker,{type:"VENGEANCE_SEAL",id,name:"復仇聖印",classification:"NEGATIVE",duration:rule.duration,ownerId:owner.id},owner);
+    return true;
+  }
+  function vengeanceMultiplier(attacker,target){
+    if(!attacker?.alive||!target?.alive)return 1;
+    const rule=vengeanceRule(attacker);
+    return rule&&state(target).some(e=>e.type==="VENGEANCE_SEAL"&&e.ownerId===attacker.id)?Number(rule.damageMultiplier||1):1;
+  }
+  function consumeVengeance(attacker,target){
+    const rule=vengeanceRule(attacker);
+    if(!rule)return false;
+    const before=state(target).length;
+    target.effects=state(target).filter(e=>!(e.type==="VENGEANCE_SEAL"&&e.ownerId===attacker.id));
+    if(before!==target.effects.length)syncModifiers(target);
+    return before!==target.effects.length;
+  }
   function shieldHp(unit){return state(unit).filter(effect=>effect.type==="SHIELD").reduce((sum,effect)=>sum+Math.max(0,Number(effect.shieldHp||0)),0)}
   // The single HP-loss result owns shield absorption and blood gain. Presentation must never create damage twice.
   function resolveIncomingDamage(unit,amount,{kind="EXTERNAL"}={}){
@@ -52,6 +82,7 @@ export const EffectEngine=(()=>{
   function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT",damageType="PHYSICAL"}={}){
     const hpBefore=Math.max(0,Number(target?.hp||0));
     if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
+    if(isInvulnerable(target))return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),invulnerable:true};
     if(damageType==="MAGIC"&&kind!=="INTERNAL"&&globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))
       return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),sanctuaryImmune:true};
     const shield=resolveIncomingDamage(target,amount,{kind});
@@ -120,6 +151,7 @@ export const EffectEngine=(()=>{
   }
   function consumeNegativeEffectGuard(target,effect){
     if(effect?.classification!=="NEGATIVE"||["DAMAGE","MAGIC_DAMAGE","DRAIN"].includes(effect?.type))return null;
+    if(isInvulnerable(target))return{id:"HOLY_SHIELD",name:"聖盾"};
     if(globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))return{id:"SAINT_SANCTUARY_WARD",name:"聖域・庇護"};
     const guard=state(target).find(e=>e.classification==="POSITIVE"&&Number(e?.negativeEffectGuard?.charges||0)>0);
     if(!guard)return null;
@@ -240,7 +272,11 @@ export const EffectEngine=(()=>{
     if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount}});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
-    if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    if(effect.type==="HP_LINK")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER"){
+      if(effect.cleanseNegative)removeNegative(target);
+      return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    }
     if(effect.type==="DRAIN"){
       const dealt=damage(target,effect.amount,{source,charge:"DIRECT"}),restored=heal(source,dealt*Number(effect.healRatio??1));
       return{applied:true,type:effect.type,damage:dealt,healed:restored};
@@ -368,6 +404,6 @@ export const EffectEngine=(()=>{
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 })();
 globalThis.EffectEngine=EffectEngine;

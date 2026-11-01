@@ -18,6 +18,8 @@ const STATUS_PICTOGRAMS=Object.freeze({
   DEF_DOWN:{symbol:"↓",kind:"debuff"},
   DAMAGE_OVER_TIME:{symbol:"◆",kind:"debuff"},
   SHIELD:{symbol:"⬡",kind:"shield"},
+  VENGEANCE_SEAL:{symbol:"✥",kind:"debuff"},
+  TEMPLAR_HP_LINK:{symbol:"⬡",kind:"shield"},
   STEALTH:{symbol:"◈",kind:"stealth"},
   HEAL_OVER_TIME:{symbol:"✚",kind:"regen"},
   ATK_UP:{symbol:"↑",kind:"attack"},
@@ -82,7 +84,7 @@ const STATUS_ICON_KEYS=Object.keys(STATUS_PICTOGRAMS);
 function statusPictogram(effect){
   const positive=effect?.classification==="POSITIVE";
   const id=String(effect?.id||"").toUpperCase(),type=String(effect?.type||"").toUpperCase();
-  const exact=STATUS_PICTOGRAMS[id];
+  const exact=STATUS_PICTOGRAMS[id]||(id.startsWith("VENGEANCE_SEAL:")?STATUS_PICTOGRAMS.VENGEANCE_SEAL:null);
   if(exact)return exact;
   if(positive){
     if(type==="SHIELD"||/SHIELD|GUARD|護盾|護甲/.test(id))return STATUS_PICTOGRAMS.SHIELD;
@@ -244,9 +246,20 @@ export class UnitHudOverlay{
       const value=Math.max(0,Number(resource?.value||0)),max=Math.max(0,Number(resource?.max||0));if(max<=0)continue;
       const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
       label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;
-      fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;
       wrap.dataset.resource=id;
-      track.appendChild(fill);wrap.append(label,track);hud.resourceBox.appendChild(wrap);
+      if(id==="holyPower"){
+        const orbs=createElement("div","unit-hud-holy-orbs");
+        for(let i=0;i<max;i++){
+          const orb=createElement("span",`unit-hud-holy-orb${i<value?" is-charged":""}`);
+          orb.setAttribute("aria-label",`聖能第 ${i+1} 顆${i<value?"已充能":"未充能"}`);
+          orbs.appendChild(orb);
+        }
+        wrap.append(label,orbs);
+      }else{
+        fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;
+        track.appendChild(fill);wrap.append(label,track);
+      }
+      hud.resourceBox.appendChild(wrap);
     }
     hud.equipment.replaceChildren();
     for(const [group,label] of [["weapon","武器"],["armor","護甲"],["other","裝備"]]){

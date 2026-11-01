@@ -7,7 +7,17 @@ export const BattleResolution=(()=>{
   function defenseMethods(d){return[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character),...effectDefenseProfiles(d)]}
   function passiveGuardRules(u){return SkillDatabase.passiveList(u?.character?.passives).map(p=>p?.guardRules).filter(Boolean)}
   function guardProfiles(u){return defenseMethods(u).filter(p=>p.canGuardAlly===true)}
-  function guardCandidates({map,units,target}){if(!target?.alive)return[];const tt=TacticalEngine.tile(map,target.x,target.y);return(units||[]).filter(g=>{if(!g.alive||g.id===target.id||g.team!==target.team||distance(g,target)!==1)return false;const gt=TacticalEngine.tile(map,g.x,g.y);return !!gt&&!!tt&&TacticalEngine.canTraverseElevation(gt,tt,g)}).map(guardian=>({guardian,profiles:guardProfiles(guardian)})).filter(x=>x.profiles.length)}
+  function guardCandidates({map,units,target}){
+    if(!target?.alive)return[];const tt=TacticalEngine.tile(map,target.x,target.y);
+    return(units||[]).filter(g=>{
+      if(!g.alive||g.id===target.id||g.team!==target.team)return false;
+      const link=globalThis.EffectEngine?.linkedGuardian?.(target,units);
+      if(link?.id===g.id)return true;
+      if(distance(g,target)!==1)return false;
+      const gt=TacticalEngine.tile(map,g.x,g.y);
+      return !!gt&&!!tt&&TacticalEngine.canTraverseElevation(gt,tt,g);
+    }).map(guardian=>({guardian,profiles:guardProfiles(guardian)})).filter(x=>x.profiles.length);
+  }
   function createGuardInterception(guardian,methodId){if(!guardian?.alive)throw new Error("Guard Ally requires a living guardian.");const p=guardProfiles(guardian).find(x=>x.id===methodId);if(!p)throw new Error(`Invalid Guard Ally method: ${methodId}`);return{type:"GUARD_ALLY",guardian,methodId:p.id}}
   function reactionTargetable(actor,target,skill){const map=actor?._runtimeMap||target?._runtimeMap;return !map||TacticalEngine.canTarget(map,actor,target,skill,null)}
   function supportSkills({ally,target,canUseSkill}){return SkillDatabase.list(ally.character.skills).filter(s=>{if(s.utilityAction||s.support!==true||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(ally,s))return false;const r=s.range||{min:1,max:1},d=distance(ally,target);return d>=r.min&&d<=r.max&&reactionTargetable(ally,target,s)})}
@@ -20,12 +30,15 @@ export const BattleResolution=(()=>{
   function prepareSingleTargetReaction({defender,attacker,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE","EVADE"]}}
   function createContext({map,units=[],initiator,target,skill,actions=[],reaction=null,interception=null}){
     [initiator,target,...actions.map(a=>a.actor)].forEach(u=>TacticalEngine.ensureFacing(u));
-    const originalTarget=target,guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:null,effectiveTarget=guardian||originalTarget;
+    const linked=globalThis.EffectEngine?.linkedGuardian?.(target,units);
+    const linkMethod=linked?guardProfiles(linked)[0]:null;
+    const resolvedInterception=linked&&linkMethod?createGuardInterception(linked,linkMethod.id):interception;
+    const originalTarget=target,guardian=resolvedInterception?.type==="GUARD_ALLY"&&resolvedInterception.guardian?.alive?resolvedInterception.guardian:null,effectiveTarget=guardian||originalTarget;
     TacticalEngine.faceToward(initiator,originalTarget);
     if(guardian)TacticalEngine.faceToward(guardian,initiator);
     const primary={id:"primary",role:"INITIATOR",actor:initiator,target:effectiveTarget,skill},participants=[],seen=new Set();
     [initiator,originalTarget,effectiveTarget,...actions.map(a=>a.actor)].forEach(u=>{if(u&&!seen.has(u.id)){seen.add(u.id);participants.push(u)}});
-    return{map,units,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?interception:null,skill,reaction,participants,actions:[primary,...actions]}
+    return{map,units,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?resolvedInterception:null,skill,reaction,participants,actions:[primary,...actions]}
   }
   const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill,a.target?.character||null);
   function buildQueue(c){return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill).map((a,index)=>({...a,index,spd:actionSpeed(a)})).sort((a,b)=>b.spd-a.spd||a.index-b.index)}
@@ -41,19 +54,19 @@ export const BattleResolution=(()=>{
     if(!rule)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:p,valid:false,reason:"ATTACK_TYPE_NOT_SUPPORTED",attackType:type}};
     const z=TacticalEngine.resolve(map,a,t,s),b=z.result;
     if(!b.hit)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,reason:"ATTACK_MISSED"}};
-    if(p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};
+    if(!s?.pureHoly&&p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};
     let success=true,roll=null;
     if(Number.isFinite(Number(rule.chance))){roll=Math.random()*100;success=roll<Number(rule.chance)}
     let m=1,waitedMultiplier=1,afterInterceptEffects=[];
     if(success){
-      m=p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1);
-      if(p.method==="GUARD")m*=Number(t?.character?.modifiers?.guardMultiplier??1);
+      m=s?.pureHoly?1:(p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1));
+      if(p.method==="GUARD"&&!s?.pureHoly)m*=Number(t?.character?.modifiers?.guardMultiplier??1);
       if(r?.guardInterception){
         for(const guardRules of passiveGuardRules(t)){
           if(t.waited&&Number.isFinite(Number(guardRules.waitedDamageMultiplier)))waitedMultiplier*=Number(guardRules.waitedDamageMultiplier);
           for(const effect of guardRules.afterInterceptEffects||[])afterInterceptEffects.push(effect);
         }
-        m*=waitedMultiplier;
+        if(!s?.pureHoly)m*=waitedMultiplier;
       }
     }
     return{...z,result:{...b,damage:Math.round(b.damage*m)},defense:{method:p,valid:true,attackType:type,triggered:true,success,roll,chance:Number.isFinite(Number(rule.chance))?Number(rule.chance):null,damageMultiplier:m,waitedMultiplier,afterInterceptEffects:success&&r?.guardInterception?afterInterceptEffects:[]}};
@@ -82,8 +95,7 @@ export const BattleResolution=(()=>{
     return applied;
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
-  // One elemental component owned by BattleEngine, sharing the attack's
-  // already-resolved hit/crit/guard/shield rather than rolling another attack.
+  // A weapon attack has one contact roll but independent critical results for physical and magical components.
   function enchantmentMagicDamage(actor,target,enchant,critical,skill){
     if(!enchant||!target?.character||!actor?.character||!skill)return 0;
     const weapon=actor.character.weapons?.[skill.weapon];
@@ -100,18 +112,22 @@ export const BattleResolution=(()=>{
     if(!enchant)return 0;
     return Math.round(enchantmentMagicDamage(actor,target,enchant,critical,skill)*defenseMultiplier*grazeMultiplier);
   }
+  function componentCritical(actor,skill,hit){
+    return !!hit&&Math.random()*100<BattleEngine.critChance(actor.character,skill);
+  }
   function withEnchantment(resolved,actor,target,enchant,skill){
     if(!enchant)return resolved;
-    const base=resolved.result;
+    const base=resolved.result,magicalCrit=componentCritical(actor,skill,base.hit);
     let extra=0;
     if(base.hit){
       let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
       const defense=resolved.defense;
       if(defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
-      extra=Math.round(enchantmentMagicDamage(actor,target,enchant,base.crit,skill)*multiplier);
+      extra=Math.round(enchantmentMagicDamage(actor,target,enchant,magicalCrit,skill)*multiplier);
     }
     return{...resolved,enchantment:enchant,result:{...base,damage:base.damage+extra,
-      weaponDamage:base.damage,enchantmentDamage:extra,enchantmentElement:enchant.element}};
+      weaponDamage:base.damage,enchantmentDamage:extra,enchantmentElement:enchant.element,
+      physicalCrit:base.type!=="MAGIC"&&base.crit===true,magicCrit:base.type==="MAGIC"&&base.crit===true||magicalCrit}};
   }
   function inherentMagicDamage(actor,target,skill,critical){
     const weapon=actor?.character?.weapons?.[skill?.weapon];
@@ -120,26 +136,28 @@ export const BattleResolution=(()=>{
     const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
     const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
     return BattleEngine.elementalEnchantmentDamage({
-      matk:Number(actor.character.combat?.matk||0),bonusPower:inherent.power,
-      element:inherent.element,defender:target.character,critical,attackClass:sourceClass
+      matk:Number(actor.character.combat?.matk||0),bonusPower:inherent.powerFromSkill?Number(skill.power||0):inherent.power,
+      element:inherent.element,defender:target.character,critical,attackClass:sourceClass,unresistable:inherent.unresistable===true
     });
   }
   function previewInherentBonus(actor,target,skill,{critical=false,defenseMultiplier=1,grazeMultiplier=1}={}){
+    if(skill?.skipInherentMagic)return 0;
     return Math.round(inherentMagicDamage(actor,target,skill,critical)*defenseMultiplier*grazeMultiplier);
   }
   function withInherentMagic(resolved,actor,target,skill){
     const inherent=actor?.character?.weapons?.[skill?.weapon]?.inherentMagic;
-    if(!inherent)return resolved;
-    const base=resolved.result;
+    if(!inherent||skill.skipInherentMagic)return resolved;
+    const base=resolved.result,magicalCrit=componentCritical(actor,skill,base.hit);
     let extra=0;
     if(base.hit){
       let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
       const defense=resolved.defense;
-      if(defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
-      extra=Math.round(inherentMagicDamage(actor,target,skill,base.crit)*multiplier);
+      if(!inherent.unblockable&&defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
+      extra=Math.round(inherentMagicDamage(actor,target,skill,magicalCrit)*multiplier);
     }
     return {...resolved,result:{...base,weaponDamage:base.weaponDamage??base.damage,
-      damage:base.damage+extra,inherentMagicDamage:extra,inherentMagicElement:inherent.element}};
+      damage:base.damage+extra,inherentMagicDamage:extra,inherentMagicElement:inherent.element,
+      physicalCrit:base.physicalCrit??(base.type!=="MAGIC"&&base.crit===true),magicCrit:!!base.magicCrit||magicalCrit}};
   }
   function splitActualHpLoss(base,hpLoss){
     const actual=Math.max(0,Math.round(Number(hpLoss||0)));
@@ -152,65 +170,76 @@ export const BattleResolution=(()=>{
     const physical=total>0?Math.max(0,Math.min(actual,Math.round(actual*weapon/total))):actual;
     return{physical,magic:actual-physical};
   }
+  function attackDamageComponents(base,damageMultiplier){
+    const weapon=base.type==="MAGIC"?0:Math.max(0,Number((base.weaponDamage??base.damage??0)));
+    const magicBase=base.type==="MAGIC"?Math.max(0,Number((base.weaponDamage??base.damage??0))):0;
+    const magicBonus=Math.max(0,Number(base.enchantmentDamage||0))+Math.max(0,Number(base.inherentMagicDamage||0));
+    return{physical:Math.max(0,Math.round(weapon*damageMultiplier)),magic:Math.max(0,Math.round((magicBase+magicBonus)*damageMultiplier))};
+  }
   function execute(c,hooks={}){
     const queue=buildQueue(c),results=[];
-    for(const a of queue){
+    for(let index=0;index<queue.length;index++){
+      const a=queue[index];
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
-      if(hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
+      const followup=a.role==="FERVOR_FOLLOWUP";
+      if(!followup&&hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
-      const bloodRuntime=globalThis.UnitRuntimeEngine;bloodRuntime?.beginBloodTransaction?.(a.actor);
-      const spent=hooks.consumeSkill?.(a.actor,skill);
+      const bloodRuntime=globalThis.UnitRuntimeEngine;
+      bloodRuntime?.beginBloodTransaction?.(a.actor);
+      const spent=followup?{cost:0,resources:{}}:hooks.consumeSkill?.(a.actor,skill);
       if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
-      const bloodDamageMultiplier=bloodRuntime?.attackEnhancement?.(a.actor,skill)||1;
+      const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
       const action={...a,skill};
-      // Consume only after the action is known to execute; misses still spend it.
-      const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
+      const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
       const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,enchantment,skill),action.actor,action.target,skill);
       const original=resolved.result;
+      const sealMultiplier=a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,a.target)||1;
       const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
-      const baseResult={...original,damage:original.hit?Math.round(Number(original.damage||0)*bloodDamageMultiplier*bleedingBonus):0};
+      const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
       globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
-      const hallucinationHit=action.target?.hallucination===true&&baseResult.hit;
+      const hallucinationHit=action.target?.hallucination===true&&original.hit;
       const hpBefore=Math.max(0,Number(action.target.hp||0));
-      const shield=hallucinationHit?globalThis.EffectEngine?.applyDamage(action.target,hpBefore,{source:action.actor,damageType:baseResult.type==="MAGIC"?"MAGIC":"PHYSICAL"}):
-        globalThis.EffectEngine?.applyDamage?.(action.target,baseResult.damage,{source:action.actor,damageType:baseResult.type==="MAGIC"?"MAGIC":"PHYSICAL"})||{damage:0,absorbed:0,shieldHp:0};
-      const result={...baseResult,damage:shield.damage,shieldAbsorbed:shield.absorbed,shieldHpAfter:shield.shieldHp,hallucinationBroken:hallucinationHit};
-      const components=splitActualHpLoss(baseResult,hpBefore-action.target.hp);
-      result.physicalHpDamage=components.physical;
-      result.magicHpDamage=components.magic;
-      globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{
-        damage:hpBefore-action.target.hp,critical:result.crit===true,components
-      });
-      const defense=resolved.defense;
-      // One resolved judgement, not a separate per-frame damage guess.
-      if(!result.hit){
-        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
-          c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
-      }else if(defense?.triggered&&defense.success!==false&&
-        (Number(defense.damageMultiplier)<1||Number(result.damage||0)===0)){
-        // Partial guard mitigation still counts as a successful BLOCK, while
-        // the reduced HP loss retains its own red damage number.
-        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
-          defense.method?.method==="PARRY"?"PARRY":"BLOCK");
-      }else if(Number(result.shieldAbsorbed||0)>0){
+      let absorbed=0,physLoss=0,magicLoss=0;
+      if(original.hit){
+        // One attack event: each damage type passes through the official shield/immunity engine.
+        const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
+        const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC"})||{hpLoss:0,absorbed:0};
+        absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
+        physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
+      }
+      const physicalCrit=original.type!=="MAGIC"&&(original.physicalCrit??original.crit)===true;
+      const magicCrit=original.type==="MAGIC"&&original.crit===true||original.magicCrit===true;
+      const result={...original,damage:physLoss+magicLoss,shieldAbsorbed:absorbed,
+        physicalHpDamage:physLoss,magicHpDamage:magicLoss,
+        physicalCrit,magicCrit,crit:physicalCrit||magicCrit,
+        criticalComponents:{physical:physicalCrit,magic:magicCrit},hallucinationBroken:hallucinationHit};
+      globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{damage:result.damage,critical:result.crit,
+        components:{physical:physLoss,magic:magicLoss},criticalComponents:result.criticalComponents});
+      if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
+      else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1)
         globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
-      }else if(result.graze){
-        globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
+      else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
+      const markTarget=(c.interception&&a.role==="INITIATOR"?c.originalTarget:a.target);
+      if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
+      if(result.hit){
+        if(!followup&&a.role==="INITIATOR"&&Number(skill.holyPowerOnHit||0)>0)
+          bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
+        if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,a.target);
       }
       if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
-      else if(result.hit&&Number(result.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:Number(result.damage||0)});
-      if(action.target.alive&&globalThis.EffectEngine){
-        for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
-      }
-      if(action.actor.alive&&globalThis.EffectEngine){
-        for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
-      }
+      else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
+      if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
+      if(action.actor.alive&&globalThis.EffectEngine&&!followup)for(const effect of skill?.afterUseEffects||[])EffectEngine.apply({source:action.actor,target:action.actor,effect});
       const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
-      if(refund>0)globalThis.CardTacticsDiagnostics?.push?.("SAINT_CRIT_REFUND",{unitId:action.actor.id,skillId:skill.id,refunded:refund});
-      const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp};
-      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);bloodRuntime?.endBloodTransaction?.(action.actor);
+      const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
+        vengeanceMultiplier:sealMultiplier};
+      e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
+      if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
+        queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
+      }
+      bloodRuntime?.endBloodTransaction?.(action.actor);
     }
     const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     return{context:c,queue,results,postEngagement:post};
