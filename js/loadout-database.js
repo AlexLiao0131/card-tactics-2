@@ -28,7 +28,7 @@ export const LOADOUTS={
   church_apprentice_default:{id:"church_apprentice_default",characterId:"church_apprentice",armorId:"imperial_medium_armor",weaponIds:{sword:"church_training_sword"},skillIds:["church_slash"]},
   church_heavy_knight_default:{id:"church_heavy_knight_default",characterId:"church_heavy_knight",armorId:"church_heavy_plate",weaponIds:{greatsword:"church_greatsword"},skillIds:["church_heavy_slash"]},
   church_templar_default:{id:"church_templar_default",characterId:"church_templar",armorId:"church_templar_plate",weaponIds:{greatsword:"church_greatsword"},skillIds:["church_heavy_slash","church_holy_bolt"]},
-  church_bishop_default:{id:"church_bishop_default",characterId:"church_bishop",armorId:"church_bishop_robe",weaponIds:{staff:"imperial_staff"},skillIds:["church_holy_bolt","saint_heal","saint_dispel"]},
+  church_bishop_default:{id:"church_bishop_default",characterId:"church_bishop",armorId:"church_bishop_robe",weaponIds:{staff:"imperial_staff"},skillIds:["church_holy_bolt","church_bishop_heal","church_bishop_dispel"]},
   church_templar_hero_default:{id:"church_templar_hero_default",characterId:"church_templar_hero",armorId:"church_templar_plate",weaponIds:{greatsword:"church_saint_greatsword"},skillIds:["templar_holy_slash","templar_charge","templar_holy_shield","templar_healing","templar_verdict"]},
   church_saint_default:{id:"church_saint_default",characterId:"church_saint",armorId:"church_saint_vestment",weaponIds:{staff:"church_royal_saint_staff"},skillIds:["saint_judgement","saint_hero_heal","saint_hero_dispel","saint_hero_blessing","saint_sanctuary"]},
 
