@@ -73,20 +73,54 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
       session.inflight?.delete(controller);
     }
   }
+  function recordGeminiResult(phase,result,legalActions=[]){
+    const session=geminiSession;
+    if(!session)return;
+    session.stats??={requests:0,success:0,fallback:0,models:{}};
+    session.stats.requests++;
+    if(result){
+      session.stats.success++;
+      const model=result.model||"unknown";
+      session.stats.models[model]=(session.stats.models[model]||0)+1;
+      globalThis.CardTacticsDiagnostics?.push?.("GEMINI_DECISION",{
+        phase,model,reason:result.reason||"",action_id:result.action_id||null,
+        action_label:legalActions.find(a=>a.id===result.action_id)?.label||null,
+        legal_options:legalActions.length
+      });
+    }else{
+      session.stats.fallback++;
+      globalThis.CardTacticsDiagnostics?.push?.("GEMINI_FALLBACK",{
+        phase,error:session.lastError||"INVALID_OR_UNSUPPORTED_RESPONSE",legal_options:legalActions.length
+      });
+    }
+  }
+  async function geminiPlan(snapshot){
+    if(!geminiSession?.enabled)return null;
+    const result=await geminiRequest("/v1/prepare",{phase:"ENEMY_PLAN",snapshot});
+    recordGeminiResult("ENEMY_PLAN",result);
+    if(result?.plan){
+      pushLog(`Gemini 整隊戰術｜${result.model||"auto"}｜${result.plan.strategy}｜${result.plan.reason||""}`,"SYSTEM");
+      return result.plan;
+    }
+    if(geminiSession?.lastError)pushLog(`Gemini 整隊規劃失敗（${geminiSession.lastError}），繼續使用合法行動決策。`,"SYSTEM");
+    return null;
+  }
   async function geminiDecide({phase,legalActions,snapshot,roundNumber}){
     if(!geminiSession?.enabled||!legalActions?.length)return null;
     const result=await geminiRequest("/v1/decision",{
       turn:Math.max(0,Number(roundNumber||round||0)),phase,
       snapshot,legal_actions:legalActions.map(a=>({id:a.id,kind:a.kind,label:a.label}))
     });
-    if(!result && geminiSession?.lastError){
-      const message=geminiSession.lastError;
+    const valid=legalActions.some(a=>a.id===result?.action_id);
+    recordGeminiResult(phase,valid?result:null,legalActions);
+    if(!valid&&geminiSession){
+      const message=geminiSession.lastError||"ILLEGAL_MODEL_ACTION";
       if(geminiSession.lastLoggedError!==message){
         geminiSession.lastLoggedError=message;
-        pushLog(`Gemini 暫時無法決策（${message}），本次改用原本 AI。`,"SYSTEM");
+        pushLog(`Gemini 決策未成功（${message}），本次改用原本 AI。`,"SYSTEM");
       }
     }
-    return legalActions.some(a=>a.id===result?.action_id)?result.action_id:null;
+    return valid?result.action_id:null;
   }
   async function geminiMulligan(state){
     if(!geminiSession?.enabled)return null;
@@ -164,11 +198,54 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
           const battleId=matchId();
           const session={token,battleId,enabled:true,lastError:null};
           geminiSession=session;
+          // One authoritative card/loadout/skill database. Only actually playable
+          // enemy card categories enter the model's pool; no fabricated powers.
           const allowed=Object.values(globalThis.CARDS||{}).filter(card=>CardDatabase.canPersist(card)&&
             (CardDatabase.isCharacter(card)||(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER")))
-            .map(card=>({id:card.id,name:card.name,cost:Number(card.cost||0),kind:card.unitType==="HERO"?"HERO":CardDatabase.isCharacter(card)?"UNIT":"SPELL"}));
+            .map(card=>{
+              const entry={id:card.id,name:card.name,cost:Number(card.cost||0),
+                kind:card.unitType==="HERO"?"HERO":CardDatabase.isCharacter(card)?"UNIT":"SPELL",
+                faction:card.faction||"NEUTRAL"};
+              if(CardDatabase.isCharacter(card)){
+                const character=LoadoutDatabase.resolveCharacter(card.characterId,card.loadoutId||null);
+                const combat=character?.combat||{};
+                entry.role=character?.archetype||"UNIT";
+                entry.stats=Object.fromEntries(["hp","atk","matk","def","mdef","move"]
+                  .filter(k=>Number.isFinite(Number(combat[k]))).map(k=>[k,Number(combat[k])]));
+                entry.skills=(character?.skillIds||[]).map(id=>SkillDatabase.get(id)).filter(Boolean).map(skill=>({
+                  name:skill.name,id:skill.id,category:skill.category,target:skill.target,
+                  power:skill.power,mp:skill.manaCost||0,range:skill.range?
+                    [skill.range.min,skill.range.max]:null,
+                  mechanic:String(skill.description||"").slice(0,100),
+                  tags:(skill.affixes||[]).slice(0,5)
+                }));
+                entry.passives=(character?.passives||[]).map(id=>{
+                  const passive=SkillDatabase.getPassive(id);
+                  if(!passive)return{id};
+                  const rules={};
+                  for(const key of ["terrainTraits","modifiers","turnEndEffect","nightVision",
+                    "encounterDominion","damageTakenRules","movementRules","powerMultiplier",
+                    "speedBonus","resourceRules","defenseProfiles"]){
+                    if(passive[key]!=null)rules[key]=passive[key];
+                  }
+                  return{id,name:passive.name,description:String(passive.description||"").slice(0,130),
+                    rules:JSON.stringify(rules).slice(0,260)};
+                });
+                entry.equipment={armor:character?.armorId||null,weapons:Object.values(character?.weaponIds||{})};
+                if(character?.companionIds?.length)entry.companions=[...character.companionIds];
+              }else entry.effect={type:card.effect?.type,weather:card.effect?.weather,
+                duration:card.effect?.durationTurns};
+              return entry;
+            });
           if(!allowed.length)throw Error("合法卡池為空，請檢查卡牌資料庫。");
-          const reply=await geminiRequest("/v1/prepare",{phase:"ENEMY_DECK",cards:allowed,stage:window.CardTacticsBattleSetup?.stageId||"versus_core_battle"});
+          const stage=StageDatabase.get(window.CardTacticsBattleSetup?.stageId||"versus_core_battle");
+          const rules=stage?.enemyCardRules||stage?.cardRules||{};
+          const reply=await geminiRequest("/v1/prepare",{phase:"ENEMY_DECK",cards:allowed,
+            stage:stage?.id||"versus_core_battle",
+            rules:{deck_size:DeckEngine.BATTLE_DECK_SIZE,starting_crystals:rules.startingCrystals,
+              max_crystals:rules.maxCrystals,crystal_growth:rules.crystalGrowth,
+              hand_size:rules.handSize},
+            objective:"CORE_CAPTURE: 3 neutral capture points and opposing Core"});
           if(completed)return;
           if(!reply){setStatus(`整備失敗：${errorDescription(session.lastError)}`,true);return;}
           const selected=reply.deck;
@@ -405,7 +482,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     stageEvent({type:"ROUND_START",round,team:"PLAYER"});
     if(environmentState){EnvironmentEngine.tick(environmentState);resolveWeatherEvents();if(checkMatchEnd()){render();return;}}
     beginHallucinationTurn(TEAM.PLAYER);cardPhaseController.begin();}
-  function createBattleContext(){return{geminiDecide,geminiMulligan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function createBattleContext(){return{geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
   function runEnemyPhase(){beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
   function endPlayerTurn({automatic=false}={}){if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}

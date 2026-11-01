@@ -47,15 +47,21 @@
         measured("enemyAI.showStepStateEvent",()=>ctx.emitState());
       };
       const isNeutral=unit=>unit?.team===NEUTRAL;
-      let generation=0;
+      let generation=0,teamPlan=null;
       const enemySnapshot=(actor=null)=>{
         const world=ctx.state(),state=world.environmentState||{};
         const allied=world.units.filter(u=>u.alive&&u.team===ctx.TEAM.ENEMY);
         const tracked=world.units.filter(u=>u.alive&&u.team!==ctx.TEAM.ENEMY&&
           allied.some(observer=>TacticalEngine.actorCanTrackTarget(world.map,world.units,observer,u,state,world)));
         const summary=u=>({id:u.id,name:u.character?.name||u.id,x:u.x,y:u.y,hp:u.hp,mana:u.mana,
-          maxHp:u.maxHp||u.character?.combat?.hp,effects:(u.effects||[]).map(e=>e.id||e.type).slice(0,6)});
+          maxHp:u.maxHp||u.character?.combat?.hp,role:u.character?.archetype||null,
+          moved:!!u.moved,acted:!!u.acted,just_deployed:u.deployedRound===world.round,
+          effects:(u.effects||[]).map(e=>e.id||e.type).slice(0,6)});
         return{round:world.round,actor_id:actor?.id||null,map:{width:world.map?.width,height:world.map?.height},
+          team_plan:teamPlan,
+          actor_skills:actor?ctx.skillList(actor).map(skill=>({id:skill.id,name:skill.name,
+            power:skill.power,mana_cost:skill.manaCost||0,range:skill.range||null,
+            target:skill.target,category:skill.category})):[],
           weather:state.weather||"CLEAR",time:state.timeOfDay||"DAY",
           allies:allied.map(summary),visible_opponents:tracked.map(summary),
           objectives:world.stage?.ruleset==="CORE_CAPTURE"?DeploymentEngine.points(world.stage).map(p=>({id:p.id,owner:p.owner,x:p.captureTiles?.[0]?.x,y:p.captureTiles?.[0]?.y})):[],
@@ -73,31 +79,55 @@
         const index=/^g\d+$/.test(selected||"")?Number(selected.slice(1)):-1;
         return Number.isInteger(index)?actions[index]||null:null;
       };
+      // Engine-certified options: do not prune movement to the first 14
+      // nearest tiles. The model needs flanks, high ground and defense options.
       const tacticalChoices=(actor,{afterMove=false}={})=>{
         const choices=[];
         if(ctx.canUnitCapture(actor))choices.push({kind:"CAPTURE",label:"佔領當前據點"});
         const burst=ctx.skillList(actor).find(skill=>skill.bloodBurst&&ctx.canUseSkill(actor,skill));
-        if(burst)choices.push({kind:"ATTACK",label:`${burst.name}｜範圍攻擊`,attack:{attacker:actor,defender:actor,skill:burst}});
-        for(const skill of singleSkills(actor)){
-          for(const target of targetsForSkill(actor,skill)){
-            if(choices.length>=75)break;
-            choices.push({kind:"ATTACK",label:`${skill.name} → ${target.character?.name||target.core?.name||target.id}｜目標 ${target.id} HP ${target.hp??target.core?.hp??"?"}`,
-              attack:{attacker:actor,defender:target,skill}});
-          }
-        }
-        if(!afterMove&&!actor.moved){
+        if(burst)choices.push({kind:"ATTACK",label:`${burst.name}｜範圍攻擊｜消耗 ${burst.manaCost||0} MP`,
+          attack:{attacker:actor,defender:actor,skill:burst}});
+        const allSkills=singleSkills(actor);
+        // Interleave skills: one verbose skill must not monopolize the action list.
+        const attacks=allSkills.map(skill=>targetsForSkill(actor,skill).map(target=>({
+          kind:"ATTACK",label:`${skill.name}｜威力倍率 ${skill.power??"依引擎"}｜MP ${skill.manaCost||0}｜${target.character?.name||target.core?.name||target.id}｜目標 ${target.id} HP ${target.hp??target.core?.hp??"?"}`,
+          attack:{attacker:actor,defender:target,skill}
+        })));
+        for(let i=0;attacks.some(a=>a.length>i)&&choices.length<99;i++)
+          for(const attacksForSkill of attacks){if(attacksForSkill[i]&&choices.length<99)choices.push(attacksForSkill[i]);}
+        if(!afterMove&&!actor.moved&&choices.length<99){
           const map=ctx.map(),world=ctx.state(),targets=world.units.filter(u=>u.alive&&u.team!==actor.team&&
             TacticalEngine.actorCanTrackTarget(map,world.units,actor,u,world.environmentState||null,world));
           const goals=targets.map(u=>({x:u.x,y:u.y}));
-          if(world.stage?.ruleset==="CORE_CAPTURE")DeploymentEngine.points(world.stage).filter(pt=>pt.owner!=="ENEMY")
-            .forEach(pt=>(pt.captureTiles||[]).forEach(p=>goals.push(p)));
+          if(world.stage?.ruleset==="CORE_CAPTURE")DeploymentEngine.points(world.stage)
+            .filter(pt=>pt.owner!=="ENEMY").forEach(pt=>(pt.captureTiles||[]).forEach(p=>goals.push(p)));
+          const assigned=teamPlan?.orders?.find(o=>o.unit_id===actor.id)?.objective_id;
+          const plannedPoint=DeploymentEngine.points(world.stage).find(pt=>pt.id===assigned);
+          const personalGoals=plannedPoint?.captureTiles?.length?plannedPoint.captureTiles:goals;
           const candidates=[...TacticalEngine.reachable(map,world.units,actor)].map(([key,cost])=>{
             const[x,y]=key.split(",").map(Number),tile=TacticalEngine.tile(map,x,y);
-            return{x,y,cost,tile,goal:goals.length?Math.min(...goals.map(t=>Math.abs(t.x-x)+Math.abs(t.y-y))):0};
-          }).filter(p=>p.tile&&habitatAllows(actor,p.tile)).sort((a,b)=>a.goal-b.goal||a.cost-b.cost||a.y-b.y||a.x-b.x).slice(0,14);
-          for(const pos of candidates)
-            choices.push({kind:"MOVE",label:`移動至 (${pos.x},${pos.y})｜移動成本 ${pos.cost}｜最近戰略目標 ${pos.goal}`,
-              destination:{x:pos.x,y:pos.y}});
+            return{x,y,cost,tile,goal:personalGoals.length?Math.min(...personalGoals.map(t=>Math.abs(t.x-x)+Math.abs(t.y-y))):null,
+              enemyDistance:targets.length?Math.min(...targets.map(t=>Math.abs(t.x-x)+Math.abs(t.y-y))):null};
+          }).filter(p=>p.tile&&habitatAllows(actor,p.tile)).sort((a,b)=>
+            (a.goal??Infinity)-(b.goal??Infinity)||a.cost-b.cost||a.y-b.y||a.x-b.x);
+          // Keep both objective routes and diverse tactical positions, without
+          // inventing movement paths or combat outcomes. The renderer never decides.
+          const slots=99-choices.length;
+          const picked=[];
+          if(candidates.length<=slots)picked.push(...candidates);
+          else{
+            // Round-robin across all distance bands, so close routes cannot
+            // completely hide flanks, retreats or high-ground positions.
+            const bands=new Map();
+            for(const c of candidates){const k=c.goal??"unknown";
+              if(!bands.has(k))bands.set(k,[]);bands.get(k).push(c);}
+            const groups=[...bands.values()];
+            while(picked.length<slots&&groups.some(g=>g.length))
+              for(const group of groups){if(group.length&&picked.length<slots)picked.push(group.shift());}
+          }
+          for(const pos of picked)choices.push({kind:"MOVE",
+            label:`移動 (${pos.x},${pos.y})｜成本 ${pos.cost}｜地形 ${pos.tile.terrain}｜高度 ${pos.tile.elevation??0}｜距目標 ${pos.goal??"?"}｜距已知敵軍 ${pos.enemyDistance??"?"}`,
+            destination:{x:pos.x,y:pos.y}});
         }
         choices.push({kind:"WAIT",label:"結束這名單位本回合行動"});
         return choices;
@@ -329,17 +359,29 @@
               [{kind:"END",label:"結束卡牌階段"}];
           }
           const out=[],tiles=measured("enemyAI.deploymentTiles",()=>deploymentTiles());
-          for(const id of [...new Set(cards.zones.hand)]){
-            const card=CardDatabase.get(id);if(!CardPhaseEngine.canPlay(cards,card))continue;
-            if(CardDatabase.isCharacter(card))for(const tile of tiles.slice(0,12)){
-              if(out.length>=98)break;
-              out.push({kind:"DEPLOY",card,tile,label:`${card.name}｜${card.cost} 水晶｜部署 (${tile.x},${tile.y})`});
-            }
-            // Weather spells use the same EnvironmentEngine.setWeather as player cards.
-            if(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER")out.push({kind:"WEATHER",card,label:`施放 ${card.name}｜${card.cost} 水晶｜改變天氣`});
-          }
-          // The proxy accepts at most 100 options including END.
-          return [...out.slice(0,99),{kind:"END",label:"保留水晶並結束卡牌階段"}];
+          const playable=[...new Set(cards.zones.hand)].map(id=>CardDatabase.get(id))
+            .filter(card=>CardPhaseEngine.canPlay(cards,card));
+          const assignments=teamPlan?.orders||[];
+          const plannedObjectives=DeploymentEngine.points(state.stage).filter(pt=>
+            assignments.some(o=>o.objective_id===pt.id)).flatMap(pt=>pt.captureTiles||[]);
+          const sortedTiles=plannedObjectives.length?[...tiles].sort((a,b)=>{
+            const near=t=>Math.min(...plannedObjectives.map(p=>Math.abs(p.x-t.x)+Math.abs(p.y-t.y)));
+            return near(a)-near(b);
+          }):tiles;
+          // Every playable card gets considered before any card receives a
+          // second deployment position. This prevents the first cheap unit
+          // monopolizing the bounded 100-action model request.
+          const candidateGroups=playable.map(card=>{
+            if(CardDatabase.isCharacter(card))return sortedTiles.map(tile=>({kind:"DEPLOY",card,tile,
+              label:`${card.name}｜${card.unitType}｜${card.cost} 水晶｜部署 (${tile.x},${tile.y})` }));
+            if(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER"&&
+              state.environmentState&&EnvironmentEngine.WEATHER?.[card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather])
+              return[{kind:"WEATHER",card,label:`施放 ${card.name}｜${card.cost} 水晶｜改變天氣`}];
+            return[];
+          });
+          for(let index=0;candidateGroups.some(group=>group.length>index)&&out.length<99;index++)
+            for(const group of candidateGroups){if(group[index]&&out.length<99)out.push(group[index]);}
+          return [...out,{kind:"END",label:"保留水晶並結束卡牌階段"}];
         };
         const decide=async()=>{
           if(marker!==generation)return;
@@ -388,23 +430,41 @@
       };
 
       const runPhase=()=>{
-        const state=ctx.state();
+        const state=ctx.state(),marker=generation;
         ctx.setPhase(ctx.PHASE.ENEMY);ctx.clearSelection();ctx.clearEnemyReaction();ctx.pushLog(`Round ${state.round}｜敵方回合開始。`);
-        runCardPhase(()=>{
+        const proceed=()=>runCardPhase(()=>{
+          if(marker!==generation)return;
           if(ctx.checkMatchEnd()){ctx.render();return;}
           ctx.resetActions(ctx.TEAM.ENEMY);
           ctx.resetActions(NEUTRAL);
           const enemyActors=(ctx.turnActors?.(ctx.TEAM.ENEMY)||ctx.living(ctx.TEAM.ENEMY));
           enemyActors.filter(unit=>unit.deployedRound===state.round).forEach(unit=>{unit.moved=true;unit.acted=true;unit.waited=true;});
           const enemies=enemyActors.filter(unit=>unit.deployedRound!==state.round);
+          const sequence=teamPlan?.sequence||[];
+          if(sequence.length)enemies.sort((a,b)=>{
+            const ai=sequence.indexOf(a.id),bi=sequence.indexOf(b.id);
+            return(ai<0?Infinity:ai)-(bi<0?Infinity:bi);
+          });
           const neutrals=(ctx.turnActors?.(NEUTRAL)||ctx.living(NEUTRAL));
           queue=[...enemies,...neutrals];
           showStep("TACTICAL",neutrals.length?"敵方進入戰棋階段｜野怪將於敵軍後自主行動":"敵方進入戰棋階段");
           afterStep(continuePhase,350);
         });
+        teamPlan=null;
+        if(ctx.geminiEnabled?.()&&ctx.geminiPlan){
+          showStep("THINK","Gemini 正在規劃整隊部署與戰術");
+          Promise.resolve(ctx.geminiPlan(enemySnapshot())).then(plan=>{
+            if(marker!==generation||ctx.state().map!==state.map||ctx.state().phase!==ctx.PHASE.ENEMY)return;
+            teamPlan=plan;proceed();
+          }).catch(error=>{
+            if(marker!==generation)return;
+            ctx.pushLog(`Gemini 整隊規劃失敗：${String(error?.message||error).slice(0,120)}，回到合法行動流程。`,"SYSTEM");
+            proceed();
+          });
+        }else proceed();
       };
 
-      const reset=()=>{generation++;queue=[];if(stepTimer){clearTimeout(stepTimer);stepTimer=null;}};
+      const reset=()=>{generation++;teamPlan=null;queue=[];if(stepTimer){clearTimeout(stepTimer);stepTimer=null;}};
       return{runPhase,continuePhase,reset};
     }
   };
