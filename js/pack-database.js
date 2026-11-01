@@ -8,7 +8,7 @@ export const CARD_GROUPS={
   SAINT_SUPPLEMENT:{id:"SAINT_SUPPLEMENT",name:"聖女補充包",cards:["church_saint_card"]},
   SERAPHINA_SUPPLEMENT:{id:"SERAPHINA_SUPPLEMENT",name:"Seraphina 補充包",cards:["seraphina_card"]},
   SEA_WORLD_SUPPLEMENT:{id:"SEA_WORLD_SUPPLEMENT",name:"海世界補充包",cards:["nereia_card"]},
-  BEAST_SUPPLEMENT:{id:"BEAST_SUPPLEMENT",name:"獸族補充包",cards:["cat_thief_hero_card"]},
+  BEAST_SUPPLEMENT:{id:"BEAST_SUPPLEMENT",name:"獸族補充包",cards:["cat_thief_hero_card","steal_hand_card"]},
   ANGEL_SUPPLEMENT:{id:"ANGEL_SUPPLEMENT",name:"天使族補充包",cards:["angel_archer_hero_card"]},
   DEMON_SUPPLEMENT:{id:"DEMON_SUPPLEMENT",name:"魔族補充包",cards:["velsa_card"]},
   OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
@@ -23,7 +23,7 @@ export const PACK_PRODUCTS={
   SAINT_FIXED:{id:"SAINT_FIXED",name:"聖女補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄聖女 HERO，其餘固定內容待故事卡設計完成後加入。",cards:["church_saint_card"]},
   SERAPHINA_FIXED:{id:"SERAPHINA_FIXED",name:"Seraphina 補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄 Seraphina HERO，其餘固定內容待後續設計。",cards:["seraphina_card"]},
   SEA_WORLD_FIXED:{id:"SEA_WORLD_FIXED",name:"海世界補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄深海女王・涅瑞雅 HERO，第二張擴充 HERO 待設計完成後加入。",cards:["nereia_card"]},
-  BEAST_FIXED:{id:"BEAST_FIXED",name:"獸族補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄貓女盜賊 HERO，後續可追加獸族普通單位。",cards:["cat_thief_hero_card"]},
+  BEAST_FIXED:{id:"BEAST_FIXED",name:"獸族補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜收錄貓女盜賊米菈與偷竊戰術卡，後續可追加獸族普通單位。",cards:["cat_thief_hero_card","steal_hand_card"]},
   ANGEL_FIXED:{id:"ANGEL_FIXED",name:"天使族補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容開發版｜目前先收錄艾蕾希雅 HERO，後續可追加天使族普通單位。",cards:["angel_archer_hero_card"]}
 };
 export const PackDatabase=(()=>({get:id=>CARD_GROUPS[id]||null,list:()=>Object.values(CARD_GROUPS),cards:id=>(CARD_GROUPS[id]?.cards||[]).map(cardId=>CardDatabase.get(cardId)).filter(Boolean),product:id=>PACK_PRODUCTS[id]||null,products:({season}={})=>Object.values(PACK_PRODUCTS).filter(p=>!season||p.season===season||p.season==="PERMANENT")}))();

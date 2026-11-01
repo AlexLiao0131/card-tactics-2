@@ -2304,7 +2304,12 @@ export class UnitRenderer{
     if(String(event?.kind||"").toUpperCase()==="TELEPORT"){
       // Instant relocation is never interpolated through intervening terrain.
       // The combat position has already been committed by the gameplay engine.
-      const point=clamp01(progress)<.5?points[0]:points[points.length-1];
+      // Gameplay has already committed the teleport destination. Replaying its
+      // origin for the first half of WALK would snap a completed blood drain
+      // back to the original tile in the renderer, even while Game State stays
+      // at the destination. The origin remains only in the event path for
+      // diagnostics; a TELEPORT has no in-between visual positions.
+      const point=points[points.length-1];
       entry.root.position.copyFrom(this.positionFor(entry,point));
       entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
       return;
