@@ -188,3 +188,8 @@
 .unit-hud-resource .unit-hud-fill{background:#8d5bd6}
 .unit-hud-resource[data-resource="faith"] .unit-hud-fill{background:#e4b448}
 .unit-hud-resource[data-resource="blood"] .unit-hud-fill{background:#c32d48}
+
+/* A three-charge Holy Power resource is distinct from Sanity and Faith bars. */
+.unit-hud-holy-orbs{display:flex;align-items:center;justify-content:center;gap:8px;padding:3px 0 2px}
+.unit-hud-holy-orb{width:16px;height:16px;border-radius:50%;border:2px solid #ae822e;background:#3a3430;box-shadow:inset 0 0 0 2px #29221b;flex:0 0 auto}
+.unit-hud-holy-orb.is-charged{background:#f4ce63;box-shadow:0 0 7px #f0c44b90,inset 0 0 4px #fff4ad}
