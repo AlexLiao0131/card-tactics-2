@@ -1,5 +1,4 @@
-/** After deploying cloudflare-pvp, paste your OWN Workers URL here.
- * Example shape (not a real deployment): https://<worker>.<subdomain>.workers.dev
- * Leave blank to disable the lobby instead of routing tokens to a guessed server.
+/** Card Tactics 2.0 PvP lobby Worker (Cloudflare Workers Builds).
+ * This Worker is separate from the Gemini AI Worker.
  */
-export const PVP_API_BASE = '';
+export const PVP_API_BASE = 'https://card-tactics-pvp.as315012.workers.dev';
