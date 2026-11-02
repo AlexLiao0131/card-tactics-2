@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "card-tactics-pvp",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-20",
+  "workers_dev": true,
+  "vars": {
+    "APP_ORIGIN": "https://alexliao0131.github.io"
+  },
+  "durable_objects": {
+    "bindings": [{"name": "ROOMS", "class_name": "PvpRoom"}]
+  },
+  "exports": {
+    "PvpRoom": {"type": "durable-object", "storage": "sqlite"}
+  }
+}
