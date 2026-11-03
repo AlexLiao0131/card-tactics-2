@@ -13,7 +13,7 @@
     button{background:#365679;color:#fff;border:1px solid #5d85a7;padding:13px 14px;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}
     button:disabled{opacity:.4;cursor:not-allowed}.strong{background:#c0a168;color:#152331;border-color:#e0bf81}a{color:#e5c28b}
     .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.room-code{font-size:40px;font-weight:900;letter-spacing:.2em;color:#f3d191;text-align:center;overflow-wrap:anywhere}
-    .seat{background:#0d1a26;border:1px solid #2d475d;padding:14px;border-radius:12px;margin:10px 0}.seat b{display:block;font-size:18px;margin:8px 0}.seat small{color:#9bafbe}.seat[data-ready="true"]{border-color:#69af88}
+    .seat{background:#0d1a26;border:1px solid #2d475d;padding:14px;border-radius:12px;margin:10px 0}.opening-card{display:flex;align-items:center;gap:12px;margin:8px 0;background:#0d1a26;border-radius:8px;padding:10px}.opening-card input{width:20px;height:20px;margin:0;flex:none}.seat b{display:block;font-size:18px;margin:8px 0}.seat small{color:#9bafbe}.seat[data-ready="true"]{border-color:#69af88}
     .state{padding:12px;border-radius:8px;background:#12283b;color:#c2dbe6;line-height:1.55;overflow-wrap:anywhere;font-size:14px}.state[data-error="true"]{color:#ffb2a7;background:#352125}
     #bothReady{font-size:14px;color:#b7cbdb;line-height:1.7;margin:14px 0}#bothReady[data-ready="true"]{color:#a6d7b9}
     .warn{color:#f5cfa2;font-size:14px;line-height:1.7;border-left:3px solid #c59b55;padding-left:12px;margin:18px 0}
@@ -24,8 +24,8 @@
 <main>
   <a href="./index.html">← 返回主選單（單機玩法完全不受影響）</a>
   <h1>PLAYER vs PLAYER</h1>
-  <p class="sub">CARD TACTICS 2.0 · 連線大廳第一階段</p>
-  <p class="warn">目前實作建立房間、加入、兩人即時狀態、準備與重連。伺服器尚未執行戰棋規則，不會讓兩台裝置假裝已進入正式 PvP 戰場。</p>
+  <p class="sub">CARD TACTICS 2.0 · 連線大廳／共用牌組驗證</p>
+  <p class="warn">目前可建立雙人房間、提交 20 張出擊牌組、伺服器抽取並確認雙方起手牌（支援斷線恢復）。仍未完成地圖生成、部署、移動、戰鬥、技能與天氣水文結算，不會假裝已開放雙人戰棋。</p>
   <p id="connect" class="sub"></p>
   <section id="setupView" class="panel" aria-label="建立或加入房間">
     <h2>建立／加入房間</h2>
@@ -40,8 +40,17 @@
     <button id="copyInvite" style="width:100%">複製邀請連結</button>
     <div id="seatA" class="seat"><small>玩家 A</small><b data-name>—</b><small data-status>—</small></div>
     <div id="seatB" class="seat"><small>玩家 B</small><b data-name>—</b><small data-status>—</small></div>
+    <button id="submitDeck" style="width:100%;margin-top:9px" disabled>提交目前的 20 張出擊牌組</button>
+    <p class="sub">使用你在本機牌組畫面選定的出擊牌組。Cloudflare 只公開是否已提交，不向另一位玩家公開卡片。</p>
     <div id="bothReady">等待雙方準備</div>
     <div class="actions"><button id="readyToggle" class="strong" disabled>我已準備</button><button id="retryRoom">重新連線</button></div>
+    <section id="openingPanel" hidden aria-label="伺服器起手牌決策">
+      <h2>雙人起手牌（伺服器權威）</h2>
+      <p id="openingHint" class="sub">等待伺服器狀態…</p>
+      <div id="openingHand"></div>
+      <div class="actions"><button id="keepOpening" class="strong" disabled>保留起手牌</button><button id="mulliganOpening" disabled>換掉勾選的牌</button></div>
+      <p class="sub">雙方只能看自己的手牌；伺服器會檢查指令、回合和版本。</p>
+    </section>
     <button id="exitRoom" style="width:100%;margin-top:10px">離開房間畫面</button>
   </section>
   <p id="lobbyStatus" role="status" aria-live="polite" class="state">準備連線設定…</p>
