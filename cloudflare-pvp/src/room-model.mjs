@@ -16,7 +16,7 @@ export function createRoom({ code, name, tokenHash, now }) {
     version: 1, code, createdAt: now, expiresAt: now + ROOM_LIFETIME_MS,
     phase: 'LOBBY',
     seats: [
-      { name: normalizeName(name), tokenHash, ready: false },
+      { name: normalizeName(name), tokenHash, ready: false, deckSubmitted: false },
       null,
     ],
   };
@@ -25,7 +25,7 @@ export function joinRoom(room, { name, tokenHash }) {
   if (!room || room.phase !== 'LOBBY') throw Error('NOT_JOINABLE');
   if (room.seats[1]) throw Error('ROOM_FULL');
   if (!normalizeName(name) || !tokenHash) throw Error('INVALID_JOIN');
-  room.seats[1] = { name: normalizeName(name), tokenHash, ready: false };
+  room.seats[1] = { name: normalizeName(name), tokenHash, ready: false, deckSubmitted: false };
   room.seats[0].ready = false;
   room.version++;
   return 1;
@@ -36,17 +36,34 @@ export function seatForToken(room, tokenHash) {
 export function setReady(room, seat, ready) {
   if (!room || room.phase !== 'LOBBY' || ![0, 1].includes(seat) || !room.seats[seat]) throw Error('BAD_SEAT');
   if (typeof ready !== 'boolean') throw Error('BAD_READY');
+  // A player cannot declare readiness before the same canonical deck validator
+  // has accepted and privately persisted their 20-card deck.
+  if (ready && room.seats[seat].deckSubmitted !== true) throw Error('DECK_REQUIRED');
   if (room.seats[seat].ready !== ready) {
     room.seats[seat].ready = ready;
     room.version++;
   }
   return room;
 }
+/** Only records a public boolean. Never place private card IDs in roomView. */
+export function markDeckSubmitted(room, seat) {
+  if (!room || room.phase !== 'LOBBY' || ![0, 1].includes(seat) || !room.seats[seat]) throw Error('BAD_SEAT');
+  room.seats[seat].deckSubmitted = true;
+  // A changed deck invalidates prior ready choices, so neither player can
+  // silently switch decks after both have declared ready.
+  for (const participant of room.seats) if (participant) participant.ready = false;
+  room.version++;
+  return room;
+}
 export function roomView(room, connections = []) {
   return {
     protocol: PROTOCOL, code: room.code, version: room.version, phase: room.phase,
-    bothReady: room.seats.every(s => s?.ready === true),
+    bothReady: room.seats.every(s => s?.ready === true && s?.deckSubmitted === true),
     // Strictly public lobby-only data; NEVER send secret hashes, decks or enemy hands.
-    seats: room.seats.map((seat, i) => seat && ({ seat: i, name: seat.name, ready: seat.ready, online: connections.includes(i) })),
+    seats: room.seats.map((seat, i) => seat && ({
+      seat: i, name: seat.name, ready: seat.ready,
+      deckSubmitted: seat.deckSubmitted === true,
+      online: connections.includes(i)
+    })),
   };
 }

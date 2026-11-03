@@ -1,12 +1,18 @@
-/* Cloudflare Workers + SQLite Durable Objects: authority for TWO-PLAYER LOBBY ONLY.
- * This is intentionally not the battle engine. Gameplay actions are denied until
- * GameCore is extracted and the server can execute the same battle rules.
+/* Cloudflare Workers + SQLite Durable Objects: authenticated lobby, private
+ * decks and server-authoritative pre-battle opening hands. All tactical actions
+ * remain rejected until the exact canonical tactical engine runs server-side.
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
   PROTOCOL, normalizeCode, normalizeName, createRoom,
-  joinRoom, seatForToken, setReady, roomView
+  joinRoom, seatForToken, setReady, markDeckSubmitted, roomView
 } from './room-model.mjs';
+import { validateOfficialDeck } from './canonical-deck-rules.mjs';
+import { createOpeningGame, openingGameCore } from './pvp-match-core.mjs';
+import { createAuthoritySession, commitAuthorityCommand, projectAuthoritySession }
+  from './battle-authority.mjs';
+import { BATTLE_STORAGE_KEY } from './battle-store.mjs';
+import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HEX_SIZE = 32;
@@ -55,7 +61,6 @@ export default {
     const headers = originHeaders(origin, allowed);
     const reject = (code, status=400) => failure(code, status, headers);
     // No CORS wildcard and no cross-site room operation from unknown browser origins.
-    // A local 'wrangler dev' test UI can be configured via APP_ORIGIN in wrangler.
     if (origin && origin !== allowed) return reject('ORIGIN_FORBIDDEN', 403);
     if (request.method === 'OPTIONS') return new Response(null, {status: 204, headers});
     const url = new URL(request.url);
@@ -79,7 +84,7 @@ export default {
         }
         return reject('ROOM_CODE_EXHAUSTED',503);
       }
-      const match = /^\/v1\/rooms\/([A-HJ-NP-Z2-9]{8})\/(join|session|ticket|socket)$/.exec(path);
+      const match = /^\/v1\/rooms\/([A-HJ-NP-Z2-9]{8})\/(join|session|ticket|socket|deck|opening)$/.exec(path);
       if (!match) return reject('BAD_ROOM_PATH',404);
       const [, code, operation] = match;
       if (!normalizeCode(code)) return reject('BAD_ROOM_CODE');
@@ -119,6 +124,21 @@ export default {
         });
         if (!response.ok) return json(await response.json(),response.status,headers);
         return json({ok:true,ticket:oneTime,expiresInMs:TICKET_MS},200,headers);
+      }
+      if (operation === 'opening') {
+        const response = await stub.fetch('https://room.internal/opening', {
+          method:'POST',body:JSON.stringify({tokenHash})
+        });
+        return json(await response.json(),response.status,headers);
+      }
+      if (operation === 'deck') {
+        const input = await bodyJson(request);
+        const result = validateOfficialDeck(input?.cards);
+        if (!result.valid) return reject(result.error, 400);
+        const response = await stub.fetch('https://room.internal/deck', {
+          method:'POST',body:JSON.stringify({tokenHash,cards:result.cards})
+        });
+        return json(await response.json(), response.status, headers);
       }
       return reject('NOT_FOUND',404);
     } catch (err) {
@@ -168,11 +188,44 @@ export class PvpRoom extends DurableObject {
       const seat = seatForToken(current,tokenHash);
       return seat < 0 ? failure('UNAUTHORIZED',401) : json({ok:true, seat, room:this.snapshot(current)});
     }
+    if (path === '/opening' && request.method === 'POST') {
+      const { tokenHash }=await request.json();
+      const seat=seatForToken(current,tokenHash);
+      if (seat<0) return failure('UNAUTHORIZED',401);
+      const session=await this.ctx.storage.get(BATTLE_STORAGE_KEY);
+      if (!session) return failure('OPENING_NOT_STARTED',409);
+      return json({ok:true,match:projectAuthoritySession(session,seat,openingGameCore)});
+    }
+    if (path === '/deck' && request.method === 'POST') {
+      const {tokenHash,cards} = await request.json();
+      const seat = seatForToken(current,tokenHash);
+      if (seat < 0) return failure('UNAUTHORIZED',401);
+      // Validate at the Durable Object boundary too, rather than trusting
+      // the outer Worker to have performed validation correctly.
+      const valid = validateOfficialDeck(cards);
+      if (!valid.valid) return failure(valid.error,400);
+      let latest, changed=false;
+      try {
+        await this.ctx.storage.transaction(async txn => {
+          latest = await txn.get('room');
+          if (!latest || latest.phase !== 'LOBBY' || latest.expiresAt <= Date.now()) throw Error('ROOM_NOT_JOINABLE');
+          if (seatForToken(latest,tokenHash) !== seat) throw Error('UNAUTHORIZED');
+          const previous = await txn.get(`deck:${seat}`);
+          if (Array.isArray(previous) && previous.length === valid.cards.length &&
+              previous.every((id,i)=>id===valid.cards[i])) return;
+          await txn.put(`deck:${seat}`,valid.cards);
+          markDeckSubmitted(latest,seat);
+          await txn.put('room',latest);
+          changed=true;
+        });
+      } catch (err) { return failure(err?.message||'DECK_SUBMIT_FAILED',409); }
+      if (changed) this.broadcast(latest);
+      return json({ok:true,seat,deckSubmitted:true,version:latest.version});
+    }
     if (path === '/ticket' && request.method === 'POST') {
       const {tokenHash,ticketHash} = await request.json();
       const seat = seatForToken(current,tokenHash);
       if (seat < 0 || !/^[a-f0-9]{64}$/.test(ticketHash||'')) return failure('UNAUTHORIZED',401);
-      // Separate ticket per seat. Only the latest is valid; never store bearer token.
       await this.ctx.storage.put(`ticket:${seat}`, { ticketHash, expires:now+TICKET_MS });
       return json({ok:true});
     }
@@ -194,6 +247,8 @@ export class PvpRoom extends DurableObject {
       this.ctx.acceptWebSocket(server);
       server.serializeAttachment({seat, protocol:PROTOCOL});
       server.send(JSON.stringify({type:'WELCOME',seat,room:this.snapshot(current)}));
+      const opening=await this.ctx.storage.get(BATTLE_STORAGE_KEY);
+      if (opening) this.sendMatchState(server,opening,seat);
       this.broadcast(current);
       return new Response(null,{status:101,webSocket:client});
     }
@@ -207,6 +262,16 @@ export class PvpRoom extends DurableObject {
     const data=JSON.stringify({type:'ROOM_STATE',room:this.snapshot(room)});
     for (const socket of this.ctx.getWebSockets()) if (socket.readyState===WebSocket.OPEN) socket.send(data);
   }
+  sendMatchState(ws, session, seat) {
+    if (ws.readyState!==WebSocket.OPEN || (seat!==0 && seat!==1)) return;
+    ws.send(JSON.stringify({type:'MATCH_STATE',
+      match:projectAuthoritySession(session,seat,openingGameCore)}));
+  }
+  broadcastMatchState(session) {
+    for (const ws of this.ctx.getWebSockets()) {
+      this.sendMatchState(ws,session,ws.deserializeAttachment()?.seat);
+    }
+  }
   async webSocketMessage(ws, input) {
     if (typeof input !== 'string' || input.length > MAX_BODY_BYTES) {
       ws.send(JSON.stringify({type:'ERROR',error:'BAD_MESSAGE'}));return;
@@ -216,23 +281,64 @@ export class PvpRoom extends DurableObject {
     if (action.type==='PING') {
       ws.send(JSON.stringify({type:'PONG'}));return;
     }
-    if (action.type!=='SET_READY') {
-      ws.send(JSON.stringify({type:'ERROR',error:'GAME_ACTIONS_NOT_AVAILABLE_YET'}));return;
-    }
     const seat=ws.deserializeAttachment()?.seat;
-    let latest;
+    if (seat!==0 && seat!==1) {
+      ws.send(JSON.stringify({type:'ERROR',error:'UNAUTHORIZED'}));return;
+    }
+    if (action.type==='MATCH_COMMAND') {
+      let result,latest;
+      try {
+        await this.ctx.storage.transaction(async txn => {
+          latest=await txn.get('room');
+          if (!latest || latest.expiresAt <= Date.now()) throw new PvpCommandError('ROOM_EXPIRED');
+          if (!['OPENING_HAND','WAITING_FOR_TACTICAL_ENGINE'].includes(latest.phase)) throw new PvpCommandError('TACTICAL_GAME_CORE_NOT_READY');
+          const session=await txn.get(BATTLE_STORAGE_KEY);
+          if (!session) throw new PvpCommandError('OPENING_NOT_STARTED');
+          result=commitAuthorityCommand({session,seat,envelope:action.envelope,core:openingGameCore});
+          if (!result.duplicate) {
+            await txn.put(BATTLE_STORAGE_KEY,result.nextSession);
+            const phase=result.nextSession.state.phase;
+            if (phase!==latest.phase) {latest.phase=phase;latest.version++;await txn.put('room',latest);}
+          }
+        });
+      } catch(err) {
+        ws.send(JSON.stringify({type:'ERROR',error:err instanceof PvpCommandError?err.code:'MATCH_COMMAND_FAILED'}));return;
+      }
+      ws.send(JSON.stringify({type:'MATCH_ACK',...result.ack,duplicate:result.duplicate}));
+      if (!result.duplicate) {
+        this.broadcastMatchState(result.nextSession);
+        if (latest.phase==='WAITING_FOR_TACTICAL_ENGINE') this.broadcast(latest);
+      }
+      return;
+    }
+    if (action.type!=='SET_READY') {
+      ws.send(JSON.stringify({type:'ERROR',error:'TACTICAL_GAME_CORE_NOT_READY'}));return;
+    }
+    let latest,opening=null;
     try {
       await this.ctx.storage.transaction(async txn => {
-        latest = await txn.get('room');
+        latest=await txn.get('room');
         if (!latest || latest.expiresAt <= Date.now()) throw Error('ROOM_EXPIRED');
         setReady(latest,seat,action.ready);
+        if (latest.seats.every(participant=>participant?.ready===true && participant?.deckSubmitted===true)) {
+          const decks=[await txn.get('deck:0'),await txn.get('deck:1')];
+          if (!decks.every(Array.isArray)) throw Error('TWO_VALID_DECKS_REQUIRED');
+          if (await txn.get(BATTLE_STORAGE_KEY)) throw Error('BATTLE_ALREADY_INITIALIZED');
+          const seed=crypto.getRandomValues(new Uint32Array(1))[0];
+          opening=createAuthoritySession({
+            initialState:createOpeningGame({decks,serverSeed:seed}), core:openingGameCore
+          });
+          await txn.put(BATTLE_STORAGE_KEY,opening);
+          latest.phase='OPENING_HAND';latest.version++;
+        }
         await txn.put('room',latest);
       });
-    } catch (err) {
+    } catch(err) {
       if (err.message==='ROOM_EXPIRED') { ws.close(4002,'ROOM_EXPIRED');return; }
-      ws.send(JSON.stringify({type:'ERROR',error:err.message}));return;
+      ws.send(JSON.stringify({type:'ERROR',error:err?.message||'READY_FAILED'}));return;
     }
     this.broadcast(latest);
+    if (opening) this.broadcastMatchState(opening);
   }
   async webSocketClose(ws, code, reason) {
     try { ws.close(code,reason); } catch {}
