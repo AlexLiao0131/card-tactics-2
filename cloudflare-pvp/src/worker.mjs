@@ -1,5 +1,5 @@
 /* Cloudflare Workers + SQLite Durable Objects: authenticated lobby, private
- * decks and server-authoritative pre-battle opening hands. All tactical actions
+ * decks, canonical opening hands and server-generated battlefield. All tactical actions
  * remain rejected until the exact canonical tactical engine runs server-side.
  */
 import { DurableObject } from 'cloudflare:workers';
@@ -291,7 +291,7 @@ export class PvpRoom extends DurableObject {
         await this.ctx.storage.transaction(async txn => {
           latest=await txn.get('room');
           if (!latest || latest.expiresAt <= Date.now()) throw new PvpCommandError('ROOM_EXPIRED');
-          if (!['OPENING_HAND','WAITING_FOR_TACTICAL_ENGINE'].includes(latest.phase)) throw new PvpCommandError('TACTICAL_GAME_CORE_NOT_READY');
+          if (!['OPENING_HAND','BATTLEFIELD_READY'].includes(latest.phase)) throw new PvpCommandError('TACTICAL_GAME_CORE_NOT_READY');
           const session=await txn.get(BATTLE_STORAGE_KEY);
           if (!session) throw new PvpCommandError('OPENING_NOT_STARTED');
           result=commitAuthorityCommand({session,seat,envelope:action.envelope,core:openingGameCore});
@@ -307,7 +307,7 @@ export class PvpRoom extends DurableObject {
       ws.send(JSON.stringify({type:'MATCH_ACK',...result.ack,duplicate:result.duplicate}));
       if (!result.duplicate) {
         this.broadcastMatchState(result.nextSession);
-        if (latest.phase==='WAITING_FOR_TACTICAL_ENGINE') this.broadcast(latest);
+        if (latest.phase==='BATTLEFIELD_READY') this.broadcast(latest);
       }
       return;
     }

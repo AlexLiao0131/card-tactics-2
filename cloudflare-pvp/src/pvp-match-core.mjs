@@ -3,9 +3,10 @@
  *
  * This module does not implement or copy Card Tactics gameplay rules. All deck
  * validation, shuffle, draw and mulligan rules come from the original js/.
- * Current server scope: authenticated match creation + two private opening hands.
- * Deployment, attacks, maps, climate and turn resolution remain DISABLED until
- * the canonical tactical engine can run on the Worker. Never call it a duel.
+ * Current server scope: private opening hands, then the original MapGenerator
+ * creates and persists ONE server-side battlefield for both players.
+ * Deployment, attacks, climate and turn resolution remain DISABLED until
+ * their exact canonical tactical engines can run on the Worker. Never call it a duel.
  */
 import { CardDatabase } from '../../js/card-database.js';
 import { createDeckEngine } from '../../js/deck-engine.js';
@@ -13,9 +14,11 @@ import { createCardPhaseEngine } from '../../js/card-phase-engine.js';
 import { StageDatabase } from '../../js/stage-database.js';
 import { validateOfficialDeck } from './canonical-deck-rules.mjs';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
+import { PVP_STAGE_ID,createOfficialBattlefield,projectOfficialBattlefield } from './pvp-battlefield.mjs';
+export { PVP_STAGE_ID };
 
 export const OPENING_GAME_SCHEMA = 'ct2-pvp-opening-v1';
-export const PVP_STAGE_ID = 'versus_core_battle';
+
 
 // RNG is stored in durable state, never provided by either player. It is only
 // used as the RNG callback to the existing DeckEngine.shuffle() implementation.
@@ -50,7 +53,7 @@ export function createOpeningGame({ decks, serverSeed }) {
   }
   const state={schema:OPENING_GAME_SCHEMA,stageId:PVP_STAGE_ID,
     // Seed is private until full authoritative battle replay is implemented.
-    randomState:serverSeed>>>0,phase:'OPENING_HAND',pendingSeats:[0,1],
+    randomState:serverSeed>>>0,serverMapSeed:serverSeed>>>0,phase:'OPENING_HAND',pendingSeats:[0,1],
     cards:[]};
   const {deckEngine,cardPhase}=rules(state);
   for (const seat of [0,1]) {
@@ -101,7 +104,17 @@ export const openingGameCore = Object.freeze({
     }
     cardPhase.end(cardState);
     state.pendingSeats.shift();
-    if (!state.pendingSeats.length) state.phase='WAITING_FOR_TACTICAL_ENGINE';
+    if (!state.pendingSeats.length) {
+      // Create the one real procedural map only AFTER both opening decisions.
+      // The seed was created by the server at room start; no client-provided
+      // map, terrain, Core HP, capture point or synthetic game result is accepted.
+      // Old in-flight opening games predate serverMapSeed; their RNG state was
+      // still chosen by the server. New games always use the immutable seed.
+      const mapSeed=Number.isSafeInteger(state.serverMapSeed)
+        ? state.serverMapSeed : state.randomState;
+      state.battlefield=createOfficialBattlefield({serverSeed:mapSeed});
+      state.phase='BATTLEFIELD_READY';
+    }
     return {accepted:true,state};
   },
   project(state,seat) {
@@ -116,6 +129,8 @@ export const openingGameCore = Object.freeze({
         deckCount:own.zones.deck.length,discardCount:own.zones.discard.length,
         graveyardCount:own.zones.graveyard.length,openingDecisionAvailable:own.mulliganAvailable===true},
       opponent:{handCount:opponent.zones.hand.length,deckCount:opponent.zones.deck.length,
-        openingDone:opponent.mulliganDone===true}};
+        openingDone:opponent.mulliganDone===true},
+      battlefield:state.phase==='BATTLEFIELD_READY'
+        ? projectOfficialBattlefield(state.battlefield) : null};
   }
 });
