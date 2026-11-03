@@ -17,6 +17,7 @@
     .state{padding:12px;border-radius:8px;background:#12283b;color:#c2dbe6;line-height:1.55;overflow-wrap:anywhere;font-size:14px}.state[data-error="true"]{color:#ffb2a7;background:#352125}
     #bothReady{font-size:14px;color:#b7cbdb;line-height:1.7;margin:14px 0}#bothReady[data-ready="true"]{color:#a6d7b9}
     .warn{color:#f5cfa2;font-size:14px;line-height:1.7;border-left:3px solid #c59b55;padding-left:12px;margin:18px 0}
+    #battlefieldCanvas{width:100%;height:auto;display:block;background:#0c1722;border:1px solid #52718a;border-radius:10px;margin:10px 0;image-rendering:pixelated}
     [hidden]{display:none!important}footer{color:#879aab;text-align:center;margin-top:30px;font-size:12px}
   </style>
 </head>
@@ -24,8 +25,8 @@
 <main>
   <a href="./index.html">← 返回主選單（單機玩法完全不受影響）</a>
   <h1>PLAYER vs PLAYER</h1>
-  <p class="sub">CARD TACTICS 2.0 · 連線大廳／共用牌組驗證</p>
-  <p class="warn">目前可建立雙人房間、提交 20 張出擊牌組、伺服器抽取並確認雙方起手牌（支援斷線恢復）。仍未完成地圖生成、部署、移動、戰鬥、技能與天氣水文結算，不會假裝已開放雙人戰棋。</p>
+  <p class="sub">CARD TACTICS 2.0 · 連線大廳／伺服器地圖準備</p>
+  <p class="warn">目前可建立雙人房間、提交 20 張出擊牌組、伺服器抽取並確認雙方起手牌（支援斷線恢復）。可由伺服器產生原版 MapGenerator 戰場；仍未完成部署、移動、戰鬥、技能與天氣水文結算，不會假裝已開放雙人戰棋。</p>
   <p id="connect" class="sub"></p>
   <section id="setupView" class="panel" aria-label="建立或加入房間">
     <h2>建立／加入房間</h2>
@@ -50,6 +51,12 @@
       <div id="openingHand"></div>
       <div class="actions"><button id="keepOpening" class="strong" disabled>保留起手牌</button><button id="mulliganOpening" disabled>換掉勾選的牌</button></div>
       <p class="sub">雙方只能看自己的手牌；伺服器會檢查指令、回合和版本。</p>
+    </section>
+    <section id="battlefieldPanel" hidden aria-label="權威地圖資料">
+      <h2>伺服器地圖檢視</h2>
+      <p id="battlefieldStatus" class="sub">等待生成…</p>
+      <canvas id="battlefieldCanvas" role="img" aria-label="伺服器已驗證地圖的俯視預覽；這不是正式 3D 戰鬥"></canvas>
+      <p class="warn">目前僅顯示由原版 MapGenerator 產生的權威地形、Core 與據點；Babylon.js 角色、部署、技能、天氣水文及勝敗尚未連接。此預覽不能操作戰棋。</p>
     </section>
     <button id="exitRoom" style="width:100%;margin-top:10px">離開房間畫面</button>
   </section>
