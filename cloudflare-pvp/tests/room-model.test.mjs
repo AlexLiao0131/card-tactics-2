@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PROTOCOL,normalizeCode,normalizeName,createRoom,joinRoom,seatForToken,setReady,roomView,ROOM_LIFETIME_MS} from '../src/room-model.mjs';
+import {PROTOCOL,normalizeCode,normalizeName,createRoom,joinRoom,seatForToken,setReady,markDeckSubmitted,roomView,ROOM_LIFETIME_MS} from '../src/room-model.mjs';
 
 test('room code and name validation',()=>{
   assert.equal(normalizeCode('abcd-efgh'),'ABCDEFGH');
@@ -16,6 +16,9 @@ test('two seats, readiness and secret never exposed',()=>{
   assert.equal(seatForToken(room,'bad'),-1);
   assert.equal(joinRoom(room,{name:'乙',tokenHash:'guest-hash'}),1);
   assert.throws(()=>joinRoom(room,{name:'三',tokenHash:'third'}),/ROOM_FULL/);
+  assert.throws(()=>setReady(room,0,true),/DECK_REQUIRED/);
+  assert.equal(roomView(room,[0,1]).bothReady,false);
+  markDeckSubmitted(room,0);markDeckSubmitted(room,1);
   setReady(room,0,true);setReady(room,1,true);
   const view=roomView(room,[0,1]);
   assert.equal(view.protocol,PROTOCOL);
