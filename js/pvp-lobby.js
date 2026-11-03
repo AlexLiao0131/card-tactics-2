@@ -10,6 +10,9 @@ const status = $('lobbyStatus');
 const ready = $('readyToggle');
 const submitDeckButton = $('submitDeck');
 const openingPanel = $('openingPanel');
+const battlefieldPanel = $('battlefieldPanel');
+const battlefieldStatus = $('battlefieldStatus');
+const battlefieldCanvas = $('battlefieldCanvas');
 const openingHand = $('openingHand');
 const openingHint = $('openingHint');
 const keepOpening = $('keepOpening');
@@ -72,6 +75,7 @@ function setSession(value) {
   matchState=null;
   commandInFlight=false;
   openingPanel.hidden=true;
+  battlefieldPanel.hidden=true;
   if (session) codeView.textContent=session.code;
 }
 function closeSocket() {
@@ -97,20 +101,57 @@ function displayRoom(data) {
   ready.textContent=mine?.ready?'取消準備':'我已準備';
   ready.disabled=data.phase!=='LOBBY' || socket?.readyState!==WebSocket.OPEN || mine?.deckSubmitted!==true;
   submitDeckButton.disabled=data.phase!=='LOBBY';
-  $('bothReady').textContent=data.phase==='OPENING_HAND'
+  $('bothReady').textContent=data.phase==='BATTLEFIELD_READY'
+    ? '伺服器已生成正式地圖並同步給雙方。3D 戰棋與回合操作仍未接入。'
+    : data.phase==='OPENING_HAND'
     ? '已由伺服器建立起手牌。雙方依序確認起手牌；完整 3D 戰棋尚未開放。'
-    : data.phase==='WAITING_FOR_TACTICAL_ENGINE'
-    ? '雙方起手牌決策已由伺服器儲存。仍須完成正式地圖、部署、戰鬥與環境結算。'
     : data.bothReady
     ? '雙方已準備。正在建立伺服器對局…'
     : data.seats?.some(s=>s && !s.deckSubmitted) ? '等待雙方提交合法的 20 張出擊牌組' : '等待雙方準備';
   $('bothReady').dataset.ready=data.bothReady?'true':'false';
+}
+const terrainColors=Object.freeze({
+  PLAIN:'#82926d', MUD:'#554d3a', SAND:'#b7a574', FOREST:'#31583e',
+  HIGH_GROUND:'#8b8578', WATER:'#417c99', WALL:'#313945'
+});
+function showBattlefield(battlefield) {
+  battlefieldPanel.hidden=!battlefield;
+  if (!battlefield) return;
+  const {map,cores,deploymentPoints,meta}=battlefield;
+  if (!map || !Array.isArray(map.tiles) || !Number.isInteger(map.width) || !Number.isInteger(map.height) ||
+      map.width<1 || map.height<1 || map.width>64 || map.height>64) {
+    battlefieldStatus.textContent='伺服器地圖資料不完整，已拒絕繪製。';return;
+  }
+  battlefieldStatus.textContent=`${meta.size}｜${map.width} × ${map.height}｜`+
+    `Core ${cores.map(c=>`${c.owner==='PLAYER'?'我方':'敵方'} ${c.hp}/${c.maxHp}`).join(' · ')}｜`+
+    `中立據點 ${deploymentPoints.filter(p=>p.owner==='NEUTRAL').length} 座`;
+  const cell=16,ctx=battlefieldCanvas.getContext('2d');
+  if (!ctx) return;
+  battlefieldCanvas.width=map.width*cell;battlefieldCanvas.height=map.height*cell;
+  ctx.fillStyle='#091621';ctx.fillRect(0,0,battlefieldCanvas.width,battlefieldCanvas.height);
+  for (const tile of map.tiles) {
+    if (!Number.isInteger(tile?.x) || !Number.isInteger(tile?.y) ||
+        tile.x<0 || tile.y<0 || tile.x>=map.width || tile.y>=map.height) continue;
+    ctx.fillStyle=terrainColors[tile.terrain]||terrainColors.PLAIN;
+    ctx.fillRect(tile.x*cell,tile.y*cell,cell-1,cell-1);
+  }
+  for (const point of deploymentPoints) {
+    if(point.owner!=='NEUTRAL')continue;
+    for(const tile of point.captureTiles||[]){
+      ctx.fillStyle='#f4cc7d';ctx.fillRect(tile.x*cell+5,tile.y*cell+5,6,6);
+    }
+  }
+  for (const core of cores) {
+    ctx.fillStyle=core.owner==='PLAYER'?'#80c6ff':'#ff7979';
+    ctx.fillRect(core.x*cell+2,core.y*cell+2,cell-4,cell-4);
+  }
 }
 function displayMatch(message) {
   if (!session || !message || message.view?.seat!==session.seat) return;
   matchState=message;
   commandInFlight=false;
   const view=message.view;
+  showBattlefield(view.battlefield);
   openingPanel.hidden=false;
   openingHand.replaceChildren();
   for (const [i,card] of view.own.hand.entries()) {
@@ -125,8 +166,8 @@ function displayMatch(message) {
   const myTurn=view.phase==='OPENING_HAND' && view.activeSeat===session.seat;
   keepOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
   mulliganOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
-  openingHint.textContent=view.phase==='WAITING_FOR_TACTICAL_ENGINE'
-    ? '伺服器已保存雙方起手牌；戰棋核心尚未接入，無法開始部署或移動。'
+  openingHint.textContent=view.phase==='BATTLEFIELD_READY'
+    ? '雙方已確認起手牌，伺服器已建立正式地圖；戰棋指令仍待完整核心接入。'
     : myTurn
     ? `輪到你確認起手牌（版本 ${message.revision}）。可勾選要換掉的牌，或直接保留。`
     : view.myOpeningDone ? '你已確認起手牌，等待另一位玩家。' : '等待另一位玩家確認起手牌。';
