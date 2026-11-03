@@ -1,4 +1,12 @@
-export const DeckEngine=(()=>{
+import { browserDeckStorage } from './deck-browser-storage.js';
+
+// Keep the original js/ rule owner. Server instances inject explicit dependencies;
+// the browser singleton keeps the established DeckEngine API and storage keys.
+export function createDeckEngine({cardDatabase=null,packDatabase=null,cards=null,storage=null}={}) {
+  const cardDB=()=>cardDatabase ?? globalThis.CardDatabase;
+  const packDB=()=>packDatabase ?? globalThis.PackDatabase;
+  const cardDefinitions=()=>cards ?? globalThis.CARDS;
+
   const ACTIVE_KEY="cardtactics.activeDeck.v1",SAVED_KEY="cardtactics.savedDecks.v1";
   const BATTLE_DECK_SIZE=20;
   function create(cardIds=[]){return{deck:[...cardIds],hand:[],graveyard:[],discard:[]};}
@@ -9,7 +17,7 @@ export const DeckEngine=(()=>{
   function reviveToHand(state,cardId){const i=state.graveyard.indexOf(cardId);if(i<0)return false;state.graveyard.splice(i,1);state.hand.push(cardId);return true;}
   // Normalize historical/local-storage decks without silently fabricating cards.
   // The same validator governs editing, saving, preparation, and battle entry.
-  function normalize(ids=[]){const out=[];for(const id of ids){const card=CardDatabase.get(id);if(!card||!CardDatabase.canPersist(card))continue;if(card.unitType==="HERO"&&out.includes(id))continue;out.push(id);}return out;}
+  function normalize(ids=[]){const db=cardDB(),out=[];for(const id of ids){const card=db.get(id);if(!card||!db.canPersist(card))continue;if(card.unitType==="HERO"&&out.includes(id))continue;out.push(id);}return out;}
   function validate(ids=[]){const deck=normalize(ids),errors=[];
     if(!Array.isArray(ids)||deck.length!==ids.length)errors.push("牌組包含無效卡牌或重複的 HERO。");
     if(deck.length!==BATTLE_DECK_SIZE)errors.push(`一場必須配置 ${BATTLE_DECK_SIZE} 張牌，目前 ${deck.length} 張。`);
@@ -17,6 +25,7 @@ export const DeckEngine=(()=>{
   }
   function canAdd(ids=[],id){return ids.length<BATTLE_DECK_SIZE&&normalize([...ids,id]).length===ids.length+1;}
   function autoBuild(groupId,{size=BATTLE_DECK_SIZE}={}){
+    const CardDatabase=cardDB(),PackDatabase=packDB();
     const cards=PackDatabase.cards(groupId).filter(CardDatabase.canPersist),heroes=cards.filter(c=>c.unitType==="HERO"),units=cards.filter(c=>c.type==="CHARACTER"&&c.unitType!=="HERO"),spells=cards.filter(c=>c.type==="SPELL"),out=[];
     const target=Math.min(BATTLE_DECK_SIZE,Math.max(0,Number(size)||0));
     heroes.slice(0,2).forEach(c=>out.push(c.id));
@@ -25,16 +34,19 @@ export const DeckEngine=(()=>{
     i=0;while(out.length<target&&units.length)out.push(units[i++%units.length].id);
     // Group-specific packs can be small. Fill from the same official collection,
     // not from phantom copies of battle-generated or uncollectible cards.
-    const available=Object.values(globalThis.CARDS||{}).filter(CardDatabase.canPersist);
+    const available=Object.values(cardDefinitions()||{}).filter(CardDatabase.canPersist);
     const pool=available.length?available:[...new Set(PackDatabase.list().flatMap(p=>PackDatabase.cards(p.id)))].filter(CardDatabase.canPersist);
     i=0;while(out.length<target&&pool.length&&i<target*pool.length){const card=pool[i++%pool.length];if(card.unitType==="HERO"&&out.includes(card.id))continue;out.push(card.id);}
     return normalize(out);
   }
-  function setActive(ids){const result=validate(ids);if(!result.valid)throw new Error(result.errors.join(" "));localStorage.setItem(ACTIVE_KEY,JSON.stringify(result.deck));return result.deck;}
-  function getActive(){try{return normalize(JSON.parse(localStorage.getItem(ACTIVE_KEY)||"[]"));}catch{return[];}}
-  function saved(){try{return JSON.parse(localStorage.getItem(SAVED_KEY)||"{}")||{};}catch{return{};}}
-  function save(name,ids){const result=validate(ids);if(!result.valid)throw new Error(result.errors.join(" "));const all=saved();all[name]=result.deck;localStorage.setItem(SAVED_KEY,JSON.stringify(all));return all[name];}
+  function requireStorage(){if(!storage)throw Error('DECK_STORAGE_UNAVAILABLE');return storage;}
+  function setActive(ids){const result=validate(ids);if(!result.valid)throw new Error(result.errors.join(" "));requireStorage().setItem(ACTIVE_KEY,JSON.stringify(result.deck));return result.deck;}
+  function getActive(){try{return normalize(JSON.parse(requireStorage().getItem(ACTIVE_KEY)||"[]"));}catch{return[];}}
+  function saved(){try{return JSON.parse(requireStorage().getItem(SAVED_KEY)||"{}")||{};}catch{return{};}}
+  function save(name,ids){const result=validate(ids);if(!result.valid)throw new Error(result.errors.join(" "));const all=saved();all[name]=result.deck;requireStorage().setItem(SAVED_KEY,JSON.stringify(all));return all[name];}
   function load(name){return normalize(saved()[name]||[]);}
   return{BATTLE_DECK_SIZE,create,shuffle,draw,removeFromHand,toDiscard,toGraveyard,reviveToHand,normalize,validate,canAdd,autoBuild,setActive,getActive,saved,save,load};
-})();
+}
+
+export const DeckEngine=createDeckEngine({storage:browserDeckStorage()});
 globalThis.DeckEngine=DeckEngine;
