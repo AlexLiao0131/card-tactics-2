@@ -61,7 +61,9 @@ test('one opening decision per seat, using official mulligan rule',()=>{
   const after1=commit(after0.nextSession,1,'goodmull001',1,{type:'MULLIGAN',indices:[0,2]});
   assert.equal(after1.nextSession.state.cards[1].zones.hand.length,5);
   assert.equal(after1.nextSession.state.cards[1].mulliganDone,true);
-  assert.equal(after1.nextSession.state.phase,'WAITING_FOR_TACTICAL_ENGINE');
+  assert.equal(after1.nextSession.state.phase,'BATTLEFIELD_READY');
+  assert.equal(after1.nextSession.state.battlefield.map.tiles.length,280);
+  assert.equal(after1.nextSession.state.battlefield.cores.length,2);
   assert.equal(openingGameCore.activeSeat(after1.nextSession.state),null);
   assert.throws(()=>commit(after1.nextSession,0,'tooearly01',2,{type:'MOVE',x:1,y:1}),/NOT_YOUR_TURN/);
 });

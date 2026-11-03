@@ -199,8 +199,10 @@ test('two-player ready atomically creates private server opening game and surviv
   protocol:'ct2-command-v1',commandId:'opening00002',baseRevision:1,action:{type:'MULLIGAN',indices:[0,1]}}}));
  session=await room.ctx.storage.get('authoritative-battle-session');
  assert.equal(session.revision,2);
- assert.equal(session.state.phase,'WAITING_FOR_TACTICAL_ENGINE');
- assert.equal((await room.ctx.storage.get('room')).phase,'WAITING_FOR_TACTICAL_ENGINE');
+ assert.equal(session.state.phase,'BATTLEFIELD_READY');
+ assert.equal(session.state.battlefield.map.tiles.length,280);
+ assert.equal(session.state.battlefield.cores.length,2);
+ assert.equal((await room.ctx.storage.get('room')).phase,'BATTLEFIELD_READY');
  // Lost ACKs remain safe to retry after the opening phase has closed.
  await room.do.webSocketMessage(ws1,JSON.stringify({type:'MATCH_COMMAND',envelope:{
   protocol:'ct2-command-v1',commandId:'opening00002',baseRevision:1,action:{type:'MULLIGAN',indices:[0,1]}}}));
@@ -214,6 +216,10 @@ test('two-player ready atomically creates private server opening game and surviv
  await socket(env,a.code,recTicket.ticket);
  const resumed=room.ctx.getWebSockets().find(s=>s.deserializeAttachment()?.seat===0);
  assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.revision,2);
- assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.view.phase,'WAITING_FOR_TACTICAL_ENGINE');
+ assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.view.phase,'BATTLEFIELD_READY');
+ assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.view.battlefield.map.tiles.length,280);
+ const mapA=(await (await post(env,`/v1/rooms/${a.code}/opening`,{},a.token)).json()).match.view.battlefield;
+ const mapB=(await (await post(env,`/v1/rooms/${a.code}/opening`,{},b.token)).json()).match.view.battlefield;
+ assert.deepEqual(mapA,mapB);
  assert.equal((await post(env,`/v1/rooms/${a.code}/opening`,{},a.token)).status,200);
 });
