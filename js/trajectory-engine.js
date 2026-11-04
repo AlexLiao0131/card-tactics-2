@@ -4,7 +4,7 @@ export const TrajectoryEngine=(()=>{
   function begin(map,unit,lift=0){
     const tile=TacticalEngine.tile(map,unit.x,unit.y),ground=surfaceZ(map,unit.x,unit.y),unitZ=Number.isFinite(Number(unit?.z))?Number(unit.z):ground;
     const forcedLift=Math.max(0,Number(lift||0));
-    const layered=forcedLift<=0&&window.VerticalMobilityEngine&&!VerticalMobilityEngine.contactsGround(unit);
+    const layered=forcedLift<=0&&globalThis.VerticalMobilityEngine&&!VerticalMobilityEngine.contactsGround(unit);
     if(layered){
       const vertical=VerticalMobilityEngine.describe(unit,tile);
       return {z:vertical.physicalZ,state:"LAYERED",layered:true,unit,fallOrigin:vertical.physicalZ};
@@ -14,7 +14,7 @@ export const TrajectoryEngine=(()=>{
   }
   function inspectStep(map,t,x,y){
     const tile=TacticalEngine.tile(map,x,y),surface=surfaceZ(map,x,y);
-    if(t.layered&&window.VerticalMobilityEngine&&tile){
+    if(t.layered&&globalThis.VerticalMobilityEngine&&tile){
       const vertical=VerticalMobilityEngine.describe(t.unit,tile);
       return{blocked:false,surface,state:"LAYERED",z:vertical.physicalZ,fallOrigin:t.fallOrigin,verticalMode:vertical.mode};
     }

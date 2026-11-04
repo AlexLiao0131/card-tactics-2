@@ -1,4 +1,4 @@
-export const UnitRuntimeEngine=(()=>{
+export function createUnitRuntimeEngine(){
   const MANA_BASE=40,MANA_INT_FACTOR=2,MANA_WIL_FACTOR=2;
   const liveUnits=new Map();
   const clone=value=>JSON.parse(JSON.stringify(value));
@@ -173,14 +173,14 @@ export const UnitRuntimeEngine=(()=>{
     const extras=resourceCosts(skill);
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
-  function canUseSkill(unit,skill){
+  function canUseSkill(unit,skill,world=null){
     if(skill?.sanctuary){
       const value=faithValue(unit),maximum=unit?.resources?.faith?.max;
       if(value===null||(value!==0&&value!==maximum))return false;
     }
     if(isBloodMemory(unit,skill)&&!unit._bloodAwakened)return false;
     skill=skillForUnit(unit,skill);
-    if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits()).length)return false;
+    if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits(),skill,world).length)return false;
     if(skill?.approach&&unit?.moved)return false;
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const req=skill?.requirements||{};
@@ -193,8 +193,8 @@ export const UnitRuntimeEngine=(()=>{
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key];if(!rule)return false;if(rule.allowOverdraft!==true&&Number(unit.resources?.[key]?.value||0)<cost)return false;}
     return true;
   }
-  function consumeSkill(unit,skill){
-    if(!canUseSkill(unit,skill))return null;
+  function consumeSkill(unit,skill,world=null){
+    if(!canUseSkill(unit,skill,world))return null;
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const mana=manaCost(skill);unit.mana=Math.max(0,unit.mana-mana);
@@ -253,5 +253,6 @@ export const UnitRuntimeEngine=(()=>{
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
   return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
-})();
+}
+export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

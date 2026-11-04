@@ -1,4 +1,6 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
+import { createBattleAreaFieldEngine,createBattleAreaFieldState } from "./battle-area-field-engine.js";
+import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle-perception-engine.js";
 (()=>{
   const ICON={PLAIN:"",MUD:"≋",FOREST:"🌲",HIGH_GROUND:"▲",WATER:"≈",WALL:"■"};
   const TEAM={PLAYER:"P",ENEMY:"E",NEUTRAL:"N"};
@@ -20,106 +22,17 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   let selectedGuardian=null;
   let selectedGuardInterception=null;
   let commandPanelCollapsed=false;
-  let hallucinationSession=null;
-  const pendingHallucinations=new Map();
-  let hallucinationSerial=0;
-  let sanctuaries=[],sanctuarySerial=0,smokeFields=[],smokeSerial=0;
-  const sanctuaryKey=(x,y)=>`${x},${y}`;
-  function sanctuaryTiles(center,radius){
-    const origin=TacticalEngine.tile(map,center.x,center.y);
-    if(!origin||origin.terrain==="WALL")return[];
-    const limit=Math.max(0,Number(radius||0)),seen=new Set([sanctuaryKey(origin.x,origin.y)]),queue=[origin],result=[];
-    for(let i=0;i<queue.length;i++){
-      const current=queue[i],distance=Math.abs(current.x-origin.x)+Math.abs(current.y-origin.y);
-      if(distance>limit)continue;
-      result.push(current);
-      if(distance===limit)continue;
-      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-        const next=TacticalEngine.tile(map,current.x+dx,current.y+dy);
-        if(!next||next.terrain==="WALL")continue;
-        const key=sanctuaryKey(next.x,next.y);
-        if(seen.has(key)||Math.abs(next.x-origin.x)+Math.abs(next.y-origin.y)>limit)continue;
-        // Use authoritative terrain elevation, never a screen-space mesh height.
-        // A discontinuity of more than one terrain level is a blocking cliff.
-        if(Math.abs(TacticalEngine.elevation(current)-TacticalEngine.elevation(next))>1)continue;
-        seen.add(key);queue.push(next);
-      }
-    }
-    return result;
-  }
-  // Battle smoke is a stationary terrain field, not a permanent unit buff.
-  // Reuse the sanctuary's terrain-aware flood fill for identical cliff blocking.
-  function syncSmokeCover(unit){
-    if(!unit?.alive||!globalThis.EffectEngine)return false;
-    const covered=smokeFields.some(field=>field.team===unit.team&&field.cells.has(sanctuaryKey(unit.x,unit.y)));
-    const existing=EffectEngine.state(unit).some(effect=>effect.id==="SMOKE_COVER"&&effect.type==="STEALTH");
-    if(!covered&&existing){
-      unit.effects=EffectEngine.state(unit).filter(effect=>effect.id!=="SMOKE_COVER");
-      EffectEngine.syncModifiers(unit);return true;
-    }
-    if(covered&&!existing){
-      EffectEngine.applyStealth(unit,{id:"SMOKE_COVER",source:unit});
-      EffectEngine.resolveProximityReveal(unit,units);
-      return true;
-    }
-    return false;
-  }
-  function activateSmoke(caster,skill){
-    const center={x:caster.x,y:caster.y},cells=sanctuaryTiles(center,skill.radius);
-    if(!cells.length)return null;
-    const field={id:`cat-smoke-${++smokeSerial}`,team:caster.team,casterId:caster.id,
-      center,cells:new Set(cells.map(tile=>sanctuaryKey(tile.x,tile.y))),expiresRound:round+skill.smokeField.duration};
-    smokeFields.push(field);
-    units.forEach(syncSmokeCover);
-    pushLog(`${caster.character.name} 投出煙霧彈｜範圍 ${cells.length} 格｜維持 ${skill.smokeField.duration} 回合。`,"BATTLE");
-    return field;
-  }
-  function expireSmoke(){
-    const active=smokeFields.filter(field=>round<field.expiresRound);
-    if(active.length!==smokeFields.length){smokeFields=active;units.forEach(syncSmokeCover);}
-  }
-  function sanctuaryProtects(unit){
-    if(!unit?.alive)return false;
-    const key=sanctuaryKey(unit.x,unit.y);
-    return sanctuaries.some(field=>field.mode==="HEALING"&&field.team===unit.team&&field.cells.has(key));
-  }
-  function pulseSanctuary(field){
-    const skill=SkillDatabase.get(field.skillId),source=units.find(unit=>unit.id===field.casterId)||null;
-    for(const unit of units){
-      if(!unit.alive||!field.cells.has(sanctuaryKey(unit.x,unit.y)))continue;
-      if(field.mode==="HEALING"&&unit.team===field.team){
-        const healed=EffectEngine.saintHealing({source,target:unit,amount:skill.sanctuary.healing.amount}).amount;
-        const dispelled=EffectEngine.apply({source,target:unit,effect:{type:"DISPEL",classification:"POSITIVE"}}).removed||0;
-        pushLog(`聖域・庇護 → ${unit.character.name}｜治療 ${healed}、淨化 ${dispelled}。`,"BATTLE");
-      }else if(field.mode==="PUNISHMENT"&&unit.team!==field.team){
-        const judgement=skill.sanctuary.punishment;
-        const outcome=EffectEngine.apply({source,target:unit,effect:{type:"MAGIC_DAMAGE",amount:judgement.amount,element:judgement.element,traitMultipliers:judgement.traitMultipliers}});
-        pushLog(`聖域・懲戒 → ${unit.character.name}｜${outcome.amount||0} 神聖傷害。`,"BATTLE");
-        if(unit.hp<=0){unit.alive=false;handleDefeated(unit,source,skill);}
-      }
-    }
-  }
-  function activateSanctuary(caster,center,skill,mode){
-    const covered=sanctuaryTiles(center,skill.radius);
-    if(!covered.length)return null;
-    const field={id:`saint-sanctuary-${++sanctuarySerial}`,casterId:caster.id,team:caster.team,
-      skillId:skill.id,mode,center:{x:center.x,y:center.y},cells:new Set(covered.map(t=>sanctuaryKey(t.x,t.y))),
-      nextRound:round+1,ticksRemaining:skill.sanctuary.duration-1,expiresRound:round+skill.sanctuary.duration};
-    sanctuaries.push(field);pulseSanctuary(field);
-    pushLog(`${caster.character.name} 放出${mode==="HEALING"?"庇護":"懲戒"}聖域｜中心 (${center.x},${center.y})｜範圍 ${covered.length} 格｜剩下 ${field.ticksRemaining} 次。`,"BATTLE");
-    return field;
-  }
-  function tickSanctuaries(team){
-    const active=[];
-    for(const field of sanctuaries){
-      if(field.team===team&&round>=field.expiresRound)continue;
-      if(field.team===team&&field.ticksRemaining>0&&round>=field.nextRound){
-        pulseSanctuary(field);field.ticksRemaining--;field.nextRound=round+1;
-      }
-      active.push(field);
-    }
-    sanctuaries=active;
-  }
+  const perceptionState=createBattlePerceptionState();
+  // One canonical terrain-field owner for browser, Gemini and Worker.
+  // Presentation consumes its fields; it never decides field mechanics.
+  const areaFields=createBattleAreaFieldEngine({
+    state:createBattleAreaFieldState(),map:()=>map,units:()=>units,round:()=>round,
+    effect:()=>globalThis.EffectEngine,pushLog:(...args)=>pushLog(...args),
+    handleDefeated:(...args)=>handleDefeated(...args)
+  });
+  const sanctuaries=areaFields.sanctuaries,smokeFields=areaFields.smokeFields;
+  const {sanctuaryTiles,syncSmokeCover,activateSmoke,expireSmoke,
+    sanctuaryProtects,activateSanctuary,tickSanctuaries}=areaFields;
 
   // Gemini is opt-in, with a user-entered bearer token kept only in this page's
   // runtime memory. Never commit secrets into GitHub Pages, localStorage, or logs.
@@ -365,146 +278,38 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     });
   }
 
-  // Game-state snapshots contain data, Maps and Sets, never renderer or callback authority.
-  // Keep this serialization independent of browser structuredClone support and
-  // exclude callable presentation/cache fields from the temporary perception snapshot.
-  function cloneRuntime(value,seen=new WeakMap()){
-    if(typeof value==="function"||typeof value==="symbol")return undefined;
-    if(value===null||typeof value!=="object")return value;
-    if(seen.has(value))return seen.get(value);
-    const tag=Object.prototype.toString.call(value);
-    if(tag==="[object Date]")return new Date(value.getTime());
-    if(tag==="[object ArrayBuffer]")return value.slice(0);
-    if(tag==="[object DataView]")return new DataView(cloneRuntime(value.buffer,seen),value.byteOffset,value.byteLength);
-    if(ArrayBuffer.isView(value))return new value.constructor(value);
-    const result=tag==="[object Map]"?new Map():tag==="[object Set]"?new Set():Array.isArray(value)?[]:{};
-    seen.set(value,result);
-    if(tag==="[object Map]"){
-      for(const [key,item]of value)result.set(cloneRuntime(key,seen),cloneRuntime(item,seen));
-    }else if(tag==="[object Set]"){
-      for(const item of value)result.add(cloneRuntime(item,seen));
-    }else for(const [key,item]of Object.entries(value)){
-      if(typeof item!=="function"&&typeof item!=="symbol")result[key]=cloneRuntime(item,seen);
-    }
-    return result;
-  }
   function currentWorld(){return{map,units,stage,stageState,environmentState,cores};}
-  function realWorld(){return hallucinationSession?.real||currentWorld();}
-  function presentationWorld(){return hallucinationSession?.active&&hallucinationSession.team===TEAM.ENEMY?hallucinationSession.real:currentWorld();}
-  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===hallucinationSession?.real?null:selected,selectedSkill:w===hallucinationSession?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,renderRevision};}
+  function realWorld(){return perceptionState.session?.real||currentWorld();}
+  function presentationWorld(){return perceptionState.session?.active&&perceptionState.session.team===TEAM.ENEMY?perceptionState.session.real:currentWorld();}
+  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===perceptionState.session?.real?null:selected,selectedSkill:w===perceptionState.session?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,renderRevision};}
   function presentationUnitAt(x,y){return presentationWorld().units.find(u=>u.alive&&u.x===x&&u.y===y)||null;}
   function presentationCoreAt(x,y){return presentationWorld().cores.find(core=>core.x===x&&core.y===y)||null;}
-  function checkMatchEnd(){return hallucinationSession?.active?false:objectiveController.checkMatchEnd();}
-  // The perception world is an isolated simulation. It owns its own HP, death,
-  // effects, positions, objects and terrain; none of those values may commit to
-  // the authoritative world. The only cross-world writes are explicit action
-  // costs and truly consumed inventory items.
-  function realCounterpart(mirrorUnit){
-    if(!hallucinationSession?.active||!mirrorUnit?.mirrorOfUnitId)return null;
-    return hallucinationSession.real.units.find(unit=>unit.id===mirrorUnit.mirrorOfUnitId)||null;
-  }
-  function commitHallucinationSkillExpense(mirrorUnit,spent){
-    if(!spent||!hallucinationSession?.active||mirrorUnit?.hallucination)return false;
-    const realUnit=realCounterpart(mirrorUnit);
-    if(!realUnit)return false;
-    // Debit only costs reported by the official UnitRuntimeEngine. Do not copy
-    // the mirror's resource values: healing, buffs and recovered resources may
-    // exist only inside the perception simulation.
-    realUnit.mana=Math.max(0,Number(realUnit.mana||0)-Math.max(0,Number(spent.cost||0)));
-    for(const [key,payment] of Object.entries(spent.resources||{})){
-      const state=realUnit.resources?.[key];
-      if(!state)continue;
-      state.value=Math.max(0,Number(state.value||0)-Math.max(0,Number(payment?.cost||0)));
-    }
-    return true;
-  }
-  function hallucinationLivePayloadIds(){
-    const ids=new Set();
-    for(const unit of units||[])for(const key of ["inventory","cargo"])for(const payload of unit?.[key]||[])if(payload?.id)ids.add(payload.id);
-    for(const payload of globalThis.ItemInventoryEngine?.battleGroundItems?.()||[])if(payload?.id)ids.add(payload.id);
-    return ids;
-  }
-  function visibleHostilesFor(team,state=currentWorld()){
-    const observers=(state.units||[]).filter(unit=>unit?.alive&&unit.team===team&&!unit.hallucination);
-    const hostiles=(state.units||[]).filter(unit=>unit?.alive&&unit.team!==team&&!unit.hallucination&&unit.team!==TEAM.NEUTRAL);
-    if(!observers.length)return[];
-    return hostiles.filter(target=>observers.some(observer=>TacticalEngine.canSee(state.map,observer,target,state.environmentState||null)));
-  }
-  function scheduleTurnSimulation({source,targetTeam,skill,action}={}){
-    if(!source?.alive||![TEAM.PLAYER,TEAM.ENEMY].includes(targetTeam)||targetTeam===source.team)return null;
-    const observed=visibleHostilesFor(targetTeam).map(unit=>unit.id),existing=pendingHallucinations.get(targetTeam),turns=Math.max(1,Number(action?.durationTurns||1)),illusionCount=Math.max(0,Number(action?.illusionCount||2));
-    const record={targetTeam,sourceUnitId:source.id,sourceSkillId:skill?.id||null,turnsRemaining:Math.max(turns,Number(existing?.turnsRemaining||0)),illusionCount:Math.max(illusionCount,Number(existing?.illusionCount||0)),observedSourceIds:[...new Set([...(existing?.observedSourceIds||[]),...observed])]};
-    pendingHallucinations.set(targetTeam,record);return record;
-  }
-  function injectHallucinations(record,world){
-    const {map,units,cores,environmentState}=world;
-    const observers=units.filter(unit=>unit?.alive&&unit.team===record.targetTeam&&!unit.hallucination),occupied=new Set(units.filter(unit=>unit?.alive).map(unit=>`${unit.x},${unit.y}`)),coreCells=new Set((cores||[]).map(core=>`${core.x},${core.y}`));
-    const candidates=map.tiles.filter(tile=>!occupied.has(`${tile.x},${tile.y}`)&&!coreCells.has(`${tile.x},${tile.y}`)&&observers.some(observer=>TacticalEngine.canSee(map,observer,tile,environmentState||null)));
-    const sources=(record.observedSourceIds||[]).map(id=>units.find(unit=>unit.id===id&&unit.alive&&!unit.hallucination&&unit.team!==record.targetTeam)).filter(Boolean);
-    if(!sources.length||!candidates.length)return[];
-    const made=[],count=Math.min(Math.max(0,Number(record.illusionCount||2)),candidates.length);
-    for(let i=0;i<count;i++){
-      const source=sources[i%sources.length],valid=candidates.filter(tile=>TacticalEngine.canOccupyTerrain(source,tile)&&!TacticalEngine.isBlockedByObject(map,tile.x,tile.y,source));if(!valid.length)break;
-      const tile=valid[Math.floor(Math.random()*valid.length)],fake=cloneRuntime({...source,_runtimeMap:null});
-      fake.id=`hallucination_${++hallucinationSerial}`;fake.x=tile.x;fake.y=tile.y;fake.z=Number(TacticalEngine.elevation(tile)||0);fake.hp=1;fake.alive=true;fake.hallucination=true;fake.mirrorOnly=true;fake.mirrorOfUnitId=null;fake.hallucinationSourceId=source.id;fake.perceivedHp=Math.max(1,Number(source.hp||source.character?.combat?.hp||1));fake.perceivedMaxHp=Math.max(fake.perceivedHp,Number(source.character?.combat?.hp||fake.perceivedHp));fake.cardId=null;fake.effects=(fake.effects||[]).filter(effect=>effect?.type!=="STEALTH");fake.participatesInTurn=false;fake.canCapture=false;fake.countsForObjectives=false;fake.moved=true;fake.acted=true;fake.waited=true;fake._runtimeMap=map;
-      units.push(fake);occupied.add(`${tile.x},${tile.y}`);made.push(fake);
-      const idx=candidates.indexOf(tile);if(idx>=0)candidates.splice(idx,1);
-    }
-    return made;
-  }
-  function beginHallucinationTurn(team){
-    if(hallucinationSession?.active)return false;
-    const record=pendingHallucinations.get(team);if(!record||Number(record.turnsRemaining||0)<=0)return false;
-    const real=currentWorld(),groundSnapshot=globalThis.ItemInventoryEngine?.battleGroundItems?.()||[];
-    const mirror={map:cloneRuntime(real.map),stage:cloneRuntime(real.stage),stageState:cloneRuntime(real.stageState),environmentState:cloneRuntime(real.environmentState),cores:cloneRuntime(real.cores),units:real.units.map(unit=>cloneRuntime({...unit,_runtimeMap:null}))};
-    for(const unit of mirror.units){unit._runtimeMap=mirror.map;unit.mirrorOfUnitId=unit.id;}
-    // Prepare the complete perception projection before switching the battle's
-    // world references. An unfinished simulation must never become the active world.
-    injectHallucinations(record,mirror);
-    ({map,units,stage,stageState,environmentState,cores}=mirror);
-    hallucinationSession={active:true,team,real,groundSnapshot,record};
-    record.turnsRemaining=Math.max(0,Number(record.turnsRemaining||1)-1);if(record.turnsRemaining<=0)pendingHallucinations.delete(team);else pendingHallucinations.set(team,record);
-    UnitRuntimeEngine.syncLiveRoster(units);clearSelection();clearEnemyReaction();return true;
-  }
-  function reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds){
-    for(const key of ["inventory","cargo"]){
-      const original=Array.isArray(realUnit?.[key])?realUnit[key]:[];
-      realUnit[key]=original.filter(payload=>{if(!payload?.id)return true;if(livePayloadIds.has(payload.id))return true;const item=globalThis.ItemDatabase?.get?.(payload.itemId);return item?.use?.consume!==true;});
-    }
-  }
-  function endHallucinationTurn(team){
-    const session=hallucinationSession;if(!session?.active||session.team!==team)return false;
-    const livePayloadIds=hallucinationLivePayloadIds();
-    // Transfer only action completion and real consumable expenditures made by
-    // the affected side. Simulated combat outcomes never leave the mirror world.
-    for(const mirrorUnit of units||[]){
-      if(!mirrorUnit?.mirrorOfUnitId||mirrorUnit.hallucination)continue;
-      const realUnit=realCounterpart(mirrorUnit);
-      if(!realUnit)continue;
-      if(mirrorUnit.team===session.team){
-        realUnit.moved=!!mirrorUnit.moved;
-        realUnit.acted=!!mirrorUnit.acted;
-        realUnit.waited=!!mirrorUnit.waited;
-        realUnit.itemInteractionUsed=Number(mirrorUnit.itemInteractionUsed||0);
-      }
-      reconcileConsumedItems(realUnit,mirrorUnit,livePayloadIds);
-    }
-    // Restore the original world references atomically. Mirror-only damage,
-    // defeat records, tiles, ground-item placement and Core changes are discarded.
-    ({map,units,stage,stageState,environmentState,cores}=session.real);
-    globalThis.ItemInventoryEngine?.restoreBattleGroundItems?.(session.groundSnapshot);
-    hallucinationSession=null;
-    UnitRuntimeEngine.syncLiveRoster(units);
-    UnitRuntimeEngine.reconcileCompanions(units);
-    clearSelection();clearEnemyReaction();return true;
-  }
-  function hallucinationActiveFor(team){return !!hallucinationSession?.active&&hallucinationSession.team===team;}
+  function checkMatchEnd(){return perceptionState.session?.active?false:objectiveController.checkMatchEnd();}
+  // A single shared gameplay owner runs perception in browser, Gemini and PvP.
+  // This UI only supplies the original live-world handles and inventory hooks.
+  const perception=createBattlePerceptionEngine({
+    state:perceptionState,world:()=>currentWorld(),
+    replaceWorld:next=>{({map,units,stage,stageState,environmentState,cores}=next);},
+    tactical:TacticalEngine,
+    itemDatabase:()=>globalThis.ItemDatabase,
+    groundItems:()=>globalThis.ItemInventoryEngine?.battleGroundItems?.()||[],
+    cardStates:()=>[cardState,enemyCardState],
+    restoreGroundItems:items=>globalThis.ItemInventoryEngine?.restoreBattleGroundItems?.(items),
+    onSwitch:()=>{UnitRuntimeEngine.syncLiveRoster(units);clearSelection();clearEnemyReaction();},
+    onRestore:()=>{UnitRuntimeEngine.syncLiveRoster(units);
+      UnitRuntimeEngine.reconcileCompanions(units);clearSelection();clearEnemyReaction();}
+  });
+  function commitHallucinationSkillExpense(unit,spent){return perception.charge(unit,spent);}
+  function scheduleTurnSimulation(args){return perception.schedule(args);}
+  function beginHallucinationTurn(team){return perception.begin(team);}
+  function endHallucinationTurn(team){return perception.end(team);}
+  function hallucinationActiveFor(team){return perception.activeFor(team);}
 
   function pushLog(text,type="SYSTEM"){logs.push(String(text));if(logs.length>240)logs.splice(0,logs.length-240);BattleLog.add(logState,type,String(text));window.dispatchEvent(new CustomEvent("cardtactics:log",{detail:{type,text:String(text)}}));}
   function logPostEffect(entry){const {source,target,effect,result}=entry;if(!result)return;if(!result.applied){pushLog(`${target.character.name}｜${effect.type} 未生效${result.reason?`（${result.reason}）`:""}。`,"DETAIL");return;}const moved=result.steps?.length||0;if(moved>0)EffectEngine.interruptChannel(target,"FORCED_MOVE");const visitCollisions=(r,mover=target)=>{for(const collision of r?.collisions||[]){environmentController.resolveCollisionRuntime(collision,{mover,source});if(collision.chain&&collision.surface?.unit)visitCollisions(collision.chain,collision.surface.unit);}};visitCollisions(result);pushLog(`${source.character.name} → ${target.character.name}：${effect.type==="PULL"?"拉近":"擊退"} ${moved} 格。`,"BATTLE");if(result.falls?.length){const drops=result.falls.map(f=>`Z${f.from}→H${f.to}`).join("、");pushLog(`${target.character.name} 墜落 ${drops}｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}。`,"BATTLE");}else pushLog(`${target.character.name} 強制位移完成｜無墜落傷害。`,"DETAIL");if(result.applied&&target.alive)enterTile(target);}
   function handleDefeated(unit,source,skillOrEffect){
     if(unit?.hallucination){unit.hp=0;unit.alive=false;return{hallucination:true};}
-    if(hallucinationSession?.active&&unit?.mirrorOfUnitId){
+    if(perceptionState.session?.active&&unit?.mirrorOfUnitId){
       unit.hp=0;unit.alive=false;
       // No deferred real-world death: the original actor was never hit.
       return{perceptionDefeat:true};
@@ -526,8 +331,8 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
 
   function resetBattle(){
     debugEnvironmentSteps=0;
-    sanctuaries=[];sanctuarySerial=0;smokeFields=[];smokeSerial=0;
-    enemyController?.reset?.();actionController?.reset?.();hallucinationSession=null;pendingHallucinations.clear();
+    areaFields.reset();
+    enemyController?.reset?.();actionController?.reset?.();perceptionState.session=null;perception.reset();
     globalThis.ItemInventoryEngine?.beginBattle?.(window.CardTacticsBattleSetup?.itemLoadouts||{});
     const requestedStageId=window.CardTacticsBattleSetup?.stageId||"prototype_battle";
     const setup=BattleSetupEngine.create({stageId:requestedStageId,battleSetup:window.CardTacticsBattleSetup,TEAM});
@@ -591,7 +396,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   function guardCandidates(){if(!pendingEnemyAttack)return[];const {defender}=pendingEnemyAttack;return BattleResolution.guardCandidates({map,units,target:defender});}
   function chooseGuardian(guardian){selectedGuardian=guardian;selectedGuardInterception=null;pendingReactionType=null;mode="enemy-guard-reaction";render();}
   function chooseEnemyReaction(type){if(!pendingEnemyAttack)return;pendingReactionType=type;if(type==="EVADE"){executeEnemyAttack(BattleResolution.createReaction("EVADE"));return;}mode=type==="COUNTER"?"enemy-counter-select":"enemy-defense-select";render();}
-  function resolvedSkill(skill,variant){return variant?{...skill,...variant,id:skill.id,name:variant.name||skill.name,baseSkillId:skill.id,variantId:variant.id,variants:undefined}:skill;}
+  function resolvedSkill(skill,variant){return SkillDatabase.resolveVariant(skill,variant?.id);}
   // Weapon enchantment changes the valid contact surfaces, not the attack's
   // underlying damage skill. The same aim mode owns both enemy and terrain hits.
   function attackWithEnchantmentTargets(unit,skill){
@@ -616,7 +421,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     // Units along the route are targets, not movement/landing positions.
     return true;
   }
-  function aoeTiles(center,radius){const r=Number(radius||0);return map.tiles.filter(tile=>Math.abs(tile.x-center.x)+Math.abs(tile.y-center.y)<=r);}
+  function aoeTiles(center,radius){return TacticalEngine.aoeTiles(map,center,radius);}
   function logEnvironmentEvent(...args){return environmentController.logEnvironmentEvent(...args);}
   function selectNextAvailableUnit(){
     if(phase!==PHASE.PLAYER||matchResult||pendingEngagement||pendingEnemyAttack)return false;
@@ -1010,7 +815,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
   if(!window.BattlePresentationController?.create)throw new Error("BattlePresentationController is not loaded.");presentationController=window.BattlePresentationController.create({TEAM,PHASE,state:presentationState,targetType,targetableEntities,targetRangeTiles,mapTargetTiles,environmentTargetTiles,unitAt:presentationUnitAt,coreAt:presentationCoreAt,effectiveSkill});
   if(!window.BattleObjectiveController?.create)throw new Error("BattleObjectiveController is not loaded.");objectiveController=window.BattleObjectiveController.create({state:()=>({stage,stageState,round,units,cores,cardState,enemyCardState,matchResult}),setMatchResult:value=>{matchResult=value;phase=PHASE.ENDED;},onMatchEnd:value=>{clearSelection();clearEnemyReaction();pushLog(`Round ${round}｜${value}｜關卡目標已${value==="VICTORY"?"達成":"失敗"}。`,"SYSTEM");}});
   if(!window.EncounterRewardEngine?.create)throw new Error("EncounterRewardEngine is not loaded.");encounterRewards=window.EncounterRewardEngine.create({playerCardState:()=>cardState,pushLog});
-  if(!window.DeathLifecycleEngine?.create)throw new Error("DeathLifecycleEngine is not loaded.");deathLifecycle=window.DeathLifecycleEngine.create({stageEvent,cardStateFor:unit=>unit.team===TEAM.PLAYER?cardState:unit.team===TEAM.ENEMY?enemyCardState:null,pushLog,onDefeated:unit=>{if(unit.team===TEAM.ENEMY)encounterRewards.onDefeated(unit);},onFinalized:()=>checkMatchEnd()});
+  if(!window.DeathLifecycleEngine?.create)throw new Error("DeathLifecycleEngine is not loaded.");deathLifecycle=window.DeathLifecycleEngine.create({stageEvent,cardStateFor:unit=>unit.team===TEAM.PLAYER?(perceptionState.session?.defeatCards?.[0]||cardState):unit.team===TEAM.ENEMY?(perceptionState.session?.defeatCards?.[1]||enemyCardState):null,deathScope:()=>perceptionState.session,allowRewards:()=>!perceptionState.session?.active,pushLog,onDefeated:unit=>{if(unit.team===TEAM.ENEMY)encounterRewards.onDefeated(unit);},onFinalized:()=>checkMatchEnd()});
   if(!window.BattleCoreCaptureController?.create)throw new Error("BattleCoreCaptureController is not loaded.");coreCaptureController=window.BattleCoreCaptureController.create({TEAM,state:()=>({stage,units,cores}),pushLog,checkMatchEnd,commitPendingMove:unit=>commitPendingMove(unit),stageEvent,onCaptureComplete:()=>{mode="inspect";if(!maybeAutoEndPlayerTurn()){window.dispatchEvent(new CustomEvent("cardtactics:state"));render();}}});
   if(!window.BattleEnvironmentController?.create)throw new Error("BattleEnvironmentController is not loaded.");environmentController=window.BattleEnvironmentController.create({TEAM,state:()=>({map,units,environmentState}),living,pushLog,handleDefeated,stageEvent,damageUnitFlat});
   if(!window.TacticalEnemyController?.create)throw new Error("TacticalEnemyController is not loaded.");enemyController=window.TacticalEnemyController.create(battleContext);
@@ -1029,7 +834,7 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
     return debugEmit();
   }
   function debugAdvanceEnvironmentTurns(count=1){
-    if(!map||!environmentState||matchResult||hallucinationSession?.active)return false;
+    if(!map||!environmentState||matchResult||perceptionState.session?.active)return false;
     const steps=Math.max(1,Math.min(10,Math.floor(Number(count)||1)));
     // Exactly the same environment path used by beginPlayerTurn(). Do not
     // fabricate Q/D, skip weatherPulse(), or run the enemy tactical phase.
@@ -1069,6 +874,6 @@ import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-syst
       candidates:enchantRecipientGroups(pending).map(({target,weapons})=>({unitId:target.id,...enchantIdentity(target),
         weaponSlots:weapons.map(weapon=>weapon.slot),waited:!!target.waited}))}:null;
   },getEnemyCardState:()=>enemyCardState,getEnemyPresentation:()=>({...enemyView}),getBattleMap:()=>presentationWorld().map,getBattleSnapshot:()=>presentationController.battleSnapshot(),clickBattleTile,getStage:()=>presentationWorld().stage,getCores:()=>presentationWorld().cores.map(core=>({...core})),getPhase:()=>phase,getPendingCard:()=>pendingCard,getBattleLog:(type=null)=>({active:logState.active,entries:BattleLog.list(logState,type||logState.active).map(entry=>({...entry}))}),getEngagementPresentation:engagementPresentation,handleEngagementUIAction,setBattleLogTab:type=>{BattleLog.setActive(logState,type);window.dispatchEvent(new CustomEvent("cardtactics:log"));},getActionMenuAnchor:()=>phase===PHASE.PLAYER&&selected&&!commandPanelCollapsed&&mode!=="support-select"?{x:selected.x,y:selected.y}:null,getInspectedUnitPresentation:()=>{const s=presentationWorld(),unit=inspectedTile?s.units.find(candidate=>candidate.alive&&candidate.x===inspectedTile.x&&candidate.y===inspectedTile.y):selected;return presentationController.unitPresentation(unit||selected);},getInspectedTilePresentation:()=>{const w=presentationWorld(),tile=inspectedTile?TacticalEngine.tile(w.map,inspectedTile.x,inspectedTile.y):null;return tile?TileInspectionPresentation.create({map:w.map,environmentState:w.environmentState,tile}):null;},playCard:cardId=>cardPhaseController.select(cardId),canPlayCard:cardId=>cardPhaseController.canResolve(CardDatabase.get(cardId)),hasPlayableCard:()=>cardPhaseController.hasPlayableCard(),maybeAutoEndCardPhase:()=>cardPhaseController.maybeAutoEnd(),endCardPhase:()=>cardPhaseController.end(),cancelCard:()=>cardPhaseController.cancel(),endPlayerTurn,selectNextAvailableUnit,refresh:render,resetBattle,prepareGeminiMatch:geminiPreparationScreen,clearGeminiMatch:()=>{geminiSession=null;
-    if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;},isHallucinated:()=>!!hallucinationSession?.active,debug:Object.freeze({state:debugState,setWeather:debugSetWeather,setTimeOfDay:debugSetTimeOfDay,setMoonlight:debugSetMoonlight,advanceEnvironmentTurns:debugAdvanceEnvironmentTurns,setWind:debugSetWind,applyEnvironmentForce:debugApplyEnvironmentForce,clearTileEffects:debugClearTileEffects,giveCard:debugGiveCard,spawnCharacterCard:debugSpawnCharacterCard,moveUnit:debugMoveUnit,hallucination:()=>hallucinationSession?{active:true,team:hallucinationSession.team,pending:[...pendingHallucinations.keys()]}:{active:false,pending:[...pendingHallucinations.keys()]}})};
+    if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;},isHallucinated:()=>!!perceptionState.session?.active,debug:Object.freeze({state:debugState,setWeather:debugSetWeather,setTimeOfDay:debugSetTimeOfDay,setMoonlight:debugSetMoonlight,advanceEnvironmentTurns:debugAdvanceEnvironmentTurns,setWind:debugSetWind,applyEnvironmentForce:debugApplyEnvironmentForce,clearTileEffects:debugClearTileEffects,giveCard:debugGiveCard,spawnCharacterCard:debugSpawnCharacterCard,moveUnit:debugMoveUnit,hallucination:()=>perceptionState.session?{active:true,team:perceptionState.session.team,pending:Object.keys(perceptionState.pending)}:{active:false,pending:Object.keys(perceptionState.pending)}})};
   resetBattle();
 })();
