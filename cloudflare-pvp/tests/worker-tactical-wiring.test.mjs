@@ -680,3 +680,75 @@ test('failed delivery to one WebSocket cannot block opponent committed snapshot 
  assert.equal(retry.state.revision,second.state.revision);
  assert.equal(receiver.sent.at(-1).duplicate,true);
 });
+
+test('canonical PVP inventory: two private player loadouts persist, equip the correct occurrence, consume once and survive DO reconnect',async()=>{
+ const {ItemInventoryEngine}=await import('../../js/item-inventory-engine.js');
+ const cards=Array(20).fill('imperial_swordsman_card');
+ function preparation(first){
+   const loadouts={imperial_swordsman_card:ItemInventoryEngine.deckEntries(cards).map((entry,i)=>
+     ({key:entry.key,items:i===0?first:[]}))};
+   const stash=Object.fromEntries(first.map(id=>[id,first.filter(k=>k===id).length]));
+   return {stash,loadouts};
+ }
+ const aItems=preparation(['torch','hp_potion_small']);
+ const bItems=preparation(['mp_potion_small']);
+ const service=createService(true),a=(await post(service.env,'/v1/rooms',{name:'Inventory A'})).data;
+ const b=(await post(service.env,`/v1/rooms/${a.code}/join`,{name:'Inventory B'})).data;
+ assert.equal((await post(service.env,`/v1/rooms/${a.code}/deck`,{cards,inventory:aItems},a.token)).status,200);
+ assert.equal((await post(service.env,`/v1/rooms/${a.code}/deck`,{cards,inventory:bItems},b.token)).status,200);
+ await openSocket(service,a.code,a.token);await openSocket(service,a.code,b.token);
+ const room=service.rooms.get(`ct2:${a.code}`),ws=room.ctx.getWebSockets();
+ await room.do.webSocketMessage(ws[0],JSON.stringify({type:'SET_READY',ready:true}));
+ await room.do.webSocketMessage(ws[1],JSON.stringify({type:'SET_READY',ready:true}));
+ let authority=await room.ctx.storage.get('authoritative-battle-session');
+ assert.deepEqual(authority.state.preparedItems[0].imperial_swordsman_card[0].items,aItems.loadouts.imperial_swordsman_card[0].items);
+ assert.deepEqual(authority.state.preparedItems[1].imperial_swordsman_card[0].items,bItems.loadouts.imperial_swordsman_card[0].items);
+ assert.equal(ws[1].sent.findLast(x=>x.type==='MATCH_STATE').match.view.own.itemConsumptions,undefined);
+ await send(room,ws[0],{type:'KEEP_OPENING_HAND'});
+ await send(room,ws[1],{type:'KEEP_OPENING_HAND'});
+ await send(room,ws[0],{type:'BEGIN_BATTLE'});
+ authority=await room.ctx.storage.get('authoritative-battle-session');
+ const base=authority.state.battlefield.deploymentPoints.find(p=>p.owner==='PLAYER').area[0];
+ const deployed=await send(room,ws[0],{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:base.x,y:base.y});
+ const soldier=deployed.state.state.units[0];
+ assert.deepEqual(soldier.inventory.map(p=>p.itemId),['torch','hp_potion_small']);
+ assert.ok(soldier.inventory.every(p=>p.owned===false&&p.source==='PVP_PREPARATION'));
+ assert.equal(deployed.state.state.preparedItems[0].imperial_swordsman_card.length,19);
+ assert.equal(deployed.state.state.preparedItems[1].imperial_swordsman_card.length,20);
+ assert.equal(ws[1].sent.findLast(x=>x.type==='MATCH_STATE').match.view.opponent.itemConsumptions,undefined);
+ await send(room,ws[0],{type:'END_CARD_PHASE'});
+ // Injure fixture only; actual item use goes through official ItemRuntimeEngine.
+ authority=await room.ctx.storage.get('authoritative-battle-session');
+ authority.state.units[0].hp-=60;
+ authority.state.units[0].acted=false;authority.state.units[0].waited=false;
+ await room.ctx.storage.put('authoritative-battle-session',authority);
+ const potion=soldier.inventory.find(p=>p.itemId==='hp_potion_small');
+ const consumed=await send(room,ws[0],{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:potion.id});
+ const after=consumed.state.state.units[0];
+ assert.equal(after.hp,authority.state.units[0].hp+50);
+ assert.deepEqual(after.inventory.map(p=>p.itemId),['torch']);
+ assert.deepEqual(after.itemConsumptions,{hp_potion_small:1});
+ assert.deepEqual(ws[0].sent.findLast(x=>x.type==='MATCH_STATE').match.view.own.itemConsumptions,{hp_potion_small:1});
+ assert.equal(ws[1].sent.findLast(x=>x.type==='MATCH_STATE').match.view.own.itemConsumptions?.hp_potion_small,undefined);
+ const retry=await send(room,ws[0],{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:potion.id},consumed.envelope.baseRevision,consumed.envelope.commandId);
+ assert.equal(retry.state.revision,consumed.state.revision);
+ assert.deepEqual(retry.state.state.units[0].itemConsumptions,{hp_potion_small:1});
+ room.do=new PvpRoom(room.ctx,service.env);
+ await openSocket(service,a.code,a.token);
+ const returned=room.ctx.getWebSockets().find(s=>s.deserializeAttachment()?.seat===0);
+ assert.deepEqual(returned.sent.findLast(x=>x.type==='MATCH_STATE').match.view.own.itemConsumptions,{hp_potion_small:1});
+});
+
+test('inventory claims fail closed outside gated PvP test rooms',async()=>{
+ const {ItemInventoryEngine}=await import('../../js/item-inventory-engine.js');
+ const service=createService(false),a=(await post(service.env,'/v1/rooms',{name:'Restricted'})).data;
+ const cards=Array(20).fill('imperial_swordsman_card');
+ const loadouts={imperial_swordsman_card:ItemInventoryEngine.deckEntries(cards).map((e,i)=>({key:e.key,items:i===0?['torch']:[]}))};
+ const forbidden=await post(service.env,`/v1/rooms/${a.code}/deck`,{cards,inventory:{stash:{torch:1},loadouts}},a.token);
+ assert.equal(forbidden.status,403);
+ assert.equal(forbidden.data.error,'PVP_ITEMS_REQUIRE_TEST_ROOM');
+ const unknown=await post(service.env,`/v1/rooms/${a.code}/deck`,{cards,inventory:{stash:{bad_item:1},loadouts}},a.token);
+ assert.equal(unknown.status,400);assert.equal(unknown.data.error,'INVALID_ITEM_STASH');
+ const allowed=await post(service.env,`/v1/rooms/${a.code}/deck`,{cards},a.token);
+ assert.equal(allowed.status,200);
+});

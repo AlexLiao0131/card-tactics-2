@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {createOpeningGame,openingGameCore} from '../src/pvp-match-core.mjs';
 import {beginCanonicalPlayerCardPhase,resolveCanonicalPlayerCommand,tacticalDebugProjection} from '../src/pvp-headless-tactical.mjs';
 import {TacticalEngine} from '../../js/tactical-engine.js';
+import {VerticalMobilityEngine} from '../../js/vertical-mobility-engine.js';
+import {CharacterDatabase} from '../../js/character-database.js';
 
 const playerDeck=Array(20).fill('imperial_archer_card');
 const enemyDeck=Array(20).fill('imperial_swordsman_card');
@@ -178,4 +180,89 @@ test('official Core damage route uses TacticalActionController and ObjectiveEngi
  assert.ok(game.events.some(e=>e.type==='BATTLE'&&e.text.includes('CORE HP')));
  assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ATTACK_CORE',unitId:attacker.id,
    skillId:skill.id,coreOwner:'ENEMY'},0),{code:'UNIT_CANNOT_ATTACK_CORE'});
+});
+
+
+test('native item menu uses original ItemRuntimeEngine and only owns private seat inventory',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const soldier=game.units[0];soldier.acted=false;soldier.waited=false;
+ soldier.hp-=50;
+ const startingHp=soldier.hp;
+ soldier.inventory=[{id:'server_item_1',itemId:'hp_potion_small',owned:false,source:'TEST'}];
+ const own=tacticalDebugProjection(game,0).units.find(x=>x.id===soldier.id);
+ assert.equal(own.itemChoices.length,1);
+ assert.equal(own.itemChoices[0].name,'小型生命藥水');
+ assert.equal(own.itemChoices[0].usable,true);
+ const opponent=tacticalDebugProjection(game,1).units.find(x=>x.id===soldier.id);
+ if(opponent)assert.equal('itemChoices' in opponent,false);
+ const used=resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'server_item_1'},0);
+ assert.equal(used.accepted,true);assert.equal(used.itemId,'hp_potion_small');
+ assert.ok(soldier.hp>startingHp,'official heal resolves on real HP');
+ assert.equal(soldier.inventory.length,0,'consumable removed from authoritative roster');
+ assert.equal(soldier.acted,true);
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'server_item_1'},0),{code:'UNIT_CANNOT_USE_ITEM'});
+});
+
+test('item authority rejects forged IDs, out-of-turn and unaudited owned local stash',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const soldier=game.units[0];soldier.acted=false;soldier.waited=false;
+ soldier.inventory=[{id:'owned_item',itemId:'hp_potion_small',owned:true,source:'PREPARATION'}];
+ soldier.hp-=35;
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'owned_item'},1),{code:'NOT_YOUR_TURN'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'owned_item'},0),{code:'PVP_OWNED_INVENTORY_NOT_CONNECTED'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'ghost'},0),{code:'ITEM_NOT_AVAILABLE'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'USE_BATTLE_ITEM',unitId:soldier.id,payloadId:'owned_item',quantity:1},0),{code:'INVALID_ITEM_COMMAND'});
+});
+
+test('native capture command appears only when the official DeploymentEngine certifies the point',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const soldier=game.units[0];
+ const before=tacticalDebugProjection(game,0).units.find(unit=>unit.id===soldier.id);
+ assert.equal(before.capturePoint,null);
+ const point=game.battlefield.deploymentPoints.find(p=>p.owner==='NEUTRAL');
+ soldier.x=point.captureTiles[0].x;soldier.y=point.captureTiles[0].y;
+ const valid=tacticalDebugProjection(game,0).units.find(unit=>unit.id===soldier.id);
+ assert.deepEqual(valid.capturePoint,{id:point.id,name:point.name});
+ point.capturable=false;
+ assert.equal(tacticalDebugProjection(game,0).units.find(unit=>unit.id===soldier.id).capturePoint,null);
+});
+
+test('native-facing turns are settled by official TacticalEngine with seat and input validation',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const soldier=game.units[0],original=soldier.facing;
+ const expected={facing:original};TacticalEngine.rotateFacing(expected,1);
+ soldier.acted=false;soldier.waited=false;
+ const result=resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:soldier.id,steps:1},0);
+ assert.equal(result.accepted,true);assert.equal(soldier.facing,expected.facing);
+ assert.equal(game.units[0].acted,false,'facing should not invent action consumption');
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:soldier.id,steps:1},1),{code:'NOT_YOUR_TURN'});
+ for(const steps of [0,2,-2,1.25])
+   assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:soldier.id,steps},0),{code:'INVALID_UNIT_CONTROL_COMMAND'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:soldier.id,steps:1,team:'E'},0),{code:'INVALID_UNIT_CONTROL_COMMAND'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:'NOT_AN_ACTOR',steps:1},0),{code:'UNIT_CONTROL_UNAVAILABLE'});
+ soldier.acted=true;
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:soldier.id,steps:-1},0),{code:'UNIT_CONTROL_UNAVAILABLE'});
+});
+
+test('flying altitude uses official VerticalMobilityEngine range, and stays private to owning seat',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const angel=game.units[0];angel.character=CharacterDatabase.get('angel_archer_hero');
+ angel.acted=false;angel.waited=false;
+ const tile=TacticalEngine.tile(game.battlefield.map,angel.x,angel.y);
+ const before=VerticalMobilityEngine.syncUnit(angel,tile);
+ const range=VerticalMobilityEngine.flightAltitudeRange(angel);
+ assert.ok(range&&range.max>range.min,'actual official flying hero');
+ const current=VerticalMobilityEngine.describe(angel,tile).flightAltitude;
+ const own=tacticalDebugProjection(game,0).units.find(x=>x.id===angel.id);
+ assert.ok(own.flightControl);assert.equal(own.flightControl.altitude,current);
+ const other=tacticalDebugProjection(game,1).units.find(x=>x.id===angel.id);
+ if(other)assert.equal('flightControl' in other,false,'no opponent private control projection');
+ const expected=Math.min(range.max,current+range.step);
+ const up=resolveCanonicalPlayerCommand(game,{type:'ADJUST_FLIGHT_ALTITUDE',unitId:angel.id,steps:1},0);
+ assert.equal(up.accepted,true);assert.equal(up.flightAltitude,expected);
+ const down=resolveCanonicalPlayerCommand(game,{type:'ADJUST_FLIGHT_ALTITUDE',unitId:angel.id,steps:-1},0);
+ assert.equal(down.flightAltitude,current);
+ const standard=game.units[0];standard.character=CharacterDatabase.get('imperial_archer');
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ADJUST_FLIGHT_ALTITUDE',unitId:standard.id,steps:1},0),{code:'FLIGHT_ALTITUDE_UNAVAILABLE'});
+ assert.doesNotThrow(()=>structuredClone(game));
 });

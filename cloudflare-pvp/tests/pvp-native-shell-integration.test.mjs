@@ -10,19 +10,22 @@ test('native app has one Babylon battle canvas, original deck and preparation sc
   const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,'DOM IDs must be unique');
   for(const id of ['deckScreen','preparationScreen','startPreparedBattle','battleScreen','battleCanvas',
-    'pvpRoomScreen','pvpPrepareDeck','pvpTacticalPanel','versusPvp'])
+    'pvpRoomScreen','pvpPrepareDeck','skillBar','versusPvp'])
     assert.ok(ids.includes(id),`${id} must be part of the original game shell`);
   assert.deepEqual([...html.matchAll(/<canvas\s[^>]*id="([^"]+)"/g)].map(m=>m[1]),['battleCanvas']);
   assert.doesNotMatch(html,/iframe|battlefieldCanvas|pvp3dCanvas/);
+  assert.doesNotMatch(html,/id=\"openingPanel\"|id=\"mulliganOpening\"|id=\"openingHand\"/);
   assert.match(html,/src="\.\/js\/main\.js"/);
   const legacy=read('multiplayer.html');
   assert.match(legacy,/location\.replace\(to\.href\)/);
   assert.doesNotMatch(legacy,/pvp-lobby\.js|babylon\.js|<canvas/);
   const main=read('js/main.js');
   assert.match(main,/new ShellUI\(runtime,null\)/);
-  assert.match(main,/new PvpLobbyController\(\{shell,createSharedRenderer:sharedBattleRenderer\}\)/);
+  assert.match(main,/new PvpLobbyController\(\{shell,createSharedRenderer:sharedBattleRenderer,cardUI,battleUI,unitControlUI\}\)/);
   assert.match(main,/onTilePicked:\(x,y\)=>pvp\?\.isBattleActive\(\)/);
   assert.match(read('js/shell-ui.js'),/this\.shell\.openDeck|this\.pvp\?\.openLobby|this\.pvp\?\.suspendForLocalBattle/);
+  assert.match(read('js/card-hand-ui.js'),/setRemoteCards\(/);
+  assert.doesNotMatch(read('js/pvp-lobby.js'),/displayOpening\(|mulliganOpening|openingHand/);
 });
 
 function fakeDom(){
@@ -48,7 +51,9 @@ test('existing ShellUI owns online room -> original deck -> full-screen battle; 
   try{
     const shown=[],decks=[],presented=[],matches=[];
     const shell={show:id=>shown.push(id),openDeck:args=>decks.push(args)};
-    const controller=new PvpLobbyController({shell,createSharedRenderer:()=>({sync(){}})});
+    const cardViews=[];
+    const cardUI={setRemoteCards:args=>cardViews.push(args),clearRemoteCards:()=>cardViews.push(null)};
+    const controller=new PvpLobbyController({shell,cardUI,createSharedRenderer:()=>({sync(){}})});
     controller.connect=async()=>{}; // Network is covered by the separate Worker WebSocket tests.
     controller.setSession({code:'ABCDEFGH',token:'a'.repeat(64),seat:0});
     controller.room={phase:'LOBBY',seats:[{name:'host',deckSubmitted:true,ready:false,online:true},null]};
@@ -96,5 +101,60 @@ test('existing ShellUI owns online room -> original deck -> full-screen battle; 
     assert.equal(shown.at(-1),'versusScreen');
     assert.equal(controller.isBattleActive(),false);
     assert.ok(matches.length>=3);
+  }finally{restore();}
+});
+
+
+test('PvP opening hand uses the original CardHandUI on battleScreen, never a second lobby list',()=>{
+  const {node,restore}=fakeDom();
+  try{
+    const displayed=[],sync=[],commands=[];
+    const cardUI={setRemoteCards:v=>sync.push(v),clearRemoteCards:()=>sync.push(null)};
+    const shell={show:id=>displayed.push(id),openDeck:()=>{}};
+    const p=new PvpLobbyController({shell,cardUI,createSharedRenderer:()=>({sync(){}})});
+    p.setSession({code:'ABCDEFGH',token:'a'.repeat(64),seat:0});
+    p.room={phase:'OPENING_HAND',seats:[{name:'Host',ready:true,deckSubmitted:true},
+      {name:'Guest',ready:true,deckSubmitted:true}]};
+    p.socket={readyState:1,send:s=>commands.push(JSON.parse(s))};
+    const cards=[{id:'alpha',name:'A'},{id:'beta',name:'B'}];
+    p.displayMatch({revision:3,protocol:'test',tacticalEnabled:true,
+      view:{phase:'OPENING_HAND',seat:0,activeSeat:0,
+        own:{hand:cards,deckCount:18,openingDecisionAvailable:true},
+        opponent:{handCount:3}}});
+    assert.equal(displayed.at(-1),'battleScreen');
+    assert.equal(node('openingPanel').hidden,false,'the controller never touches the legacy opening DOM');
+    assert.equal(globalThis.document.body.dataset.pvpPhase,'OPENING_HAND');
+    assert.deepEqual(sync.at(-1).hand,cards);
+    assert.equal(sync.at(-1).canAct,true);
+    assert.equal(sync.at(-1).deckCount,18);
+    assert.equal(sync.at(-1).opponentHandCount,3);
+    assert.equal(sync.at(-1).onDecision({type:'MULLIGAN',indices:[1]}),true);
+    assert.equal(commands.length,1);
+    assert.deepEqual(commands[0].envelope.action,{type:'MULLIGAN',indices:[1]});
+    assert.equal(sync.at(-1).canAct,false,'after sending, online card UI is disabled');
+    p.backToLobby();
+    assert.equal(displayed.at(-1),'pvpRoomScreen');
+    assert.equal(sync.at(-1),null);
+    assert.equal('pvpPhase' in globalThis.document.body.dataset,false);
+    p.suspendForLocalBattle();
+    const count=displayed.length;
+    p.displayMatch({revision:4,protocol:'test',tacticalEnabled:true,
+      view:{phase:'OPENING_HAND',seat:0,activeSeat:1,
+        own:{hand:cards,deckCount:18,openingDecisionAvailable:false},
+        opponent:{handCount:3}}});
+    assert.equal(displayed.length,count,'no auto-hijack after suspension');
+    assert.equal(sync.at(-1),null);
+    // Resuming during the real card phase must present the same fan-card UI.
+    p.enterBattle();
+    p.tacticalUI={setPresented:()=>{},receiveMatch:()=>{},update:()=>{},close:()=>{},
+      chooseCard:id=>`TARGET:${id}`,cancelCardTarget:()=>{}};
+    p.displayMatch({revision:5,protocol:'test',tacticalEnabled:true,
+      view:{phase:'PLAYER_CARD_PHASE',seat:0,activeSeat:0,
+        own:{hand:cards,deckCount:18,crystals:4},opponent:{handCount:3}}});
+    assert.equal(globalThis.document.body.dataset.pvpPhase,'CARD_PHASE');
+    assert.equal(sync.at(-1).phase,'CARD_PHASE');
+    assert.equal(sync.at(-1).onPlayCard('alpha'),'TARGET:alpha');
+    assert.equal(sync.at(-1).onEndCard(),true);
+    assert.deepEqual(commands.at(-1).envelope.action,{type:'END_CARD_PHASE'});
   }finally{restore();}
 });
