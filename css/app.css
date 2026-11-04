@@ -145,3 +145,38 @@ button{cursor:pointer;font-weight:700}button:disabled{opacity:.42;cursor:not-all
  .skillbar{width:104px;max-height:245px}.skillbar button{font-size:10px;padding:5px;min-height:32px}.field-row{grid-template-columns:1fr}
  .opponent-hand{top:-42px;width:92vw;height:132px}.opponent-card-back{width:66px;height:94px;margin-left:-25px}.opponent-meta{top:44px;font-size:9px}.opponent-message{top:66px;font-size:9px}
 }
+
+/* A single game-screen owner for offline and PvP.  The online room is not a game viewport. */
+.pvp-room-shell{max-height:90svh;overflow:auto;overscroll-behavior:contain}
+.pvp-room-shell input{min-width:0;max-width:100%;padding:9px 12px;border:1px solid #526b7c;border-radius:8px;background:#0d1b28;color:#fff;font-size:16px}
+.pvp-room-entry,.pvp-room-seats,.pvp-room-actions{display:grid;gap:12px}
+.pvp-room-seats{grid-template-columns:repeat(2,minmax(0,1fr));margin:16px 0}
+.pvp-room-seats>div{display:grid;gap:6px;padding:14px;border:1px solid #37536b;border-radius:10px}
+.pvp-room-seats small{font-size:12px;opacity:.78}
+.pvp-room-actions{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin:14px 0}
+.pvp-room-code{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:18px 0}
+.pvp-room-code strong{font-size:24px;letter-spacing:.13em}
+.pvp-room-opening{border-top:1px solid #37536b;padding-top:16px}
+.pvp-room-opening #openingHand{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px}
+.pvp-room-opening .opening-card{display:block;padding:12px;background:#1b3042;border:1px solid #52718a;border-radius:9px}
+#lobbyStatus[data-error="true"]{color:#ffb7ad}
+/* The original battleScreen owns Babylon, camera and HUD. Never display a
+   second WebGL canvas or a 2-D fallback in the lobby. */
+body[data-battle-mode="PVP"] #cardPhasePanel,
+body[data-battle-mode="PVP"] #skillBar,
+body[data-battle-mode="PVP"] #endTurn,
+body[data-battle-mode="PVP"] #nextUnit,
+body[data-battle-mode="PVP"] #resetMap{display:none!important}
+.pvp-battle-commands[hidden]{display:none!important}
+.pvp-battle-commands{position:absolute;z-index:35;bottom:env(safe-area-inset-bottom,0px);left:0;right:0;display:flex;flex-direction:column;gap:6px;padding:8px max(12px,env(safe-area-inset-left,0px)) 9px;background:linear-gradient(0deg,rgba(6,16,28,.97),rgba(10,26,43,.83));border-top:1px solid #51758a;color:#f0f8ff;max-height:min(45svh,340px)}
+.pvp-battle-status{margin:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pvp-battle-choices,.pvp-battle-actions{display:flex;gap:7px;overflow-x:auto;scrollbar-width:thin;flex-shrink:0;align-items:center}
+.pvp-battle-choices label{display:flex;flex:none;align-items:center;gap:5px;font-size:12px;color:#d6eafa}
+.pvp-battle-choices select{min-width:120px;max-width:175px;font-size:13px;padding:8px;color:#fff;background:#132a40;border:1px solid #536f86;border-radius:7px}
+.pvp-battle-actions button{flex:none;padding:9px 12px;min-height:42px;border:1px solid #597d9b;border-radius:9px;background:#23435f;color:#fff;touch-action:manipulation}
+.pvp-battle-actions button:disabled{display:none}
+.pvp-battle-actions button:focus-visible{outline:2px solid #ffda82}
+.pvp-special-choices{position:relative;flex:none;background:#193044;border-radius:7px;padding:8px;border:1px solid #536f86}
+.pvp-special-choices summary{font-size:12px;cursor:pointer}
+.pvp-special-choices>div{position:absolute;right:0;bottom:100%;z-index:42;display:grid;gap:7px;max-height:40svh;overflow:auto;padding:12px;background:#142d41;border:1px solid #62829a;border-radius:8px}
+@media(max-width:650px){.pvp-battle-commands{max-height:42svh}.pvp-room-seats{grid-template-columns:1fr}}
