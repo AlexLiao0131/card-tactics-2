@@ -3,7 +3,7 @@ export const PostEngagementEngine=(()=>{
   const tileElevation=(map,x,y)=>FallEngine.tileElevation(map,x,y);
   const groundZ=(map,unit)=>FallEngine.groundZ(map,unit);
   const syncGroundZ=(map,unit)=>FallEngine.syncGroundZ(map,unit);
-  const isAirborneState=state=>window.TrajectoryEngine?.isAirborneState?.(state)??(state==="AIRBORNE"||state==="FALLING");
+  const isAirborneState=state=>globalThis.TrajectoryEngine?.isAirborneState?.(state)??(state==="AIRBORNE"||state==="FALLING");
   function direction(source,target,type){let dx=Math.sign(target.x-source.x),dy=Math.sign(target.y-source.y);if(dx&&dy){if(Math.abs(target.x-source.x)>=Math.abs(target.y-source.y))dy=0;else dx=0;}if(type==="PULL"){dx=-dx;dy=-dy}return{dx,dy}}
   function damageUnit(unit,amount){if(!unit?.alive)return 0;const d=globalThis.EffectEngine?.applyDamage?.(unit,amount,{kind:"EXTERNAL"})?.hpLoss??0;if(unit.hp===0)unit.alive=false;return d}
   const fallDamage=drop=>FallEngine.fallDamage(drop);
@@ -96,7 +96,7 @@ export const PostEngagementEngine=(()=>{
     const occupancyViolation=gridOccupant(units,target.x,target.y,target);
     if(occupancyViolation){
       target.x=start.x;target.y=start.y;target.z=start.z;
-      if(window.VerticalMobilityEngine){const tile=TacticalEngine.tile(map,target.x,target.y);if(tile)VerticalMobilityEngine.syncUnit(target,tile);}
+      if(globalThis.VerticalMobilityEngine){const tile=TacticalEngine.tile(map,target.x,target.y);if(tile)VerticalMobilityEngine.syncUnit(target,tile);}
       landingAdjusted=true;blockedBy=occupancyViolation.id;
     }
     return emitForcedMovement(target,{type:effect.type,applied:steps.length>0||lift>0||collisions.length>0,start,end:{x:target.x,y:target.y,z:target.z},steps,collisions,airborne:isAirborneState(preLandingState),trajectoryState:preLandingState,lift,travelZ,displacement,landing,falls,fallDamage:landing.damage,defeated:!target.alive,landingAdjusted,blockedBy,occupancySafe:!gridOccupant(units,target.x,target.y,target)},effect);

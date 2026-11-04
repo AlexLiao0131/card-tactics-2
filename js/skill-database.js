@@ -142,6 +142,18 @@ export const PASSIVES={
 export const SkillDatabase=(()=>{
   function get(id){const skill=SKILLS[id];if(!skill)throw new Error("Unknown skill: "+id);return skill}
   function list(ids){return(ids||[]).map(get)}
+  // Both the browser's variant selection and authoritative network commands
+  // use the SAME skill merge semantics. A variant's values override its parent,
+  // without changing the canonical skill ID or inventing a second skill entry.
+  function resolveVariant(skill,variantId){
+    const base=typeof skill==='string'?get(skill):skill;
+    if(!base)return null;
+    if(variantId==null)return base;
+    const variant=Array.isArray(base.variants)?base.variants.find(v=>v.id===variantId):null;
+    if(!variant)return null;
+    return {...base,...variant,id:base.id,name:variant.name||base.name,
+      baseSkillId:base.id,variantId:variant.id,variants:undefined};
+  }
   function getPassive(id){return PASSIVES[id]||null}
   function passiveList(ids){return(ids||[]).map(getPassive).filter(Boolean)}
   function passiveDefenseProfiles(ids){const profiles=[];for(const passive of passiveList(ids))for(const profile of passive.defenseProfiles||[])profiles.push({...profile,sourceId:passive.id,sourceName:passive.name,sourceType:"PASSIVE"});return profiles}
@@ -168,7 +180,7 @@ export const SkillDatabase=(()=>{
       (active.target==="ENEMY"?`以「${active.name}」向敵人發動攻勢。`:active.target==="ALLY"?`以「${active.name}」支援隊友。`:active.target==="SELF"?`以「${active.name}」強化自身。`:`施展「${active.name}」，按照技能所指定的目標與效果行動。`));
     return{title:active.name||base.name,description,mechanics};
   }
-  return{get,list,getPassive,passiveList,passiveDefenseProfiles,inspect}
+  return{get,list,resolveVariant,getPassive,passiveList,passiveDefenseProfiles,inspect}
 })();
 globalThis.SKILLS=SKILLS;
 globalThis.PASSIVES=PASSIVES;

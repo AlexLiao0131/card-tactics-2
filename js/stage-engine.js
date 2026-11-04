@@ -74,12 +74,12 @@ export const StageEngine=(()=>{
     return true;
   }
   function encounterEventType(type){
-    if(type==="ROUND_START")return window.EncounterEngine?.TRIGGER?.ROUND_START||"ROUND_START";
-    if(type==="ENTER_TILE")return window.EncounterEngine?.TRIGGER?.TILE_ENTER||"TILE_ENTER";
+    if(type==="ROUND_START")return globalThis.EncounterEngine?.TRIGGER?.ROUND_START||"ROUND_START";
+    if(type==="ENTER_TILE")return globalThis.EncounterEngine?.TRIGGER?.TILE_ENTER||"TILE_ENTER";
     return null;
   }
   function triggerEncounter(state,event,context){
-    if(!state?.encounterState||!window.EncounterEngine?.trigger)return[];
+    if(!state?.encounterState||!globalThis.EncounterEngine?.trigger)return[];
     return EncounterEngine.trigger(state.encounterState,event,{pushLog:context?.log});
   }
   function run(state,event,context){
@@ -114,7 +114,7 @@ export const StageEngine=(()=>{
         if(item.once)state.fired.add(item.id);
         executed.push(item.id);
         triggerEncounter(state,{
-          type:window.EncounterEngine?.TRIGGER?.SCRIPT||"SCRIPT",
+          type:globalThis.EncounterEngine?.TRIGGER?.SCRIPT||"SCRIPT",
           scriptEventId:item.id,
           sourceEventType:event?.type||null,
           round:event?.round,

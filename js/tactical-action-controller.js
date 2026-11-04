@@ -32,7 +32,7 @@
           }
         }
       }
-      window.CardTacticsDiagnostics?.gameAction?.("SKILL_FAILURE",{
+      globalThis.CardTacticsDiagnostics?.gameAction?.("SKILL_FAILURE",{
         unitId:unit?.id,unit:unit?.character?.name,team:unit?.team,
         skillId:skill?.id,skill:skill?.name,
         targetId:target?.id||null,target:target?.character?.name||target?.name||null,
@@ -470,12 +470,18 @@
     }
     function commitCandidateEnchantment(targetId,weaponSlot){
       const pending=pendingEnchantment;
-      if(!pending)return false;
-      // Validate the current target and actual weapon before charging mana.
-      const choice=enchantmentCandidates(pending.attacker,pending.skill).find(entry=>
+      return pending?executeEnchantmentChoice(pending.attacker,pending.skill,targetId,weaponSlot):false;
+    }
+    // Canonical one-transaction enchantment commit. The interactive browser
+    // menu and headless server both use this entry; only selection UI differs.
+    // The caster's self-followup remains a separate, non-free tactical choice.
+    function executeEnchantmentChoice(attacker,skill,targetId,weaponSlot){
+      if(!attacker?.alive||attacker.acted||skill?.utilityAction?.type!=="ENCHANT_WEAPON"||
+         !ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT");
+      const choice=enchantmentCandidates(attacker,skill).find(entry=>
         String(entry.target.id)===String(targetId)&&entry.weapon.slot===weaponSlot);
-      if(!choice)return skillFailure(pending.attacker,pending.skill,"ENCHANT_TARGET_INVALID");
-      pending.target=choice.target;pending.slots=[choice.weapon];
+      if(!choice)return skillFailure(attacker,skill,"ENCHANT_TARGET_INVALID");
+      pendingEnchantment={attacker,skill,candidates:[],target:choice.target,slots:[choice.weapon]};
       return commitEnchantment(weaponSlot);
     }
     function commitEnchantment(weaponSlot){
@@ -806,12 +812,12 @@
           const occupant=ctx.unitAt(tile.x,tile.y);
           if(!occupant||occupant.team===attacker.team)return;
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
-          const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance});
+          const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance,random:ctx.random});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
           // LINE follows the same physical / elemental damage ownership as
           // BattleResolution. Different types cannot share one shield pass or
           // a critical roll merely because they originate from one strike.
-          const magicalCrit=!!enchantment&&Math.random()*100<BattleEngine.critChance(attacker.character,skill);
+          const magicalCrit=!!enchantment&&(typeof ctx.random==="function"?ctx.random():Math.random())*100<BattleEngine.critChance(attacker.character,skill);
           const bonus=enchantment?BattleResolution.enchantmentMagicDamage(attacker,occupant,enchantment,magicalCrit,skill):0;
           const base=Math.max(0,Number(result.damage||0));
           result.enchantmentDamage=bonus;
@@ -840,7 +846,7 @@
           const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();if(relation==="ENEMY"&&occupant.team===attacker.team)return;if(relation==="ALLY"&&occupant.team!==attacker.team)return;
           const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
           const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
-          const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance,random:ctx.random});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
           result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
           const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
@@ -866,7 +872,7 @@
           :[];
         environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);
       });
-      if(skill.hydrologyFlood&&window.HydrologyEngine?.floodArea){
+      if(skill.hydrologyFlood&&globalThis.HydrologyEngine?.floodArea){
         const clusterKeys=EnvironmentEngine.largeFireKeys(environmentState);
         const floodEvents=HydrologyEngine.floodArea(map,affected,{surfaceRise:Number(skill.hydrologyFlood.surfaceRise||1),source:skill.id,
           intercept:(tile,volume,events)=>EnvironmentEngine.exchangeWaterFire(map,environmentState,tile,volume,events,{source:skill.id,clusterKeys})});
@@ -955,13 +961,13 @@
     }
 
     function executeEffectSkill(attacker,target,skill){
-      if(!window.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
+      if(!globalThis.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.bloodBurst){
-        const centers=EffectEngine.bloodBurstCenters(attacker,state().units);
+        const centers=EffectEngine.bloodBurstCenters(attacker,state().units,skill,{map:state().map,environmentState:state().environmentState});
         if(!centers.length)return skillFailure(attacker,skill,"NO_BLEEDING_ENEMIES",target);
         UnitRuntimeEngine.beginBloodTransaction(attacker);
         if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
@@ -971,7 +977,7 @@
         for(const center of centers){
           for(const victim of units){
             if(!victim.alive||victim.team===attacker.team||Math.abs(victim.x-center.x)+Math.abs(victim.y-center.y)>radius)continue;
-            const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y)});
+            const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y),random:ctx.random});
             if(!roll.hit)continue;
             const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker});
             total+=outcome.hpLoss;hits++;
@@ -997,7 +1003,7 @@
           if(effect.type==="MAGIC_DAMAGE"){
             const attackSkill={...skill,power:Number(effect.power||1),attackType:"MAGIC",element:effect.element||"NONE",traitMultipliers:effect.traitMultipliers||{},weapon:effect.weapon||skill.weapon};
             const distance=Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y);
-            const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance});
+            const result=BattleEngine.calculate(attacker.character,target.character,attackSkill,{distance,random:ctx.random});
             const hpBefore=Math.max(0,Number(target.hp||0));let dealt=0,absorbed=0;
             if(result.hit){const shield=EffectEngine.applyDamage(target,target.hallucination===true?hpBefore:Math.round(result.damage*bloodMult),{source:attacker,damageType:"MAGIC"});dealt=shield.damage;absorbed=shield.absorbed;if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:Math.min(hpBefore,Number(dealt||0)),critical:result.crit===true,components:{physical:0}});
@@ -1069,7 +1075,7 @@
         // Present a true teleport instead of treating the sudden coordinate
         // change as an ordinary walking animation. This is presentation-only.
         if(relocated)globalThis.UnitAnimationEngine?.emitMove?.(attacker,{from:origin,kind:"TELEPORT"});
-        window.CardTacticsDiagnostics?.gameAction?.("BLOOD_SHADOW_TRANSIT",{
+        globalThis.CardTacticsDiagnostics?.gameAction?.("BLOOD_SHADOW_TRANSIT",{
           unitId:attacker.id,targetId:defender.id,
           from:{x:origin.x,y:origin.y},to:{x:attacker.x,y:attacker.y},
           distance:Math.abs(origin.x-attacker.x)+Math.abs(origin.y-attacker.y),relocated
@@ -1127,7 +1133,7 @@
         if(!target?.alive||target.team===attacker.team)continue;
         const dx=Math.abs(target.x-center.x),dy=Math.abs(target.y-center.y);
         if(!((dx===0&&dy<=radius)||(dy===0&&dx<=radius)))continue;
-        const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true});
+        const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true,random:ctx.random});
         const damage=Math.round(roll.damage*multiplier),result=EffectEngine.applyDamage(target,damage,{source:attacker,damageType:"MAGIC"});
         globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:result.hpLoss,
           components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true},element:"HOLY",skillId:skill.id});
@@ -1136,10 +1142,10 @@
       }
     }
 
-    function executeEngagement(attacker,defender,skill,actions){
+    function executeEngagement(attacker,defender,skill,actions,reaction=null){
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
-        {map,units,initiator:attacker,target:defender,skill,actions},
+        {map,units,initiator:attacker,target:defender,skill,actions,reaction},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
@@ -1170,8 +1176,9 @@
       if(enchantmentFollowup?.unitId===attacker.id)enchantmentFollowup=null;
       attacker.moved=true;attacker.acted=true;attacker.waited=true;
       ctx.setSelectedSkill(null);ctx.clearEngagement();ctx.setMode("inspect");
-      if(ctx.checkMatchEnd()){ctx.render();return;}
+      if(ctx.checkMatchEnd()){ctx.render();return true;}
       if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();
+      return true;
     }
 
     function reset(){pendingMove=null;pendingTransport=null;pendingEnchantment=null;enchantmentFollowup=null;}
@@ -1182,12 +1189,13 @@
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
-      beginEnchantment,enchantmentCandidates,commitCandidateEnchantment,
+      beginEnchantment,enchantmentCandidates,commitCandidateEnchantment,executeEnchantmentChoice,
+      executeChannelSkill,
       commitEnchantment,cancelEnchantmentSelection,cancelEnchantmentFollowup,
       enchantedTerrainTargetTiles,resolveEnchantmentImpact,resolveEnchantmentImpacts,
       selectedSupportActions,confirmEngagement,executeEngagement
     });
   }
 
-  window.TacticalActionController=Object.freeze({create});
+  globalThis.TacticalActionController=Object.freeze({create});
 })();

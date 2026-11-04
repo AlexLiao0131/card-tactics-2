@@ -2,6 +2,7 @@ import { PVP_API_BASE } from './pvp-config.js';
 // Use the SAME official card definitions and deck rules as single player.
 import { CardDatabase } from './card-database.js';
 import { DeckEngine } from './deck-engine.js';
+import { PvpTacticalUI } from './pvp-tactical-ui.js';
 
 const $ = id => document.getElementById(id);
 const storageKey = 'ct2:pvp-lobby-session:v1';
@@ -35,6 +36,7 @@ let roomState = null;
 let matchState = null;
 let commandInFlight = false;
 let everJoined = false;
+let tacticalUI = null;
 
 function setStatus(message, bad = false) {
   status.textContent = message;
@@ -66,6 +68,7 @@ async function api(path, { name, token, cards } = {}) {
   } finally { clearTimeout(timer); }
 }
 function setSession(value) {
+  tacticalUI?.close();tacticalUI=null;
   session=value;
   if (session) sessionStorage.setItem(storageKey,JSON.stringify(session));
   else sessionStorage.removeItem(storageKey);
@@ -84,6 +87,7 @@ function closeSocket() {
   socket=null;
   ready.disabled=true;
   commandInFlight=false;
+  tacticalUI?.update();
 }
 function displayRoom(data) {
   if (!data || data.code !== session?.code) return;
@@ -102,9 +106,9 @@ function displayRoom(data) {
   ready.disabled=data.phase!=='LOBBY' || socket?.readyState!==WebSocket.OPEN || mine?.deckSubmitted!==true;
   submitDeckButton.disabled=data.phase!=='LOBBY';
   $('bothReady').textContent=data.phase==='BATTLEFIELD_READY'
-    ? '伺服器已生成正式地圖並同步給雙方。3D 戰棋與回合操作仍未接入。'
+    ? '伺服器已生成正式地圖並同步給雙方；請使用下方 Babylon 3D 戰棋。'
     : data.phase==='OPENING_HAND'
-    ? '已由伺服器建立起手牌。雙方依序確認起手牌；完整 3D 戰棋尚未開放。'
+    ? '已由伺服器建立起手牌。雙方依序確認後可進入 3D 戰棋測試。'
     : data.bothReady
     ? '雙方已準備。正在建立伺服器對局…'
     : data.seats?.some(s=>s && !s.deckSubmitted) ? '等待雙方提交合法的 20 張出擊牌組' : '等待雙方準備';
@@ -150,9 +154,15 @@ function displayMatch(message) {
   if (!session || !message || message.view?.seat!==session.seat) return;
   matchState=message;
   commandInFlight=false;
+  if (message.tacticalEnabled===true && message.view.phase!=='OPENING_HAND' && !tacticalUI) {
+    tacticalUI=new PvpTacticalUI({root:$('pvpTacticalPanel'),canvas:$('pvp3dCanvas'),
+      seat:session.seat,sendCommand:sendMatchCommand,
+      isConnected:()=>socket?.readyState===WebSocket.OPEN});
+  }
+  tacticalUI?.receiveMatch(message);
   const view=message.view;
   showBattlefield(view.battlefield);
-  openingPanel.hidden=false;
+  openingPanel.hidden=view.phase!=='OPENING_HAND';
   openingHand.replaceChildren();
   for (const [i,card] of view.own.hand.entries()) {
     const row=document.createElement('label');
@@ -167,12 +177,12 @@ function displayMatch(message) {
   keepOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
   mulliganOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
   openingHint.textContent=view.phase==='BATTLEFIELD_READY'
-    ? '雙方已確認起手牌，伺服器已建立正式地圖；戰棋指令仍待完整核心接入。'
+    ? '雙方起手牌已確認、地圖已建立；可由房主開始正式 3D 戰鬥測試。'
     : myTurn
     ? `輪到你確認起手牌（版本 ${message.revision}）。可勾選要換掉的牌，或直接保留。`
     : view.myOpeningDone ? '你已確認起手牌，等待另一位玩家。' : '等待另一位玩家確認起手牌。';
 }
-function sendOpeningCommand(action) {
+function sendMatchCommand(action) {
   if (!session || !matchState || commandInFlight ||
       matchState.view?.activeSeat!==session.seat || socket?.readyState!==WebSocket.OPEN) return;
   const id=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');
@@ -182,8 +192,8 @@ function sendOpeningCommand(action) {
     protocol:matchState.protocol,baseRevision:matchState.revision,commandId:id,action
   }}));
 }
-keepOpening.onclick=()=>sendOpeningCommand({type:'KEEP_OPENING_HAND'});
-mulliganOpening.onclick=()=>sendOpeningCommand({type:'MULLIGAN',indices:[...openingHand.querySelectorAll('input:checked')].map(x=>Number(x.value))});
+keepOpening.onclick=()=>sendMatchCommand({type:'KEEP_OPENING_HAND'});
+mulliganOpening.onclick=()=>sendMatchCommand({type:'MULLIGAN',indices:[...openingHand.querySelectorAll('input:checked')].map(x=>Number(x.value))});
 
 async function socketConnect() {
   if (!session) return;
@@ -198,13 +208,17 @@ async function socketConnect() {
     ws.onopen=()=>{
       reconnects=0;everJoined=true;
       ready.disabled=roomState?.phase!=='LOBBY' || !roomState?.seats?.[session?.seat]?.deckSubmitted;
-      setStatus('已連上房間。可提交牌組；雙方準備後由伺服器抽取起手牌。正式戰棋仍未開放。');
+      setStatus('已連上房間。伺服器將驗證所有牌組及戰棋指令。');
+      tacticalUI?.update();
     };
     ws.onmessage=event=>{
       let message;
       try { message=JSON.parse(event.data); } catch { return; }
       if (message.type==='ROOM_STATE'||message.type==='WELCOME') displayRoom(message.room);
       if (message.type==='MATCH_STATE') displayMatch(message.match);
+      if (message.type==='PVP_RENDER_SNAPSHOT') {
+        void tacticalUI?.receiveRender(message);
+      }
       if (message.type==='MATCH_ACK') commandInFlight=false;
       if (message.type==='ERROR') {
         commandInFlight=false;
@@ -216,6 +230,7 @@ async function socketConnect() {
     ws.onclose=e=>{
       if (socket!==ws || !session) return;
       ready.disabled=true;
+      tacticalUI?.update();
       if (e.code===4002) {setStatus('房間已到期，請重新建立房間。',true);setSession(null);return;}
       if (e.code===4001) {setStatus('此席位已在另一個頁面登入。',true);return;}
       // Reconnect only while the user keeps the lobby open. No server-side heartbeat.
