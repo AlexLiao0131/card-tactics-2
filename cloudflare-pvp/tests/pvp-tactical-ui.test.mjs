@@ -225,3 +225,45 @@ test('perception skill uses server-published skill ID and enemy target only; no 
  v.ui.receiveMatch(make(0,'PLAYER_TACTICAL_PHASE',61,[{...caster,perceptionSkills:[]},enemy]));
  assert.equal(v.controls.PERCEPTION.disabled,true);
 });
+
+test('selected official skill and card survive a tactical UI refresh instead of reverting to the first choice',()=>{
+ const v=build(0);
+ const actor={...soldier,attackSkills:[
+   {id:'standard_slash',name:'普通斬擊'},
+   {id:'special_slash',name:'特殊斬擊'}
+ ]};
+ const other={...soldier,id:'victim',team:'E',x:3,y:3};
+ v.ui.receiveMatch(make(0,'PLAYER_TACTICAL_PHASE',10,[actor,other]));
+ v.ui.tilePicked({seat:0,x:2,y:3});
+ v.skills.value='special_slash';
+ v.controls.ATTACK.click();
+ v.ui.tilePicked({seat:0,x:3,y:3});
+ assert.deepEqual(v.actions.at(-1),{type:'DECLARE_ATTACK',attackerId:'unit1',targetId:'victim',skillId:'special_slash'});
+ // The next authoritative revision must keep the player's legal selection.
+ v.ui.receiveMatch(make(0,'PLAYER_TACTICAL_PHASE',11,[actor,other]));
+ assert.equal(v.skills.value,'special_slash');
+});
+
+test('room and battle screens own tactical panel visibility independently of incoming socket state',()=>{
+ const v=build(0);
+ v.ui.setPresented(false);
+ v.ui.receiveMatch(make(0,'PLAYER_CARD_PHASE',1));
+ assert.equal(v.root.hidden,true,'an active remote match must not overlay the local game or room screen');
+ v.ui.setPresented(true);
+ assert.equal(v.root.hidden,false);
+ v.ui.setPresented(false);
+ v.ui.receiveMatch(make(0,'PLAYER_TACTICAL_PHASE',2,[soldier]));
+ assert.equal(v.root.hidden,true,'even later match revisions remain hidden offscreen');
+});
+
+test('selected hand index survives entering deployment mode and sends the intended official card ID',()=>{
+ const v=build(0);
+ const data=make(0,'PLAYER_CARD_PHASE',14);
+ data.view.own.hand.push({id:'imperial_spearman_card',name:'帝國槍兵',cost:3});
+ v.ui.receiveMatch(data);
+ assert.equal(v.cards.options.length,2);
+ v.cards.value='1';
+ v.controls.DEPLOY.click();
+ v.ui.tilePicked({seat:0,x:2,y:2});
+ assert.deepEqual(v.actions,[{type:'DEPLOY_CARD',cardId:'imperial_spearman_card',x:2,y:2}]);
+});

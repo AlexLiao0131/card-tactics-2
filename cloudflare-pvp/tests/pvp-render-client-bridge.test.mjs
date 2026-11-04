@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import {PvpBattleRenderBridge} from '../../js/pvp-battle-render-bridge.js';
 function makeBridge(){
  const calls=[];
- const active=new Set();
+ const active=new Set(['active']);
  const canvas={id:'c',parentElement:{classList:{
    contains:key=>active.has(key),add:key=>active.add(key),remove:key=>active.delete(key)
  }}};
- const bridge=new PvpBattleRenderBridge({canvas,seat:1,
+ const bridge=new PvpBattleRenderBridge({canvas,seat:1,ownsRenderer:true,
    onTilePicked:tile=>calls.push(['tile',tile]),
    createRenderer:(canvas,snapshot,options)=>{
      calls.push(['construct',canvas.id,snapshot.revision]);
@@ -34,7 +34,7 @@ test('seat-specific bridge uses official renderer once, synchronizes only increa
  assert.deepEqual(calls.at(-1),['tile',{matchId:'m1',seat:1,x:2,y:4}]);
  bridge.close();bridge.close();
  assert.equal(calls.filter(c=>c[0]==='engine-dispose').length,1);
- assert.equal(active.has('active'),false);
+ assert.equal(active.has('active'),true,'ShellUI still owns the active battle screen');
  assert.throws(()=>bridge.accept(packet(4)),/CLOSED/);
 });
 test('bridge rejects stale cross-room, wrong seat, malformed or client-forged presentation',()=>{
@@ -46,4 +46,40 @@ test('bridge rejects stale cross-room, wrong seat, malformed or client-forged pr
  assert.equal(bridge.accept(packet(0)),true);
  assert.throws(()=>bridge.accept(packet(2,1,'other-room')),/MATCH_MISMATCH/);
  assert.equal(bridge.accept(packet(1)),true);
+});
+
+test('shared native renderer is not disposed by room disconnect and remains usable for the offline battle',()=>{
+ const calls=[];
+ const canvas={parentElement:{classList:{contains:()=>true,add:()=>{},remove:()=>{throw Error('DO_NOT_REMOVE_NATIVE_SCREEN')}}}};
+ const renderer={sync:state=>calls.push(state.revision),dispose:()=>{throw Error('DISPOSED_SHARED_RENDERER')}};
+ const bridge=new PvpBattleRenderBridge({canvas,seat:0,ownsRenderer:false,createRenderer:()=>renderer});
+ assert.equal(bridge.accept(packet(0,0)),true);
+ bridge.close();
+ renderer.sync({revision:8});
+ assert.deepEqual(calls,[0,8]);
+});
+
+test('native shell render bridge cannot force the original battle screen visible while player is in a menu',()=>{
+ const active=new Set();
+ const canvas={parentElement:{classList:{contains:x=>active.has(x),add:x=>active.add(x),remove:x=>active.delete(x)}}};
+ const bridge=new PvpBattleRenderBridge({canvas,seat:0,ownsRenderer:false,
+   createRenderer:()=>({sync(){}})});
+ assert.throws(()=>bridge.accept(packet(1,0)),/NATIVE_PVP_SCREEN_NOT_ACTIVE/);
+ assert.equal(active.size,0);
+});
+
+test('server render revision only commits after official Babylon renderer reports successful subsystem publication',()=>{
+ const active=new Set(['active']);
+ const canvas={parentElement:{classList:{contains:x=>active.has(x),add:x=>active.add(x),remove:x=>active.delete(x)}}};
+ let renderComplete=false;
+ const renderer={presentationCommitHistory:[],sync(snapshot){
+   this.presentationCommitHistory.push({revision:snapshot.revision,complete:renderComplete,
+     failedStages:renderComplete?[]:['terrain','units']});
+ }};
+ const bridge=new PvpBattleRenderBridge({canvas,seat:0,ownsRenderer:false,createRenderer:()=>renderer});
+ assert.throws(()=>bridge.accept(packet(1,0)),/PVP_RENDER_INCOMPLETE/);
+ assert.equal(bridge.revision,-1,'partial terrain or mesh render is not a committed 3D frame');
+ renderComplete=true;
+ assert.equal(bridge.accept(packet(1,0)),true,'same authoritative revision can retry after a failure');
+ assert.equal(bridge.revision,1);
 });
