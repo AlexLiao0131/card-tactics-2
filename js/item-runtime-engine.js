@@ -29,10 +29,15 @@ export const ItemRuntimeEngine=(()=>{
     }
     return true;
   }
+  function trackPreparationConsumption(unit,payload){
+    if(payload?.source!=="PVP_PREPARATION")return;
+    unit.itemConsumptions??={};
+    unit.itemConsumptions[payload.itemId]=Number(unit.itemConsumptions[payload.itemId]||0)+1;
+  }
   function use(unit,payloadOrItemId){
     const payload=findPayload(unit,payloadOrItemId),item=payload&&ItemDatabase.get(payload.itemId);if(!canUse(unit,payloadOrItemId))return{ok:false,reason:"CANNOT_USE"};
     const results=(item.use.effects||[]).map(effect=>applyItemEffect(unit,effect,item,payload));
-    if(item.use.consume===true){const removed=removePayload(unit,payload.id,{removeEffects:false});if(removed?.owned)ItemInventoryEngine.consumeOwned(removed.itemId,1);}
+    if(item.use.consume===true){const removed=removePayload(unit,payload.id,{removeEffects:false});if(removed?.owned)ItemInventoryEngine.consumeOwned(removed.itemId,1);if(removed)trackPreparationConsumption(unit,removed);}
     return{ok:true,item,payload,results,consumeAction:item.use.actionCost!=="FREE"};
   }
   function resolveTrigger(unit,event,context={}){
@@ -40,7 +45,7 @@ export const ItemRuntimeEngine=(()=>{
       if(String(trigger.event)!==String(event))continue;
       const result={ok:true,item,payload,event,preventDamage:false,effects:[]};
       for(const effect of trigger.effects||[]){if(effect.type==="PREVENT_DAMAGE")result.preventDamage=true;else result.effects.push(applyItemEffect(unit,effect,item,payload));}
-      if(trigger.consume===true){const removed=removePayload(unit,payload.id,{removeEffects:false});if(removed?.owned)ItemInventoryEngine.consumeOwned(removed.itemId,1);result.consumed=true;}
+      if(trigger.consume===true){const removed=removePayload(unit,payload.id,{removeEffects:false});if(removed?.owned)ItemInventoryEngine.consumeOwned(removed.itemId,1);if(removed)trackPreparationConsumption(unit,removed);result.consumed=true;}
       return result;
     }
     return{ok:false,event};

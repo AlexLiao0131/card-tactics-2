@@ -1,10 +1,12 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
+import { BattleCommandMenuUI } from "./battle-command-menu-ui.js";
 import { createBattleAreaFieldEngine,createBattleAreaFieldState } from "./battle-area-field-engine.js";
 import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle-perception-engine.js";
 (()=>{
   const ICON={PLAIN:"",MUD:"≋",FOREST:"🌲",HIGH_GROUND:"▲",WATER:"≈",WALL:"■"};
   const TEAM={PLAYER:"P",ENEMY:"E",NEUTRAL:"N"};
   const skillBar=document.getElementById("skillBar");
+  const commandMenuUI=new BattleCommandMenuUI(skillBar);
   const PHASE={CARD:"CARD_PHASE",PLAYER:"PLAYER_TURN",ENEMY:"ENEMY_TURN",ENDED:"MATCH_ENDED"};
 
   let map,units,selected,mode,selectedSkill,selectedSkillVariant,logs,round,phase,matchResult,stage,stageState,environmentState,inspectedTile,cores=[];
@@ -459,7 +461,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   // The skill selector owns one reusable read-only inspector, rather than a tooltip per button.
   // Use the same hold threshold as BattleInputController's battlefield inspector.
   const SKILL_HOLD_MS=420,SKILL_HOLD_SLOP=12;
-  const inspectableSkillButtons=new WeakMap();
+  const inspectableSkillButtons=BattleCommandMenuUI.skillRegistry;
   const skillInspector=document.createElement("aside");
   skillInspector.className="battle-skill-inspector";
   skillInspector.setAttribute("role","tooltip");
@@ -625,17 +627,13 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     updateEnchantmentMarkerPositions();
   }
   function addActionButton(text,onClick,disabled=false,skill=null){
-    const button=document.createElement("button");button.textContent=text;button.className="action-button";
-    if(skill){
-      inspectableSkillButtons.set(button,selected?UnitRuntimeEngine.skillForUnit(selected,skill):skill);
-      button.style.webkitTouchCallout="none";button.style.webkitUserSelect="none";button.style.userSelect="none";
-      // Native disabled buttons cannot receive long-press events; keep them inspectable but not executable.
-      if(disabled){button.setAttribute("aria-disabled","true");button.style.opacity=".55";}
-      button.onclick=()=>{if(!disabled)onClick();};
-    }else{button.disabled=disabled;button.onclick=onClick;}
-    skillBar.appendChild(button);return button;
+    const button=commandMenuUI.button(text,onClick,{disabled,inspectable:!!skill});
+    // The same presenter is used in all three game modes.  Offline skills
+    // additionally register their official hold-for-description handler.
+    if(skill)inspectableSkillButtons.set(button,selected?UnitRuntimeEngine.skillForUnit(selected,skill):skill);
+    return button;
   }
-  function addCommandPanelClose(){const button=document.createElement("button");button.type="button";button.className="battle-command-close";button.textContent="×";button.setAttribute("aria-label","關閉作戰選單");button.onclick=()=>{commandPanelCollapsed=true;render();};skillBar.appendChild(button);}
+  function addCommandPanelClose(){commandMenuUI.close(()=>{commandPanelCollapsed=true;render();});}
   function renderCollapsedCommandButton(){skillBar.classList.add("command-panel-collapsed");}
   // Read-only attack forecast. The official TacticalEngine/BattleEngine remain
   // the sole owners of terrain, facing, hit, crit and damage formulas. Forced
@@ -712,6 +710,9 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function transferBattleItem(unit,payloadId,targetId){const entry=itemEntries(unit).find(x=>x.payload.id===payloadId),target=units.find(x=>x.id===targetId&&x.alive),result=ItemRuntimeEngine.transfer(unit,target,payloadId);pushLog(result?.ok?`${unit.character.name} 將「${entry?.item?.name||"道具"}」交給 ${target?.character?.name||"友軍"}。`:`${unit.character.name} 無法轉交道具。`,result?.ok?"SYSTEM":"DETAIL");render();}
 
   function renderPanel(){
+    // PvP owns this SAME #skillBar while a server-authoritative match is
+    // displayed; an offline render event may never replace online commands.
+    if(document.body.dataset.battleMode==='PVP')return;
     if(mode!=="enchant-weapon-select"&&enchantMenuCandidates.length)releaseEnchantmentMarkers();
     dismissSkillInspection();skillBar.innerHTML="";skillBar.classList.remove("enemy-reaction-panel","command-panel-collapsed","engagement-overlay");
     if(matchResult||phase===PHASE.CARD)return;

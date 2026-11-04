@@ -74,6 +74,83 @@ export const ItemInventoryEngine=(()=>{
     syncPreparationsForDeck(deck);
     const result={};for(const entry of deckEntries(deck)){const slots=slotCountForCard(entry.card),prep=preparation(entry.key,slots),items=prep.slots.filter(id=>id&&ItemDatabase.get(id));(result[entry.cardId]??=[]).push({key:entry.key,items});}return result;
   }
+  /**
+   * Transport-safe version of the SAME single-player preparation and slot rules.
+   * A browser stash is an ownership *claim*, not an authenticated server account.
+   * PvP test rooms may use it only when their experimental inventory mode is enabled.
+   */
+  function validateMatchPreparation(deck=[],submitted=null){
+    const fail=reason=>({valid:false,reason});
+    if(submitted==null){
+      const byCard={};
+      for(const entry of deckEntries(deck))
+        (byCard[entry.cardId]??=[]).push({key:entry.key,items:[]});
+      return{valid:true,preparation:{stash:{},loadouts:byCard}};
+    }
+    if(!submitted||typeof submitted!=="object"||Array.isArray(submitted)||
+       Object.keys(submitted).sort().join("|")!=="loadouts|stash")return fail("INVALID_ITEM_PREPARATION");
+    const {stash:claimed,loadouts:entries}=submitted;
+    if(!claimed||typeof claimed!=="object"||Array.isArray(claimed)||
+       !entries||typeof entries!=="object"||Array.isArray(entries))return fail("INVALID_ITEM_PREPARATION");
+    const checkedStash={};
+    for(const [id,count] of Object.entries(claimed)){
+      if(!ItemDatabase.get(id)||!Number.isSafeInteger(count)||count<0)
+        return fail("INVALID_ITEM_STASH");
+      checkedStash[id]=count;
+    }
+    const expected=deckEntries(deck),byCard=new Map(),seen=new Map(),used={};
+    for(const entry of expected){
+      const array=byCard.get(entry.cardId)||[];array.push(entry);byCard.set(entry.cardId,array);
+    }
+    for(const cardId of Object.keys(entries))if(!byCard.has(cardId))return fail("FOREIGN_ITEM_CARD");
+    const normalized={};
+    for(const [cardId,occurrences] of byCard){
+      const provided=entries[cardId];
+      if(!Array.isArray(provided)||provided.length!==occurrences.length)
+        return fail("INVALID_ITEM_OCCURRENCES");
+      normalized[cardId]=[];
+      for(let i=0;i<occurrences.length;i++){
+        const specified=provided[i],entry=occurrences[i];
+        if(!specified||typeof specified!=="object"||Array.isArray(specified)||
+           Object.keys(specified).sort().join("|")!=="items|key"||
+           specified.key!==entry.key||!Array.isArray(specified.items)||
+           specified.items.length>slotCountForCard(entry.card))return fail("INVALID_ITEM_SLOTS");
+        for(const id of specified.items){
+          if(typeof id!=="string"||!ItemDatabase.get(id))return fail("INVALID_ITEM_ID");
+          used[id]=(used[id]||0)+1;
+          if(used[id]>(checkedStash[id]||0))return fail("ITEM_COUNT_EXCEEDS_STASH");
+        }
+        normalized[cardId].push({key:entry.key,items:[...specified.items]});
+      }
+    }
+    return{valid:true,preparation:{stash:checkedStash,loadouts:normalized}};
+  }
+  function matchPreparationForDeck(deck=[]){
+    const prepared={stash:stash(),loadouts:loadoutsForDeck(deck)};
+    const result=validateMatchPreparation(deck,prepared);
+    if(!result.valid)throw Error(result.reason);
+    return result.preparation;
+  }
+  /** Idempotent local profile reconciliation from the seat-private authority view. */
+  function reconcileMatchConsumption(matchId,seat,counts={}){
+    if(typeof matchId!=="string"||!matchId||![0,1].includes(seat)||
+       !counts||typeof counts!=="object"||Array.isArray(counts))return false;
+    const s=state();s.pvpItemReceipts??={};
+    const key=`${matchId}:${seat}`,previous=s.pvpItemReceipts[key]||{},next={...previous};
+    for(const [id,total] of Object.entries(counts)){
+      if(!ItemDatabase.get(id)||!Number.isSafeInteger(total)||total<0)return false;
+      if(total<Number(previous[id]||0))return false;
+      const delta=total-Number(previous[id]||0);
+      if(delta>0){
+        s.stash[id]=Math.max(0,Number(s.stash[id]||0)-delta);
+        if(s.stash[id]===0)delete s.stash[id];
+        trimAssignmentsInState(s,id);
+      }
+      next[id]=total;
+    }
+    s.pvpItemReceipts[key]=next;
+    save(s);return true;
+  }
   function beginBattle(loadouts={}){battleQueues=new Map();for(const[cardId,entries]of Object.entries(loadouts||{}))battleQueues.set(cardId,(entries||[]).map(entry=>clone(entry)));groundItems=[];groundSerial=0;return true}
   function claimBattleLoadout(cardId){const q=battleQueues.get(cardId)||[];if(!q.length)return[];const entry=q.shift();battleQueues.set(cardId,q);return[...(entry?.items||[])].filter(id=>ItemDatabase.get(id))}
   function makePayload(itemId,{owned=false,source="BATTLE"}={}){const item=ItemDatabase.get(itemId);if(!item)return null;return{id:`item_${Date.now().toString(36)}_${groundSerial++}`,itemId:item.id,type:"ITEM",kind:"ITEM",owned:owned===true,source}}
@@ -84,12 +161,23 @@ export const ItemInventoryEngine=(()=>{
   function removeGround(id){const index=groundItems.findIndex(item=>item.id===id);if(index<0)return null;return groundItems.splice(index,1)[0]||null}
   function battleGroundItems(){return groundItems.map(clone)}
   function restoreBattleGroundItems(items=[]){groundItems=(items||[]).map(clone);groundSerial=Math.max(groundSerial,groundItems.length);return battleGroundItems()}
+  function withBattleGroundState(items,callback){
+    if(!Array.isArray(items)||typeof callback!=="function")throw Error("INVALID_BATTLE_GROUND_SCOPE");
+    const previousItems=groundItems,previousSerial=groundSerial;
+    groundItems=clone(items);groundSerial=Math.max(groundSerial,groundItems.length);
+    try{
+      const result=callback();
+      if(result&&typeof result.then==="function")throw Error("BATTLE_GROUND_SCOPE_MUST_BE_SYNCHRONOUS");
+      return{result,groundItems:battleGroundItems()};
+    }finally{groundItems=previousItems;groundSerial=previousSerial;}
+  }
   function resetProfile(){localStorage.removeItem(STORAGE_KEY);return defaults()}
 
   return Object.freeze({
     state,gold,addGold,spendGold,stash,stashCount,grant,consumeOwned,buy,
     deckEntries,slotCountForCard,syncPreparationsForDeck,preparation,assignedCount,availableCount,equip,unequip,loadoutsForDeck,
-    beginBattle,claimBattleLoadout,makePayload,spawnGroundItem,dropPayload,groundAt,takeGround,removeGround,battleGroundItems,restoreBattleGroundItems,resetProfile
+    validateMatchPreparation,matchPreparationForDeck,reconcileMatchConsumption,
+    beginBattle,claimBattleLoadout,makePayload,spawnGroundItem,dropPayload,groundAt,takeGround,removeGround,battleGroundItems,restoreBattleGroundItems,withBattleGroundState,resetProfile
   });
 })();
 

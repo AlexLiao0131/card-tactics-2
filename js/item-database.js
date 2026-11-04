@@ -71,7 +71,7 @@ export const ITEMS=Object.freeze({
 });
 
 export const ItemDatabase=(()=>{
-  function get(id){return ITEMS[String(id)]||null}
+  function get(id){const key=String(id);return Object.hasOwn(ITEMS,key)?ITEMS[key]:null}
   function list(ids=null){return ids?(ids||[]).map(get).filter(Boolean):Object.values(ITEMS)}
   function shopList(){return list().filter(item=>Number.isFinite(Number(item?.shop?.buyPrice)))}
   function price(id){const item=get(id);return item?Math.max(0,Number(item.shop?.buyPrice||0)):null}

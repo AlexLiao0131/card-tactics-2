@@ -18,8 +18,12 @@ export function presentBattleOverview({snapshot,cores=snapshot?.cores||[],stage=
     const mine=seat===1?"ENEMY":"PLAYER",theirs=seat===1?"PLAYER":"ENEMY";
     const player=cores.find(c=>c.owner===mine),enemy=cores.find(c=>c.owner===theirs);
     const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team===(seat===1?"ENEMY":"PLAYER")&&!unit.finished);
-    next.disabled=online||phase!=="PLAYER_TURN"||eligible.length===0;
-    next.title=eligible.length?`選取下一位未完成行動角色（剩 ${eligible.length} 位）`:"目前沒有可行動角色";
+    // In online matches, the authoritative PvpTacticalUI owns which seat can
+    // press Next Unit. HUD presentation must never disable a legal action.
+    if(!online){
+      next.disabled=phase!=="PLAYER_TURN"||eligible.length===0;
+      next.title=eligible.length?`選取下一位未完成行動角色（剩 ${eligible.length} 位）`:"目前沒有可行動角色";
+    }
     const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
     coreHud.classList.toggle("available",hasCores);
     coreHud.setAttribute("aria-hidden",String(!hasCores));
@@ -66,6 +70,7 @@ export function presentBattleWeather(snapshot){
 export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
+    this.onlineSnapshot=null;this.onlineStage=null;this.onlineSeat=0;this.onlinePhase=null;
     this.heldInspection=null; // Read-only snapshot of explicitly long-pressed tile.
     this.inspectorHome=q("battleScreen");
     this.contextHudSlot=q("contextHudSlot");
@@ -81,8 +86,10 @@ export class BattleUI{
 
   bind(runtime,renderer){
     this.runtime=runtime;this.renderer=renderer;
-    this.endTurn.onclick=()=>runtime.endPlayerTurn();
-    q("nextUnit").onclick=()=>runtime.selectNextAvailableUnit?.();
+    this.endTurn.onclick=()=>document.body.dataset.battleMode==='PVP'
+      ?globalThis.CardTacticsPvpInput?.endPhase?.():runtime.endPlayerTurn();
+    q("nextUnit").onclick=()=>document.body.dataset.battleMode==='PVP'
+      ?globalThis.CardTacticsPvpInput?.nextUnit?.():runtime.selectNextAvailableUnit?.();
     q("rotateLeft").onclick=()=>renderer.rotate(-1);
     q("rotateRight").onclick=()=>renderer.rotate(1);
     q("projectionToggle").onclick=()=>renderer.toggleProjection();
@@ -158,6 +165,7 @@ export class BattleUI{
   // A command-menu action opens the already-existing hero card detail
   // presenter. The unit ID and current values belong to UnitRuntimeEngine.
   openStatus(unitId){
+    if(document.body.dataset.battleMode==='PVP')return this.openOnlineStatus(unitId);
     const selected=this.runtime?.getBattleSnapshot?.()?.units?.find(
       unit=>unit.id===unitId&&unit.team==="PLAYER"&&unit.selected
     );
@@ -172,6 +180,26 @@ export class BattleUI{
     return true;
   }
 
+  openOnlineStatus(unitId){
+    const unit=this.onlineSnapshot?.units?.find(u=>u.id===unitId&&
+      u.team===(this.onlineSeat===0?'P':'E'));
+    const character=unit?globalThis.CharacterDatabase?.get?.(unit.characterId):null;
+    if(!unit||!character||!globalThis.CardTacticsHeroCard?.detail)return false;
+    const card=Object.values(globalThis.CARDS||{}).find(entry=>
+      entry.type==='CHARACTER'&&entry.characterId===unit.characterId)||
+      {name:character.name,characterId:unit.characterId};
+    this.statusReturnFocus=document.activeElement;
+    this.statusUnitId=unit.id;
+    this.statusMarkup='';
+    // Only public snapshot properties, never the local UnitRuntimeEngine.
+    const onlineUnit={...unit,character,resources:unit.resources||{}};
+    const markup=globalThis.CardTacticsHeroCard.detail(card,{unit:onlineUnit});
+    if(!markup)return false;
+    this.statusRoot.innerHTML=markup;this.statusMarkup=markup;
+    this.statusRoot.querySelector('.hero-info-header button')?.focus();
+    return true;
+  }
+
   closeStatus({restoreFocus=true}={}){
     this.statusUnitId=null;
     this.statusMarkup="";
@@ -181,7 +209,7 @@ export class BattleUI{
   }
 
   renderStatus(snapshot=this.runtime?.getBattleSnapshot?.()){
-    if(!this.statusUnitId)return;
+    if(document.body.dataset.battleMode==='PVP'||!this.statusUnitId)return;
     const unit=globalThis.UnitRuntimeEngine?.getLiveUnit?.(this.statusUnitId);
     const selected=snapshot?.units?.some(
       candidate=>candidate.id===this.statusUnitId&&candidate.team==="PLAYER"&&candidate.selected
@@ -226,6 +254,31 @@ export class BattleUI{
     this.renderWeather(snapshot);this.renderView();this.renderContext();this.renderStatus(snapshot);this.renderLog();
   }
 
+  // Same native BattleUI and inspector, receiving a *visible* server snapshot.
+  // The PvP presenter never calls local runtime combat/input functions.
+  presentOnline(snapshot,{cores=snapshot?.cores||[],stage=null,phase=null,seat=0}={}){
+    if(!snapshot)return;
+    this.onlineSnapshot=snapshot;this.onlineStage=stage;
+    this.onlinePhase=phase;this.onlineSeat=seat;
+    if(this.heldInspection?.unit&&!snapshot.units?.some(u=>u.id===this.heldInspection.unit.id))
+      this.setContextOpen(false);
+    presentBattleOverview({snapshot,cores,stage,phase,seat,online:true});
+    presentBattleWeather(snapshot);
+    this.renderView();
+    this.renderContext();
+    this.renderLog();
+  }
+  leaveOnline(){
+    this.onlineSnapshot=null;this.onlineStage=null;this.onlinePhase=null;
+    this.endTurn.hidden=false;
+    q('nextUnit').hidden=false;
+    if(this.statusUnitId)this.closeStatus({restoreFocus:false});
+    if(this.context?.classList?.contains('open'))this.setContextOpen(false);
+    this.mapShell?.classList?.remove('open');
+    this.logShell?.classList?.remove('active');
+    this.logRenderedTail=null;this.logRenderedLength=-1;
+  }
+
   renderWeather(snapshot){presentBattleWeather(snapshot);}
 
   renderView(){
@@ -236,7 +289,7 @@ export class BattleUI{
   // The official game owns all data. Long press reads it without selecting a
   // unit, changing the action mode or firing a tactical tile click.
   inspectHeldTile(x,y){
-    if(document.body.dataset.battleMode==='PVP')return false;
+    if(document.body.dataset.battleMode==='PVP')return this.inspectOnlineTile(x,y);
     const snapshot=this.runtime?.getBattleSnapshot?.();
     const published=snapshot?.map?.tiles?.find(tile=>tile.x===x&&tile.y===y);
     const map=this.runtime?.getBattleMap?.();
@@ -300,8 +353,30 @@ export class BattleUI{
     return true;
   }
 
+  inspectOnlineTile(x,y){
+    const snapshot=this.onlineSnapshot;
+    if(!snapshot||!Number.isInteger(x)||!Number.isInteger(y))return false;
+    const tile=snapshot.map?.tiles?.find(tile=>tile.x===x&&tile.y===y);
+    if(!tile)return false;
+    const unit=snapshot.units?.find(unit=>unit.x===x&&unit.y===y&&unit.alive!==false);
+    const character=unit?globalThis.CharacterDatabase?.get?.(unit.characterId):null;
+    this.heldInspection={x,y,unit:unit?{
+      id:unit.id,name:unit.name||character?.name||unit.id,team:unit.team,
+      hp:unit.hp,maxHp:unit.maxHp,mana:unit.mana,maxMana:unit.maxMana,
+      x,y,move:character?.combat?.move,terrain:tile.terrain,
+      actionState:unit.waited?'已待機':unit.acted?'已完成行動':unit.moved?'已移動':'可行動',
+      stats:character?.combat||{}
+    }:null,tile:{summary:{title:tile.terrain||'地形',
+      meta:`(${x}, ${y})｜高度 ${tile.elevation??0}`,
+      status:(tile.effectDetails||[]).map(e=>e.type).join('、')||'無'},
+      details:`地形：${tile.terrain||'—'}｜高度：${tile.elevation??0}`}};
+    this.contextTab=unit?'UNIT':'TILE';
+    this.setContextOpen(true);return true;
+  }
+
   contextData(){
     if(this.heldInspection)return{unit:this.heldInspection.unit,tile:this.heldInspection.tile};
+    if(document.body.dataset.battleMode==='PVP')return{unit:null,tile:null};
     return{
       unit:this.runtime?.getInspectedUnitPresentation?.()||null,
       tile:this.runtime?.getInspectedTilePresentation?.()||null
@@ -381,7 +456,8 @@ export class BattleUI{
   }
   renderLog(){
     if(!this.logShell?.classList.contains("active"))return;
-    const model=this.runtime?.getBattleLog?.();if(!model)return;
+    const model=document.body.dataset.battleMode==='PVP'
+      ?{active:'BATTLE',entries:[]} :this.runtime?.getBattleLog?.();if(!model)return;
     const entries=model.entries||[],tail=entries[entries.length-1]||null;
     if(this.logRenderedTail===tail&&this.logRenderedLength===entries.length&&this.logRenderedTab===model.active)return;
     this.logRenderedTail=tail;this.logRenderedLength=entries.length;this.logRenderedTab=model.active;

@@ -62,6 +62,7 @@ try{
   let renderer=null;
   let localBattleUiBound=false;
   let pvp=null;
+  const battleUI=new BattleUI();
   function sharedBattleRenderer(surface,snapshot){
     if(surface!==canvas)throw Error('NATIVE_BATTLE_CANVAS_REQUIRED');
     if(!renderer){
@@ -71,6 +72,7 @@ try{
       });
       globalThis.CardTacticsRenderer=renderer;
       shell.renderer=renderer;
+      enableLocalBattleUI();
       // The original BattleUI owns these handlers during offline play.  When
       // the FIRST match is online, the very same camera controls still work.
       document.getElementById('rotateLeft').onclick=()=>renderer.rotate(-1);
@@ -82,7 +84,7 @@ try{
   }
   function enableLocalBattleUI(){
     if(localBattleUiBound)return;
-    const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
+    battleUI.bind(runtime,renderer);
     unitControlUI.bind(runtime);
     localBattleUiBound=true;
   }
@@ -218,7 +220,18 @@ try{
   shell.bind();
   loadingStep="原生 PVP 房間協調器";
   const {PvpLobbyController}=await load('./pvp-lobby.js');
-  pvp=new PvpLobbyController({shell,createSharedRenderer:sharedBattleRenderer});
+  pvp=new PvpLobbyController({shell,createSharedRenderer:sharedBattleRenderer,cardUI,battleUI,unitControlUI});
+  globalThis.CardTacticsPvpInput=Object.freeze({
+    nextUnit:()=>pvp?.tacticalUI?.nextUnit(),
+    endPhase:()=>pvp?.tacticalUI?.endPhase(),
+    rotateFacing:steps=>pvp?.tacticalUI?.rotateFacing(steps),
+    adjustAltitude:steps=>pvp?.tacticalUI?.adjustAltitude(steps)
+  });
+  // PvP before any local game still uses the SAME native turn controls.
+  document.getElementById('endTurn').onclick=()=>pvp?.isBattleActive()
+    ?pvp.tacticalUI?.endPhase():runtime.endPlayerTurn();
+  document.getElementById('nextUnit').onclick=()=>pvp?.isBattleActive()
+    ?pvp.tacticalUI?.nextUnit():runtime.selectNextAvailableUnit?.();
   shell.attachPvp(pvp);
   pvp.bind();
   // Before the first battle, there is no scene and nothing to publish.

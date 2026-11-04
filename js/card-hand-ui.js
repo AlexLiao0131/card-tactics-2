@@ -218,6 +218,7 @@ export class CardHandUI{
     this.host=document.getElementById("cardPhasePanel");
     this.runtime=null;this.previewId=null;this.detailsOpen=false;this.mulligan=new Set();this.openingHandRef=null;
     this.regions=null;this.regionMarkup=new Map();
+    this.remoteCards=null;
     ensureHeroCardStyles();
   }
   bind(runtime){
@@ -228,6 +229,38 @@ export class CardHandUI{
     window.addEventListener("keydown",event=>{
       if(event.key==="Escape"&&this.detailsOpen){this.detailsOpen=false;this.render();}
     });
+    this.render();
+  }
+  /** The SAME official hand component reads offline state or a private,
+   * read-only remote card view. No client-side gameplay rule or card zone is
+   * copied. Remote callbacks issue WebSocket commands to the authority.
+   */
+  setRemoteCards({phase,matchId,seat,hand,deckCount,opponentHandCount,
+    crystals=null,canAct,onDecision,onPlayCard,onEndCard,onCancel}={}){
+    if(!['OPENING_HAND','CARD_PHASE'].includes(phase)||
+       typeof matchId!=="string"||!matchId||![0,1].includes(seat)||
+       !Array.isArray(hand)||hand.some(card=>typeof card?.id!=="string"||!globalThis.CardDatabase?.get(card.id))||
+       !Number.isSafeInteger(deckCount)||deckCount<0||
+       !Number.isSafeInteger(opponentHandCount)||opponentHandCount<0||
+       (crystals!==null&&(!Number.isSafeInteger(crystals)||crystals<0))||
+       typeof onDecision!=="function"||typeof onPlayCard!=="function"||
+       typeof onEndCard!=="function"||typeof onCancel!=="function")throw Error("PVP_PRIVATE_CARD_VIEW_INVALID");
+    const handIds=hand.map(card=>card.id);
+    const handKey=JSON.stringify([matchId,seat,phase,handIds]);
+    const previous=this.remoteCards;
+    if(previous?.handKey!==handKey){
+      this.mulligan.clear();this.openingHandRef=null;
+      this.previewId=null;this.detailsOpen=false;
+    }
+    this.remoteCards={phase,handIds,handKey,deckCount,opponentHandCount,
+      crystals,canAct:canAct===true,onDecision,onPlayCard,onEndCard,onCancel,
+      pendingCardId:previous?.handKey===handKey?previous.pendingCardId:null};
+    this.render();
+  }
+  clearRemoteCards(){
+    if(!this.remoteCards)return;
+    this.remoteCards=null;this.mulligan.clear();this.openingHandRef=null;
+    this.previewId=null;this.detailsOpen=false;
     this.render();
   }
   ensureRegions(){
@@ -311,40 +344,91 @@ export class CardHandUI{
     }
     const button=origin.closest("button");
     if(!button||!this.host.contains(button)||button.disabled)return;
-    const r=this.runtime,state=r?.getCardState(),phase=r?.getPhase();
+    const remote=this.remoteCards,r=this.runtime;
+    const state=remote?{zones:{hand:remote.handIds}}:r?.getCardState();
+    const phase=remote?"CARD_PHASE":r?.getPhase();
     if(!r||!state)return;
-    const opening=phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone;
+    const opening=remote?remote.phase==='OPENING_HAND':
+      (phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone);
     const id=button.dataset.card;
     if(id){
       if(opening){
+        if(remote&&!remote.canAct)return;
         const index=Number(button.dataset.handIndex);
-        if(!Number.isInteger(index)||index<0||state.zones.hand[index]!==id)return;
+        if(!Number.isInteger(index)||index<0||state.zones.hand[index]!==id||
+           globalThis.CardDatabase.get(id)?.mulliganEligible===false)return;
         this.mulligan.has(index)?this.mulligan.delete(index):this.mulligan.add(index);
       }else{this.previewId=id;this.detailsOpen=false;}
       this.render();return;
     }
     switch(button.id){
       case "confirmMulligan":
-        globalThis.CardPhaseEngine.mulligan(state,[...this.mulligan]);this.mulligan.clear();
-        if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"));
+        if(remote){
+          if(!remote.canAct||!this.mulligan.size)return;
+          if(remote.onDecision({type:"MULLIGAN",indices:[...this.mulligan].sort((a,b)=>a-b)})){
+            remote.canAct=false;this.render();
+          }
+        }else{
+          globalThis.CardPhaseEngine.mulligan(state,[...this.mulligan]);this.mulligan.clear();
+          if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"));
+        }
         break;
       case "keepOpeningHand":
-        globalThis.CardPhaseEngine.keepOpeningHand(state);this.mulligan.clear();
-        if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"));
+        if(remote){
+          if(!remote.canAct)return;
+          if(remote.onDecision({type:"KEEP_OPENING_HAND"})){
+            remote.canAct=false;this.render();
+          }
+        }else{
+          globalThis.CardPhaseEngine.keepOpeningHand(state);this.mulligan.clear();
+          if(!r.maybeAutoEndCardPhase?.())window.dispatchEvent(new CustomEvent("cardtactics:state"));
+        }
         break;
       case "confirmCardUse":{
-        const chosen=this.previewId;this.previewId=null;this.detailsOpen=false;
-        if(chosen)r.playCard(chosen);this.render();break;
+        if(remote){
+          if(!remote.canAct)return;
+          const chosen=this.previewId;
+          if(!chosen)return;
+          const result=remote.onPlayCard(chosen);
+          if(!result)return; // Keep preview when server action was rejected.
+          this.previewId=null;this.detailsOpen=false;
+          if(result==='TARGET')remote.pendingCardId=chosen;
+          else remote.canAct=false;
+        }else{
+          const chosen=this.previewId;this.previewId=null;this.detailsOpen=false;
+          if(chosen)r.playCard(chosen);
+        }
+        this.render();break;
       }
       case "cancelCardPreview":this.previewId=null;this.detailsOpen=false;this.render();break;
       case "openHeroCardInfo":this.detailsOpen=true;this.render();break;
-      case "cancelCardTarget":this.previewId=null;r.cancelCard();this.render();break;
-      case "endCardPhase":r.endCardPhase();break;
+      case "cancelCardTarget":
+        this.previewId=null;
+        if(remote){remote.pendingCardId=null;remote.onCancel();}
+        else r.cancelCard();
+        this.render();break;
+      case "endCardPhase":
+        if(remote){
+          if(!remote.canAct||remote.pendingCardId)return;
+          if(remote.onEndCard()){remote.canAct=false;this.render();}
+        }else r.endCardPhase();
+        break;
     }
   }
   render(){
     const r=this.runtime;if(!r)return;
-    const state=r.getCardState(),phase=r.getPhase(),pending=r.getPendingCard(),enemy=r.getEnemyCardState?.(),view=r.getEnemyPresentation?.();
+    const remote=this.remoteCards;
+    const state=remote?{
+      zones:{hand:remote.handIds,deck:{length:remote.deckCount}},
+      mulliganAvailable:remote.phase==='OPENING_HAND',
+      mulliganDone:remote.phase!=='OPENING_HAND',
+      active:remote.phase==='CARD_PHASE',crystals:remote.crystals
+    }:r.getCardState();
+    const phase=remote?"CARD_PHASE":r.getPhase();
+    const pending=remote?.pendingCardId?globalThis.CardDatabase.get(remote.pendingCardId):
+      remote?null:r.getPendingCard();
+    const enemy=remote?null:r.getEnemyCardState?.();
+    const view=remote?null:r.getEnemyPresentation?.();
     if(!state){
       this.detailsOpen=false;this.mulligan.clear();this.openingHandRef=null;
       if(this.regions){this.host.replaceChildren();this.regions=null;this.regionMarkup.clear();}
@@ -356,7 +440,8 @@ export class CardHandUI{
     // A new match gets a new hand array: do not carry slot choices across
     // games. The game engine and UI both identify a duplicate by hand index.
     if(opening){
-      if(this.openingHandRef!==state.zones.hand){this.openingHandRef=state.zones.hand;this.mulligan.clear();}
+      const sourceKey=remote?remote.handKey:state.zones.hand;
+      if(this.openingHandRef!==sourceKey){this.openingHandRef=sourceKey;this.mulligan.clear();}
     }else{this.openingHandRef=null;this.mulligan.clear();}
     if(pending){this.previewId=null;this.detailsOpen=false;}
     if(this.previewId&&!cards.some(c=>c.id===this.previewId)){this.previewId=null;this.detailsOpen=false;}
@@ -365,17 +450,22 @@ export class CardHandUI{
     this.host.classList.toggle("hero-preview-open",isHeroCard(preview));
     this.host.classList.toggle("hero-info-open",this.detailsOpen&&isHeroCard(preview));
     const enemyMotion=phase==="ENEMY_TURN"?(view?.kind==="DRAW"?"enemy-draw":view?.kind==="CARD_SELECT"?"enemy-select":"enemy-thinking"):"";
-    const enemyHtml=enemy?`<div class="opponent-hand ${enemyMotion}">${Array.from({length:enemy.zones?.hand?.length||0},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-((enemy.zones?.hand?.length||1)-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">敵方　💎 ${enemy.crystals||0}/${enemy.crystalCapacity||0}　牌庫 ${enemy.zones?.deck?.length||0}</div>${phase==="ENEMY_TURN"?`<div class="opponent-message">${esc(view?.message||"敵方思考中…")}</div>`:""}`:"";
-    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=!opening&&!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" data-hand-index="${i}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
+    const enemyHtml=remote?`<div class="opponent-hand">${Array.from({length:remote.opponentHandCount},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-(remote.opponentHandCount-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">對手手牌 ${remote.opponentHandCount} 張｜${remote.canAct?"輪到你操作":"等待對手"}</div>`
+      :enemy?`<div class="opponent-hand ${enemyMotion}">${Array.from({length:enemy.zones?.hand?.length||0},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-((enemy.zones?.hand?.length||1)-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">敵方　💎 ${enemy.crystals||0}/${enemy.crystalCapacity||0}　牌庫 ${enemy.zones?.deck?.length||0}</div>${phase==="ENEMY_TURN"?`<div class="opponent-message">${esc(view?.message||"敵方思考中…")}</div>`:""}`:"";
+    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=remote?(!remote.canAct||!!pending||(opening?c.mulliganEligible===false:
+      !globalThis.CardPhaseEngine.canPlay(state,c))):
+      (opening?c.mulliganEligible===false:!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c)))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" data-hand-index="${i}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
     const art=preview?cardArt(preview):null,heroPreview=isHeroCard(preview);
-    const previewHtml=!opening&&!targeting&&preview?`<div class="card-preview ${heroPreview?"hero-preview":""}">${heroPreview?heroCardFace(preview,{variant:"preview"}):`<div class="preview-card-face">${art?`<span class="preview-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="preview-cost">${preview.cost}</span><strong>${esc(preview.name)}</strong><small>${esc(preview.type)}</small><p>${esc(describe(preview))}</p></div>`}<div class="preview-actions"><button id="confirmCardUse">使用</button>${heroPreview?`<button id="openHeroCardInfo" type="button">詳細資訊</button>`:""}<button id="cancelCardPreview">取消</button></div></div>`:"";
-    const mulliganHtml=opening?`<div class="mulligan-guide"><strong>起手換牌</strong><span>選擇不要的牌；整場僅一次。</span></div><div class="mulligan-actions"><button id="confirmMulligan" ${this.mulligan.size?"":"disabled"}>換掉 ${this.mulligan.size} 張</button><button id="keepOpeningHand">全部保留</button></div>`:"";
+    const previewHtml=!opening&&!targeting&&preview?`<div class="card-preview ${heroPreview?"hero-preview":""}">${heroPreview?heroCardFace(preview,{variant:"preview"}):`<div class="preview-card-face">${art?`<span class="preview-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="preview-cost">${preview.cost}</span><strong>${esc(preview.name)}</strong><small>${esc(preview.type)}</small><p>${esc(describe(preview))}</p></div>`}<div class="preview-actions"><button id="confirmCardUse" ${remote&&!remote.canAct?"disabled":""}>使用</button>${heroPreview?`<button id="openHeroCardInfo" type="button">詳細資訊</button>`:""}<button id="cancelCardPreview">取消</button></div></div>`:"";
+    const mulliganHtml=opening?`<div class="mulligan-guide"><strong>起手換牌</strong><span>選擇不要的牌；整場僅一次。</span></div><div class="mulligan-actions"><button id="confirmMulligan" ${this.mulligan.size&&(!remote||remote.canAct)?"":"disabled"}>換掉 ${this.mulligan.size} 張</button><button id="keepOpeningHand" ${remote&&!remote.canAct?"disabled":""}>全部保留</button></div>`:"";
     const targetingHtml=targeting?`<div class="card-targeting-bar"><button id="cancelCardTarget">← 取消</button><strong>${esc(pending.name)}</strong><span>${pending.type==="CHARACTER"?"請選擇出生區中的部署格":"請在戰場選擇目標"}</span></div>`:"";
-    const actionsHtml=!opening&&!targeting&&phase==="CARD_PHASE"?`<div class="card-phase-actions"><button id="endCardPhase">結束卡牌階段</button></div>`:"";
+    const actionsHtml=!opening&&!targeting&&phase==="CARD_PHASE"?`<div class="card-phase-actions"><button id="endCardPhase" ${remote&&!remote.canAct?"disabled":""}>結束卡牌階段</button></div>`:"";
     this.ensureRegions();
     // Render by independent regions. Unchanged hand/preview image elements keep their identity.
     this.syncRegion("enemy",enemyHtml);
-    this.syncRegion("status",`<div class="battle-resource">💎 ${state.crystals}/${state.crystalCapacity||state.startingCrystals||4}</div><div class="battle-deck-count">牌庫 ${state.zones.deck.length}</div>`);
+    this.syncRegion("status",remote
+      ?`<div class="battle-resource">${remote.phase==='OPENING_HAND'?"雙人 PVP｜起手牌":`💎 ${remote.crystals??"?"}`}</div><div class="battle-deck-count">牌庫 ${remote.deckCount} 張</div>`
+      :`<div class="battle-resource">💎 ${state.crystals}/${state.crystalCapacity||state.startingCrystals||4}</div><div class="battle-deck-count">牌庫 ${state.zones.deck.length}</div>`);
     this.syncHand(`<div class="fan-hand">${hand||`<div class="deck-empty">目前沒有手牌</div>`}</div>`);
     this.syncRegion("mulligan",mulliganHtml);
     this.syncRegion("preview",previewHtml);
