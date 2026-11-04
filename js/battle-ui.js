@@ -13,6 +13,56 @@ const WEATHER_LABEL=Object.freeze({
   BLIZZARD:["❄","暴風雪"]
 });
 
+export function presentBattleOverview({snapshot,cores=snapshot?.cores||[],stage=null,phase=null,seat=0,online=false}){
+  if(!snapshot)return;
+    const mine=seat===1?"ENEMY":"PLAYER",theirs=seat===1?"PLAYER":"ENEMY";
+    const player=cores.find(c=>c.owner===mine),enemy=cores.find(c=>c.owner===theirs);
+    const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team===(seat===1?"ENEMY":"PLAYER")&&!unit.finished);
+    next.disabled=online||phase!=="PLAYER_TURN"||eligible.length===0;
+    next.title=eligible.length?`選取下一位未完成行動角色（剩 ${eligible.length} 位）`:"目前沒有可行動角色";
+    const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
+    coreHud.classList.toggle("available",hasCores);
+    coreHud.setAttribute("aria-hidden",String(!hasCores));
+    // The core + capture HUD is the one authoritative persistent scoreboard.
+    coreHud.classList.toggle("open",hasCores);
+    q("playerCoreHp").textContent=player?`${player.hp}/${player.maxHp}`:"—";
+    q("enemyCoreHp").textContent=enemy?`${enemy.hp}/${enemy.maxHp}`:"—";
+    q("playerCoreBar").style.width=player?`${Math.max(0,Math.min(100,player.hp/Math.max(1,player.maxHp)*100))}%`:"0%";
+    q("enemyCoreBar").style.width=enemy?`${Math.max(0,Math.min(100,enemy.hp/Math.max(1,enemy.maxHp)*100))}%`:"0%";
+
+    const points=(stage?.deploymentPoints||snapshot?.presentation?.deploymentPoints||[]).filter(point=>point.capturable!==false);
+    q("captureSummary").textContent=points.map(point=>`${point.owner===mine?"◆":point.owner===theirs?"◇":"○"}${point.name}`).join("　");
+
+    q("mapMeta").textContent=[
+      snapshot?.map?`地圖：${snapshot.map.width} × ${snapshot.map.height}`:"",
+      stage?.generatedBattlefield?.size?`尺寸：${stage.generatedBattlefield.size}`:"",
+      stage?.generatedBattlefield?.seed!=null?`Seed：${stage.generatedBattlefield.seed}`:"固定關卡地圖"
+    ].filter(Boolean).join("\n");
+
+    q("mapStageInfo").textContent=[
+      `模式：${stage?.mode==="VERSUS"?"對戰":"戰役／關卡"}`,
+      stage?.name?`關卡：${stage.name}`:"",
+      points.length?`據點：${points.map(point=>`${point.name}（${point.owner===mine?"我方":point.owner===theirs?"敵方":"中立"}）`).join("、")}`:"",
+      stage?.ruleset==="CORE_CAPTURE"?"勝利條件：摧毀敵方 Core；中立據點可作為出生點。":""
+    ].filter(Boolean).join("\n");
+
+}
+
+export function presentBattleWeather(snapshot){
+    const node=q("weatherIndicator");if(!node)return;
+    const env=snapshot?.presentation?.environment||{};
+    const weather=String(env.weather||"CLEAR").toUpperCase();
+    const [icon,label]=WEATHER_LABEL[weather]||["◌",weather];
+    const remaining=env.weatherTurnsRemaining;
+    const suffix=weather==="CLEAR"||remaining==null?"":Number(remaining)>0?` ${Number(remaining)}T`:" 即將結束";
+    node.textContent=`${icon} ${label}${suffix}`;
+    node.title=`目前天氣：${label}${weather==="CLEAR"||remaining==null?"":Number(remaining)>0?`｜剩餘 ${Number(remaining)} 回合`:"｜即將結束"}${env.timeOfDay==="NIGHT"?"｜夜間":""}`;
+    node.setAttribute("aria-label",node.title);
+    node.style.pointerEvents="none";
+    node.style.cursor="default";
+  }
+
+
 export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
@@ -164,59 +214,19 @@ export class BattleUI{
   }
 
   render(publishedSnapshot=null){
-    if(!this.runtime)return;
+    if(!this.runtime||document.body.dataset.battleMode==='PVP')return;
     const snapshot=publishedSnapshot||this.runtime.getBattleSnapshot(),stage=this.runtime.getStage(),cores=this.runtime.getCores(),phase=this.runtime.getPhase();
     // An inspected unit can die or disappear under visibility rules.
     // Never keep its last-known portrait/HP on screen after it leaves the snapshot.
     if(this.heldInspection?.unit&&!snapshot.units.some(u=>u.id===this.heldInspection.unit.id))
       this.setContextOpen(false);
-    const player=cores.find(c=>c.owner==="PLAYER"),enemy=cores.find(c=>c.owner==="ENEMY");
-    const next=q("nextUnit"),eligible=(snapshot?.units||[]).filter(unit=>unit.team==="PLAYER"&&!unit.finished);
-    next.disabled=phase!=="PLAYER_TURN"||eligible.length===0;
-    next.title=eligible.length?`選取下一位未完成行動角色（剩 ${eligible.length} 位）`:"目前沒有可行動角色";
-    const coreHud=q("versusCoreHud"),hasCores=!!player||!!enemy;
-    coreHud.classList.toggle("available",hasCores);
-    coreHud.setAttribute("aria-hidden",String(!hasCores));
-    // The core + capture HUD is the one authoritative persistent scoreboard.
-    coreHud.classList.toggle("open",hasCores);
-    q("playerCoreHp").textContent=player?`${player.hp}/${player.maxHp}`:"—";
-    q("enemyCoreHp").textContent=enemy?`${enemy.hp}/${enemy.maxHp}`:"—";
-    q("playerCoreBar").style.width=player?`${Math.max(0,Math.min(100,player.hp/Math.max(1,player.maxHp)*100))}%`:"0%";
-    q("enemyCoreBar").style.width=enemy?`${Math.max(0,Math.min(100,enemy.hp/Math.max(1,enemy.maxHp)*100))}%`:"0%";
-
-    const points=(stage?.deploymentPoints||[]).filter(point=>point.capturable!==false);
-    q("captureSummary").textContent=points.map(point=>`${point.owner==="PLAYER"?"◆":point.owner==="ENEMY"?"◇":"○"}${point.name}`).join("　");
-
-    q("mapMeta").textContent=[
-      snapshot?.map?`地圖：${snapshot.map.width} × ${snapshot.map.height}`:"",
-      stage?.generatedBattlefield?.size?`尺寸：${stage.generatedBattlefield.size}`:"",
-      stage?.generatedBattlefield?.seed!=null?`Seed：${stage.generatedBattlefield.seed}`:"固定關卡地圖"
-    ].filter(Boolean).join("\n");
-
-    q("mapStageInfo").textContent=[
-      `模式：${stage?.mode==="VERSUS"?"對戰":"戰役／關卡"}`,
-      stage?.name?`關卡：${stage.name}`:"",
-      points.length?`據點：${points.map(point=>`${point.name}（${OWNER_LABEL[point.owner]||point.owner}）`).join("、")}`:"",
-      stage?.ruleset==="CORE_CAPTURE"?"勝利條件：摧毀敵方 Core；中立據點可作為出生點。":""
-    ].filter(Boolean).join("\n");
+    presentBattleOverview({snapshot,cores,stage,phase});
 
     this.endTurn.disabled=phase!=="PLAYER_TURN";
     this.renderWeather(snapshot);this.renderView();this.renderContext();this.renderStatus(snapshot);this.renderLog();
   }
 
-  renderWeather(snapshot){
-    const node=q("weatherIndicator");if(!node)return;
-    const env=snapshot?.presentation?.environment||{};
-    const weather=String(env.weather||"CLEAR").toUpperCase();
-    const [icon,label]=WEATHER_LABEL[weather]||["◌",weather];
-    const remaining=env.weatherTurnsRemaining;
-    const suffix=weather==="CLEAR"||remaining==null?"":Number(remaining)>0?` ${Number(remaining)}T`:" 即將結束";
-    node.textContent=`${icon} ${label}${suffix}`;
-    node.title=`目前天氣：${label}${weather==="CLEAR"||remaining==null?"":Number(remaining)>0?`｜剩餘 ${Number(remaining)} 回合`:"｜即將結束"}${env.timeOfDay==="NIGHT"?"｜夜間":""}`;
-    node.setAttribute("aria-label",node.title);
-    node.style.pointerEvents="none";
-    node.style.cursor="default";
-  }
+  renderWeather(snapshot){presentBattleWeather(snapshot);}
 
   renderView(){
     const state=this.renderer?.getViewState?.();if(!state)return;
@@ -226,6 +236,7 @@ export class BattleUI{
   // The official game owns all data. Long press reads it without selecting a
   // unit, changing the action mode or firing a tactical tile click.
   inspectHeldTile(x,y){
+    if(document.body.dataset.battleMode==='PVP')return false;
     const snapshot=this.runtime?.getBattleSnapshot?.();
     const published=snapshot?.map?.tiles?.find(tile=>tile.x===x&&tile.y===y);
     const map=this.runtime?.getBattleMap?.();

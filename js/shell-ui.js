@@ -4,8 +4,9 @@ export class ShellUI{
     this.runtime=runtime;this.renderer=renderer;this.screens=[...document.querySelectorAll(".game-screen")];
     this.deck=[...globalThis.DeckEngine.getActive()];this.activeGroup=globalThis.PackDatabase.list()[0]?.id||null;
     this.deckReturn="menuScreen";this.deckCanDeploy=false;this.activeShopPack=globalThis.PackDatabase.products?.({season:"TEST_SEASON"})?.[0]?.id||null;
-    this.shopMode="PACK";this.geminiWanted=false;this.startingBattle=false;this.prepSelectedKey=null;this.cardInspector=null;this.cardInspectorOrigin=null;
+    this.shopMode="PACK";this.geminiWanted=false;this.startingBattle=false;this.pvp=null;this.prepSelectedKey=null;this.cardInspector=null;this.cardInspectorOrigin=null;
   }
+  attachPvp(controller){this.pvp=controller;}
   show(id){if(id!=="deckScreen"&&id!=="shopScreen")this.closeCardPreview({restoreFocus:false});this.screens.forEach(s=>s.classList.toggle("active",s.id===id));if(id==="battleScreen")requestAnimationFrame(()=>{
       if(!$("battleScreen")?.classList.contains("active"))return;
       // Scene startup is lazy; the registered event creates it on first entry.
@@ -22,13 +23,14 @@ export class ShellUI{
     const geminiButton=document.createElement("button");geminiButton.id="versusGemini";geminiButton.type="button";geminiButton.className="primary-button";
     geminiButton.textContent="VS Gemini｜AI 指揮官";geminiButton.onclick=()=>{this.geminiWanted=true;this.openDeck({from:"versusScreen",deploy:true})};
     $("versusAi").insertAdjacentElement("afterend",geminiButton);
+    $("versusPvp").onclick=()=>this.pvp?.openLobby();
     $("versusMapSize").onchange=()=>this.updateVersusMeta();
     $("deckBack").onclick=()=>this.show(this.deckReturn);
     $("autoDeck").onclick=()=>this.replaceDeck(globalThis.DeckEngine.autoBuild(this.activeGroup));
     $("applyDeck").onclick=()=>{if(!this.validDeck())return;globalThis.DeckEngine.setActive(this.deck);this.renderDeck()};
     $("saveDeck").onclick=()=>{if(!this.validDeck())return;const n=prompt("牌組名稱",globalThis.PackDatabase.get(this.activeGroup)?.name||"我的牌組");if(n)globalThis.DeckEngine.save(n,this.deck)};
     $("loadDeck").onclick=()=>{const names=Object.keys(globalThis.DeckEngine.saved());if(!names.length){alert("目前沒有已儲存牌組。");return}const n=prompt(`輸入牌組名稱：\n${names.join("\n")}`,names[0]);if(n)this.replaceDeck(globalThis.DeckEngine.load(n))};
-    $("deployDeck").onclick=()=>this.openPreparation();$("prepBack").onclick=()=>this.show("deckScreen");$("startPreparedBattle").onclick=()=>this.startBattle();$("battleBack").onclick=()=>this.show("menuScreen");
+    $("deployDeck").onclick=()=>this.openPreparation();$("prepBack").onclick=()=>this.show("deckScreen");$("startPreparedBattle").onclick=()=>this.startBattle();$("battleBack").onclick=()=>this.pvp?.isBattleActive()?this.pvp.backToLobby():this.show("menuScreen");
     document.querySelectorAll("[data-shop-mode]").forEach(b=>b.onclick=()=>{this.shopMode=b.dataset.shopMode;this.renderShop()});
     document.addEventListener("keydown",event=>{if(event.key!=="Escape"||!this.cardInspector)return;const info=this.cardInspector.querySelector(".hero-info-overlay");if(info)info.remove();else this.closeCardPreview();});
     this.updateVersusMeta();this.show("titleScreen");
@@ -121,7 +123,7 @@ export class ShellUI{
     $("applyDeck").disabled=!result.valid;$("saveDeck").disabled=!result.valid;
   }
   replaceDeck(ids){this.deck.splice(0,this.deck.length,...globalThis.DeckEngine.normalize(ids).slice(0,globalThis.DeckEngine.BATTLE_DECK_SIZE));this.renderDeck();this.renderGroup()}
-  openPreparation(){if(!this.validDeck())return;globalThis.DeckEngine.setActive(this.deck);ItemInventoryEngine.syncPreparationsForDeck(this.deck);const entries=ItemInventoryEngine.deckEntries(this.deck);this.prepSelectedKey=entries[0]?.key||null;this.renderPreparation();this.show("preparationScreen")}
+  openPreparation(){if(!this.validDeck())return;globalThis.DeckEngine.setActive(this.deck);ItemInventoryEngine.syncPreparationsForDeck(this.deck);const entries=ItemInventoryEngine.deckEntries(this.deck);this.prepSelectedKey=entries[0]?.key||null;this.renderPreparation();$("startPreparedBattle").textContent=this.deckReturn==="pvpRoomScreen"?"確認牌組並返回連線房間":"開始戰鬥";this.show("preparationScreen")}
   renderPreparation(){
     const entries=ItemInventoryEngine.deckEntries(this.deck),selected=entries.find(e=>e.key===this.prepSelectedKey)||entries[0]||null;if(selected)this.prepSelectedKey=selected.key;
     $("prepGold").textContent=`Gold ${ItemInventoryEngine.gold()} G`;$("prepSummary").textContent=`出擊牌組 ${this.deck.length}/${globalThis.DeckEngine.BATTLE_DECK_SIZE} 張｜角色卡 ${entries.length} 張｜道具倉庫 ${Object.values(ItemInventoryEngine.stash()).reduce((a,b)=>a+Number(b||0),0)} 件`;
@@ -134,6 +136,17 @@ export class ShellUI{
   async startBattle(){
     if(this.startingBattle||!this.validDeck())return;
     this.startingBattle=true;
+    if(this.deckReturn==="pvpRoomScreen"){
+      try{
+        if(!this.pvp)throw Error('PVP_ROOM_CONTROLLER_UNAVAILABLE');
+        await this.pvp.submitPreparedDeck([...this.deck]);
+        this.pvp.openLobby();
+      }catch(error){alert(`PVP 出擊整備無法完成：${String(error?.message||error).slice(0,180)}`);}
+      finally{this.startingBattle=false;}
+      return;
+    }
+    this.pvp?.suspendForLocalBattle();
+    document.body.dataset.battleMode='LOCAL';
     const versus=this.deckReturn==="versusScreen",itemLoadouts=ItemInventoryEngine.loadoutsForDeck(this.deck);
     globalThis.CardTacticsBattleSetup={stageId:versus?"versus_core_battle":"prototype_battle",deck:[...this.deck],itemLoadouts,...(versus?{mapSize:$("versusMapSize").value||"MEDIUM",seed:globalThis.MapGenerator.randomSeed()}: {})};
     try{

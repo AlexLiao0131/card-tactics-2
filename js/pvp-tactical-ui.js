@@ -4,32 +4,11 @@
  * The production Worker does not enable this incomplete battle contract.
  */
 import { CardDatabase } from './card-database.js';
-import { createOfficialPvpRenderBridge } from './pvp-battle-render-bridge.js';
 
 const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTICAL_PHASE',
   'ENEMY_CARD_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING','MATCH_ENDED']);
 const UNIT_TEAM=['P','E'];
 const text=(id,value)=>{if(id)id.textContent=value;};
-let runtimePromise=null;
-function loadScript(src){
-  return new Promise((resolve,reject)=>{
-    const script=document.createElement('script');
-    script.src=src;script.async=true;
-    script.onload=resolve;script.onerror=()=>reject(Error('BABYLON_RESOURCE_UNAVAILABLE'));
-    document.head.append(script);
-  });
-}
-function loadBabylon(){
-  if(globalThis.BABYLON?.Engine&&globalThis.BABYLON?.GridMaterial)return Promise.resolve();
-  if(runtimePromise)return runtimePromise;
-  runtimePromise=(async()=>{
-    if(!globalThis.BABYLON?.Engine)await loadScript('https://cdn.babylonjs.com/babylon.js');
-    if(!globalThis.BABYLON?.GridMaterial)
-      await loadScript('https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js');
-    if(!globalThis.BABYLON?.Engine)throw Error('BABYLON_RUNTIME_NOT_LOADED');
-  })().catch(error=>{runtimePromise=null;throw error});
-  return runtimePromise;
-}
 function option(parent,value,label){const element=document.createElement('option');element.value=value;element.textContent=label;parent.append(element);}
 function skillChoices(unit,followup=null){
   const skills=Array.isArray(unit?.attackSkills)?unit.attackSkills:[];
@@ -39,12 +18,13 @@ function skillChoices(unit,followup=null){
 
 export class PvpTacticalUI{
   constructor({root,canvas,seat,sendCommand,isConnected=()=>true,
-    createBridge=createOfficialPvpRenderBridge,ensureBabylon=loadBabylon}={}){
-    if(!root||!canvas||![0,1].includes(seat)||typeof sendCommand!=='function')
+    createBridge,ensureBabylon,onRendered=()=>{}}={}){
+    if(!root||!canvas||![0,1].includes(seat)||typeof sendCommand!=='function'||
+       typeof createBridge!=='function'||typeof ensureBabylon!=='function')
       throw Error('PVP_TACTICAL_UI_CONFIGURATION_REQUIRED');
     this.root=root;this.canvas=canvas;this.seat=seat;this.sendCommand=sendCommand;
-    this.createBridge=createBridge;this.ensureBabylon=ensureBabylon;this.isConnected=isConnected;
-    this.match=null;this.bridge=null;this.closed=false;this.selectedUnitId=null;
+    this.createBridge=createBridge;this.ensureBabylon=ensureBabylon;this.isConnected=isConnected;this.onRendered=onRendered;
+    this.match=null;this.bridge=null;this.closed=false;this.selectedUnitId=null;this.presented=true;
     this.mode='SELECT';this.renderToken=0;this.newestRender=null;
     this.status=root.querySelector('[data-pvp-battle-status]');
     this.units=root.querySelector('[data-pvp-units]');
@@ -70,6 +50,13 @@ export class PvpTacticalUI{
     }
   }
   isActive(){return GAME_PHASES.has(this.match?.view?.phase);}
+  // Game shell alone owns screen visibility. Incoming socket states never
+  // display PvP controls above offline games or deck preparation screens.
+  setPresented(value){
+    this.presented=!!value;
+    this.root.hidden=!(this.presented&&this.isActive());
+    if(this.presented&&this.isActive())this.update();
+  }
   myTurn(){return this.match?.view?.activeSeat===this.seat;}
   isCardPhase(){return this.match?.view?.phase===['PLAYER_CARD_PHASE','ENEMY_CARD_PHASE'][this.seat];}
   isTacticalPhase(){return this.match?.view?.phase===['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'][this.seat];}
@@ -77,11 +64,20 @@ export class PvpTacticalUI{
   receiveMatch(match){
     if(this.closed||match?.view?.seat!==this.seat||!Number.isSafeInteger(match.revision))return false;
     if(this.match && match.revision<this.match.revision)return false;
-    this.match=match;this.root.hidden=!this.isActive();this.update();return true;
+    this.match=match;this.root.hidden=!(this.presented&&this.isActive());
+    this.update();return true;
   }
   update(){
     const v=this.match?.view;
     if(!this.isActive())return;
+    // All selectors are authoritative choices. Redrawing the current server
+    // view may invalidate an option, but must never silently replace a still-
+    // legal player choice with the first weapon, card, reaction or target.
+    const selectors=[this.cards,this.skills,this.effectSkills,this.enchantments,
+      this.enchantedAttacks,this.bloodShadow,this.bloodBurst,this.areaFields,
+      this.mapSkills,this.transports,this.perceptionSkills,this.bloodMemory,
+      this.instantCards,this.targetCards,this.reactions].filter(Boolean);
+    const selectedChoices=new Map(selectors.map(select=>[select,select.value]));
     const canAct=this.myTurn()&&this.isConnected();
     const unit=this.selectedUnit(),mine=unit?.team===UNIT_TEAM[this.seat];
     const isReaction=v.phase==='PVP_REACTION_PENDING'&&canAct;
@@ -218,6 +214,9 @@ export class PvpTacticalUI{
       else if(name==='REACT')enabled=isReaction&&this.reactions.options.length>0;
       button.disabled=!enabled;
     }
+    for(const [select,previous] of selectedChoices){
+      if(Array.from(select.options).some(option=>option.value===previous))select.value=previous;
+    }
     const unitName=unit?.characterId||unit?.id||'未選取角色';
     text(this.status,`Round ${v.round??1}｜${v.phase}｜${canAct?'輪到你操作':'等待對手'}｜`+
       `水晶 ${v.own?.crystals??'?'}｜${unitName}｜模式 ${this.mode}`);
@@ -335,7 +334,9 @@ export class PvpTacticalUI{
         canvas:this.canvas,seat:this.seat,onTilePicked:p=>this.tilePicked(p)
       });
       if(this.closed||token!==this.renderToken)return false;
-      return this.bridge.accept(packet);
+      const updated=this.bridge.accept(packet);
+      if(updated)this.onRendered(packet.snapshot);
+      return updated;
     }catch(error){
       text(this.status,`3D 畫面尚無法建立：${error.message}`);
       return false;

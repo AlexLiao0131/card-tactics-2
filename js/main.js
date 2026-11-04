@@ -60,6 +60,32 @@ try{
   // Non-battle screens must not initialize WebGL, shadows, water geometry or
   // battlefield presentation. The first battle entry owns that lifecycle.
   let renderer=null;
+  let localBattleUiBound=false;
+  let pvp=null;
+  function sharedBattleRenderer(surface,snapshot){
+    if(surface!==canvas)throw Error('NATIVE_BATTLE_CANVAS_REQUIRED');
+    if(!renderer){
+      renderer=new BabylonRenderer(canvas,snapshot,{
+        onTilePicked:(x,y)=>pvp?.isBattleActive()
+          ?pvp.tilePicked(x,y):runtime.clickBattleTile(x,y)
+      });
+      globalThis.CardTacticsRenderer=renderer;
+      shell.renderer=renderer;
+      // The original BattleUI owns these handlers during offline play.  When
+      // the FIRST match is online, the very same camera controls still work.
+      document.getElementById('rotateLeft').onclick=()=>renderer.rotate(-1);
+      document.getElementById('rotateRight').onclick=()=>renderer.rotate(1);
+      document.getElementById('projectionToggle').onclick=()=>renderer.toggleProjection();
+      document.getElementById('resetView').onclick=()=>renderer.resetView();
+    }
+    return renderer;
+  }
+  function enableLocalBattleUI(){
+    if(localBattleUiBound)return;
+    const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
+    unitControlUI.bind(runtime);
+    localBattleUiBound=true;
+  }
   const cardUI=new CardHandUI();cardUI.bind(runtime);
   const shell=new ShellUI(runtime,null);
   const unitControlUI=new UnitControlUI();
@@ -95,6 +121,12 @@ try{
   }
 
   function publishFrame(){
+    // Online presentation is authoritative and arrives only by authenticated
+    // WebSocket. A local state event must never draw the offline game on top.
+    if(pvp?.isBattleActive()){
+      if(renderer)renderer.presentationFrameSync=null;
+      return;
+    }
     if(!presentationDirty){
       renderer.presentationFrameSync=null;
       return;
@@ -148,6 +180,7 @@ try{
   }
 
   function invalidatePresentation(){
+    if(pvp?.isBattleActive())return;
     presentationStats.signals++;
     signalsPending++;
     presentationDirty=true;
@@ -157,35 +190,37 @@ try{
   window.addEventListener("cardtactics:battle-render",invalidatePresentation);
   window.addEventListener("cardtactics:state",invalidatePresentation);
   window.addEventListener("cardtactics:battle-screen-enter",()=>{
-    if(!renderer){
-      // Instantiate the original renderer exactly once, in the existing
-      // battle-screen lifecycle. All official UI classes retain their owners.
-      try{
-        loadingStep="BabylonRenderer";
-        renderer=new BabylonRenderer(canvas,runtime.getBattleSnapshot(),
-          {onTilePicked:(x,y)=>runtime.clickBattleTile(x,y)});
-        globalThis.CardTacticsRenderer=renderer;
-        shell.renderer=renderer;
-        const battleUI=new BattleUI();battleUI.bind(runtime,renderer);
-        unitControlUI.bind(runtime);
-      }catch(error){
-        const message=String(error?.message||error);
-        bootStatus.textContent=`啟動失敗｜${loadingStep}｜${message}`;
-        bootStatus.style.color="#ff9b9b";
-        shell.show("bootScreen");
-        globalThis.CardTacticsDiagnostics?.push?.("BOOT_FAILURE",
-          {step:loadingStep,name:error?.name||"Error",message});
-        console.error("Card Tactics battle startup failed",error);
-        return;
-      }
+    if(pvp?.isBattleActive()){
+      // The server render packet will initialize the shared renderer with
+      // its own canonical snapshot. Never call runtime.getBattleSnapshot().
+      renderer?.resize();
+      return;
     }
-    renderer.resize();
-    invalidatePresentation();
+    try{
+      loadingStep="BabylonRenderer";
+      sharedBattleRenderer(canvas,runtime.getBattleSnapshot());
+      enableLocalBattleUI();
+      renderer.resize();
+      invalidatePresentation();
+    }catch(error){
+      const message=String(error?.message||error);
+      bootStatus.textContent=`啟動失敗｜${loadingStep}｜${message}`;
+      bootStatus.style.color="#ff9b9b";
+      shell.show("bootScreen");
+      globalThis.CardTacticsDiagnostics?.push?.("BOOT_FAILURE",
+        {step:loadingStep,name:error?.name||"Error",message});
+      console.error("Card Tactics battle startup failed",error);
+    }
   });
   // Wire screen events before exposing the title screen to clicks. The first
   // battle creates WebGL only when the already-registered event fires.
   loadingStep="shell-ui";
   shell.bind();
+  loadingStep="原生 PVP 房間協調器";
+  const {PvpLobbyController}=await load('./pvp-lobby.js');
+  pvp=new PvpLobbyController({shell,createSharedRenderer:sharedBattleRenderer});
+  shell.attachPvp(pvp);
+  pvp.bind();
   // Before the first battle, there is no scene and nothing to publish.
   // Next updates are consumed by Babylon just before its scene render.
 }catch(error){

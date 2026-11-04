@@ -1,315 +1,409 @@
+/**
+ * Online session coordinator for the EXISTING Card Tactics 2.0 game shell.
+ *
+ * The room has no game renderer, deck editor, battle rules, or independent
+ * gameplay scene. ShellUI owns screen changes and the official battle screen;
+ * DeckEngine/ItemInventoryEngine own preparation; the server owns outcomes.
+ * This module owns only authenticated room I/O, reconnects, and private views.
+ */
 import { PVP_API_BASE } from './pvp-config.js';
-// Use the SAME official card definitions and deck rules as single player.
-import { CardDatabase } from './card-database.js';
 import { DeckEngine } from './deck-engine.js';
 import { PvpTacticalUI } from './pvp-tactical-ui.js';
+import { PvpBattleRenderBridge } from './pvp-battle-render-bridge.js';
+import { presentBattleOverview, presentBattleWeather } from './battle-ui.js';
 
-const $ = id => document.getElementById(id);
-const storageKey = 'ct2:pvp-lobby-session:v1';
-const connect = $('connect');
-const status = $('lobbyStatus');
-const ready = $('readyToggle');
-const submitDeckButton = $('submitDeck');
-const openingPanel = $('openingPanel');
-const battlefieldPanel = $('battlefieldPanel');
-const battlefieldStatus = $('battlefieldStatus');
-const battlefieldCanvas = $('battlefieldCanvas');
-const openingHand = $('openingHand');
-const openingHint = $('openingHint');
-const keepOpening = $('keepOpening');
-const mulliganOpening = $('mulliganOpening');
-const createButton = $('createRoom');
-const joinButton = $('joinRoom');
-const exitButton = $('exitRoom');
-const copyButton = $('copyInvite');
-const retryButton = $('retryRoom');
-const roomView = $('roomView');
-const setupView = $('setupView');
-const codeView = $('roomCode');
-const cards = [$('seatA'), $('seatB')];
-const endpoint = String(PVP_API_BASE||'').replace(/\/$/, '');
-let socket = null;
-let session = null;
-let reconnects = 0;
-let reconnectTimer = null;
-let roomState = null;
-let matchState = null;
-let commandInFlight = false;
-let everJoined = false;
-let tacticalUI = null;
-
-function setStatus(message, bad = false) {
-  status.textContent = message;
-  status.dataset.error = bad ? 'true' : 'false';
+const $=id=>document.getElementById(id);
+const SESSION_KEY='ct2:pvp-lobby-session:v1';
+const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTICAL_PHASE',
+  'ENEMY_CARD_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING','MATCH_ENDED']);
+function codeOrNull(input){
+  const code=String(input||'').toUpperCase().replace(/[\s-]/g,'');
+  return /^[A-HJ-NP-Z2-9]{8}$/.test(code)?code:null;
 }
-function validCode(s) {
-  const result = String(s||'').toUpperCase().replace(/[\s-]/g,'');
-  return /^[A-HJ-NP-Z2-9]{8}$/.test(result)?result:null;
+function nameOrNull(input){
+  return String(input||'').normalize('NFKC').trim().replace(/\s+/g,' ').slice(0,24)||null;
 }
-function safeDisplayName(s) { return String(s||'').normalize('NFKC').trim().replace(/\s+/g,' ').slice(0,24); }
-function safeEndpoint() {
+function apiOrigin(){
   try {
-    const url = new URL(endpoint);
-    return url.protocol==='https:' && !url.username && !url.password && !url.search && !url.hash && url.pathname==='/' ? url.origin : null;
-  } catch { return null; }
+    const origin=new URL(PVP_API_BASE);
+    return origin.protocol==='https:'&&!origin.username&&!origin.password&&
+      !origin.search&&!origin.hash&&origin.pathname==='/'?origin.origin:null;
+  }catch{return null;}
 }
-async function api(path, { name, token, cards } = {}) {
-  if (!safeEndpoint()) throw Error('PVP_SERVER_NOT_CONFIGURED');
-  const controller = new AbortController();
-  const timer = setTimeout(()=>controller.abort(), 12_000);
-  try {
-    const response = await fetch(`${endpoint}${path}`, {
-      method:'POST', headers:{'Content-Type':'application/json',...(token?{'Authorization':`Bearer ${token}`}:{})},
-      body:JSON.stringify(cards ? {cards} : name ? {name} : {}),signal:controller.signal
+function isValidSession(value){
+  return !!(value&&codeOrNull(value.code)===value.code&&
+    /^[a-f0-9]{64}$/.test(value.token||'')&&[0,1].includes(value.seat));
+}
+export class PvpLobbyController {
+  constructor({shell,createSharedRenderer}={}){
+    if(!shell||typeof createSharedRenderer!=='function')
+      throw Error('NATIVE_PVP_SHELL_REQUIRED');
+    this.shell=shell;
+    this.createSharedRenderer=createSharedRenderer;
+    this.session=null;
+    this.socket=null;
+    this.room=null;
+    this.match=null;
+    this.tacticalUI=null;
+    this.reconnects=0;
+    this.reconnectTimer=null;
+    this.commandInFlight=false;
+    this.lastCommand=null;
+    this.renderError=null;
+    this.generation=0;
+    this.readyToBattle=false;
+    this.battleVisible=false;
+    this.suspendedBattle=false;
+    this.pendingRender=null;
+  }
+  isBattleActive(){return !!(this.session&&this.battleVisible);}
+  isConnected(){return this.socket?.readyState===WebSocket.OPEN;}
+  status(message,bad=false){
+    $('lobbyStatus').textContent=message;
+    $('lobbyStatus').dataset.error=String(bad);
+    if(this.battleVisible&&bad){const display=$('pvpTacticalPanel')?.querySelector('[data-pvp-battle-status]');
+      if(display)display.textContent=`連線失敗：${message}`;}
+  }
+  async api(path,{name,token,cards}={}){
+    const origin=apiOrigin();if(!origin)throw Error('PVP_SERVER_NOT_CONFIGURED');
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),12000);
+    try {
+      const response=await fetch(`${origin}${path}`,{
+        method:'POST',headers:{'Content-Type':'application/json',
+          ...(token?{'Authorization':`Bearer ${token}`}:{})},
+        body:JSON.stringify(cards?{cards}:name?{name}:{}),signal:controller.signal
+      });
+      const body=await response.json();
+      if(!response.ok)throw Error(body.error||`HTTP_${response.status}`);
+      return body;
+    }finally{clearTimeout(timeout);}
+  }
+  bind(){
+    $('createRoom').onclick=()=>this.createRoom();
+    $('joinRoom').onclick=()=>this.joinRoom();
+    $('pvpRoomBack').onclick=()=>this.leaveLobby();
+    $('pvpPrepareDeck').onclick=()=>this.openPreparation();
+    $('pvpResumeBattle').onclick=()=>this.enterBattle();
+    $('readyToggle').onclick=()=>{
+      if(!this.isConnected()||!this.room||!this.session)return;
+      const me=this.room.seats?.[this.session.seat];
+      this.socket.send(JSON.stringify({type:'SET_READY',ready:!me?.ready}));
+    };
+    $('retryRoom').onclick=()=>{this.reconnects=0;void this.connect();};
+    $('exitRoom').onclick=()=>this.exitRoom();
+    $('copyInvite').onclick=async()=>{
+      if(!this.session)return;
+      const invite=new URL('./index.html',location.href);
+      invite.searchParams.set('mode','pvp');
+      invite.searchParams.set('room',this.session.code);
+      try{await navigator.clipboard.writeText(invite.href);this.status('已複製邀請連結。');}
+      catch{this.status(`邀請連結：${invite.href}`);}
+    };
+    $('keepOpening').onclick=()=>this.sendCommand({type:'KEEP_OPENING_HAND'});
+    $('mulliganOpening').onclick=()=>this.sendCommand({
+      type:'MULLIGAN',indices:[...$('openingHand').querySelectorAll('input:checked')]
+        .map(input=>Number(input.value))
     });
-    const data = await response.json();
-    if (!response.ok) throw Error(data.error || `HTTP_${response.status}`);
-    return data;
-  } finally { clearTimeout(timer); }
-}
-function setSession(value) {
-  tacticalUI?.close();tacticalUI=null;
-  session=value;
-  if (session) sessionStorage.setItem(storageKey,JSON.stringify(session));
-  else sessionStorage.removeItem(storageKey);
-  setupView.hidden=!!session;
-  roomView.hidden=!session;
-  submitDeckButton.disabled=!session;
-  matchState=null;
-  commandInFlight=false;
-  openingPanel.hidden=true;
-  battlefieldPanel.hidden=true;
-  if (session) codeView.textContent=session.code;
-}
-function closeSocket() {
-  clearTimeout(reconnectTimer);
-  if (socket) { socket.onclose=null; socket.onerror=null; socket.onmessage=null; socket.close(1000,'LEAVE'); }
-  socket=null;
-  ready.disabled=true;
-  commandInFlight=false;
-  tacticalUI?.update();
-}
-function displayRoom(data) {
-  if (!data || data.code !== session?.code) return;
-  roomState=data;
-  for (let i=0;i<2;i++) {
-    const seat=data.seats[i];
-    const name=cards[i].querySelector('[data-name]');
-    const meta=cards[i].querySelector('[data-status]');
-    name.textContent=seat?.name || '等待玩家加入';
-    const isMe=session.seat===i;
-    meta.textContent=seat ? `${seat.online?'已連線':'離線'} · ${seat.ready?'已準備':'尚未準備'} · ${seat.deckSubmitted?'牌組已提交':'未提交牌組'}${isMe?' · 你':''}` : '空位';
-    cards[i].dataset.ready=seat?.ready?'true':'false';
+    $('joinCode').value=codeOrNull(new URL(location.href).searchParams.get('room'))||'';
+    const origin=apiOrigin();
+    $('connect').textContent=origin?`連線伺服器：${origin}`:'Cloudflare 伺服器網址尚未設定';
+    $('createRoom').disabled=!origin;
+    $('joinRoom').disabled=!origin;
+    try{
+      const saved=JSON.parse(sessionStorage.getItem(SESSION_KEY)||'null');
+      if(isValidSession(saved))this.setSession(saved);
+    }catch{sessionStorage.removeItem(SESSION_KEY);}
+    if(new URL(location.href).searchParams.get('mode')==='pvp')this.openLobby();
+    this.refreshRoom();
   }
-  const mine=data.seats?.[session.seat];
-  ready.textContent=mine?.ready?'取消準備':'我已準備';
-  ready.disabled=data.phase!=='LOBBY' || socket?.readyState!==WebSocket.OPEN || mine?.deckSubmitted!==true;
-  submitDeckButton.disabled=data.phase!=='LOBBY';
-  $('bothReady').textContent=data.phase==='BATTLEFIELD_READY'
-    ? '伺服器已生成正式地圖並同步給雙方；請使用下方 Babylon 3D 戰棋。'
-    : data.phase==='OPENING_HAND'
-    ? '已由伺服器建立起手牌。雙方依序確認後可進入 3D 戰棋測試。'
-    : data.bothReady
-    ? '雙方已準備。正在建立伺服器對局…'
-    : data.seats?.some(s=>s && !s.deckSubmitted) ? '等待雙方提交合法的 20 張出擊牌組' : '等待雙方準備';
-  $('bothReady').dataset.ready=data.bothReady?'true':'false';
-}
-const terrainColors=Object.freeze({
-  PLAIN:'#82926d', MUD:'#554d3a', SAND:'#b7a574', FOREST:'#31583e',
-  HIGH_GROUND:'#8b8578', WATER:'#417c99', WALL:'#313945'
-});
-function showBattlefield(battlefield) {
-  battlefieldPanel.hidden=!battlefield;
-  if (!battlefield) return;
-  const {map,cores,deploymentPoints,meta}=battlefield;
-  if (!map || !Array.isArray(map.tiles) || !Number.isInteger(map.width) || !Number.isInteger(map.height) ||
-      map.width<1 || map.height<1 || map.width>64 || map.height>64) {
-    battlefieldStatus.textContent='伺服器地圖資料不完整，已拒絕繪製。';return;
+  openLobby(){
+    this.battleVisible=false;
+    this.tacticalUI?.setPresented(false);
+    this.shell.show('pvpRoomScreen');
+    if(this.session&&!this.isConnected())void this.connect();
+    this.refreshRoom();
   }
-  battlefieldStatus.textContent=`${meta.size}｜${map.width} × ${map.height}｜`+
-    `Core ${cores.map(c=>`${c.owner==='PLAYER'?'我方':'敵方'} ${c.hp}/${c.maxHp}`).join(' · ')}｜`+
-    `中立據點 ${deploymentPoints.filter(p=>p.owner==='NEUTRAL').length} 座`;
-  const cell=16,ctx=battlefieldCanvas.getContext('2d');
-  if (!ctx) return;
-  battlefieldCanvas.width=map.width*cell;battlefieldCanvas.height=map.height*cell;
-  ctx.fillStyle='#091621';ctx.fillRect(0,0,battlefieldCanvas.width,battlefieldCanvas.height);
-  for (const tile of map.tiles) {
-    if (!Number.isInteger(tile?.x) || !Number.isInteger(tile?.y) ||
-        tile.x<0 || tile.y<0 || tile.x>=map.width || tile.y>=map.height) continue;
-    ctx.fillStyle=terrainColors[tile.terrain]||terrainColors.PLAIN;
-    ctx.fillRect(tile.x*cell,tile.y*cell,cell-1,cell-1);
+  backToLobby(){this.suspendedBattle=true;this.openLobby();}
+  leaveLobby(){
+    // Returning to the mode menu suspends this online presentation. Remote
+    // packets continue to be received without stealing the native battle UI.
+    this.suspendedBattle=true;
+    this.battleVisible=false;
+    this.tacticalUI?.setPresented(false);
+    this.shell.show('versusScreen');
   }
-  for (const point of deploymentPoints) {
-    if(point.owner!=='NEUTRAL')continue;
-    for(const tile of point.captureTiles||[]){
-      ctx.fillStyle='#f4cc7d';ctx.fillRect(tile.x*cell+5,tile.y*cell+5,6,6);
+  // Going to a local/Gemini match leaves the room connected but hands all
+  // presentation and input ownership to the original local game runtime.
+  suspendForLocalBattle(){
+    if(!this.session)return;
+    this.suspendedBattle=true;
+    this.battleVisible=false;
+    this.tacticalUI?.setPresented(false);
+  }
+  openPreparation(){
+    if(!this.session)return this.status('請先建立或加入房間。',true);
+    if(this.room?.phase&&this.room.phase!=='LOBBY')return this.status('對戰已建立，不能再更換牌組。',true);
+    // EXACTLY the same ShellUI collection -> deck -> equipment preparation
+    // workflow as local/Gemini: no PvP-specific deck picker or replica rules.
+    this.shell.openDeck({from:'pvpRoomScreen',deploy:true});
+  }
+  async submitPreparedDeck(deck){
+    if(!this.session||this.room?.phase!=='LOBBY')
+      throw Error('ROOM_NOT_ACCEPTING_DECK');
+    const checked=DeckEngine.validate(deck);
+    if(!checked.valid)throw Error(checked.errors.join('；'));
+    this.status('正在提交正式 20 張出擊牌組…');
+    const seat=this.session;
+    const result=await this.api(`/v1/rooms/${seat.code}/deck`,{
+      token:seat.token,cards:checked.deck
+    });
+    if(this.session!==seat)throw Error('SESSION_CHANGED');
+    if(!result.deckSubmitted)throw Error('DECK_NOT_SUBMITTED');
+    this.status('出擊牌組已驗證；等待兩位玩家準備。');
+    this.refreshRoom();
+    return true;
+  }
+  setSession(value){
+    this.closeSocket();
+    this.tacticalUI?.close();this.tacticalUI=null;
+    this.session=value;
+    this.room=null;this.match=null;
+    this.readyToBattle=false;this.battleVisible=false;
+    this.suspendedBattle=false;this.pendingRender=null;
+    this.renderError=null;
+    if(value)sessionStorage.setItem(SESSION_KEY,JSON.stringify(value));
+    else sessionStorage.removeItem(SESSION_KEY);
+    this.refreshRoom();
+  }
+  closeSocket(){
+    this.generation++;
+    clearTimeout(this.reconnectTimer);this.reconnectTimer=null;
+    const previous=this.socket;
+    this.socket=null;
+    if(previous){
+      previous.onopen=previous.onmessage=previous.onerror=previous.onclose=null;
+      try{previous.close(1000,'CLOSED');}catch{}
+    }
+    this.commandInFlight=false;
+  }
+  exitRoom(){
+    this.setSession(null);
+    this.shell.show('versusScreen');
+    document.body.dataset.battleMode='LOCAL';
+    this.status('已離開房間畫面。');
+  }
+  async createRoom(){
+    const name=nameOrNull($('playerName').value);
+    if(!name)return this.status('請輸入玩家暱稱。',true);
+    $('createRoom').disabled=true;
+    try{
+      this.status('建立房間中…');
+      const response=await this.api('/v1/rooms',{name});
+      this.setSession({code:response.code,token:response.token,seat:response.seat});
+      await this.connect();
+    }catch(error){this.status(`建立房間失敗：${error.message}`,true);}
+    finally{$('createRoom').disabled=false;}
+  }
+  async joinRoom(){
+    const name=nameOrNull($('playerName').value),code=codeOrNull($('joinCode').value);
+    if(!name||!code)return this.status('請輸入玩家暱稱與合法房間碼。',true);
+    $('joinRoom').disabled=true;
+    try{
+      this.status('加入房間中…');
+      const response=await this.api(`/v1/rooms/${code}/join`,{name});
+      this.setSession({code:response.code,token:response.token,seat:response.seat});
+      await this.connect();
+    }catch(error){this.status(`加入房間失敗：${error.message}`,true);}
+    finally{$('joinRoom').disabled=false;}
+  }
+  refreshRoom(){
+    $('setupView').hidden=!!this.session;
+    $('roomView').hidden=!this.session;
+    if(!this.session)return;
+    $('roomCode').textContent=this.session.code;
+    for(let i=0;i<2;i++){
+      const source=this.room?.seats?.[i]||null,root=$(i===0?'seatA':'seatB');
+      root.querySelector('[data-name]').textContent=source?.name||'等待玩家加入';
+      root.querySelector('[data-status]').textContent=source
+        ?`${source.online?'在線':'離線'}｜${source.ready?'準備完成':'尚未準備'}｜${source.deckSubmitted?'牌組已提交':'尚未提交'}${this.session.seat===i?'｜你':''}`
+        :'空位';
+    }
+    const stage=this.room?.phase||'LOBBY',me=this.room?.seats?.[this.session.seat];
+    $('pvpPrepareDeck').disabled=stage!=='LOBBY';
+    $('pvpResumeBattle').hidden=!this.readyToBattle;
+    $('readyToggle').disabled=stage!=='LOBBY'||!this.isConnected()||!me?.deckSubmitted;
+    $('readyToggle').textContent=me?.ready?'取消準備':'我已準備';
+    $('pvpDeckSummary').textContent=me?.deckSubmitted?'已提交：伺服器確認合法的 20 張牌組'
+      :'請先使用原本卡牌整備流程選定出擊牌組（20 張）。';
+    $('bothReady').textContent=stage==='LOBBY'?'等待雙方提交牌組及準備':
+      stage==='OPENING_HAND'?'雙方確認起手牌中':
+      '已進入伺服器權威對局；返回戰場可繼續操作。';
+    if(stage!=='LOBBY'){
+      $('pvpPrepareDeck').disabled=true;
     }
   }
-  for (const core of cores) {
-    ctx.fillStyle=core.owner==='PLAYER'?'#80c6ff':'#ff7979';
-    ctx.fillRect(core.x*cell+2,core.y*cell+2,cell-4,cell-4);
+  displayOpening(){
+    const view=this.match?.view;
+    if(!view)return;
+    const isOpening=view.phase==='OPENING_HAND';
+    $('openingPanel').hidden=!isOpening;
+    if(!isOpening)return;
+    const isTurn=view.activeSeat===this.session?.seat;
+    const available=!!view.own?.openingDecisionAvailable;
+    const cards=view.own?.hand||[];
+    $('openingHand').replaceChildren();
+    cards.forEach((card,index)=>{
+      const label=document.createElement('label');label.className='opening-card';
+      const input=document.createElement('input');input.type='checkbox';input.value=String(index);
+      input.disabled=!isTurn||!available||!this.isConnected();
+      label.append(input,document.createTextNode(`${card.name}｜${card.cost??'?'} 水晶`));
+      $('openingHand').append(label);
+    });
+    $('openingHint').textContent=isTurn?'你的起手牌已由伺服器決定，可保留或替換勾選的卡。'
+      :'等待對方確認起手牌。';
+    $('keepOpening').disabled=!isTurn||!available||!this.isConnected();
+    $('mulliganOpening').disabled=!isTurn||!available||!this.isConnected();
   }
-}
-function displayMatch(message) {
-  if (!session || !message || message.view?.seat!==session.seat) return;
-  matchState=message;
-  commandInFlight=false;
-  if (message.tacticalEnabled===true && message.view.phase!=='OPENING_HAND' && !tacticalUI) {
-    tacticalUI=new PvpTacticalUI({root:$('pvpTacticalPanel'),canvas:$('pvp3dCanvas'),
-      seat:session.seat,sendCommand:sendMatchCommand,
-      isConnected:()=>socket?.readyState===WebSocket.OPEN});
+  createTacticalUI(){
+    if(this.tacticalUI)return this.tacticalUI;
+    const seat=this.session.seat;
+    this.tacticalUI=new PvpTacticalUI({
+      onRendered:snapshot=>this.presentServerBattle(snapshot),
+      root:$('pvpTacticalPanel'),canvas:$('battleCanvas'),seat,
+      sendCommand:action=>this.sendCommand(action),
+      isConnected:()=>this.isConnected(),
+      ensureBabylon:async()=>{
+        if(typeof globalThis.BABYLON?.Engine!=='function')throw Error('BABYLON_RUNTIME_NOT_LOADED');
+      },
+      createBridge:async(options)=>new PvpBattleRenderBridge({
+        ...options,ownsRenderer:false,
+        createRenderer:(canvas,snapshot)=>this.createSharedRenderer(canvas,snapshot)
+      })
+    });
+    this.tacticalUI.setPresented(this.battleVisible);
+    return this.tacticalUI;
   }
-  tacticalUI?.receiveMatch(message);
-  const view=message.view;
-  showBattlefield(view.battlefield);
-  openingPanel.hidden=view.phase!=='OPENING_HAND';
-  openingHand.replaceChildren();
-  for (const [i,card] of view.own.hand.entries()) {
-    const row=document.createElement('label');
-    row.className='opening-card';
-    const input=document.createElement('input');
-    input.type='checkbox';input.value=String(i);
-    input.disabled=view.activeSeat!==session.seat || !view.own.openingDecisionAvailable;
-    row.append(input,document.createTextNode(`${card.name}｜${card.cost??'?'} 水晶`));
-    openingHand.append(row);
-  }
-  const myTurn=view.phase==='OPENING_HAND' && view.activeSeat===session.seat;
-  keepOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
-  mulliganOpening.disabled=!myTurn || socket?.readyState!==WebSocket.OPEN;
-  openingHint.textContent=view.phase==='BATTLEFIELD_READY'
-    ? '雙方起手牌已確認、地圖已建立；可由房主開始正式 3D 戰鬥測試。'
-    : myTurn
-    ? `輪到你確認起手牌（版本 ${message.revision}）。可勾選要換掉的牌，或直接保留。`
-    : view.myOpeningDone ? '你已確認起手牌，等待另一位玩家。' : '等待另一位玩家確認起手牌。';
-}
-function sendMatchCommand(action) {
-  if (!session || !matchState || commandInFlight ||
-      matchState.view?.activeSeat!==session.seat || socket?.readyState!==WebSocket.OPEN) return;
-  const id=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');
-  commandInFlight=true;
-  keepOpening.disabled=true;mulliganOpening.disabled=true;
-  socket.send(JSON.stringify({type:'MATCH_COMMAND',envelope:{
-    protocol:matchState.protocol,baseRevision:matchState.revision,commandId:id,action
-  }}));
-}
-keepOpening.onclick=()=>sendMatchCommand({type:'KEEP_OPENING_HAND'});
-mulliganOpening.onclick=()=>sendMatchCommand({type:'MULLIGAN',indices:[...openingHand.querySelectorAll('input:checked')].map(x=>Number(x.value))});
-
-async function socketConnect() {
-  if (!session) return;
-  closeSocket();
-  setStatus('正在重新取得一次性連線票證…');
-  try {
-    const ticket=await api(`/v1/rooms/${session.code}/ticket`,{token:session.token});
-    if (!session) return;
-    const url=safeEndpoint().replace(/^https:/,'wss:')+`/v1/rooms/${session.code}/socket?ticket=${ticket.ticket}`;
-    const ws = new WebSocket(url);
-    socket=ws;
-    ws.onopen=()=>{
-      reconnects=0;everJoined=true;
-      ready.disabled=roomState?.phase!=='LOBBY' || !roomState?.seats?.[session?.seat]?.deckSubmitted;
-      setStatus('已連上房間。伺服器將驗證所有牌組及戰棋指令。');
-      tacticalUI?.update();
-    };
-    ws.onmessage=event=>{
-      let message;
-      try { message=JSON.parse(event.data); } catch { return; }
-      if (message.type==='ROOM_STATE'||message.type==='WELCOME') displayRoom(message.room);
-      if (message.type==='MATCH_STATE') displayMatch(message.match);
-      if (message.type==='PVP_RENDER_SNAPSHOT') {
-        void tacticalUI?.receiveRender(message);
+  displayMatch(data){
+    if(!this.session||data?.view?.seat!==this.session.seat)return;
+    if(this.match&&data.revision<this.match.revision)return;
+    this.match=data;
+    this.commandInFlight=false;
+    this.displayOpening();
+    const view=data.view;
+    if(GAME_PHASES.has(view.phase)){
+      if(data.tacticalEnabled!==true){
+        this.status('Cloudflare Worker 未開啟戰棋權威連線，請核對已部署的 Worker 版本。',true);
+        return;
       }
-      if (message.type==='MATCH_ACK') commandInFlight=false;
-      if (message.type==='ERROR') {
-        commandInFlight=false;
-        setStatus(`伺服器拒絕操作：${message.error}`,true);
-        if (matchState) displayMatch(matchState);
-      }
-    };
-    ws.onerror=()=>setStatus('WebSocket 連線發生問題。',true);
-    ws.onclose=e=>{
-      if (socket!==ws || !session) return;
-      ready.disabled=true;
-      tacticalUI?.update();
-      if (e.code===4002) {setStatus('房間已到期，請重新建立房間。',true);setSession(null);return;}
-      if (e.code===4001) {setStatus('此席位已在另一個頁面登入。',true);return;}
-      // Reconnect only while the user keeps the lobby open. No server-side heartbeat.
-      if (reconnects>=5) {setStatus('自動重連失敗，請按「重新連線」。',true);return;}
-      reconnects++;
-      setStatus(`連線中斷，正在重試（${reconnects}/5）…`,true);
-      reconnectTimer=setTimeout(socketConnect, Math.min(15_000,1000*2**reconnects));
-    };
-  } catch (err) {
-    setStatus(`無法連線：${err.message}`,true);
-    ready.disabled=true;
-  }
-}
-async function openSession(value) {
-  closeSocket();setSession(value);roomState=null;await socketConnect();
-}
-createButton.onclick=async()=>{
-  const name=safeDisplayName($('playerName').value);
-  if (!name) return setStatus('請輸入玩家名稱。',true);
-  createButton.disabled=true;
-  try {
-    setStatus('正在建立房間…');
-    const result=await api('/v1/rooms',{name});
-    await openSession({code:result.code,token:result.token,seat:result.seat});
-  } catch(err) {setStatus(`建立失敗：${err.message}`,true);}
-  finally {createButton.disabled=false;}
-};
-joinButton.onclick=async()=>{
-  const name=safeDisplayName($('playerName').value);
-  const code=validCode($('joinCode').value);
-  if (!name || !code) return setStatus('請輸入玩家名稱與有效的 8 碼房間碼。',true);
-  joinButton.disabled=true;
-  try {
-    setStatus('正在加入房間…');
-    const result=await api(`/v1/rooms/${code}/join`,{name});
-    await openSession({code:result.code,token:result.token,seat:result.seat});
-  } catch(err) {setStatus(`加入失敗：${err.message}`,true);}
-  finally {joinButton.disabled=false;}
-};
-submitDeckButton.onclick=async()=>{
-  if (!session || roomState?.phase!=='LOBBY') return;
-  // The UI reads the same saved deck and official validator as the main game.
-  const deck = DeckEngine.getActive();
-  const validation = DeckEngine.validate(deck);
-  if (!validation.valid) return setStatus('目前尚未設定合法的 20 張出擊牌組，請先在遊戲的牌組畫面整備。', true);
-  const originalSession=session;
-  submitDeckButton.disabled=true;
-  try {
-    setStatus('正在將你的出擊牌組交由 PVP 伺服器驗證…');
-    const response=await api(`/v1/rooms/${session.code}/deck`,{token:session.token,cards:validation.deck});
-    if (session!==originalSession) return;
-    if (response.deckSubmitted) setStatus('牌組已由伺服器驗證並儲存。對手只能看到已提交狀態，看不到牌組內容。');
-  } catch(err) {setStatus(`牌組提交失敗：${err.message}`,true);}
-  finally {submitDeckButton.disabled=!session;}
-};
-ready.onclick=()=>{
-  if (socket?.readyState!==WebSocket.OPEN || !roomState) return;
-  const mySeat=roomState.seats[session.seat];
-  socket.send(JSON.stringify({type:'SET_READY',ready:!mySeat?.ready}));
-};
-retryButton.onclick=()=>{reconnects=0;socketConnect();};
-exitButton.onclick=()=>{closeSocket();setSession(null);setStatus('已離開本機房間畫面；你的席位在房間到期前仍保留。');};
-copyButton.onclick=async()=>{
-  const url=new URL(location.href);
-  url.searchParams.set('room',session.code);url.searchParams.delete('token');
-  try {await navigator.clipboard.writeText(url.href);setStatus('已複製邀請連結。');}
-  catch {setStatus(`邀請連結：${url.href}`);}
-};
-$('joinCode').value=validCode(new URLSearchParams(location.search).get('room'))||'';
-if (!safeEndpoint()) {
-  connect.textContent='尚未設定 Cloudflare Worker 網址';
-  createButton.disabled=true;joinButton.disabled=true;
-  setStatus('請先部署 cloudflare-pvp，並在 js/pvp-config.js 填入實際 Worker HTTPS 網址。',true);
-} else {
-  connect.textContent=`連線伺服器：${safeEndpoint()}`;
-  try {
-    const saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');
-    if (saved?.token && validCode(saved.code) && [0,1].includes(saved.seat)) {
-      setSession(saved);await socketConnect();
+      this.readyToBattle=true;
+      this.createTacticalUI().receiveMatch(data);
+      if(!this.battleVisible&&!this.suspendedBattle)this.enterBattle();
+    }else{
+      this.refreshRoom();
+      this.openLobby();
     }
-  } catch { sessionStorage.removeItem(storageKey); }
+  }
+  enterBattle(){
+    if(!this.session||!this.readyToBattle)return;
+    this.suspendedBattle=false;
+    this.battleVisible=true;
+    document.body.dataset.battleMode='PVP';
+    this.shell.show('battleScreen');
+    this.tacticalUI?.setPresented(true);
+    if(this.pendingRender){
+      const latest=this.pendingRender;this.pendingRender=null;
+      void this.tacticalUI?.receiveRender(latest);
+    }
+  }
+  presentServerBattle(snapshot){
+    // HUD is the SAME presenter used by the single-player BattleUI. Server
+    // presentation is read-only; this never derives or changes battle rules.
+    const stage={mode:'VERSUS',ruleset:'CORE_CAPTURE',
+      deploymentPoints:snapshot?.presentation?.deploymentPoints||[],
+      generatedBattlefield:{size:this.match?.view?.battlefield?.meta?.size}};
+    presentBattleOverview({snapshot,cores:snapshot?.cores||[],stage,
+      phase:this.match?.view?.phase,seat:this.session?.seat,online:true});
+    presentBattleWeather(snapshot);
+    $('turnStatus').textContent=`PVP｜Round ${snapshot.round}｜${this.match?.view?.phase||''}`;
+  }
+  tilePicked(x,y){
+    if(this.battleVisible)this.tacticalUI?.tilePicked({seat:this.session?.seat,x,y});
+  }
+  sendCommand(action){
+    if(!this.session||!this.match||this.commandInFlight||!this.isConnected())return false;
+    const allowed=this.match.view?.activeSeat===this.session.seat ||
+      (action?.type==='BEGIN_BATTLE'&&this.session.seat===0&&this.match.view?.phase==='BATTLEFIELD_READY');
+    if(!allowed)return false;
+    const commandId=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');
+    this.commandInFlight=true;
+    this.lastCommand={type:'MATCH_COMMAND',envelope:{
+      protocol:this.match.protocol,baseRevision:this.match.revision,commandId,action
+    }};
+    try{this.socket.send(JSON.stringify(this.lastCommand));return true;}
+    catch(error){this.commandInFlight=false;this.status(`提交操作失敗：${error.message}`,true);return false;}
+  }
+  async connect(){
+    if(!this.session)return;
+    this.closeSocket();
+    const generation=this.generation;
+    const session=this.session;
+    this.status('正在取得一次性連線票證…');
+    try{
+      const response=await this.api(`/v1/rooms/${session.code}/ticket`,{token:session.token});
+      if(generation!==this.generation||this.session!==session)return;
+      const socket=new WebSocket(`${apiOrigin().replace(/^https:/,'wss:')}/v1/rooms/${session.code}/socket?ticket=${response.ticket}`);
+      this.socket=socket;
+      socket.onopen=()=>{
+        if(socket!==this.socket)return;
+        this.reconnects=0;
+        this.status('已連上房間。');
+        this.refreshRoom();this.tacticalUI?.update();
+      };
+      socket.onmessage=event=>{
+        if(socket!==this.socket)return;
+        let packet;
+        try{packet=JSON.parse(event.data);}catch{return;}
+        if(!packet||typeof packet!=='object')return;
+        if(packet.type==='ROOM_STATE'||packet.type==='WELCOME'){
+          if(packet.room?.code===session.code){this.room=packet.room;this.refreshRoom();}
+        }
+        if(packet.type==='MATCH_STATE')this.displayMatch(packet.match);
+        if(packet.type==='PVP_RENDER_SNAPSHOT'){
+          // Do not activate a hidden battle screen while viewing the lobby.
+          // Keep only the newest authenticated snapshot until the player
+          // resumes; no second renderer or client-generated game state.
+          if(this.battleVisible)void this.tacticalUI?.receiveRender(packet);
+          else if(!this.pendingRender||packet.revision>=this.pendingRender.revision)
+            this.pendingRender=packet;
+        }
+        if(packet.type==='PVP_RENDER_ERROR'){
+          this.renderError=packet.error;
+          this.status(`權威 3D 畫面產生失敗：${packet.error}`,true);
+        }
+        if(packet.type==='MATCH_ACK'){
+          this.commandInFlight=false;
+          this.lastCommand=null;
+        }
+        if(packet.type==='ERROR'){
+          this.commandInFlight=false;
+          this.status(`伺服器拒絕操作：${packet.error}`,true);
+          this.tacticalUI?.update();
+        }
+      };
+      socket.onerror=()=>this.status('WebSocket 連線異常。',true);
+      socket.onclose=event=>{
+        if(socket!==this.socket||!this.session)return;
+        this.socket=null;
+        this.refreshRoom();
+        this.tacticalUI?.update();
+        if(event.code===4002){this.status('房間已過期，請重新建立。',true);return;}
+        if(event.code===4001){this.status('同席位已由其他裝置連線。',true);return;}
+        if(this.reconnects>=5){this.status('自動重連失敗，請使用「重新連線」。',true);return;}
+        this.reconnects++;
+        this.status(`連線中斷，重試中（${this.reconnects}/5）…`,true);
+        this.reconnectTimer=setTimeout(()=>void this.connect(),Math.min(15000,1000*2**this.reconnects));
+      };
+    }catch(error){this.status(`連線失敗：${error.message}`,true);}
+  }
 }
