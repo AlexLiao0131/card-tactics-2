@@ -1,6 +1,7 @@
 /* Cloudflare Workers + SQLite Durable Objects: authenticated lobby, private
- * decks, canonical opening hands and server-generated battlefield. All tactical actions
- * remain rejected until the exact canonical tactical engine runs server-side.
+ * decks, canonical opening hands, and server-generated battlefield. Tactical
+ * commands remain DISABLED by default. PVP_INTERNAL_TACTICAL_TEST is an
+ * isolated test switch, not a production-ready 1v1 release.
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
@@ -9,6 +10,8 @@ import {
 } from './room-model.mjs';
 import { validateOfficialDeck } from './canonical-deck-rules.mjs';
 import { createOpeningGame, openingGameCore } from './pvp-match-core.mjs';
+import { pvpAuthoritativeMatchCore } from './pvp-authoritative-match-core.mjs';
+import { rendererEnvelopeForSeat } from './pvp-render-snapshot-transport.mjs';
 import { createAuthoritySession, commitAuthorityCommand, projectAuthoritySession }
   from './battle-authority.mjs';
 import { BATTLE_STORAGE_KEY } from './battle-store.mjs';
@@ -149,6 +152,23 @@ export default {
 };
 
 export class PvpRoom extends DurableObject {
+  // One delivery boundary for every room socket. A broken connection must
+  // never roll back an already-committed battle or prevent delivery to the
+  // other authenticated seat. The closed seat can rejoin with a fresh ticket.
+  sendSocketFrame(ws, frame) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(typeof frame === 'string' ? frame : JSON.stringify(frame));
+      return true;
+    } catch {
+      try { ws.close(1011, 'SOCKET_DELIVERY_FAILED'); } catch {}
+      return false;
+    }
+  }
+  // Explicit opt-in for isolated development tests. Never enable in production
+  // before full skill parity and browser/iPhone tests pass.
+  tacticalTestEnabled() { return this.env?.PVP_INTERNAL_TACTICAL_TEST === 'true'; }
+  authorityCore() { return this.tacticalTestEnabled() ? pvpAuthoritativeMatchCore : openingGameCore; }
   async fetch(request) {
     const url = new URL(request.url), path = url.pathname;
     const now = Date.now();
@@ -194,7 +214,8 @@ export class PvpRoom extends DurableObject {
       if (seat<0) return failure('UNAUTHORIZED',401);
       const session=await this.ctx.storage.get(BATTLE_STORAGE_KEY);
       if (!session) return failure('OPENING_NOT_STARTED',409);
-      return json({ok:true,match:projectAuthoritySession(session,seat,openingGameCore)});
+      return json({ok:true,match:{...projectAuthoritySession(session,seat,this.authorityCore()),
+        tacticalEnabled:this.tacticalTestEnabled()}});
     }
     if (path === '/deck' && request.method === 'POST') {
       const {tokenHash,cards} = await request.json();
@@ -246,9 +267,9 @@ export class PvpRoom extends DurableObject {
       const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
       server.serializeAttachment({seat, protocol:PROTOCOL});
-      server.send(JSON.stringify({type:'WELCOME',seat,room:this.snapshot(current)}));
+      this.sendSocketFrame(server,{type:'WELCOME',seat,room:this.snapshot(current)});
       const opening=await this.ctx.storage.get(BATTLE_STORAGE_KEY);
-      if (opening) this.sendMatchState(server,opening,seat);
+      if (opening) this.sendMatchState(server,opening,seat,current.code);
       this.broadcast(current);
       return new Response(null,{status:101,webSocket:client});
     }
@@ -260,30 +281,51 @@ export class PvpRoom extends DurableObject {
   }
   broadcast(room) {
     const data=JSON.stringify({type:'ROOM_STATE',room:this.snapshot(room)});
-    for (const socket of this.ctx.getWebSockets()) if (socket.readyState===WebSocket.OPEN) socket.send(data);
+    for (const socket of this.ctx.getWebSockets()) this.sendSocketFrame(socket,data);
   }
-  sendMatchState(ws, session, seat) {
+  sendMatchState(ws, session, seat, roomCode) {
     if (ws.readyState!==WebSocket.OPEN || (seat!==0 && seat!==1)) return;
-    ws.send(JSON.stringify({type:'MATCH_STATE',
-      match:projectAuthoritySession(session,seat,openingGameCore)}));
+    if (!this.sendSocketFrame(ws,{type:'MATCH_STATE',
+      match:{...projectAuthoritySession(session,seat,this.authorityCore()),
+        tacticalEnabled:this.tacticalTestEnabled()}})) return;
+    if (this.tacticalTestEnabled() && session.state?.battlefield?.map) {
+      // A generated map ID is not a room identity. Only the authenticated
+      // Durable Object's own room code may label the render stream.
+      if (typeof roomCode !== 'string' || roomCode.length !== 8) return;
+      try {
+        this.sendSocketFrame(ws,rendererEnvelopeForSeat({session,seat,matchId:roomCode}));
+      } catch (error) {
+        // A presentation failure must not undo an already committed game
+        // command or corrupt its revision; the client may reconnect/retry.
+        this.sendSocketFrame(ws,{type:'PVP_RENDER_ERROR',error:'RENDER_SNAPSHOT_UNAVAILABLE'});
+      }
+    }
   }
-  broadcastMatchState(session) {
+  broadcastMatchState(session, roomCode) {
     for (const ws of this.ctx.getWebSockets()) {
-      this.sendMatchState(ws,session,ws.deserializeAttachment()?.seat);
+      this.sendMatchState(ws,session,ws.deserializeAttachment()?.seat,roomCode);
     }
   }
   async webSocketMessage(ws, input) {
+    // Closing/replaced sockets must not commit queued events after rejoin.
+    // A fresh ticket + socket is the only route back into the room.
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (typeof input !== 'string' || input.length > MAX_BODY_BYTES) {
-      ws.send(JSON.stringify({type:'ERROR',error:'BAD_MESSAGE'}));return;
+      this.sendSocketFrame(ws,{type:'ERROR',error:'BAD_MESSAGE'});return;
     }
     let action;
-    try { action=JSON.parse(input); } catch { ws.send(JSON.stringify({type:'ERROR',error:'BAD_JSON'}));return; }
+    try { action=JSON.parse(input); } catch {
+      this.sendSocketFrame(ws,{type:'ERROR',error:'BAD_JSON'});return;
+    }
+    if (!action || typeof action !== 'object' || Array.isArray(action)) {
+      this.sendSocketFrame(ws,{type:'ERROR',error:'BAD_MESSAGE'});return;
+    }
     if (action.type==='PING') {
-      ws.send(JSON.stringify({type:'PONG'}));return;
+      this.sendSocketFrame(ws,{type:'PONG'});return;
     }
     const seat=ws.deserializeAttachment()?.seat;
     if (seat!==0 && seat!==1) {
-      ws.send(JSON.stringify({type:'ERROR',error:'UNAUTHORIZED'}));return;
+      this.sendSocketFrame(ws,{type:'ERROR',error:'UNAUTHORIZED'});return;
     }
     if (action.type==='MATCH_COMMAND') {
       let result,latest;
@@ -291,10 +333,12 @@ export class PvpRoom extends DurableObject {
         await this.ctx.storage.transaction(async txn => {
           latest=await txn.get('room');
           if (!latest || latest.expiresAt <= Date.now()) throw new PvpCommandError('ROOM_EXPIRED');
-          if (!['OPENING_HAND','BATTLEFIELD_READY'].includes(latest.phase)) throw new PvpCommandError('TACTICAL_GAME_CORE_NOT_READY');
+          if (latest.phase !== 'OPENING_HAND' && !this.tacticalTestEnabled() &&
+              !['KEEP_OPENING_HAND','MULLIGAN'].includes(action?.envelope?.action?.type))
+            throw new PvpCommandError('TACTICAL_GAME_CORE_NOT_READY');
           const session=await txn.get(BATTLE_STORAGE_KEY);
           if (!session) throw new PvpCommandError('OPENING_NOT_STARTED');
-          result=commitAuthorityCommand({session,seat,envelope:action.envelope,core:openingGameCore});
+          result=commitAuthorityCommand({session,seat,envelope:action.envelope,core:this.authorityCore()});
           if (!result.duplicate) {
             await txn.put(BATTLE_STORAGE_KEY,result.nextSession);
             const phase=result.nextSession.state.phase;
@@ -302,17 +346,17 @@ export class PvpRoom extends DurableObject {
           }
         });
       } catch(err) {
-        ws.send(JSON.stringify({type:'ERROR',error:err instanceof PvpCommandError?err.code:'MATCH_COMMAND_FAILED'}));return;
+        this.sendSocketFrame(ws,{type:'ERROR',error:err instanceof PvpCommandError?err.code:'MATCH_COMMAND_FAILED'});return;
       }
-      ws.send(JSON.stringify({type:'MATCH_ACK',...result.ack,duplicate:result.duplicate}));
+      this.sendSocketFrame(ws,{type:'MATCH_ACK',...result.ack,duplicate:result.duplicate});
       if (!result.duplicate) {
-        this.broadcastMatchState(result.nextSession);
-        if (latest.phase==='BATTLEFIELD_READY') this.broadcast(latest);
+        this.broadcastMatchState(result.nextSession,latest.code);
+        if (latest.phase!=='OPENING_HAND') this.broadcast(latest);
       }
       return;
     }
     if (action.type!=='SET_READY') {
-      ws.send(JSON.stringify({type:'ERROR',error:'TACTICAL_GAME_CORE_NOT_READY'}));return;
+      this.sendSocketFrame(ws,{type:'ERROR',error:'TACTICAL_GAME_CORE_NOT_READY'});return;
     }
     let latest,opening=null;
     try {
@@ -326,7 +370,7 @@ export class PvpRoom extends DurableObject {
           if (await txn.get(BATTLE_STORAGE_KEY)) throw Error('BATTLE_ALREADY_INITIALIZED');
           const seed=crypto.getRandomValues(new Uint32Array(1))[0];
           opening=createAuthoritySession({
-            initialState:createOpeningGame({decks,serverSeed:seed}), core:openingGameCore
+            initialState:createOpeningGame({decks,serverSeed:seed}), core:this.authorityCore()
           });
           await txn.put(BATTLE_STORAGE_KEY,opening);
           latest.phase='OPENING_HAND';latest.version++;
@@ -335,10 +379,10 @@ export class PvpRoom extends DurableObject {
       });
     } catch(err) {
       if (err.message==='ROOM_EXPIRED') { ws.close(4002,'ROOM_EXPIRED');return; }
-      ws.send(JSON.stringify({type:'ERROR',error:err?.message||'READY_FAILED'}));return;
+      this.sendSocketFrame(ws,{type:'ERROR',error:err?.message||'READY_FAILED'});return;
     }
     this.broadcast(latest);
-    if (opening) this.broadcastMatchState(opening);
+    if (opening) this.broadcastMatchState(opening,latest.code);
   }
   async webSocketClose(ws, code, reason) {
     try { ws.close(code,reason); } catch {}

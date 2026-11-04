@@ -14,7 +14,8 @@ import { createCardPhaseEngine } from '../../js/card-phase-engine.js';
 import { StageDatabase } from '../../js/stage-database.js';
 import { validateOfficialDeck } from './canonical-deck-rules.mjs';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
-import { PVP_STAGE_ID,createOfficialBattlefield,projectOfficialBattlefield } from './pvp-battlefield.mjs';
+import { PVP_STAGE_ID,projectOfficialBattlefield } from './pvp-battlefield.mjs';
+import { initializeCanonicalWorld } from './pvp-canonical-setup.mjs';
 export { PVP_STAGE_ID };
 
 export const OPENING_GAME_SCHEMA = 'ct2-pvp-opening-v1';
@@ -112,7 +113,22 @@ export const openingGameCore = Object.freeze({
       // still chosen by the server. New games always use the immutable seed.
       const mapSeed=Number.isSafeInteger(state.serverMapSeed)
         ? state.serverMapSeed : state.randomState;
-      state.battlefield=createOfficialBattlefield({serverSeed:mapSeed});
+      // Construct the exact single-player battle initial conditions: MapGenerator,
+      // Hydrology, Climate, environmental objects and StageEngine. The existing
+      // opening hands and mulligan decisions remain authoritative and are never
+      // reshuffled by this initialization.
+      const decks=state.cards.map(cardState=>[
+        ...cardState.zones.hand,...cardState.zones.deck,
+        ...cardState.zones.discard,...cardState.zones.graveyard
+      ]);
+      const world=initializeCanonicalWorld({seed:mapSeed,
+        mapSize:StageDatabase.get(PVP_STAGE_ID).battlefield.defaultSize,decks});
+      state.battlefield=world.battlefield;
+      state.environmentState=world.environmentState;
+      state.stageState=world.stageState;
+      state.units=world.units;
+      state.nextUnitSerial=0;
+      state.round=1;
       state.phase='BATTLEFIELD_READY';
     }
     return {accepted:true,state};
