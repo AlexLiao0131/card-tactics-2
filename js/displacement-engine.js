@@ -5,7 +5,7 @@ export const DisplacementEngine=(()=>{
     const character=target?.character||target||{};
     const explicit=normalizeWeight(character.displacement?.weightClass||character.weightClass);
     if(Object.prototype.hasOwnProperty.call(WEIGHT,explicit))return explicit;
-    const armor=window.EquipmentDatabase?.get?.(character.armorId)||character.armor;
+    const armor=globalThis.EquipmentDatabase?.get?.(character.armorId)||character.armor;
     const armorType=normalizeWeight(armor?.type);
     if(armorType==="HEAVY")return "HEAVY";
     if(armorType==="MEDIUM")return "MEDIUM";

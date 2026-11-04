@@ -31,7 +31,7 @@ export const EnvironmentEngine=(()=>{
   const HYDROLOGY=Object.freeze({WATERLINE:HydrologyEngine.WATERLINE,RAIN_FILL_PER_EVENT:HydrologyEngine.RAIN_FILL_PER_EVENT,HEAVY_RAIN_FILL_PER_EVENT:HydrologyEngine.HEAVY_RAIN_FILL_PER_EVENT,STORM_RAIN_FILL_PER_EVENT:HydrologyEngine.STORM_RAIN_FILL_PER_EVENT});
   function key(x,y){return `${x},${y}`;}
   function tileAt(map,x,y){return map?.tiles?.find(t=>t.x===x&&t.y===y)||null;}
-  function objectAt(map,x,y){return window.EnvironmentObjectEngine?.activeObjectsAt?.(map,x,y)?.[0]||(map?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null;}
+  function objectAt(map,x,y){return globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,x,y)?.[0]||(map?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null;}
   const elevation=tile=>HydrologyEngine.elevation(tile);
   const waterDepth=tile=>HydrologyEngine.waterDepth(tile);
   function environmentAt(map,x,y){const object=objectAt(map,x,y);if(object?.environment)return object.environment;const tile=tileAt(map,x,y);return TERRAINS[tile?.terrain]?.environment||ELEMENT.NONE;}
@@ -388,16 +388,16 @@ export const EnvironmentEngine=(()=>{
   }
   function weatherPulse(map,state,events=[]){
     if(isRain(state))events.push(...applyRainToTerrain(map,state));
-    else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{amount:HydrologyEngine.DRYING_PER_CLEAR_TURN*Number(window.ClimateEngine?.config?.(state)?.extraDrying||1),source:legacyWeatherRaw(state)}));
-    if(window.ClimateEngine)events.push(...ClimateEngine.advance(map,state));
+    else if(!isSnow(state))events.push(...HydrologyEngine.drySoil(map,{amount:HydrologyEngine.DRYING_PER_CLEAR_TURN*Number(globalThis.ClimateEngine?.config?.(state)?.extraDrying||1),source:legacyWeatherRaw(state)}));
+    if(globalThis.ClimateEngine)events.push(...ClimateEngine.advance(map,state));
     // A sky weather label does not inject water. Only the completed rain pulse
     // enables ambient wet exposure for this climate turn.
     if(isRain(state)&&state.climate)state.climate.lastPrecipitationPulseTurn=state.climate.turn;
     meltSnowByFire(map,state,events);
     resolveStandingWaterFire(map,state,events,{source:"HYDROLOGY_CONTACT"});
     advanceFireDryness(map,state,events);
-    if(window.EnvironmentObjectEngine?.resolveWind){const ambientWind=windAt(state),source=legacyWeatherRaw(state)===WEATHER.TYPHOON?"TYPHOON_WIND":"AMBIENT_WIND";EnvironmentObjectEngine.resolveWind(map,state,ambientWind,{events,source});}
-    if(window.EnvironmentResolver)events.push(...EnvironmentResolver.resolve(map,state,{source:"ENVIRONMENT_TICK"}));
+    if(globalThis.EnvironmentObjectEngine?.resolveWind){const ambientWind=windAt(state),source=legacyWeatherRaw(state)===WEATHER.TYPHOON?"TYPHOON_WIND":"AMBIENT_WIND";EnvironmentObjectEngine.resolveWind(map,state,ambientWind,{events,source});}
+    if(globalThis.EnvironmentResolver)events.push(...EnvironmentResolver.resolve(map,state,{source:"ENVIRONMENT_TICK"}));
     return events;
   }
   function climateChannels(){return[CLIMATE_CHANNEL.PRECIPITATION,CLIMATE_CHANNEL.FOG,CLIMATE_CHANNEL.THUNDER,CLIMATE_CHANNEL.HEAT];}
@@ -449,7 +449,7 @@ export const EnvironmentEngine=(()=>{
     if(emitted||drifted)events.push({type:"SMOKE_UPDATED",emitted,drifted,wind:{...wind}});
     return events;
   }
-  function flammableAt(map,x,y){const tile=tileAt(map,x,y);if(!tile||HydrologyEngine.isWater(tile))return false;if(window.EnvironmentObjectEngine?.flammableAt?.(map,x,y))return true;const object=objectAt(map,x,y);if(object&&(object.flammable===true||object.environment===ELEMENT.GRASS))return true;return TERRAINS[tile.terrain]?.environment===ELEMENT.GRASS;}
+  function flammableAt(map,x,y){const tile=tileAt(map,x,y);if(!tile||HydrologyEngine.isWater(tile))return false;if(globalThis.EnvironmentObjectEngine?.flammableAt?.(map,x,y))return true;const object=objectAt(map,x,y);if(object&&(object.flammable===true||object.environment===ELEMENT.GRASS))return true;return TERRAINS[tile.terrain]?.environment===ELEMENT.GRASS;}
   // Environmental fuel state, shared by all weather. A reproducible roll depends
   // on map seed, tile and climate pulse, never on render order or Math.random().
   function fireRoll(map,state,tile){
@@ -462,12 +462,12 @@ export const EnvironmentEngine=(()=>{
     const raining=isRain(state),snowing=isSnow(state),wind=windAt(state);
     // All spontaneous ignition and drying use ClimateEngine's shared solar
     // exposure. Fire spread from existing flames remains independent of sun.
-    const sunlight=window.ClimateEngine?.solarExposure?.(state)??0;
+    const sunlight=globalThis.ClimateEngine?.solarExposure?.(state)??0;
     for(const tile of map?.tiles||[]){
       const before=Math.max(0,Math.min(1,Number(tile.fireDryness||0)));
       const wet=waterDepth(tile)>0||Number(tile.snowDepth||0)>0||Number(tile.iceThickness||0)>0;
       const moisture=HydrologyEngine.soilMoisture(tile)/Math.max(.01,HydrologyEngine.soilCapacity(tile));
-      const temperature=window.ClimateEngine?.temperatureAt?.(state,tile)??7;
+      const temperature=globalThis.ClimateEngine?.temperatureAt?.(state,tile)??7;
       // Ambient warmth continues drying exposed fuel after sunset, but the
       // extra radiant component vanishes with the sun. Existing dry fuel is
       // preserved; nightfall neither re-wets it nor extinguishes fire.
@@ -551,7 +551,7 @@ export const EnvironmentEngine=(()=>{
     return out;
   }
   function rebindTornadoCargo(map,group,clusterId,events=[]){
-    const engine=window.EnvironmentObjectEngine;if(!engine)return[];
+    const engine=globalThis.EnvironmentObjectEngine;if(!engine)return[];
     const ids=new Set((group||[]).flatMap(entry=>Array.isArray(entry.effect?.carriedLogIds)?entry.effect.carriedLogIds.map(String):[]));
     for(const previousId of tornadoClusterIds(group))for(const object of engine.carriedObjects?.(map,previousId)||[]){
       if(String(engine.normalizeType?.(object.type)||object.type||"").toUpperCase()!=="LOG")continue;
@@ -565,7 +565,7 @@ export const EnvironmentEngine=(()=>{
     return[...ids];
   }
   function resolveTornadoWindObjects(map,state,cells,clusterId,carriedLogIds,events,windStrength){
-    const engine=window.EnvironmentObjectEngine;if(!engine?.activeObjectsAt||!engine?.resolveWindAt)return carriedLogIds;
+    const engine=globalThis.EnvironmentObjectEngine;if(!engine?.activeObjectsAt||!engine?.resolveWindAt)return carriedLogIds;
     const ids=new Set((carriedLogIds||[]).map(String)),strength=Math.max(WIND_SCALE.TORNADO,Number(windStrength||0));
     for(const point of cells||[]){
       engine.resolveWindAt(map,state,point.x,point.y,{x:0,y:0,strength},{events,source:"TORNADO_WIND"});
@@ -579,7 +579,7 @@ export const EnvironmentEngine=(()=>{
   }
 
   function releaseTornadoCargo(map,clusterId,carriedLogIds,cells,events,reason){
-    const engine=window.EnvironmentObjectEngine;if(!engine?.releaseObject)return 0;
+    const engine=globalThis.EnvironmentObjectEngine;if(!engine?.releaseObject)return 0;
     const dropCells=(cells||[]).filter(point=>tileAt(map,point.x,point.y));if(!dropCells.length)return 0;
     const ids=[...new Set([...(carriedLogIds||[]).map(String),...(engine.carriedObjects?.(map,clusterId)||[]).map(object=>String(object.id))])];let released=0;
     for(let i=0;i<ids.length;i++){
@@ -734,7 +734,7 @@ export const EnvironmentEngine=(()=>{
     }
     if(events.some(event=>event.type==="TORNADO_WATER_ENTRAINED"))waterRelocated=true;
     if(waterRelocated)HydrologyEngine.redistribute(map,{source:"TORNADO_WATER_TRANSFER",events});
-    if(window.EnvironmentResolver&&events.some(event=>String(event?.reason||event?.source||"").includes("TORNADO_WIND")))events.push(...EnvironmentResolver.resolve(map,state,{source:"TORNADO_WIND"}));
+    if(globalThis.EnvironmentResolver&&events.some(event=>String(event?.reason||event?.source||"").includes("TORNADO_WIND")))events.push(...EnvironmentResolver.resolve(map,state,{source:"TORNADO_WIND"}));
     recordDestroyedObjects(state,events);return events;
   }
   function advanceEnvironmentTurn(map,state){
@@ -752,21 +752,21 @@ export const EnvironmentEngine=(()=>{
       // below is its authoritative timer (ordinary natural channel timers still
       // expire normally when no card is active).
       if(!state.cardClimateOverride)expireClimate(state,events);
-      if(window.HydrologyEngine?.updateSourceYields)HydrologyEngine.updateSourceYields(map,{
+      if(globalThis.HydrologyEngine?.updateSourceYields)HydrologyEngine.updateSourceYields(map,{
         environmentTurn,weather:legacyWeatherRaw(state),precipitation:precipitationAt(state).type,
         heat:Number(state.climate?.heat?.intensity||0),events
       });
       // A hydrology source is a real volume source, not only a discharge label.
       // Inject it once per environment turn, then let the canonical Hydrology flow
       // decide where that water settles, overflows and drains.
-      if(window.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
+      if(globalThis.HydrologyEngine?.advanceSources)HydrologyEngine.advanceSources(map,{events,source:"NATURAL_SOURCE_INFLOW"});
       weatherPulse(map,state,events);
       if(state.cardClimateOverride){
         state.cardClimateOverride.remaining=Math.max(0,state.cardClimateOverride.remaining-1);
       }else decrementClimate(state);
       advanceTornadoes(map,state,events);advanceWhirlpools(map,state,events);windDrivenWaterEvents(map,state,events);
       resolveStandingWaterFire(map,state,events,{source:"TORNADO_AND_FLOW_CONTACT"});
-      events.push(...spreadFire(map,state));window.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);
+      events.push(...spreadFire(map,state));globalThis.EnvironmentObjectEngine?.tickBurning?.(map,state,events);advanceSmoke(map,state,events);recordDestroyedObjects(state,events);
       HydrologyEngine.endEnvironmentTurn(map,{events,source:"ENVIRONMENT_TURN"});
       const physicalStep=events[events.length-1];
       if(wasReceding&&!HydrologyEngine.sourceRecessionActive(map))
@@ -973,25 +973,25 @@ export const EnvironmentEngine=(()=>{
 
   function apply({map,state,x,y,forces=[]}){
     const forceSet=new Set(forces),events=[],burningBefore=isBurning(state,x,y),steamBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.STEAM),smokeBefore=effectAt(state,x,y).some(e=>e.type===EFFECT.SMOKE),stoneObjectBefore=objectAt(map,x,y);
-    if((forceSet.has(FORCE.FIRE)||forceSet.has(FORCE.HEAVY_FIRE))&&window.ClimateEngine)events.push(...ClimateEngine.applyHeat(map,state,x,y,{heavy:forceSet.has(FORCE.HEAVY_FIRE)}));
+    if((forceSet.has(FORCE.FIRE)||forceSet.has(FORCE.HEAVY_FIRE))&&globalThis.ClimateEngine)events.push(...ClimateEngine.applyHeat(map,state,x,y,{heavy:forceSet.has(FORCE.HEAVY_FIRE)}));
     if(forceSet.has(FORCE.IMPACT))events.push(...deformTerrain(map,x,y,{deltaElevation:-1,source:"IMPACT"}));
-    if(window.EnvironmentObjectEngine)EnvironmentObjectEngine.applyForces(map,x,y,[...forceSet],{events});
+    if(globalThis.EnvironmentObjectEngine)EnvironmentObjectEngine.applyForces(map,x,y,[...forceSet],{events});
     const environment=environmentAt(map,x,y);
     if(forceSet.has(FORCE.WIND)&&steamBefore){removeEffect(state,x,y,EFFECT.STEAM);events.push({type:"STEAM_DISPERSED",x,y});}
     if(forceSet.has(FORCE.WIND)&&smokeBefore){removeEffect(state,x,y,EFFECT.SMOKE);events.push({type:"SMOKE_DISPERSED",x,y});}
     if(forceSet.has(FORCE.WIND)&&burningBefore)events.push(createTornado(state,x,y,{map,duration:2}));
     if(environment===ELEMENT.GRASS&&forceSet.has(FORCE.FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"NORMAL"});addSmoke(state,x,y,{intensity:.9,duration:3,source:"IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
     if(environment===ELEMENT.GRASS&&forceSet.has(FORCE.HEAVY_FIRE)){addEffect(state,x,y,{type:EFFECT.BURNING,duration:3,lightRadius:2,damage:HAZARD.BURNING_DAMAGE,damageType:"FIRE",fireIntensity:"HEAVY"});addSmoke(state,x,y,{intensity:1.35,duration:3,source:"HEAVY_IGNITE"});events.push({type:"IGNITE",x,y,effect:EFFECT.BURNING});}
-    if(environment===ELEMENT.WATER){if(forceSet.has(FORCE.HEAVY_FIRE)){removeEffect(state,x,y,EFFECT.BURNING);const waterTile=tileAt(map,x,y);if(window.ClimateEngine?.isFrozen?.(waterTile))events.push({type:"ICE_HEATED",x,y,iceThickness:ClimateEngine.iceThickness(waterTile)});else heatWater(map,state,x,y,events);}else if(forceSet.has(FORCE.FIRE)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}}
+    if(environment===ELEMENT.WATER){if(forceSet.has(FORCE.HEAVY_FIRE)){removeEffect(state,x,y,EFFECT.BURNING);const waterTile=tileAt(map,x,y);if(globalThis.ClimateEngine?.isFrozen?.(waterTile))events.push({type:"ICE_HEATED",x,y,iceThickness:ClimateEngine.iceThickness(waterTile)});else heatWater(map,state,x,y,events);}else if(forceSet.has(FORCE.FIRE)){removeEffect(state,x,y,EFFECT.BURNING);events.push({type:"FIRE_EXTINGUISHED",x,y});}}
     if(forceSet.has(FORCE.THUNDER)&&isConductive(map,state,x,y))conductThunder(map,state,x,y,events);
     const terrainEnvironment=TERRAINS[tileAt(map,x,y)?.terrain]?.environment||ELEMENT.NONE;
     if((environment===ELEMENT.STONE||terrainEnvironment===ELEMENT.STONE||stoneObjectBefore?.environment===ELEMENT.STONE)&&forceSet.has(FORCE.EXPLOSION)){
       addEffect(state,x,y,{type:EFFECT.FRAGMENTS,duration:1,damageType:"PHYSICAL",radius:1});let destroyed=false;
-      if(window.EnvironmentObjectEngine)destroyed=events.some(e=>e.type==="ENV_OBJECT_DESTROYED"&&e.objectId===stoneObjectBefore?.id);else destroyed=destroyStoneObject(map,state,stoneObjectBefore);
+      if(globalThis.EnvironmentObjectEngine)destroyed=events.some(e=>e.type==="ENV_OBJECT_DESTROYED"&&e.objectId===stoneObjectBefore?.id);else destroyed=destroyStoneObject(map,state,stoneObjectBefore);
       events.push({type:"STONE_FRAGMENT",x,y,effect:EFFECT.FRAGMENTS,destroyed,objectId:stoneObjectBefore?.id||null});
     }
-    if(forceSet.has(FORCE.AVALANCHE_TRIGGER)&&window.ClimateEngine?.triggerAvalanche)events.push(...ClimateEngine.triggerAvalanche(map,x,y,{strength:1.6,source:"AVALANCHE_TRIGGER",state}));
-    if(window.EnvironmentResolver){const disturbance=forceSet.has(FORCE.EXPLOSION)?1.25:forceSet.has(FORCE.IMPACT)?1:0;if(disturbance>0){events.push(...EnvironmentResolver.disturb(map,x,y,disturbance,{source:forceSet.has(FORCE.EXPLOSION)?"EXPLOSION":"IMPACT"}));events.push(...EnvironmentResolver.resolve(map,state,{source:"DISTURBANCE"}));}}
+    if(forceSet.has(FORCE.AVALANCHE_TRIGGER)&&globalThis.ClimateEngine?.triggerAvalanche)events.push(...ClimateEngine.triggerAvalanche(map,x,y,{strength:1.6,source:"AVALANCHE_TRIGGER",state}));
+    if(globalThis.EnvironmentResolver){const disturbance=forceSet.has(FORCE.EXPLOSION)?1.25:forceSet.has(FORCE.IMPACT)?1:0;if(disturbance>0){events.push(...EnvironmentResolver.disturb(map,x,y,disturbance,{source:forceSet.has(FORCE.EXPLOSION)?"EXPLOSION":"IMPACT"}));events.push(...EnvironmentResolver.resolve(map,state,{source:"DISTURBANCE"}));}}
     recordDestroyedObjects(state,events);return events;
   }
 

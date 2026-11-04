@@ -1,14 +1,21 @@
 export const DeathLifecycleEngine=(()=>{
   function create(ctx){
     if(!ctx?.stageEvent||!ctx?.cardStateFor||!ctx?.pushLog)throw new Error("DeathLifecycleEngine requires stage/card/log callbacks.");
-    const finalized=new Set();
+    const finalized=new Set(),mirrorFinalized=new WeakMap();
+    function finalizationScope(){
+      const mirror=ctx.deathScope?.();
+      if(!mirror||typeof mirror!=="object")return finalized;
+      if(!mirrorFinalized.has(mirror))mirrorFinalized.set(mirror,new Set());
+      return mirrorFinalized.get(mirror);
+    }
 
     function finalize(unit,source=null,cause=null){
       if(!unit||Number(unit.hp)>0)return false;
       unit.hp=0;
       unit.alive=false;
-      if(finalized.has(unit.id))return false;
-      finalized.add(unit.id);
+      const scope=finalizationScope();
+      if(scope.has(unit.id))return false;
+      scope.add(unit.id);
 
       globalThis.UnitAnimationEngine?.emitDeath?.(unit,{
         sourceId:source?.id||null,
@@ -24,11 +31,11 @@ export const DeathLifecycleEngine=(()=>{
         ctx.pushLog(`${unit.character.name} 戰敗，角色卡進入墓地。`,"SYSTEM");
       }
 
-      if(window.EncounterRewardEngine?.resolveDefeat){
+      if(ctx.allowRewards?.()!==false&&globalThis.EncounterRewardEngine?.resolveDefeat){
         EncounterRewardEngine.resolveDefeat(unit,source,cause,{pushLog:ctx.pushLog});
       }
 
-      if(window.RewardEngine?.resolveDefeat){
+      if(ctx.allowRewards?.()!==false&&globalThis.RewardEngine?.resolveDefeat){
         const reward=RewardEngine.resolveDefeat(unit,source,cause);
         if(reward?.ok)ctx.pushLog(`擊破獎勵｜${unit.character.name}｜Gold +${reward.amount}｜目前 ${reward.total} G。`,"SYSTEM");
       }

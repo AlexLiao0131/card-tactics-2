@@ -24,5 +24,5 @@ function evaluate(raw,c){
  }
 }
 function evaluateMatch(stage,c){if(evaluate(stage?.defeat,c))return{ended:true,result:"DEFEAT"};if(evaluate(stage?.victory,c))return{ended:true,result:"VICTORY"};return{ended:false,result:null}}
-window.ObjectiveEngine={TYPES:T,evaluate,evaluateMatch};
+globalThis.ObjectiveEngine={TYPES:T,evaluate,evaluateMatch};
 })();

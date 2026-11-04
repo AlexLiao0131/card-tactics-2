@@ -1,8 +1,19 @@
 (()=>{
 "use strict";
+  const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD","WHIRLPOOL"]);
+  // Public gameplay capability contract. The browser and authoritative server
+  // read this one classification; adding another card with an existing effect
+  // automatically uses its official execution path. Unsupported new effects
+  // fail closed until their canonical reducer is implemented.
+  function commandKind(card){
+    if(!CardDatabase.isSpell(card))return null;
+    if(card.effect?.type==="WEATHER"||card.effect?.type==="STEAL_HAND")return "INSTANT";
+    if(TARGETED_SPELL_EFFECTS.has(card.effect?.type))return "TARGETED";
+    return null;
+  }
 function create(ctx){
   function cardFailure(card,reason,position=null){
-    window.CardTacticsDiagnostics?.gameAction?.("CARD_FAILURE",{
+    globalThis.CardTacticsDiagnostics?.gameAction?.("CARD_FAILURE",{
       cardId:card?.id,card:card?.name,reason,x:position?.x,y:position?.y
     });
     return false;
@@ -10,7 +21,6 @@ function create(ctx){
   const {TEAM,PHASE}=ctx;const state=()=>ctx.state();
   let resolvingPresentation=false,presentationGeneration=0;
   function waterRecheckUnits(units,reason){(units||[]).filter(unit=>unit?.alive).forEach(unit=>ctx.applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"CHANGE",includeElectric:false,includeBoiling:false,includeFire:false}));}
-  const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD","WHIRLPOOL"]);
   function weatherName(weather){return weather==="TYPHOON"?"颱風":weather==="SCORCHING_SUN"?"烈日":weather==="THUNDERSTORM"?"雷雨":weather==="HEAVY_RAIN"?"豪大雨":weather==="FOG"?"迷霧":weather==="SNOW"?"降雪":weather==="BLIZZARD"?"暴風雪":weather==="RAIN"?"雨":weather;}
   function climateSummary(environmentState){
     const c=EnvironmentEngine.climateSnapshot?.(environmentState);if(!c)return weatherName(environmentState?.weather||"CLEAR");if(c.legacyWeather==="TYPHOON")return"颱風";const parts=[];
@@ -27,11 +37,11 @@ function create(ctx){
     if(resolvingPresentation||s.phase!==PHASE.CARD||!CardPhaseEngine.canPlay(s.cardState,card))return false;
     if(CardDatabase.isCharacter(card))return hasDeploymentTile(s);
     if(!CardDatabase.isSpell(card))return false;
-    if(card.effect?.type==="WEATHER")return true;
-    if(card.effect?.type==="STEAL_HAND")return (s.enemyCardState?.zones?.hand?.length||0)>0;
+    if(commandKind(card)==="INSTANT")return card.effect?.type==="STEAL_HAND"
+      ?(s.enemyCardState?.zones?.hand?.length||0)>0:true;
     // An owned living Core or held point can anchor defensive magic even before
     // any unit is deployed. Target legality is rechecked at resolveAt().
-    return TARGETED_SPELL_EFFECTS.has(card.effect?.type)&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0&&
+    return commandKind(card)==="TARGETED"&&Array.isArray(s.map?.tiles)&&s.map.tiles.length>0&&
       ((s.units||[]).some(unit=>unit?.alive&&unit.team===TEAM.PLAYER)||
        TacticalEngine.teamVisionSources(s,TEAM.PLAYER).length>0);
   }
@@ -64,7 +74,8 @@ function create(ctx){
       const opponent=s.enemyCardState?.zones?.hand;
       if(!Array.isArray(opponent)||opponent.length===0)return cardFailure(card,"ENEMY_HAND_EMPTY");
       if(!CardPhaseEngine.commit(s.cardState,card))return cardFailure(card,"CARD_NOT_PAYABLE");
-      const cardId=opponent.splice(Math.floor(Math.random()*opponent.length),1)[0];
+      const random=typeof ctx.random==="function"?ctx.random():Math.random();
+      const cardId=opponent.splice(Math.floor(random*opponent.length),1)[0];
       s.cardState.zones.hand.push(cardId);
       ctx.pushLog(`施放「${card.name}」｜消耗 ${card.cost} 水晶，取得敵方手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅本場戰鬥可用。`,"BATTLE");
       ctx.setPendingCard(null);ctx.checkMatchEnd();
@@ -74,7 +85,7 @@ function create(ctx){
     if(card.effect?.type==="WEATHER"){
       if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false,source:"CARD"}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }
-    if(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD","WHIRLPOOL"].includes(card.effect?.type)){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
+    if(commandKind(card)==="TARGETED"){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
     return false;
   }
   function nextPresentationFrame(){
@@ -84,21 +95,17 @@ function create(ctx){
     });
   }
 
-  async function resolveAreaDamage(card,center,effect,affected,s,generation){
-    const environmentEvents=[];
-    let sliceStarted=performance.now();
-    for(const tile of affected){
-      if(state().map!==s.map||generation!==presentationGeneration)return false;
-      const u=ctx.unitAt(tile.x,tile.y);
-      if(u&&Number(effect.damage||0)>0)ctx.damageUnitFlat(u,effect.damage||0,card.name);
-      const events=EnvironmentEngine.apply({map:s.map,state:s.environmentState,x:tile.x,y:tile.y,forces:effect.forces||[]})||[];
-      environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);
-      // Preserve the exact tile/force order and gameplay lock, but allow the
-      // already-running impact animation to render between expensive tiles.
-      if(performance.now()-sliceStarted>=8){await nextPresentationFrame();sliceStarted=performance.now();}
-    }
-    if(state().map!==s.map||generation!==presentationGeneration)return false;
-
+  // One official gameplay implementation for browser (paced by animation) and
+  // authoritative server (one synchronous transaction). Animation has no right
+  // to determine damage, force ordering, or the committed battlefield state.
+  function resolveAreaDamageTile(card,effect,tile,s,environmentEvents){
+    const u=ctx.unitAt(tile.x,tile.y);
+    if(u&&Number(effect.damage||0)>0)ctx.damageUnitFlat(u,effect.damage||0,card.name);
+    const events=EnvironmentEngine.apply({map:s.map,state:s.environmentState,x:tile.x,y:tile.y,forces:effect.forces||[]})||[];
+    environmentEvents.push(...events);
+    events.forEach(ctx.logEnvironmentEvent);
+  }
+  function finishAreaDamage(card,center,effect,environmentEvents){
     const shockwave=effect.shockwave||null;
     const innerRadius=Math.max(0,Number(effect.radius||0));
     const shockwaveRadius=innerRadius+Math.max(0,Number(shockwave?.outerRadius||0));
@@ -114,11 +121,32 @@ function create(ctx){
       if(targets.length)ctx.pushLog(`${card.name} 的衝擊波掃過外圈｜${targets.length} 個目標。`,"BATTLE");
       for(const unit of targets){
         if(!unit.alive)continue;
-        const result=ctx.applyForcedMovement(center,unit,Math.max(0,Number(shockwave.distance||0)),{name:`${card.name}衝擊波`,lift:Math.max(0,Number(shockwave.lift||0)),damage:Math.max(0,Number(shockwave.damage||0)),damageType:shockwave.damageType||"PHYSICAL",resistAxes:shockwave.resistAxes||null});
+        ctx.applyForcedMovement(center,unit,Math.max(0,Number(shockwave.distance||0)),{name:`${card.name}衝擊波`,lift:Math.max(0,Number(shockwave.lift||0)),damage:Math.max(0,Number(shockwave.damage||0)),damageType:shockwave.damageType||"PHYSICAL",resistAxes:shockwave.resistAxes||null});
       }
     }
-
     ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${card.name} 引發環境連鎖`});
+  }
+  // Server-only synchronous path: same tile and shockwave reducers, no frames,
+  // timers, or uncommitted async gameplay mutations in Durable Object storage.
+  function resolveAreaDamageImmediate(card,center,effect,affected,s){
+    const environmentEvents=[];
+    for(const tile of affected)resolveAreaDamageTile(card,effect,tile,s,environmentEvents);
+    finishAreaDamage(card,center,effect,environmentEvents);
+    return true;
+  }
+  async function resolveAreaDamage(card,center,effect,affected,s,generation){
+    const environmentEvents=[];
+    let sliceStarted=performance.now();
+    for(const tile of affected){
+      if(state().map!==s.map||generation!==presentationGeneration)return false;
+      resolveAreaDamageTile(card,effect,tile,s,environmentEvents);
+      // Original browser yield budget remains unchanged. Only visual pacing
+      // differs; the gameplay reducer above is shared with the server.
+      if(performance.now()-sliceStarted>=8){await nextPresentationFrame();sliceStarted=performance.now();}
+    }
+    if(state().map!==s.map||generation!==presentationGeneration)return false;
+    finishAreaDamage(card,center,effect,environmentEvents);
+    return true;
   }
 
   function finishResolvedCard(){
@@ -136,6 +164,11 @@ function create(ctx){
     if(String(effect.targetEnvironment||"").toUpperCase()==="WATER"&&!globalThis.HydrologyEngine?.isWater?.(centerTile)){cardFailure(card,"REQUIRES_WATER_TILE",center);ctx.pushLog(`${card.name} 只能施放在實際水域。`,"SYSTEM");return false;}const affected=ctx.aoeTiles(center,Number(effect.radius||0));if(!CardPhaseEngine.commit(s.cardState,card))return false;ctx.pushLog(`施放卡牌魔法「${card.name}」｜中心 (${center.x},${center.y})｜消耗 ${card.cost} 水晶。`,"SYSTEM");
     const presentation=effect.presentation||null;
     if(effect.type==="AREA_DAMAGE"){
+      if(ctx.resolveAreaDamageSynchronously===true){
+        const completed=resolveAreaDamageImmediate(card,center,effect,affected,s);
+        if(completed)finishResolvedCard();
+        return completed;
+      }
       const generation=++presentationGeneration;
       resolvingPresentation=true;ctx.setPendingCard(null);
       const meteor=String(presentation?.type||"").toUpperCase()==="METEOR_STRIKE";
@@ -173,7 +206,7 @@ function create(ctx){
     }else if(effect.type==="DISPEL"){
       const u=ctx.unitAt(center.x,center.y);if(u?.alive&&u.team===TEAM.PLAYER){const r=EffectEngine.apply({source:{id:"CARD_SOURCE",team:TEAM.PLAYER},target:u,effect:{type:"DISPEL",classification:effect.classification||"NEGATIVE"}});ctx.pushLog(`${card.name} → ${u.character.name}｜移除 ${r.removed||0} 個負面效果。`,"BATTLE");}
     }else if(effect.type==="HYDROLOGY_FLOOD"){
-      if(!window.HydrologyEngine?.floodArea)ctx.pushLog(`${card.name} 失敗：HydrologyEngine.floodArea 尚未載入。`,"SYSTEM");else{const clusterKeys=EnvironmentEngine.largeFireKeys(s.environmentState);
+      if(!globalThis.HydrologyEngine?.floodArea)ctx.pushLog(`${card.name} 失敗：HydrologyEngine.floodArea 尚未載入。`,"SYSTEM");else{const clusterKeys=EnvironmentEngine.largeFireKeys(s.environmentState);
         const events=HydrologyEngine.floodArea(s.map,affected,{surfaceRise:Number(effect.surfaceRise||1),source:card.id,
           intercept:(tile,volume,events)=>EnvironmentEngine.exchangeWaterFire(s.map,s.environmentState,tile,volume,events,{source:card.id,clusterKeys})});
         EnvironmentEngine.resolveStandingWaterFire(s.map,s.environmentState,events,{source:card.id});
@@ -198,5 +231,5 @@ function create(ctx){
   function cancel(){if(resolvingPresentation||!ctx.getPendingCard())return false;ctx.setPendingCard(null);if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}
   return{begin,end,select,resolveAt,deployAt,cancel,canResolve,hasPlayableCard,maybeAutoEnd};
 }
-window.CardPhaseController={create};
+globalThis.CardPhaseController=Object.freeze({create,commandKind});
 })();

@@ -1,6 +1,7 @@
-export const BattleResolution=(()=>{
+export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+  const resolveWithRandom=(map,a,t,skill,opt={})=>TacticalEngine.resolve(map,a,t,skill,{...opt,random});
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
   function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
@@ -46,17 +47,17 @@ export const BattleResolution=(()=>{
   const attackWeapon=(a,s)=>a?.character?.weapons?.[s?.weapon]||null,hasAffix=(i,id)=>i?.affixes?.includes(id)===true;
   function defenseProfileById(d,id){return id?defenseMethods(d).find(p=>p.id===id)||null:null}
   function isPrimaryIncomingAction(c,a){return a.role==="INITIATOR"&&a.actor?.id===c.initiator?.id&&a.target?.id===c.target?.id}
-  function resolveEvade(map,a,t,s){const z=TacticalEngine.resolve(map,a,t,s,{forceHit:true}),b=z.result,o=b.hc,f=Math.max(0,o-ACTIVE_EVADE_PENALTY),roll=Math.random()*100;let outcome="MISS",m=0;if(roll<f){outcome="HIT";m=1}else if(roll<o){outcome="GRAZE";m=GRAZE_DAMAGE_MULTIPLIER}return{...z,result:{...b,hit:outcome!=="MISS",graze:outcome==="GRAZE",evadeOutcome:outcome,evadeRoll:roll,originalHitChance:o,activeHitChance:f,damage:Math.round(b.damage*m)}}}
+  function resolveEvade(map,a,t,s){const z=resolveWithRandom(map,a,t,s,{forceHit:true}),b=z.result,o=b.hc,f=Math.max(0,o-ACTIVE_EVADE_PENALTY),roll=random()*100;let outcome="MISS",m=0;if(roll<f){outcome="HIT";m=1}else if(roll<o){outcome="GRAZE";m=GRAZE_DAMAGE_MULTIPLIER}return{...z,result:{...b,hit:outcome!=="MISS",graze:outcome==="GRAZE",evadeOutcome:outcome,evadeRoll:roll,originalHitChance:o,activeHitChance:f,damage:Math.round(b.damage*m)}}}
   function resolveDefense(map,a,t,s,r){
     const p=defenseProfileById(t,r?.methodId);
-    if(!p)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:null,valid:false,reason:"DEFENSE_METHOD_NOT_FOUND"}};
+    if(!p)return{...resolveWithRandom(map,a,t,s),defense:{method:null,valid:false,reason:"DEFENSE_METHOD_NOT_FOUND"}};
     const type=attackType(a,s),rule=p.vs?.[type];
-    if(!rule)return{...TacticalEngine.resolve(map,a,t,s),defense:{method:p,valid:false,reason:"ATTACK_TYPE_NOT_SUPPORTED",attackType:type}};
-    const z=TacticalEngine.resolve(map,a,t,s),b=z.result;
+    if(!rule)return{...resolveWithRandom(map,a,t,s),defense:{method:p,valid:false,reason:"ATTACK_TYPE_NOT_SUPPORTED",attackType:type}};
+    const z=resolveWithRandom(map,a,t,s),b=z.result;
     if(!b.hit)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,reason:"ATTACK_MISSED"}};
     if(!s?.pureHoly&&p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};
     let success=true,roll=null;
-    if(Number.isFinite(Number(rule.chance))){roll=Math.random()*100;success=roll<Number(rule.chance)}
+    if(Number.isFinite(Number(rule.chance))){roll=random()*100;success=roll<Number(rule.chance)}
     let m=1,waitedMultiplier=1,afterInterceptEffects=[];
     if(success){
       m=s?.pureHoly?1:(p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1));
@@ -77,12 +78,12 @@ export const BattleResolution=(()=>{
     // Taking an adjacent attack never cancels the target's stealth status.
     // Individual observers must succeed at probabilistic contact detection.
     if(a.role!=="INITIATOR")TacticalEngine.faceToward(a.actor,a.target);
-    if(a.skill?.bloodShadow)return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill,{forceHit:true});
-    if(!isPrimaryIncomingAction(c,a))return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill);
+    if(a.skill?.bloodShadow)return resolveWithRandom(c.map,a.actor,a.target,a.skill,{forceHit:true});
+    if(!isPrimaryIncomingAction(c,a))return resolveWithRandom(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
     if(c.reaction?.type==="EVADE")return resolveEvade(c.map,a.actor,a.target,a.skill);
     if(c.reaction?.type==="DEFENSE")return resolveDefense(c.map,a.actor,a.target,a.skill,c.reaction);
-    return TacticalEngine.resolve(c.map,a.actor,a.target,a.skill)
+    return resolveWithRandom(c.map,a.actor,a.target,a.skill)
   }
   function normalizeStatus(status){
     if(status.type==="DEF_DOWN")return{type:"BUFF",id:status.id||"DEF_DOWN",name:status.name||"防禦下降",classification:"NEGATIVE",duration:Number(status.duration||2),modifiers:{def:-Math.abs(Number(status.value||0))}};
@@ -91,7 +92,7 @@ export const BattleResolution=(()=>{
   }
   function applyStatuses(entry){
     if(!entry?.result?.hit||Number(entry.result.damage||0)<=0||!globalThis.EffectEngine)return[];const applied=[];
-    for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(Math.random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result})}
+    for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result})}
     return applied;
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
@@ -113,7 +114,7 @@ export const BattleResolution=(()=>{
     return Math.round(enchantmentMagicDamage(actor,target,enchant,critical,skill)*defenseMultiplier*grazeMultiplier);
   }
   function componentCritical(actor,skill,hit){
-    return !!hit&&Math.random()*100<BattleEngine.critChance(actor.character,skill);
+    return !!hit&&random()*100<BattleEngine.critChance(actor.character,skill);
   }
   function withEnchantment(resolved,actor,target,enchant,skill){
     if(!enchant)return resolved;
@@ -253,10 +254,11 @@ export const BattleResolution=(()=>{
           EffectEngine.apply({source:action.actor,target:action.actor,effect});
       bloodRuntime?.endBloodTransaction?.(a.actor);
     }
-    const pq=postQueue(results),post=window.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
+    const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     return{context:c,queue,results,postEngagement:post};
   }
   function resolve(options,hooks={}){const actions=[...(options.actions||[])];if(options.reaction?.type==="COUNTER"&&options.reaction.skill)actions.push(createCounterAction(options.target,options.initiator,options.reaction.skill));return execute(createContext({...options,actions}),hooks)}
   return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
-})();
+}
+export const BattleResolution=createBattleResolution();
 globalThis.BattleResolution=BattleResolution;

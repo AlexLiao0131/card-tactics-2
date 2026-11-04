@@ -18,7 +18,7 @@ export const ClimateEngine=(()=>{
   const tileAt=(map,x,y)=>map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
   const clean=n=>Math.max(0,Math.round(Number(n||0)*1000)/1000);
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
-  const weightClass=unit=>window.DisplacementEngine?.weightClass?.(unit)||"LIGHT";
+  const weightClass=unit=>globalThis.DisplacementEngine?.weightClass?.(unit)||"LIGHT";
   const isFrozen=tile=>Number(tile?.iceThickness||0)>=.25&&Number(tile?.waterDepth||0)>0;
   const isSolidIce=tile=>Number(tile?.iceThickness||0)>=.45&&Number(tile?.waterDepth||0)>0;
   const snowDepth=tile=>Math.max(0,Number(tile?.snowDepth||0));
@@ -134,7 +134,7 @@ export const ClimateEngine=(()=>{
   }
   function initializeMap(map,state){ensureState(state);for(const tile of map?.tiles||[]){tile.snowWaterEquivalent=volumeRound(snowWaterEquivalent(tile));tile.snowDepth=clean(tile.snowDepth);tile.iceThickness=clean(Math.min(iceThickness(tile),Math.max(0,Number(tile.waterDepth||0))));if(tile.river){tile.baseFlowSpeed=Number(tile.baseFlowSpeed||.62);tile.flowSpeed=Number(tile.flowSpeed||tile.baseFlowSpeed);tile.baseDischarge=Number(tile.baseDischarge||tile.discharge||1);tile.discharge=riverDischarge(tile);}syncTileVisuals(state,tile);}return map;}
 
-  function legacyWeather(state){return window.EnvironmentEngine?.legacyWeather?.(state)||state?.weather||"CLEAR";}
+  function legacyWeather(state){return globalThis.EnvironmentEngine?.legacyWeather?.(state)||state?.weather||"CLEAR";}
   function updateRiverFlow(map,state,events=[]){
     const mult=config(state).flow;let count=0,maxSpeed=0;
     for(const tile of map?.tiles||[]){if(!tile.river)continue;const depth=Math.max(.1,Number(tile.waterDepth||0)),depthFactor=1+Math.max(0,depth-1)*.25;tile.flowSpeed=clean(Number(tile.baseFlowSpeed||.62)*mult*depthFactor);
@@ -197,7 +197,7 @@ export const ClimateEngine=(()=>{
     if(snowfallWater>0)events.push({type:"SNOW_PRECIPITATION_WATER_INPUT",volume:volumeRound(snowfallWater),source:"SNOW",weather:legacyWeather(state)});
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
 
-    if(precipitationType(state)==="NONE"&&window.HydrologyEngine?.evaporateUnfedWater){
+    if(precipitationType(state)==="NONE"&&globalThis.HydrologyEngine?.evaporateUnfedWater){
       const evaporation=HydrologyEngine.evaporateUnfedWater(map,{
         amount:Number(HydrologyEngine.EVAPORATION_PER_CLEAR_TURN||.06)*evaporationExposure(state,map),
         source:"CLIMATE_EVAPORATION"
@@ -239,7 +239,7 @@ export const ClimateEngine=(()=>{
   }
 
   function triggerAvalanche(map,x,y,{strength=1,source="SHOCK",state=null}={}){
-    if(!map||!window.MassFlowEngine)return[];let start=tileAt(map,x,y);
+    if(!map||!globalThis.MassFlowEngine)return[];let start=tileAt(map,x,y);
     if(!start||snowDepth(start)<.6){
       const near=[];for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const t=tileAt(map,x+dx,y+dy);if(t&&snowDepth(t)>=.6)near.push(t);}near.sort((a,b)=>Number(b.elevation||0)-Number(a.elevation||0)||snowDepth(b)-snowDepth(a));start=near[0]||null;
     }

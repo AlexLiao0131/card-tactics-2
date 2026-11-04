@@ -104,13 +104,13 @@ export const BattleSetupEngine=(()=>{
     return{environment,meta:{weather,weatherTurns,weatherSeed:climateSeed,battleSeed,climateSeed,fogSeed,windSeed,moonSeed,moonlight,wind:{...wind},climate:snapshot,selectedPreset:selectedPreset?.weather||null,selectedPrecipitation:selectedPrecipitation?{...selectedPrecipitation}:null}};
   }
 
-  function create({stageId,battleSetup,TEAM}){
+  function create({stageId,battleSetup,TEAM,random=Math.random}){
     const stage=StageDatabase.get(stageId);
     if(!stage)throw new Error(`Unknown stage: ${stageId}`);
 
     let map;
     if(stage.mode==="VERSUS"&&stage.battlefield?.type==="PROCEDURAL"){
-      if(!window.MapGenerator?.generateVersus)throw new Error("MapGenerator.generateVersus is not loaded.");
+      if(!globalThis.MapGenerator?.generateVersus)throw new Error("MapGenerator.generateVersus is not loaded.");
 
       const generated=MapGenerator.generateVersus({
         size:battleSetup?.mapSize||stage.battlefield.defaultSize||"MEDIUM",
@@ -131,10 +131,10 @@ export const BattleSetupEngine=(()=>{
       map=MapDatabase.createMap(stage.mapId);
     }
 
-    if(window.EnvironmentObjectEngine){
+    if(globalThis.EnvironmentObjectEngine){
       EnvironmentObjectEngine.initializeMap(map,{seed:battleSetup?.seed??stage.generatedBattlefield?.seed??stage.id});
     }
-    if(window.HydrologyEngine)HydrologyEngine.initializeMap(map);
+    if(globalThis.HydrologyEngine)HydrologyEngine.initializeMap(map);
 
     const stageState=StageEngine.create(stage.scriptId,{
       victory:stage.victory,
@@ -150,7 +150,7 @@ export const BattleSetupEngine=(()=>{
     }));
 
     const resolvedEnvironment=resolveEnvironment(stage,battleSetup||{});
-    const environmentState=window.EnvironmentEngine
+    const environmentState=globalThis.EnvironmentEngine
       ?EnvironmentEngine.create(resolvedEnvironment.environment)
       :null;
 
@@ -170,7 +170,7 @@ export const BattleSetupEngine=(()=>{
     }
 
     const units=[];
-    if(window.ClimateEngine&&environmentState){
+    if(globalThis.ClimateEngine&&environmentState){
       ClimateEngine.initializeMap(map,environmentState);
     }
 
@@ -224,8 +224,8 @@ export const BattleSetupEngine=(()=>{
       handSize:Number(stage.enemyCardRules?.handSize||stage.cardRules?.handSize||5)
     });
 
-    DeckEngine.shuffle(cardState.zones);
-    DeckEngine.shuffle(enemyCardState.zones);
+    DeckEngine.shuffle(cardState.zones,random);
+    DeckEngine.shuffle(enemyCardState.zones,random);
     DeckEngine.draw(
       enemyCardState.zones,
       Number(stage.enemyCardRules?.handSize||stage.cardRules?.handSize||5)
@@ -238,7 +238,7 @@ export const BattleSetupEngine=(()=>{
       units.push(createUnit(`e${i}`,TEAM.ENEMY,u.characterId,u.x,u.y))
     );
 
-    const encounterState=window.EncounterEngine?.create?.(
+    const encounterState=globalThis.EncounterEngine?.create?.(
       stage.encounters||[],
       {map,units,createUnit}
     )||null;

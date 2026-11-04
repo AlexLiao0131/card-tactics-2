@@ -1,4 +1,28 @@
-export const EffectEngine=(()=>{
+// Execution capability is declared by the owning effect engine, not separately
+// in the PVP adapter. This subset is safe for single-target synchronous casts;
+// new effect types must first have a real EffectEngine.apply handler.
+const STANDALONE_DIRECT_EFFECT_TYPES=new Set([
+  'HEAL','SHIELD','RESTORE_MANA','HEAL_OVER_TIME','DISPEL',
+  'BUFF','ATTRIBUTE_OVERRIDE','ATTRIBUTE_MODIFIER'
+]);
+export function isStandaloneDirectEffectType(type){
+  return typeof type==='string'&&STANDALONE_DIRECT_EFFECT_TYPES.has(type);
+}
+// Channel capability is owned by the canonical effect engine, not by a PvP
+// skill-ID list. A new channel type is enabled only after EffectEngine.apply()
+// and tick() both support it with an explicit validated contract.
+export function isSupportedChannelRule(rule){
+  return rule?.type==='HEALING_CHANNEL' && typeof rule.id==='string' &&
+    rule.id.length>0 && Number.isFinite(Number(rule.radius)) &&
+    Number.isFinite(Number(rule.amount)) &&
+    Number.isFinite(Number(rule.duration)) && Number(rule.duration)>=1;
+}
+
+export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=null}={}) {
+  // Browser defaults to its current battle field; the Worker supplies the
+  // room-owned field state instead of reading an unrelated browser runtime.
+  const underSanctuary=unit=>typeof sanctuaryProtects==='function'
+    ?sanctuaryProtects(unit):!!globalThis.CardTacticsRuntime?.sanctuaryProtects?.(unit);
   const clone=v=>JSON.parse(JSON.stringify(v));
   const relation=(source,target)=>source?.id===target?.id?"SELF":source?.team===target?.team?"ALLY":"ENEMY";
   const traits=unit=>new Set([...(unit?.character?.traits||[]),...(unit?.character?.race?[unit.character.race]:[])]);
@@ -83,7 +107,7 @@ export const EffectEngine=(()=>{
     const hpBefore=Math.max(0,Number(target?.hp||0));
     if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
     if(isInvulnerable(target))return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),invulnerable:true};
-    if(damageType==="MAGIC"&&kind!=="INTERNAL"&&globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))
+    if(damageType==="MAGIC"&&kind!=="INTERNAL"&&underSanctuary(target))
       return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),sanctuaryImmune:true};
     const shield=resolveIncomingDamage(target,amount,{kind});
     target.hp=Math.max(0,hpBefore-shield.damage);
@@ -96,13 +120,17 @@ export const EffectEngine=(()=>{
     return{...shield,hpLoss,damage:hpLoss};
   }
   function damage(unit,amount,options){const result=applyDamage(unit,amount,options);if(unit?.hp<=0)unit.alive=false;return result.hpLoss;}
-  function bloodBurstCenters(source,units){
-    const skill=globalThis.SkillDatabase?.get?.("seraphina_blood_burst");
+  function bloodBurstCenters(source,units,skill=globalThis.SkillDatabase?.get?.("seraphina_blood_burst"),world=null){
+    // The caller may supply the authoritative map and climate explicitly.
+    // Durable Objects do not persist unit._runtimeMap, and its absence must
+    // never silently reveal concealed units to a player.
+    const map=world?.map??source?._runtimeMap??globalThis.CardTacticsRuntime?.getBattleMap?.()??null;
+    const environmentState=world?.environmentState??globalThis.CardTacticsRuntime?.getEnvironmentState?.()??null;
     const max=Math.max(0,Number(skill?.range?.max||0));
     return(units||[]).filter(target=>target?.alive&&target.team!==source?.team&&
       Math.abs(target.x-source.x)+Math.abs(target.y-source.y)<=max&&hasEffect(target,"BLEEDING")&&
-      (!source?._runtimeMap||!globalThis.TacticalEngine?.teamCanSee||
-        TacticalEngine.teamCanSee(source._runtimeMap,units,source.team,target,globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null)));
+      (!map||!globalThis.TacticalEngine?.teamCanSee||
+        TacticalEngine.teamCanSee(map,units,source.team,target,environmentState)));
   }
   function targetMatches(source,target,filter={}){
     if(filter.relation&&filter.relation!==relation(source,target))return false;
@@ -152,7 +180,7 @@ export const EffectEngine=(()=>{
   function consumeNegativeEffectGuard(target,effect){
     if(effect?.classification!=="NEGATIVE"||["DAMAGE","MAGIC_DAMAGE","DRAIN"].includes(effect?.type))return null;
     if(isInvulnerable(target))return{id:"HOLY_SHIELD",name:"聖盾"};
-    if(globalThis.CardTacticsRuntime?.sanctuaryProtects?.(target))return{id:"SAINT_SANCTUARY_WARD",name:"聖域・庇護"};
+    if(underSanctuary(target))return{id:"SAINT_SANCTUARY_WARD",name:"聖域・庇護"};
     const guard=state(target).find(e=>e.classification==="POSITIVE"&&Number(e?.negativeEffectGuard?.charges||0)>0);
     if(!guard)return null;
     guard.negativeEffectGuard.charges=Math.max(0,Number(guard.negativeEffectGuard.charges||0)-1);
@@ -184,7 +212,7 @@ export const EffectEngine=(()=>{
     }
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
-    window.UnitRuntimeEngine?.syncMana?.(unit);
+    globalThis.UnitRuntimeEngine?.syncMana?.(unit);
   }
   function addEffect(target,effect,source){
     const entry={...clone(effect),sourceUnitId:source?.id||null,remaining:Number(effect.duration||0)||null};
@@ -255,13 +283,13 @@ export const EffectEngine=(()=>{
     if(effect.type==="HEAL"){
       if(effect.saintHealing){
         const critical=!!source?.character?.passives?.includes("STIGMATA")&&
-          Math.random()*100<BattleEngine.critChance(source.character,SkillDatabase.get("saint_hero_heal"));
+          random()*100<BattleEngine.critChance(source.character,SkillDatabase.get("saint_hero_heal"));
         return saintHealing({source,target,amount:effect.amount,overflowShield:effect.overflowShield,critical});
       }
       return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
     }
     if(effect.type==="HEALING_CHANNEL"){
-      if(!effect.id||!Number.isFinite(Number(effect.radius))||!Number.isFinite(Number(effect.amount))||!Number.isFinite(Number(effect.duration))||effect.duration<1)return{applied:false,reason:"INVALID_CHANNEL"};
+      if(!isSupportedChannelRule(effect))return{applied:false,reason:"INVALID_CHANNEL"};
       return{applied:true,type:effect.type,effect:addEffect(target,{...effect,classification:"POSITIVE"},source)};
     }
     if(effect.type==="HEAL_OVER_TIME"||effect.type==="DAMAGE_OVER_TIME")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
@@ -269,7 +297,7 @@ export const EffectEngine=(()=>{
       const amount=Math.max(0,Math.round(Number(effect.amount||0))),entry=addEffect(target,{...effect,shieldHp:amount,maxShieldHp:amount},source);
       return{applied:true,type:effect.type,amount,shieldHp:shieldHp(target),effect:entry};
     }
-    if(effect.type==="RESTORE_MANA"){const amount=window.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
+    if(effect.type==="RESTORE_MANA"){const amount=globalThis.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="HP_LINK")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
@@ -388,7 +416,7 @@ export const EffectEngine=(()=>{
     // Roll once upon first contact, not every frame / UI render / attack query.
     if(stealth.checkedBy.includes(id))return false;
     stealth.checkedBy.push(id);
-    if(Math.random()*100>=stealthDetectionChance(observer,target,stealth))return false;
+    if(random()*100>=stealthDetectionChance(observer,target,stealth))return false;
     stealth.detectedBy.push(id);
     return true;
   }
@@ -404,6 +432,7 @@ export const EffectEngine=(()=>{
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
-})();
+  return{isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+}
+export const EffectEngine=createEffectEngine();
 globalThis.EffectEngine=EffectEngine;
