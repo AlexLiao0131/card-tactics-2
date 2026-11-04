@@ -5,12 +5,21 @@
   "compatibility_date": "2026-10-20",
   "workers_dev": true,
   "vars": {
-    "APP_ORIGIN": "https://alexliao0131.github.io"
+    "APP_ORIGIN": "https://alexliao0131.github.io",
+    "PVP_INTERNAL_TACTICAL_TEST": "true"
   },
   "durable_objects": {
-    "bindings": [{"name": "ROOMS", "class_name": "PvpRoom"}]
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "PvpRoom"
+      }
+    ]
   },
   "exports": {
-    "PvpRoom": {"type": "durable-object", "storage": "sqlite"}
+    "PvpRoom": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
   }
 }
