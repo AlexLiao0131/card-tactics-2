@@ -1,14 +1,14 @@
-(()=>{
+export const BattleObjectiveController=(()=>{
 "use strict";
 function create(ctx){
  if(!ctx?.state||!ctx?.setMatchResult)throw new Error("BattleObjectiveController requires state/setMatchResult.");
  function hasPendingReinforcement(team){
    const s=ctx.state();
-   return !!window.StageEngine?.hasPendingSpawn?.(s.stageState,team);
+   return !!globalThis.StageEngine?.hasPendingSpawn?.(s.stageState,team);
  }
  function activeObjectives(){
    const s=ctx.state();
-   return window.StageEngine?.objectives?.(s.stageState,s.stage)||{victory:s.stage?.victory??null,defeat:s.stage?.defeat??null};
+   return globalThis.StageEngine?.objectives?.(s.stageState,s.stage)||{victory:s.stage?.victory??null,defeat:s.stage?.defeat??null};
  }
  function objectiveContext(){
    const s=ctx.state(),areas={};
@@ -25,5 +25,6 @@ function create(ctx){
  }
  return Object.freeze({hasPendingReinforcement,activeObjectives,objectiveContext,checkMatchEnd});
 }
-window.BattleObjectiveController=Object.freeze({create});
+return Object.freeze({create});
 })();
+globalThis.BattleObjectiveController=BattleObjectiveController;

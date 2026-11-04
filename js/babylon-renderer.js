@@ -234,7 +234,8 @@ export class BabylonRenderer{
       }
     });
 
-    window.addEventListener("resize",()=>this.resize());
+    this.pvpSafeResizeHandler=()=>this.resize();
+    window.addEventListener("resize",this.pvpSafeResizeHandler);
   }
 
   createSkyLayer(){
@@ -658,6 +659,18 @@ export class BabylonRenderer{
       bar.style.setProperty("--menu-x",`${Math.round(sx)}px`);
       bar.style.setProperty("--menu-y",`${Math.round(sy)}px`);
     }
+  }
+
+  // Explicit lifecycle for an online match that may close without navigating.
+  // Single-player keeps its original long-lived renderer lifecycle.
+  dispose(){
+    if(this.pvpSafeResizeHandler){
+      window.removeEventListener("resize",this.pvpSafeResizeHandler);
+      this.pvpSafeResizeHandler=null;
+    }
+    this.engine?.stopRenderLoop?.();
+    this.scene?.dispose?.();
+    this.engine?.dispose?.();
   }
 
   resize(){

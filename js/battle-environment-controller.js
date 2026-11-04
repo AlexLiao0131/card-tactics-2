@@ -7,7 +7,7 @@ const FATIGUE_RECOVERY_PER_TICK=2;
 const ENTRY_DAMAGE=Object.freeze({LIGHT:10,MEDIUM:15,HEAVY:20,IMMOVABLE:30});
 const TICK_DAMAGE=Object.freeze({LIGHT:20,MEDIUM:25,HEAVY:30,IMMOVABLE:40});
 function traits(unit){return new Set(unit?.character?.terrainTraits||[])}
-function weightClass(unit){return window.DisplacementEngine?.weightClass?.(unit)||"LIGHT"}
+function weightClass(unit){return globalThis.DisplacementEngine?.weightClass?.(unit)||"LIGHT"}
 function currentFatigue(unit){return Math.max(0,Number(unit?.waterInteraction?.fatigue||0))}
 function activeWaterRules(unit){
   const out={breathing:false,waterWalk:false,preventSinking:false};
@@ -15,15 +15,15 @@ function activeWaterRules(unit){
   return out;
 }
 function baseState(unit,tile,fatigue=currentFatigue(unit)){
-  const depth=Math.max(0,Number(window.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),weight=weightClass(unit),rules=activeWaterRules(unit),forcedTurns=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0));
-  if(window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{state:STATE.DRY,depth,weight,safe:true,fatigue};
+  const depth=Math.max(0,Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),weight=weightClass(unit),rules=activeWaterRules(unit),forcedTurns=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0));
+  if(globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{state:STATE.DRY,depth,weight,safe:true,fatigue};
   if(depth<=0)return{state:STATE.DRY,depth,weight,safe:true,fatigue};
   if(set.has("AQUATIC"))return{state:STATE.AQUATIC,depth,weight,safe:true,fatigue};
   // A breaking rogue wave can engulf a surface swimmer/wader/water-walker and
   // temporarily force them below the surface. Explicit anti-sinking effects still win.
   if(forcedTurns>0&&!rules.preventSinking)return{state:STATE.SINKING,depth,weight,safe:false,fatigue:Math.max(fatigue,FATIGUE_LIMIT),forcedSubmerge:true,forcedSubmergeTurns:forcedTurns};
   if(set.has("WATER_WALK")||rules.waterWalk)return{state:STATE.WATER_WALK,depth,weight,safe:true,fatigue,source:rules.waterWalk?"EFFECT":null};
-  if(window.ClimateEngine?.isFrozen?.(tile)&&ClimateEngine.iceSupports(unit,tile))return{state:STATE.ICE,depth,weight,safe:true,iceThickness:ClimateEngine.iceThickness(tile),fatigue};
+  if(globalThis.ClimateEngine?.isFrozen?.(tile)&&ClimateEngine.iceSupports(unit,tile))return{state:STATE.ICE,depth,weight,safe:true,iceThickness:ClimateEngine.iceThickness(tile),fatigue};
   if(depth<2)return{state:STATE.WADING,depth,weight,safe:true,fatigue};
   if(fatigue>=FATIGUE_LIMIT&&!rules.preventSinking)return{state:STATE.SINKING,depth,weight,safe:false,fatigue};
   return{state:STATE.SWIMMING,depth,weight,safe:true,fatigue};
@@ -31,9 +31,9 @@ function baseState(unit,tile,fatigue=currentFatigue(unit)){
 function assess(unit,tile){return baseState(unit,tile)}
 function forceSubmerge(unit,tile,{turns=1,impactDamage=0}={}){
   if(!unit?.alive||!tile)return{applied:false,reason:"INVALID_TARGET",damage:0};
-  const depth=Math.max(0,Number(window.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),rules=activeWaterRules(unit);
+  const depth=Math.max(0,Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)),set=traits(unit),rules=activeWaterRules(unit);
   if(depth<=0)return{applied:false,reason:"NO_WATER",damage:0};
-  if(window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{applied:false,reason:"NO_WATER_CONTACT",damage:0};
+  if(globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))return{applied:false,reason:"NO_WATER_CONTACT",damage:0};
   const impact=Math.max(0,Math.round(Number(impactDamage||0)));
   if(set.has("AQUATIC"))return{applied:false,reason:"AQUATIC",damage:impact,state:STATE.AQUATIC};
   if(rules.preventSinking)return{applied:false,reason:"PREVENT_SINKING",damage:impact,state:unit?.waterInteraction?.state||STATE.WATER_WALK};
@@ -44,7 +44,7 @@ function forceSubmerge(unit,tile,{turns=1,impactDamage=0}={}){
 }
 function resolve(unit,tile,{trigger="CHECK"}={}){
   const previous=unit?.waterInteraction||{state:STATE.DRY,depth:0,weight:weightClass(unit),fatigue:0},set=traits(unit),rules=activeWaterRules(unit);let ice=null;
-  if(tile&&!window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit)&&window.ClimateEngine?.isFrozen?.(tile)&&!set.has("AQUATIC")&&!set.has("WATER_WALK")&&!rules.waterWalk&&!ClimateEngine.iceSupports(unit,tile))ice=ClimateEngine.resolveIceStep(unit,tile);
+  if(tile&&!globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit)&&globalThis.ClimateEngine?.isFrozen?.(tile)&&!set.has("AQUATIC")&&!set.has("WATER_WALK")&&!rules.waterWalk&&!ClimateEngine.iceSupports(unit,tile))ice=ClimateEngine.resolveIceStep(unit,tile);
   const preliminary=baseState(unit,tile,currentFatigue(unit));
   let fatigue=currentFatigue(unit);
   if(trigger==="TICK"){
@@ -61,7 +61,7 @@ function resolve(unit,tile,{trigger="CHECK"}={}){
   if(unit){
     const forcedBefore=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0)),forcedAfter=trigger==="TICK"?Math.max(0,forcedBefore-1):forcedBefore;
     unit.waterInteraction={...next,forcedSubmerge:forcedAfter>0,forcedSubmergeTurns:forcedAfter};
-    window.VerticalMobilityEngine?.syncUnit?.(unit,tile);
+    globalThis.VerticalMobilityEngine?.syncUnit?.(unit,tile);
   }
   return{...next,fatigueLimit:FATIGUE_LIMIT,fatigueGain:Number(FATIGUE_GAIN[next.weight]??FATIGUE_GAIN.LIGHT),previousState:previous.state,previousDepth:Number(previous.depth||0),previousFatigue:Number(previous.fatigue||0),changed,damage,trigger,ice,breathing:rules.breathing};
 }
@@ -74,9 +74,9 @@ function create(ctx){
  if(!ctx?.state||!ctx?.pushLog||!ctx?.handleDefeated||!ctx?.stageEvent)throw new Error("BattleEnvironmentController requires state/log/lifecycle callbacks.");
  const state=()=>ctx.state();
  function tileFor(unit){const s=state();return TacticalEngine.tile(s.map,unit?.x,unit?.y)}
- function effectContacts(unit,tile,effect){return !window.EnvironmentContactEngine||EnvironmentContactEngine.effectContacts(unit,tile,effect)}
- function eventContacts(unit,tile,event){return !window.EnvironmentContactEngine||EnvironmentContactEngine.eventContacts(unit,tile,event)}
- function profileContacts(unit,tile,profile,source={}){return !window.EnvironmentContactEngine||EnvironmentContactEngine.contacts(unit,tile,profile,source)}
+ function effectContacts(unit,tile,effect){return !globalThis.EnvironmentContactEngine||EnvironmentContactEngine.effectContacts(unit,tile,effect)}
+ function eventContacts(unit,tile,event){return !globalThis.EnvironmentContactEngine||EnvironmentContactEngine.eventContacts(unit,tile,event)}
+ function profileContacts(unit,tile,profile,source={}){return !globalThis.EnvironmentContactEngine||EnvironmentContactEngine.contacts(unit,tile,profile,source)}
  function resolveCollisionRuntime(collision,{mover,source}={}){
   if(!collision)return;const s=state(),surface=collision.surface||{},moverName=mover?.character?.name||"單位";
   if(surface.kind==="SHIELD")ctx.pushLog(`${moverName} 撞上 ${surface.unit?.character?.name||"防禦者"} 的防禦面｜撞擊傷害 ${collision.damage||0}｜HP ${mover?.hp??"-"}。`,"BATTLE");
@@ -87,7 +87,7 @@ function create(ctx){
  }
  function teamLabel(team){if(team===ctx.TEAM?.PLAYER||team==="P")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E")return"ENEMY";return"NEUTRAL";}
  function applyWaterInteraction(unit,{trigger="CHECK",reason="水域"}={}){
-  const s=state();if(!unit?.alive||!window.WaterInteractionEngine)return{damage:0,state:null};const tile=TacticalEngine.tile(s.map,unit.x,unit.y),result=WaterInteractionEngine.resolve(unit,tile,{trigger});
+  const s=state();if(!unit?.alive||!globalThis.WaterInteractionEngine)return{damage:0,state:null};const tile=TacticalEngine.tile(s.map,unit.x,unit.y),result=WaterInteractionEngine.resolve(unit,tile,{trigger});
   if(result.ice?.broke)ctx.pushLog(`${unit.character.name} 踩裂冰面｜冰厚 ${Number(result.ice.thickness||0).toFixed(2)} < ${result.ice.weight} 所需 ${Number(result.ice.threshold||0).toFixed(2)}。`,"BATTLE");
   if(result.changed){
     if(result.state===WaterInteractionEngine.STATE.ICE)ctx.pushLog(`${unit.character.name} 踏上結冰水面｜冰厚 ${Number(result.iceThickness||0).toFixed(2)}。`,"DETAIL");
@@ -177,8 +177,8 @@ function create(ctx){
   if(result.defeated)ctx.handleDefeated(target,source,{type:"ENVIRONMENT_FORCE",name,damageType});return result;
  }
  function applyCurrentToUnit(unit,{reason="水流"}={}){
-  if(window.VerticalMobilityEngine?.ignoresCurrent?.(unit))return false;
-  const s=state();if(!unit?.alive||unit._currentResolving||!window.ClimateEngine)return false;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,window.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",{type:"CURRENT"}))return false;const current=ClimateEngine.currentForce(tile,s.environmentState);if(!current)return false;
+  if(globalThis.VerticalMobilityEngine?.ignoresCurrent?.(unit))return false;
+  const s=state();if(!unit?.alive||unit._currentResolving||!globalThis.ClimateEngine)return false;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",{type:"CURRENT"}))return false;const current=ClimateEngine.currentForce(tile,s.environmentState);if(!current)return false;
   unit._currentResolving=true;try{const source={x:unit.x-current.flowX,y:unit.y-current.flowY};ctx.pushLog(`${unit.character.name} 遭${reason}沖刷｜流速 ${current.speed.toFixed(2)}｜位移力 ${current.distance}。`,"BATTLE");applyForcedMovement(source,unit,current.distance,{name:"暴漲溪流",damage:Math.max(0,Math.round((current.speed-1)*8)),damageType:"WATER"});return true;}finally{delete unit._currentResolving;}
  }
  function enterTile(unit){const s=state();if(!unit?.alive)return;ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const spotted=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];spotted.filter(({observer})=>observer.team===ctx.TEAM?.PLAYER).forEach(({observer,target})=>ctx.pushLog(`${observer.character.name} 近身察覺 ${target.character.name}，但目標仍處於潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
@@ -194,9 +194,9 @@ function create(ctx){
     if(unit.x!==tile.x||unit.y!==tile.y)return{completed:false,reason:"CURRENT"};
     const interaction=EnvironmentEngine.pathInteraction({state:s.environmentState,x:tile.x,y:tile.y,kind}),forced=interaction.effects?.find(e=>e.type==="FORCED_MOVE");
     if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE");applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
-    const friction=Number(window.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);
+    const friction=Number(globalThis.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);
     const momentum=Math.max(0,1-friction);
-    if(kind==="UNIT"&&momentum>=.5&&(incoming.dx||incoming.dy)&&!window.VerticalMobilityEngine?.isAirborne?.(unit)&&!window.VerticalMobilityEngine?.isBurrowed?.(unit)){
+    if(kind==="UNIT"&&momentum>=.5&&(incoming.dx||incoming.dy)&&!globalThis.VerticalMobilityEngine?.isAirborne?.(unit)&&!globalThis.VerticalMobilityEngine?.isBurrowed?.(unit)){
       const distance=Math.max(1,Math.min(2,Math.ceil(momentum*2))),source={x:unit.x-incoming.dx,y:unit.y-incoming.dy};
       ctx.pushLog(`${unit.character.name} 在低摩擦地表失去制動｜摩擦 ${friction.toFixed(2)}｜慣性位移 ${distance}。`,"DETAIL");
       applyForcedMovement(source,unit,distance,{name:"滑行",damage:0,damageType:"PHYSICAL"});
@@ -233,7 +233,7 @@ function create(ctx){
   const s=state(),path=event.path||[],pathKeys=new Set(path.map(point=>`${point.x},${point.y}`)),initial=(s.units||[]).filter(unit=>unit?.alive&&pathKeys.has(`${unit.x},${unit.y}`));let count=0;
   const element=String(event.element||"AIR").toUpperCase(),name=element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風",dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0)),debrisDamage=Math.max(0,Number(event.debrisDamage||0));
   for(const unit of initial){
-   if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,window.EnvironmentContactEngine?.PROFILE?.AIR_COLUMN||"AIR_COLUMN",event))continue;
+   if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.AIR_COLUMN||"AIR_COLUMN",event))continue;
    if(debrisDamage>0)ctx.pushLog(`${unit.character.name} 被${name}內捲起的樹幹撞擊｜額外 ${debrisDamage} 傷害。`,"BATTLE");
    const source={x:unit.x-(dx||0),y:unit.y-(dy||0)};applyForcedMovement(source,unit,Number(event.pushDistance||2),{name,lift:Number(event.lift||0),damage:Number(event.damage||0)+debrisDamage,damageType:event.damageType||"PHYSICAL",resistAxes:{horizontal:false,vertical:true}});count++;
   }
@@ -244,8 +244,8 @@ function create(ctx){
   globalThis.UnitAnimationEngine?.emitPresentation?.("ROGUE_WAVE",{...event});
   const initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
   for(const unit of initial){
-    if(!unit.alive||window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
-    const tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=window.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";
+    if(!unit.alive||globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
+    const tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=globalThis.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";
     if(!profileContacts(unit,tile,profile,event))continue;
     const dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0));
     if(!dx&&!dy)continue;
@@ -258,7 +258,7 @@ function create(ctx){
     // Only a genuinely different, submerged landing location can drown; contact
     // and impact damage never imply that a unit was pulled underwater.
     if((unit.x!==before.x||unit.y!==before.y)&&depth>=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(unit)||2)){
-      const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,destination,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
+      const result=globalThis.WaterInteractionEngine?.forceSubmerge?.(unit,destination,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
       if(result?.damage>0&&unit.alive)ctx.damageUnitFlat(unit,result.damage,"瘋狗浪捲入深水");
       if(result?.applied)ctx.pushLog(`${unit.character.name} 被瘋狗浪推入深水｜水深 ${depth.toFixed(2)}｜進入沉沒狀態。`,"BATTLE");
     }else ctx.pushLog(`${unit.character.name} 被瘋狗浪沖刷，但未被捲入深水。`,"DETAIL");
@@ -271,14 +271,14 @@ function create(ctx){
   globalThis.UnitAnimationEngine?.emitPresentation?.("WHIRLPOOL_PULSE",{...event});
   const center={x:Number(event.centerX),y:Number(event.centerY)},initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
   for(const unit of initial){
-    if(!unit.alive||window.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
-    let tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=window.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";if(!profileContacts(unit,tile,profile,event))continue;
+    if(!unit.alive||globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
+    let tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=globalThis.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";if(!profileContacts(unit,tile,profile,event))continue;
     const distance=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y),pull=Math.max(0,Math.min(Number(event.pullDistance||1),Math.ceil(distance)));
     if(pull>0&&distance>0)applyForcedMovement(center,unit,pull,{name:"漩渦",damage:Math.max(0,Number(event.damage||0)),damageType:"WATER",type:"PULL",resistAxes:{horizontal:true,vertical:true}});
     if(!unit.alive){count++;continue;}
     tile=TacticalEngine.tile(s.map,unit.x,unit.y);const atCore=unit.x===center.x&&unit.y===center.y,nearCore=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y)<=1;
     if((atCore||nearCore)&&profileContacts(unit,tile,profile,event)){
-      const result=window.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
+      const result=globalThis.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
       if(result?.applied)ctx.pushLog(`${unit.character.name} 被漩渦拖入水下｜進入沉沒狀態。`,"BATTLE");
       else if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被捲入漩渦核心，但水生體質能維持水下姿態。`,"DETAIL");
     }
@@ -331,7 +331,7 @@ function create(ctx){
  }
  function resolveWeatherEvents(){
   const s=state();if(!s.environmentState)return;
-  for(const event of EnvironmentEngine.rollWeatherEvent({map:s.map,state:s.environmentState,units:s.units})){
+  for(const event of EnvironmentEngine.rollWeatherEvent({map:s.map,state:s.environmentState,units:s.units,random:ctx.random})){
     if(event.type!=="LIGHTNING_STRIKE")continue;const unit=event.unit;if(!unit?.alive)continue;
     globalThis.UnitAnimationEngine?.emitPresentation?.("LIGHTNING_STRIKE",{x:event.x,y:event.y,unitId:unit.id,damage:Number(event.damage||0)});
     const names=(event.riskReasons||[]).map(r=>r==="METAL"?"金屬裝備":r==="WATER"?"水域":"樹木／森林"),damage=Number(event.damage||0);
@@ -394,6 +394,6 @@ function create(ctx){
  }
  return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
-window.BattleEnvironmentController=Object.freeze({create});
+globalThis.BattleEnvironmentController=Object.freeze({create});
 })();
 globalThis.WaterInteractionEngine=WaterInteractionEngine;

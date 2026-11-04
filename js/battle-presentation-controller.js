@@ -9,7 +9,7 @@ function create(ctx){
   if(!ctx?.state)throw new Error("BattlePresentationController requires state().");
   function teamPresentation(team){if(team===ctx.TEAM?.PLAYER||team==="P"||team==="PLAYER")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E"||team==="ENEMY")return"ENEMY";if(team===ctx.TEAM?.NEUTRAL||team==="N"||team==="NEUTRAL")return"NEUTRAL";return String(team||"NEUTRAL");}
   function tileHydrology(tile){
-    const depth=Number(window.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=window.HydrologyEngine?.waterSurfaceZ?.(tile);
+    const depth=Number(globalThis.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0),surface=globalThis.HydrologyEngine?.waterSurfaceZ?.(tile);
     const edgeOutflows=Object.fromEntries(Object.entries(tile?.hydrologyEdgeOutflows||{}).map(([dir,flow])=>[dir,{...flow}]));
     const edgeDischarge=Object.fromEntries(Object.entries(tile?.hydrologyEdgeDischarge||{}).map(([dir,flow])=>[dir,{...flow}]));
     return{
@@ -85,7 +85,7 @@ function create(ctx){
   function combatPreview(attacker,target,skill){if(!attacker?.alive||!target?.alive||!skill||target.kind==="CORE")return null;const s=ctx.state(),resolved=ctx.effectiveSkill(attacker,skill),at=TacticalEngine.tile(s.map,attacker.x,attacker.y),dt=TacticalEngine.tile(s.map,target.x,target.y),weapon=attacker.character.weapons?.[resolved.weapon],type=resolved.attackType==="INHERIT"?weapon?.attackType:resolved.attackType,terrainAcc=at?.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt?.elevation?Number(TERRAINS[at.terrain]?.rangedAccuracy||0):0,terrainEva=Number(TERRAINS[dt?.terrain]?.evasion||0),ac={...attacker.character,modifiers:{...(attacker.character.modifiers||{}),accuracy:Number(attacker.character.modifiers?.accuracy||0)+terrainAcc}},dc={...target.character,modifiers:{...(target.character.modifiers||{}),evasion:Number(target.character.modifiers?.evasion||0)+terrainEva}};return{skillId:resolved.id,skillName:resolved.name,hit:BattleEngine.hitChance(ac,dc,resolved),crit:BattleEngine.critChance(ac,resolved),terrainAcc,terrainEva};}
   function unitSkillPresentation(unit){
     if(!unit?.character)return[];
-    const ids=window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills;
+    const ids=globalThis.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills;
     return SkillDatabase.list(ids).map(skill=>{
       const range=TacticalEngine.range(skill);
       return{
@@ -203,5 +203,5 @@ function create(ctx){
   }
   return Object.freeze({battleSnapshot,unitPresentation,combatPreview,tileAnnotation});
 }
-window.BattlePresentationController=Object.freeze({create});
+globalThis.BattlePresentationController=Object.freeze({create});
 })();

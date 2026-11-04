@@ -1,4 +1,4 @@
-(()=>{
+export const BattleCoreCaptureController=(()=>{
 "use strict";
 function create(ctx){
  if(!ctx?.state||!ctx?.pushLog||!ctx?.checkMatchEnd)throw new Error("BattleCoreCaptureController requires state/log/checkMatchEnd.");
@@ -52,5 +52,6 @@ function create(ctx){
 
  return Object.freeze({ownerForTeam,enemyOwner,coreForOwner,coreAt,capturePointForUnit,canUnitCapture,damageCore,executeCapture,reconcileHeldPoints,coreCombatTarget,combatTargetEntities});
 }
-window.BattleCoreCaptureController=Object.freeze({create});
+return Object.freeze({create});
 })();
+globalThis.BattleCoreCaptureController=BattleCoreCaptureController;
