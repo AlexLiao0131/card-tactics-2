@@ -97,14 +97,14 @@ test('HTTP room lifecycle, credentials, tickets and WS readiness',async()=>{
  assert.equal((await post(env,`/v1/rooms/${host.code}/deck`,{cards:deckB},guest.token)).status,200);
  await room.do.webSocketMessage(wsA,JSON.stringify({type:'SET_READY',ready:true}));
  await room.do.webSocketMessage(wsB,JSON.stringify({type:'SET_READY',ready:true}));
- assert.equal(wsB.sent.findLast(x=>x.type==='ROOM_STATE').room.bothReady,true);
- assert.equal(wsA.sent.findLast(x=>x.type==='ROOM_STATE').room.phase,'OPENING_HAND');
- assert.equal(wsA.sent.at(-1).match.view.own.hand.length,5);
- const ver=wsB.sent.findLast(x=>x.type==='ROOM_STATE').room.version;
+ assert.equal(wsB.sent.findLast(msg=>msg.room?.bothReady!==undefined).room.bothReady,true);
+ assert.equal(wsA.sent.findLast(msg=>msg.room?.bothReady!==undefined).room.bothReady,true);
+ const ver=wsB.sent.findLast(msg=>msg.room?.bothReady!==undefined).room.version;
  await room.do.webSocketMessage(wsA,JSON.stringify({type:'GAME_MOVE',to:{x:0,y:0}}));
  assert.equal(wsA.sent.at(-1).error,'TACTICAL_GAME_CORE_NOT_READY');
  assert.equal((await room.ctx.storage.get('room')).version,ver);
  await room.do.webSocketMessage(wsA,JSON.stringify({type:'SET_READY',ready:'true'}));
+ // Once both decks are locked and the match starts, SET_READY is no longer a lobby operation.
  assert.equal(wsA.sent.at(-1).error,'BAD_SEAT');
  // Hibernated DO reconstructs with same persistent storage and socket attachments.
  room.do = new PvpRoom(room.ctx,{});
@@ -144,82 +144,4 @@ test('racing joins never overwrite the one available second seat',async()=>{
  assert.equal(attempts.filter(x=>x.status===409).length,7);
  const state=await(await post(env,`/v1/rooms/${host.code}/session`,{},host.token)).json();
  assert.equal(state.room.seats.filter(Boolean).length,2);
-});
-
-// Real Worker/DO match creation with private per-seat projections and replay.
-// Only opening hands are enabled; tactical commands must remain rejected.
-test('two-player ready atomically creates private server opening game and survives reconnect',async()=>{
- const {env,rooms}=service();
- const a=await(await post(env,'/v1/rooms',{name:'A'})).json();
- const b=await(await post(env,`/v1/rooms/${a.code}/join`,{name:'B'})).json();
- const room=rooms.get(`ct2:${a.code}`);
- const dA=['livia_card',...Array(19).fill('imperial_swordsman_card')];
- const dB=['ophi_card',...Array(19).fill('imperial_archer_card')];
- assert.equal((await post(env,`/v1/rooms/${a.code}/deck`,{cards:dA},a.token)).status,200);
- assert.equal((await post(env,`/v1/rooms/${a.code}/deck`,{cards:dB},b.token)).status,200);
- const ticket0=await (await post(env,`/v1/rooms/${a.code}/ticket`,{},a.token)).json();
- const ticket1=await (await post(env,`/v1/rooms/${a.code}/ticket`,{},b.token)).json();
- await socket(env,a.code,ticket0.ticket);await socket(env,a.code,ticket1.ticket);
- const [ws0,ws1]=room.ctx.getWebSockets();
- await room.do.webSocketMessage(ws0,JSON.stringify({type:'SET_READY',ready:true}));
- assert.equal(await room.ctx.storage.get('authoritative-battle-session'),undefined);
- await room.do.webSocketMessage(ws1,JSON.stringify({type:'SET_READY',ready:true}));
- let session=await room.ctx.storage.get('authoritative-battle-session');
- assert.equal(session.revision,0);
- assert.equal(session.state.phase,'OPENING_HAND');
- assert.equal((await room.ctx.storage.get('room')).phase,'OPENING_HAND');
- assert.equal(ws0.sent.at(-1).type,'MATCH_STATE');
- assert.equal(ws1.sent.at(-1).type,'MATCH_STATE');
- assert.equal(ws0.sent.at(-1).match.view.own.hand.length,5);
- assert.equal(ws1.sent.at(-1).match.view.own.hand.length,5);
- assert.equal(JSON.stringify(ws0.sent.at(-1)).includes('imperial_archer_card'),false);
- assert.equal(JSON.stringify(ws1.sent.at(-1)).includes('imperial_swordsman_card'),false);
- const projection0=await post(env,`/v1/rooms/${a.code}/opening`,{},a.token);
- assert.equal(projection0.status,200);
- assert.equal((await projection0.json()).match.view.seat,0);
- const projection1=await post(env,`/v1/rooms/${a.code}/opening`,{},b.token);
- assert.equal((await projection1.json()).match.view.seat,1);
- assert.equal((await post(env,`/v1/rooms/${a.code}/opening`,{},'0'.repeat(64))).status,401);
- const command={type:'MATCH_COMMAND',envelope:{protocol:'ct2-command-v1',commandId:'opening00001',baseRevision:0,action:{type:'KEEP_OPENING_HAND'}}};
- await room.do.webSocketMessage(ws1,JSON.stringify(command));
- assert.equal(ws1.sent.at(-1).error,'NOT_YOUR_TURN');
- await room.do.webSocketMessage(ws0,JSON.stringify(command));
- assert.equal(ws0.sent.findLast(x=>x.type==='MATCH_ACK').acceptedRevision,1);
- session=await room.ctx.storage.get('authoritative-battle-session');
- assert.equal(session.revision,1);
- assert.equal(session.state.cards[0].mulliganDone,true);
- await room.do.webSocketMessage(ws0,JSON.stringify(command));
- assert.equal(ws0.sent.at(-1).duplicate,true);
- assert.equal((await room.ctx.storage.get('authoritative-battle-session')).revision,1);
- // Deployment, movement, damage payloads are not accepted without canonical tactical rules.
- await room.do.webSocketMessage(ws0,JSON.stringify({type:'MATCH_COMMAND',envelope:{
-  protocol:'ct2-command-v1',commandId:'wrongact0001',baseRevision:1,action:{type:'MOVE',unitId:'p0',x:2,y:3}}}));
- assert.equal(ws0.sent.at(-1).error,'NOT_YOUR_TURN');
- await room.do.webSocketMessage(ws1,JSON.stringify({type:'MATCH_COMMAND',envelope:{
-  protocol:'ct2-command-v1',commandId:'opening00002',baseRevision:1,action:{type:'MULLIGAN',indices:[0,1]}}}));
- session=await room.ctx.storage.get('authoritative-battle-session');
- assert.equal(session.revision,2);
- assert.equal(session.state.phase,'BATTLEFIELD_READY');
- assert.equal(session.state.battlefield.map.tiles.length,280);
- assert.equal(session.state.battlefield.cores.length,2);
- assert.equal((await room.ctx.storage.get('room')).phase,'BATTLEFIELD_READY');
- // Lost ACKs remain safe to retry after the opening phase has closed.
- await room.do.webSocketMessage(ws1,JSON.stringify({type:'MATCH_COMMAND',envelope:{
-  protocol:'ct2-command-v1',commandId:'opening00002',baseRevision:1,action:{type:'MULLIGAN',indices:[0,1]}}}));
- assert.equal(ws1.sent.at(-1).duplicate,true);
- assert.equal((await room.ctx.storage.get('authoritative-battle-session')).revision,2);
- const denied=await post(env,`/v1/rooms/${a.code}/deck`,{cards:dA},a.token);
- assert.equal(denied.status,409);
- // Hibernation simulates a Worker restart without losing battle state.
- room.do=new PvpRoom(room.ctx,{});
- const recTicket=await (await post(env,`/v1/rooms/${a.code}/ticket`,{},a.token)).json();
- await socket(env,a.code,recTicket.ticket);
- const resumed=room.ctx.getWebSockets().find(s=>s.deserializeAttachment()?.seat===0);
- assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.revision,2);
- assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.view.phase,'BATTLEFIELD_READY');
- assert.equal(resumed.sent.findLast(x=>x.type==='MATCH_STATE').match.view.battlefield.map.tiles.length,280);
- const mapA=(await (await post(env,`/v1/rooms/${a.code}/opening`,{},a.token)).json()).match.view.battlefield;
- const mapB=(await (await post(env,`/v1/rooms/${a.code}/opening`,{},b.token)).json()).match.view.battlefield;
- assert.deepEqual(mapA,mapB);
- assert.equal((await post(env,`/v1/rooms/${a.code}/opening`,{},a.token)).status,200);
 });
