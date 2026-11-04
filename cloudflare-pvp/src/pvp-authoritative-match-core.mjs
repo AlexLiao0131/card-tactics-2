@@ -8,6 +8,7 @@ import { openingGameCore } from './pvp-match-core.mjs';
 import { experimentalTacticalCore } from './pvp-headless-tactical.mjs';
 import { projectOfficialBattlefield } from './pvp-battlefield.mjs';
 import { CardDatabase } from '../../js/card-database.js';
+import { ItemInventoryEngine } from '../../js/item-inventory-engine.js';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 import {canonicalWorldForViewer} from './pvp-perception-controller.mjs';
 
@@ -24,16 +25,25 @@ export const pvpAuthoritativeMatchCore=Object.freeze({
   reduce(state,action,{seat,revision}) {
     if (isOpening(state)) return openingGameCore.reduce(state,action,{seat,revision});
     if (!isBattle(state)) throw new PvpCommandError('CANONICAL_WORLD_REQUIRED');
-    return experimentalTacticalCore.reduce(state,action,{seat,revision});
+    const result=ItemInventoryEngine.withBattleGroundState(state.battleGroundItems||[],()=>
+      experimentalTacticalCore.reduce(state,action,{seat,revision}));
+    if(result.result?.accepted===true)result.result.state.battleGroundItems=result.groundItems;
+    return result.result;
   },
   project(state,seat) {
     if (isOpening(state)) return openingGameCore.project(state,seat);
     if (!isBattle(state)) throw new PvpCommandError('CANONICAL_WORLD_REQUIRED');
     const view=experimentalTacticalCore.project(state,seat);
     const hand=state.cards[seat].zones.hand;
+    const itemConsumptions={};
+    for(const unit of state.units||[]){
+      if(unit.team!==(seat===0?'P':'E'))continue;
+      for(const [id,count] of Object.entries(unit.itemConsumptions||{}))
+        itemConsumptions[id]=(itemConsumptions[id]||0)+count;
+    }
     return {
       ...view,stageId:state.stageId,seat,
-      own:{...view.own,hand:hand.map(id=>({
+      own:{...view.own,itemConsumptions,hand:hand.map(id=>({
         id,name:CardDatabase.get(id)?.name||id,
         cost:CardDatabase.get(id)?.cost??null,
         type:CardDatabase.get(id)?.type||'UNKNOWN'

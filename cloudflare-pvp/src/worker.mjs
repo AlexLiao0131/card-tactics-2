@@ -9,6 +9,7 @@ import {
   joinRoom, seatForToken, setReady, markDeckSubmitted, roomView
 } from './room-model.mjs';
 import { validateOfficialDeck } from './canonical-deck-rules.mjs';
+import { ItemInventoryEngine } from '../../js/item-inventory-engine.js';
 import { createOpeningGame, openingGameCore } from './pvp-match-core.mjs';
 import { pvpAuthoritativeMatchCore } from './pvp-authoritative-match-core.mjs';
 import { rendererEnvelopeForSeat } from './pvp-render-snapshot-transport.mjs';
@@ -19,7 +20,8 @@ import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HEX_SIZE = 32;
-const MAX_BODY_BYTES = 2048;
+// Item submission contains a whole official 20-card deck and its prepared slots.
+const MAX_BODY_BYTES = 16384;
 const TICKET_MS = 45_000;
 const textEncoder = new TextEncoder();
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), {
@@ -138,8 +140,10 @@ export default {
         const input = await bodyJson(request);
         const result = validateOfficialDeck(input?.cards);
         if (!result.valid) return reject(result.error, 400);
+        const prepared = ItemInventoryEngine.validateMatchPreparation(result.cards,input?.inventory);
+        if (!prepared.valid) return reject(prepared.reason,400);
         const response = await stub.fetch('https://room.internal/deck', {
-          method:'POST',body:JSON.stringify({tokenHash,cards:result.cards})
+          method:'POST',body:JSON.stringify({tokenHash,cards:result.cards,inventory:prepared.preparation})
         });
         return json(await response.json(), response.status, headers);
       }
@@ -218,13 +222,20 @@ export class PvpRoom extends DurableObject {
         tacticalEnabled:this.tacticalTestEnabled()}});
     }
     if (path === '/deck' && request.method === 'POST') {
-      const {tokenHash,cards} = await request.json();
+      const {tokenHash,cards,inventory} = await request.json();
       const seat = seatForToken(current,tokenHash);
       if (seat < 0) return failure('UNAUTHORIZED',401);
       // Validate at the Durable Object boundary too, rather than trusting
       // the outer Worker to have performed validation correctly.
       const valid = validateOfficialDeck(cards);
       if (!valid.valid) return failure(valid.error,400);
+      const prepared=ItemInventoryEngine.validateMatchPreparation(valid.cards,inventory);
+      if(!prepared.valid)return failure(prepared.reason,400);
+      // LocalStorage ownership is NOT server-authenticated. Only the explicitly
+      // gated private test room may accept prepared local items as match inputs.
+      const hasItems=Object.values(prepared.preparation.loadouts).some(entries=>
+        entries.some(entry=>entry.items.length>0));
+      if(hasItems&&!this.tacticalTestEnabled())return failure('PVP_ITEMS_REQUIRE_TEST_ROOM',403);
       let latest, changed=false;
       try {
         await this.ctx.storage.transaction(async txn => {
@@ -232,9 +243,13 @@ export class PvpRoom extends DurableObject {
           if (!latest || latest.phase !== 'LOBBY' || latest.expiresAt <= Date.now()) throw Error('ROOM_NOT_JOINABLE');
           if (seatForToken(latest,tokenHash) !== seat) throw Error('UNAUTHORIZED');
           const previous = await txn.get(`deck:${seat}`);
-          if (Array.isArray(previous) && previous.length === valid.cards.length &&
-              previous.every((id,i)=>id===valid.cards[i])) return;
+          const previousItems = await txn.get(`inventory:${seat}`);
+          if(Array.isArray(previous)&&previous.length===valid.cards.length&&
+             previous.every((id,i)=>id===valid.cards[i])&&
+             JSON.stringify(previousItems||{stash:{},loadouts:{}})===
+             JSON.stringify(prepared.preparation))return;
           await txn.put(`deck:${seat}`,valid.cards);
+          await txn.put(`inventory:${seat}`,prepared.preparation);
           markDeckSubmitted(latest,seat);
           await txn.put('room',latest);
           changed=true;
@@ -367,10 +382,16 @@ export class PvpRoom extends DurableObject {
         if (latest.seats.every(participant=>participant?.ready===true && participant?.deckSubmitted===true)) {
           const decks=[await txn.get('deck:0'),await txn.get('deck:1')];
           if (!decks.every(Array.isArray)) throw Error('TWO_VALID_DECKS_REQUIRED');
+          const inventories=[await txn.get('inventory:0'),await txn.get('inventory:1')];
+          const preparedInventories=decks.map((deck,i)=>{
+            const verified=ItemInventoryEngine.validateMatchPreparation(deck,inventories[i]);
+            if(!verified.valid)throw Error(verified.reason);
+            return verified.preparation;
+          });
           if (await txn.get(BATTLE_STORAGE_KEY)) throw Error('BATTLE_ALREADY_INITIALIZED');
           const seed=crypto.getRandomValues(new Uint32Array(1))[0];
           opening=createAuthoritySession({
-            initialState:createOpeningGame({decks,serverSeed:seed}), core:this.authorityCore()
+            initialState:createOpeningGame({decks,serverSeed:seed,preparedInventories}), core:this.authorityCore()
           });
           await txn.put(BATTLE_STORAGE_KEY,opening);
           latest.phase='OPENING_HAND';latest.version++;

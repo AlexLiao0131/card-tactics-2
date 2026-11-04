@@ -15,6 +15,8 @@ import { StageDatabase } from '../../js/stage-database.js';
 import { StageEngine } from '../../js/stage-engine.js';
 import { DeploymentEngine } from '../../js/deployment-engine.js';
 import { TacticalEngine } from '../../js/tactical-engine.js';
+import { VerticalMobilityEngine } from '../../js/vertical-mobility-engine.js';
+import { ItemRuntimeEngine } from '../../js/item-runtime-engine.js';
 import { DeathLifecycleEngine } from '../../js/death-lifecycle-engine.js';
 import { BattleCoreCaptureController } from '../../js/battle-core-capture-controller.js';
 import { BattleObjectiveController } from '../../js/battle-objective-controller.js';
@@ -222,6 +224,72 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       }
       return {accepted:true,state:game};
     }
+    if(['DROP_BATTLE_ITEM','PICKUP_BATTLE_ITEM','TRANSFER_BATTLE_ITEM'].includes(action?.type)){
+      if(game.phase!==TACTICAL_PHASE[seat]||typeof action.unitId!=='string')
+        fail('INVALID_ITEM_INTERACTION');
+      const unit=game.units.find(u=>u.id===action.unitId&&u.alive&&u.team===UNIT_TEAM[seat]);
+      if(!unit)fail('INVALID_ITEM_ACTOR');
+      let result;
+      if(action.type==='DROP_BATTLE_ITEM'){
+        if(!sameKeys(action,['type','unitId','payloadId'])||typeof action.payloadId!=='string')
+          fail('INVALID_ITEM_INTERACTION');
+        result=ItemRuntimeEngine.drop(unit,action.payloadId);
+      }else if(action.type==='PICKUP_BATTLE_ITEM'){
+        if(!sameKeys(action,['type','unitId','groundId'])||typeof action.groundId!=='string')
+          fail('INVALID_ITEM_INTERACTION');
+        result=ItemRuntimeEngine.pickup(unit,action.groundId);
+      }else{
+        if(!sameKeys(action,['type','unitId','payloadId','targetUnitId'])||
+           typeof action.payloadId!=='string'||typeof action.targetUnitId!=='string')
+          fail('INVALID_ITEM_INTERACTION');
+        const target=game.units.find(u=>u.id===action.targetUnitId&&u.alive&&u.team===UNIT_TEAM[seat]);
+        if(!target)fail('INVALID_ITEM_RECIPIENT');
+        result=ItemRuntimeEngine.transfer(unit,target,action.payloadId);
+      }
+      if(!result?.ok)fail(result?.reason||'ITEM_INTERACTION_DENIED');
+      hooks.pushLog(`${unit.character.name} 道具操作｜${action.type}`,'BATTLE');
+      return{accepted:true,state:game,unitId:unit.id,itemId:result.payload?.itemId};
+    }
+    if(action?.type==='USE_BATTLE_ITEM'){
+      if(game.phase!==TACTICAL_PHASE[seat]||
+         !sameKeys(action,['type','unitId','payloadId'])||
+         typeof action.unitId!=='string'||typeof action.payloadId!=='string')
+        fail('INVALID_ITEM_COMMAND');
+      const unit=game.units.find(u=>u.id===action.unitId&&u.alive&&u.team===UNIT_TEAM[seat]);
+      if(!unit||unit.acted||unit.waited)fail('UNIT_CANNOT_USE_ITEM');
+      const available=ItemRuntimeEngine.list(unit).find(({payload})=>payload.id===action.payloadId);
+      if(!available||!ItemRuntimeEngine.canUse(unit,action.payloadId))fail('ITEM_NOT_AVAILABLE');
+      // Owned player stash is browser-private: this test backend cannot
+      // consume its localStorage counter as if it were an authoritative DB.
+      if(available.payload.owned===true)fail('PVP_OWNED_INVENTORY_NOT_CONNECTED');
+      const result=ItemRuntimeEngine.use(unit,action.payloadId);
+      if(!result.ok)fail('CANONICAL_ITEM_USE_REJECTED');
+      if(result.consumeAction){unit.acted=true;unit.waited=true;unit.moved=true;}
+      hooks.pushLog(`${unit.character.name} 使用「${result.item.name}」。`,'BATTLE');
+      return {accepted:true,state:game,itemId:result.item.id,unitId:unit.id};
+    }
+    // Native UnitControlUI input, with no duplicate facing/flight formulas.
+    // Official TacticalEngine and VerticalMobilityEngine are the only owners.
+    if(action?.type==='ROTATE_UNIT'||action?.type==='ADJUST_FLIGHT_ALTITUDE'){
+      if(game.phase!==TACTICAL_PHASE[seat]||
+         !sameKeys(action,['type','unitId','steps'])||
+         typeof action.unitId!=='string'||!Number.isInteger(action.steps)||
+         ![-1,1].includes(action.steps))fail('INVALID_UNIT_CONTROL_COMMAND');
+      const unit=game.units.find(u=>u.id===action.unitId&&u.alive&&u.team===UNIT_TEAM[seat]);
+      if(!unit||unit.acted||unit.waited)fail('UNIT_CONTROL_UNAVAILABLE');
+      if(action.type==='ROTATE_UNIT'){
+        const facing=TacticalEngine.rotateFacing(unit,action.steps);
+        if(!facing)fail('INVALID_UNIT_FACING');
+        return {accepted:true,state:game,facing};
+      }
+      const tile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
+      if(!tile)fail('INVALID_UNIT_POSITION');
+      const before=VerticalMobilityEngine.describe(unit,tile).flightAltitude;
+      const next=VerticalMobilityEngine.adjustFlightAltitude(unit,tile,action.steps);
+      if(!next?.ok||next.state?.flightAltitude===before)
+        fail('FLIGHT_ALTITUDE_UNAVAILABLE');
+      return {accepted:true,state:game,flightAltitude:next.state.flightAltitude};
+    }
     if(action?.type==='MOVE_UNIT'){
       if(game.phase!==TACTICAL_PHASE[seat]||!sameKeys(action,['type','unitId','x','y'])||
          typeof action.unitId!=='string'||!Number.isSafeInteger(action.x)||!Number.isSafeInteger(action.y))
@@ -366,6 +434,34 @@ export function tacticalDebugProjection(game,seat){
             .map(skill=>({id:skill.id,name:skill.name})),
           bloodBurstSkills:canonicalBloodBurstSkills(unit,engine,game.units,{map:world.map,environmentState:game.environmentState})
             .map(skill=>({id:skill.id,name:skill.name})),
+          // The same DeploymentEngine legality drives the offline and online
+          // command menu. A capture option is absent until a real point is legal.
+          itemInteractionAvailable:ItemRuntimeEngine.interactionAvailable(unit),
+          groundItemChoices:(game.battleGroundItems||[])
+            .filter(entry=>entry.x===unit.x&&entry.y===unit.y)
+            .map(entry=>({groundId:entry.id,itemId:entry.itemId,
+              name:globalThis.ItemDatabase.get(entry.itemId)?.name||entry.itemId})),
+          itemTransferTargets:game.units.filter(other=>other.id!==unit.id&&other.alive&&
+            other.team===unit.team&&
+            Math.abs(other.x-unit.x)+Math.abs(other.y-unit.y)<=1&&
+            ItemRuntimeEngine.list(other).length<ItemRuntimeEngine.capacity(other))
+            .map(other=>({unitId:other.id,name:other.character?.name||other.id})),
+          itemChoices:ItemRuntimeEngine.list(unit).map(({payload,item})=>({
+            payloadId:payload.id,itemId:item.id,name:item.name,
+            usable:payload.owned!==true&&ItemRuntimeEngine.canUse(unit,payload.id)
+          })),
+          capturePoint:(()=>{
+            const point=DeploymentEngine.pointAt(stage,unit.x,unit.y);
+            return point&&DeploymentEngine.canCapture({stage,units:game.units,unit,point})
+              ?{id:point.id,name:point.name}:null;
+          })(),
+          flightControl:(()=>{
+            const range=VerticalMobilityEngine.flightAltitudeRange(unit);
+            const tile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
+            if(!range||!tile)return null;
+            const info=VerticalMobilityEngine.describe(unit,tile);
+            return {...range,altitude:info.flightAltitude,mode:info.mode};
+          })(),
           attackSkills:canonicalDirectAttackSkillOptions(unit)
             .map(skill=>({id:skill.id,name:skill.name,weaponSlot:skill.weapon})),
           effectSkills:canonicalDirectEffectSkillOptions(unit,engine)

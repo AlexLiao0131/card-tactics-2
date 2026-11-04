@@ -22,6 +22,7 @@ import { DeploymentEngine } from '../../js/deployment-engine.js';
 import { CardDatabase } from '../../js/card-database.js';
 import { createCardPhaseEngine } from '../../js/card-phase-engine.js';
 import { createDeckEngine } from '../../js/deck-engine.js';
+import { ItemRuntimeEngine } from '../../js/item-runtime-engine.js';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 
 const CARD_PHASE = ['PLAYER_CARD_PHASE','ENEMY_CARD_PHASE'];
@@ -80,6 +81,15 @@ export function deployCanonicalCard(game, action, seat) {
   created.acted=true;
   created.waited=true;
   if(!cardPhase.commit(cardState,card))throw new PvpCommandError('CARD_COMMIT_FAILED');
+  // The original single-player ItemRuntimeEngine owns inventory capacity,
+  // item payload creation, equipment effects and consumption.
+  const queue=game.preparedItems?.[seat]?.[card.id];
+  if(queue?.length){
+    const selected=queue.shift();
+    const loaded=ItemRuntimeEngine.initializeUnitInventory(created,selected.items,
+      {owned:false,source:'PVP_PREPARATION'});
+    if(loaded.length!==selected.items.length)throw new PvpCommandError('CANONICAL_ITEM_SETUP_FAILED');
+  }
   // RuntimeEngine owns live state and keeps a map reference. The Durable
   // Object must store only the per-room structural state, not a map copy per
   // unit. Reattach non-serializable view references during simulation later.

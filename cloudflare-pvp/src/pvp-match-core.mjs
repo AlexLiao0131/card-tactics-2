@@ -13,6 +13,7 @@ import { createDeckEngine } from '../../js/deck-engine.js';
 import { createCardPhaseEngine } from '../../js/card-phase-engine.js';
 import { StageDatabase } from '../../js/stage-database.js';
 import { validateOfficialDeck } from './canonical-deck-rules.mjs';
+import { ItemInventoryEngine } from '../../js/item-inventory-engine.js';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 import { PVP_STAGE_ID,projectOfficialBattlefield } from './pvp-battlefield.mjs';
 import { initializeCanonicalWorld } from './pvp-canonical-setup.mjs';
@@ -41,7 +42,7 @@ function requireOpening(state) {
     throw new PvpCommandError('BAD_MATCH_STATE');
   }
 }
-export function createOpeningGame({ decks, serverSeed }) {
+export function createOpeningGame({ decks, serverSeed,preparedInventories=null }) {
   if (!Array.isArray(decks) || decks.length !== 2) throw new PvpCommandError('TWO_VALID_DECKS_REQUIRED');
   const validated=decks.map(deck=>validateOfficialDeck(deck));
   if (!validated.every(item=>item.valid)) throw new PvpCommandError('TWO_VALID_DECKS_REQUIRED');
@@ -55,7 +56,14 @@ export function createOpeningGame({ decks, serverSeed }) {
   const state={schema:OPENING_GAME_SCHEMA,stageId:PVP_STAGE_ID,
     // Seed is private until full authoritative battle replay is implemented.
     randomState:serverSeed>>>0,serverMapSeed:serverSeed>>>0,phase:'OPENING_HAND',pendingSeats:[0,1],
-    cards:[]};
+    cards:[],
+    // Seat-specific preparation stays in the authoritative room state; only
+    // the canonical deployment engine may materialize item payloads.
+    preparedItems:validated.map((item,i)=>{
+      const result=ItemInventoryEngine.validateMatchPreparation(item.cards,preparedInventories?.[i]);
+      if(!result.valid)throw new PvpCommandError(result.reason);
+      return result.preparation.loadouts;
+    })};
   const {deckEngine,cardPhase}=rules(state);
   for (const seat of [0,1]) {
     const parameters=seat===0?stage.cardRules:stage.enemyCardRules;
@@ -127,6 +135,7 @@ export const openingGameCore = Object.freeze({
       state.environmentState=world.environmentState;
       state.stageState=world.stageState;
       state.units=world.units;
+      state.battleGroundItems=[];
       state.nextUnitSerial=0;
       state.round=1;
       state.phase='BATTLEFIELD_READY';
