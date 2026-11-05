@@ -32,7 +32,7 @@ function fixture(seat=0){
     click(label){this.button(label).click()}};
 }
 const soldier={id:'unit1',team:'P',characterId:'imperial_swordsman',x:2,y:3,
-  alive:true,acted:false,moved:false,waited:false,attackSkills:[{id:'slash',name:'斬擊'}]};
+  alive:true,acted:false,moved:false,waited:false,reachableTiles:[{x:3,y:3,cost:1}],attackSkills:[{id:'slash',name:'斬擊'}]};
 const game=(seat,phase,revision,units=[soldier])=>({revision,view:{seat,phase,round:2,
   activeSeat:phase==='BATTLEFIELD_READY'?null:seat,
   own:{hand:[{id:'imperial_swordsman_card',name:'帝國劍士',cost:1}],crystals:4},
@@ -52,13 +52,16 @@ test('online battle reuses official #skillBar action-button presenter, not a sel
     assert.equal(f.controls.nextUnit.hidden,false);
   }finally{f.restore()}
 });
-test('initial authoritative battle starts with original skillBar button, then hides it for the hand phase',()=>{
+test('native PvP battle entry has NO extra Start Battle button or dummy selection prompt',()=>{
   const f=fixture();try{
-    f.ui.receiveMatch(game(0,'BATTLEFIELD_READY',0));f.click('開始戰鬥');
+    f.ui.receiveMatch(game(0,'BATTLEFIELD_READY',0));
+    assert.equal(f.root.children.length,0);
+    assert.deepEqual(f.commands,[],'automatic battle transition belongs to the lobby transport');
     f.ui.receiveMatch(game(0,'PLAYER_CARD_PHASE',1));
-    assert.deepEqual(f.commands,[{type:'BEGIN_BATTLE'}]);
     assert.equal(f.root.children.length,0);
     assert.equal(f.controls.endTurn.hidden,true);
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',2));
+    assert.equal(f.root.children.length,0,'no 點選自己的角色 overlay');
   }finally{f.restore()}
 });
 test('fan-hand deployment uses official card and does not submit until map tile selected',()=>{
@@ -203,7 +206,7 @@ test('native special commands handle enchant, terrain, shadow, burst, area field
       transportOptions:[{skillId:'carry',skillName:'空運',targetId:'ally',targetName:'友軍'}]};
     const enemy={...soldier,id:'enemy',team:'E',x:5,y:3};
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',11,[caster,enemy]));clickActor(f);
-    f.click('魔法／特殊技能');f.click('火元素｜自己｜劍');
+    f.click('魔法／特殊技能');assert.ok(f.root.children.some(x=>x.textContent==='自己'));f.click('　⚔ 劍｜火元素');
     f.click('魔法／特殊技能');f.click('血影瞬襲 → 敵軍');
     f.click('魔法／特殊技能');f.click('血爆');
     f.click('魔法／特殊技能');f.click('聖域');
@@ -257,7 +260,7 @@ test('offline screen cannot be overwritten by delayed online match/socket render
   const f=fixture();try{
     f.ui.setPresented(false);f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',15));
     assert.equal(f.root.children.length,0);
-    f.ui.setPresented(true);assert.ok(f.root.children.length);
+    f.ui.setPresented(true);assert.equal(f.root.children.length,0,'no dummy PvP selection prompt');
     f.ui.setPresented(false);f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',16));
     assert.equal(f.root.children.length,0);
     assert.equal(f.ui.receiveMatch(game(1,'PLAYER_TACTICAL_PHASE',17)),false);
@@ -348,5 +351,45 @@ test('native no-selection PvP menu never fabricates an additional end-turn butto
     assert.equal(f.root.children.some(x=>x.textContent==='結束戰棋階段'),false);
     assert.equal(f.ui.endPhase(),true);
     assert.deepEqual(f.commands,[{type:'END_TACTICAL_PHASE'}]);
+  }finally{f.restore()}
+});
+
+test('native movement highlight comes only from server-certified reachable tiles and restores original highlight overlay',()=>{
+  const f=fixture();try{
+    const own={...soldier,reachableTiles:[{x:3,y:3,cost:1},{x:4,y:3,cost:2}]};
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',120,[own]));
+    const published=[];const highlights=[];const unitHuds=[];
+    f.ui.onRendered=s=>published.push(s);
+    f.ui.bridge={renderer:{
+      highlights:{sync:s=>highlights.push(s)},unitHud:{sync:s=>unitHuds.push(s)},
+      syncActionAnchor:()=>{}
+    }};
+    const serverFrame={revision:120,round:2,map:{id:'map',tiles:[
+      {x:2,y:3,reachable:false},{x:3,y:3,reachable:false},{x:4,y:3,reachable:false},
+      {x:5,y:3,reachable:false}]},units:[{id:'unit1',selected:false}],cores:[],presentation:{}};
+    f.ui.serverSnapshot=serverFrame;
+    assert.equal(f.ui.selectUnit('unit1'),true);
+    assert.deepEqual(highlights.at(-1).map.tiles.filter(t=>t.reachable).map(t=>[t.x,t.y]),[[3,3],[4,3]]);
+    assert.equal(unitHuds.at(-1).units[0].selected,true);
+    assert.equal(serverFrame.map.tiles.some(t=>t.reachable),false,'authenticated frame must stay unchanged');
+    assert.equal(serverFrame.units[0].selected,false);
+    assert.deepEqual(f.commands,[],'selecting a unit is purely local presentation');
+    assert.ok(published.length);
+    // No legal server tile -> no forged move command.
+    assert.equal(f.ui.tilePicked({seat:0,x:5,y:3}),false);
+    assert.equal(f.ui.tilePicked({seat:0,x:3,y:3}),true);
+  }finally{f.restore()}
+});
+test('server committed move offers original Cancel Move in the SAME command panel',()=>{
+  const f=fixture();try{
+    const moved={...soldier,x:3,y:3,moved:true,reachableTiles:[]};
+    const match=game(0,'PLAYER_TACTICAL_PHASE',121,[moved]);
+    match.view.pendingMoveUnitId='unit1';
+    f.ui.receiveMatch(match);f.ui.selectUnit('unit1');
+    f.click('取消移動');
+    assert.deepEqual(f.commands,[{type:'CANCEL_MOVE',unitId:'unit1'}]);
+    const committed=game(0,'PLAYER_TACTICAL_PHASE',122,[moved]);
+    f.ui.receiveMatch(committed);
+    assert.equal(f.root.children.some(x=>x.textContent==='取消移動'),false);
   }finally{f.restore()}
 });

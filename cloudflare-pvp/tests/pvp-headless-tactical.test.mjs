@@ -283,3 +283,28 @@ test('the server projects canonical skill names, resource labels and certified C
   assert.equal(view.units.some(u=>u.team==='E'&&'attackSkills' in u),false,
     'opponent private skill options must not leak');
 });
+
+test('official move reachability is projected privately, and the original move can be cancelled once',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const unit=game.units[0];unit.moved=false;unit.acted=false;unit.waited=false;
+ const legal=[...TacticalEngine.reachable(game.battlefield.map,game.units,unit).keys()];
+ assert.ok(legal.length);
+ const projected=tacticalDebugProjection(game,0);
+ const own=projected.units.find(u=>u.id===unit.id);
+ assert.deepEqual(new Set(own.reachableTiles.map(t=>`${t.x},${t.y}`)),new Set(legal));
+ assert.equal(tacticalDebugProjection(game,1).units.find(u=>u.id===unit.id)?.reachableTiles,undefined);
+ const before={x:unit.x,y:unit.y};const [x,y]=legal[0].split(',').map(Number);
+ const moved=resolveCanonicalPlayerCommand(game,{type:'MOVE_UNIT',unitId:unit.id,x,y},0);
+ assert.equal(moved.accepted,true);
+ assert.equal(unit.moved,true);
+ assert.equal(game.pendingMove?.unitId,unit.id);
+ assert.equal(tacticalDebugProjection(game,0).pendingMoveUnitId,unit.id);
+ assert.equal(tacticalDebugProjection(game,1).pendingMoveUnitId,null);
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id},1),{code:'NOT_YOUR_TURN'});
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id,x,y},0),{code:'INVALID_CANCEL_MOVE_COMMAND'});
+ assert.equal(resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id},0).accepted,true);
+ assert.deepEqual({x:unit.x,y:unit.y},before);
+ assert.equal(unit.moved,false);
+ assert.equal(game.pendingMove,null);
+ assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id},0),{code:'NO_CANCELABLE_MOVE'});
+});
