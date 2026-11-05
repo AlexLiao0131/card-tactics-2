@@ -11,6 +11,7 @@ import { DeckEngine } from './deck-engine.js';
 import { ItemInventoryEngine } from './item-inventory-engine.js';
 import { PvpTacticalUI } from './pvp-tactical-ui.js';
 import { PvpBattleRenderBridge } from './pvp-battle-render-bridge.js';
+import { applyRenderUpdate } from './pvp-render-delta.js';
 import { presentBattleOverview, presentBattleWeather } from './battle-ui.js';
 
 const $=id=>document.getElementById(id);
@@ -60,6 +61,8 @@ export class PvpLobbyController {
     this.battleVisible=false;
     this.suspendedBattle=false;
     this.pendingRender=null;
+    this.renderBaseline=null;
+    this.renderResyncPending=false;
   }
   isBattleActive(){return !!(this.session&&this.battleVisible);}
   isConnected(){return this.socket?.readyState===WebSocket.OPEN;}
@@ -183,6 +186,7 @@ export class PvpLobbyController {
     this.room=null;this.match=null;
     this.readyToBattle=false;this.battleVisible=false;
     this.suspendedBattle=false;this.pendingRender=null;
+    this.renderBaseline=null;this.renderResyncPending=false;
     this.renderError=null;
     if(value)sessionStorage.setItem(SESSION_KEY,JSON.stringify(value));
     else sessionStorage.removeItem(SESSION_KEY);
@@ -383,6 +387,12 @@ export class PvpLobbyController {
     try{this.socket.send(JSON.stringify(this.lastCommand));return true;}
     catch(error){this.commandInFlight=false;this.syncNativeCards();this.status(`提交操作失敗：${error.message}`,true);return false;}
   }
+  requestFullRender(){
+    if(this.renderResyncPending||!this.isConnected()||!this.session)return false;
+    this.renderResyncPending=true;
+    try {this.socket.send(JSON.stringify({type:'REQUEST_RENDER_SNAPSHOT'}));return true;}
+    catch {this.renderResyncPending=false;return false;}
+  }
   async connect(){
     if(!this.session)return;
     this.closeSocket();
@@ -394,6 +404,9 @@ export class PvpLobbyController {
       if(generation!==this.generation||this.session!==session)return;
       const socket=new WebSocket(`${apiOrigin().replace(/^https:/,'wss:')}/v1/rooms/${session.code}/socket?ticket=${response.ticket}`);
       this.socket=socket;
+      this.renderBaseline=null;
+      this.renderResyncPending=false;
+      this.pendingRender=null;
       socket.onopen=()=>{
         if(socket!==this.socket)return;
         this.reconnects=0;
@@ -409,13 +422,21 @@ export class PvpLobbyController {
           if(packet.room?.code===session.code){this.room=packet.room;this.refreshRoom();}
         }
         if(packet.type==='MATCH_STATE')this.displayMatch(packet.match);
-        if(packet.type==='PVP_RENDER_SNAPSHOT'){
-          // Do not activate a hidden battle screen while viewing the lobby.
-          // Keep only the newest authenticated snapshot until the player
-          // resumes; no second renderer or client-generated game state.
-          if(this.battleVisible)void this.tacticalUI?.receiveRender(packet);
-          else if(!this.pendingRender||packet.revision>=this.pendingRender.revision)
-            this.pendingRender=packet;
+        if(packet.type==='PVP_RENDER_SNAPSHOT'||packet.type==='PVP_RENDER_DELTA'){
+          // Decode against the authenticated seat stream, never local game rules.
+          // A lost delta is repaired by an explicit server FULL, not guessed.
+          try {
+            const full=applyRenderUpdate(this.renderBaseline,packet);
+            if(full.matchId!==this.session.code||full.seat!==this.session.seat)
+              throw Error('PVP_RENDER_SESSION_MISMATCH');
+            this.renderBaseline=full;
+            this.renderResyncPending=false;
+            if(this.battleVisible)void this.tacticalUI?.receiveRender(full);
+            else if(!this.pendingRender||full.revision>=this.pendingRender.revision)
+              this.pendingRender=full;
+          } catch {
+            this.requestFullRender();
+          }
         }
         if(packet.type==='PVP_RENDER_ERROR'){
           this.renderError=packet.error;
