@@ -40,6 +40,20 @@ export function projectDeployedUnits(units,seat) {
   }));
 }
 
+/** The same deployment authority as the commit path, projected for the
+ * authenticated seat. Only x/y is sent; never trust a browser-computed area.
+ */
+export function projectLegalDeploymentTiles(game,seat){
+  if(seat!==0&&seat!==1)throw new PvpCommandError('BAD_SEAT');
+  if(!game?.battlefield?.map||!Array.isArray(game.units))
+    throw new PvpCommandError('BATTLEFIELD_NOT_READY');
+  const stage={deploymentPoints:game.battlefield.deploymentPoints};
+  return DeploymentEngine.area(stage,OWNER[seat])
+    .filter(tile=>DeploymentEngine.canDeploy({stage,map:game.battlefield.map,
+      units:game.units,owner:OWNER[seat],x:tile.x,y:tile.y}))
+    .map(tile=>({x:tile.x,y:tile.y}));
+}
+
 export function deployCanonicalCard(game, action, seat) {
   if(seat!==0 && seat!==1) throw new PvpCommandError('BAD_SEAT');
   if(!game?.battlefield?.map || !Array.isArray(game.units) ||

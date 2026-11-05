@@ -23,7 +23,7 @@ import { BattleObjectiveController } from '../../js/battle-objective-controller.
 import '../../js/objective-engine.js';
 import { CardPhaseEngine } from '../../js/card-phase-engine.js';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
-import { deployCanonicalCard } from './pvp-headless-deployment.mjs';
+import { deployCanonicalCard,projectLegalDeploymentTiles } from './pvp-headless-deployment.mjs';
 import { withCanonicalEngines } from './pvp-engine-context.mjs';
 import { createCanonicalEnvironmentController } from './pvp-environment-controller.mjs';
 import {declareCanonicalAttack,reactCanonicalAttack,pendingReactionOptions,canonicalDirectAttackSkillOptions} from './pvp-headless-engagement.mjs';
@@ -472,6 +472,9 @@ export function tacticalDebugProjection(game,seat){
       !hiddenNames.some(name=>e.text.includes(name)))
       .slice(-160).map(e=>({type:e.type,text:e.text}));
     return {phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
+       // Authenticated seat's official current deployable tiles.
+       deployableTiles:game.phase===CARD_PHASE[seat]&&game.activeSeat===seat
+         ?projectLegalDeploymentTiles(game,seat):[],
       // Only the owning seat receives its unit's battle skill options.
       // The resolved runtime character (loadout + effects) is the authority,
       // not the raw CharacterDatabase template.
