@@ -64,7 +64,12 @@ export const pvpAuthoritativeMatchCore=Object.freeze({
       opponent:{...view.opponent,deckCount:state.cards[1-seat].zones.deck.length},
       // This is a seat-neutral public battlefield; enemy units are projected
       // separately according to the official visibility engine.
-      battlefield:projectOfficialBattlefield(canonicalWorldForViewer(state,seat).battlefield)
+      battlefield:(()=>{
+        const data=projectOfficialBattlefield(canonicalWorldForViewer(state,seat).battlefield);
+        // Full terrain/water render data lives only in the versioned 3D stream.
+        // MATCH_STATE transports only shared public metadata and Core state.
+        return {...data,map:{id:data.map.id,width:data.map.width,height:data.map.height}};
+      })()
     };
   }
 });

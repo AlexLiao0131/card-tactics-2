@@ -301,11 +301,15 @@ export class PvpRoom extends DurableObject {
     const data=JSON.stringify({type:'ROOM_STATE',room:this.snapshot(room)});
     for (const socket of this.ctx.getWebSockets()) this.sendSocketFrame(socket,data);
   }
-  sendMatchState(ws, session, seat, roomCode) {
+  sendMatchState(ws, session, seat, roomCode, {stateOnly=false}={}) {
     if (ws.readyState!==WebSocket.OPEN || (seat!==0 && seat!==1)) return;
     if (!this.sendSocketFrame(ws,{type:'MATCH_STATE',
       match:{...projectAuthoritySession(session,seat,this.authorityCore()),
         tacticalEnabled:this.tacticalTestEnabled()}})) return;
+    if (!stateOnly) this.sendMatchRender(ws,session,seat,roomCode);
+  }
+  sendMatchRender(ws,session,seat,roomCode){
+    if(ws.readyState!==WebSocket.OPEN || (seat!==0 && seat!==1))return;
     if (this.tacticalTestEnabled() && session.state?.battlefield?.map) {
       // A generated map ID is not a room identity. Only the authenticated
       // Durable Object's own room code may label the render stream.
@@ -323,9 +327,12 @@ export class PvpRoom extends DurableObject {
     }
   }
   broadcastMatchState(session, roomCode) {
-    for (const ws of this.ctx.getWebSockets()) {
-      this.sendMatchState(ws,session,ws.deserializeAttachment()?.seat,roomCode);
-    }
+    const sockets=this.ctx.getWebSockets();
+    // Publish state to both seats before synchronous, costly 3D projections.
+    for(const ws of sockets)
+      this.sendMatchState(ws,session,ws.deserializeAttachment()?.seat,roomCode,{stateOnly:true});
+    for(const ws of sockets)
+      this.sendMatchRender(ws,session,ws.deserializeAttachment()?.seat,roomCode);
   }
   async webSocketMessage(ws, input) {
     // Closing/replaced sockets must not commit queued events after rejoin.
