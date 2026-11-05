@@ -1,3 +1,4 @@
+import { BattleCommandMenuUI } from './battle-command-menu-ui.js';
 function q(id){return document.getElementById(id)}
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 const OWNER_LABEL={PLAYER:"我方",ENEMY:"敵方",NEUTRAL:"中立"};
@@ -71,6 +72,7 @@ export class BattleUI{
   constructor(){
     this.runtime=null;this.renderer=null;this.contextTab="UNIT";
     this.onlineSnapshot=null;this.onlineStage=null;this.onlineSeat=0;this.onlinePhase=null;
+    this.onlineLogEntries=[];this.onlineLogTab="BATTLE";
     this.heldInspection=null; // Read-only snapshot of explicitly long-pressed tile.
     this.inspectorHome=q("battleScreen");
     this.contextHudSlot=q("contextHudSlot");
@@ -110,7 +112,10 @@ export class BattleUI{
 
     this.logTabs?.querySelectorAll("[data-log-type]").forEach(button=>{
       button.onclick=()=>{
-        this.runtime?.setBattleLogTab?.(button.dataset.logType);
+        if(document.body.dataset.battleMode==='PVP'){
+          if(globalThis.BattleLog?.TYPES?.includes(button.dataset.logType))
+            this.onlineLogTab=button.dataset.logType;
+        }else this.runtime?.setBattleLogTab?.(button.dataset.logType);
         this.renderLog();
       };
     });
@@ -200,6 +205,24 @@ export class BattleUI{
     return true;
   }
 
+  // Same existing hero card detail presenter: keep an open online status
+  // synchronized with authoritative HP/MP/effects without stealing focus.
+  refreshOnlineStatus(){
+    if(document.body.dataset.battleMode!=='PVP'||!this.statusUnitId)return;
+    const unit=this.onlineSnapshot?.units?.find(u=>u.id===this.statusUnitId&&
+      u.team===(this.onlineSeat===0?'P':'E'));
+    const character=unit?globalThis.CharacterDatabase?.get?.(unit.characterId):null;
+    if(!unit||!character||!globalThis.CardTacticsHeroCard?.detail){
+      this.closeStatus({restoreFocus:false});return;
+    }
+    const card=Object.values(globalThis.CARDS||{}).find(entry=>
+      entry.type==='CHARACTER'&&entry.characterId===unit.characterId)||
+      {name:character.name,characterId:unit.characterId};
+    const markup=globalThis.CardTacticsHeroCard.detail(card,{
+      unit:{...unit,character,resources:unit.resources||{}}
+    });
+    if(markup&&markup!==this.statusMarkup){this.statusRoot.innerHTML=markup;this.statusMarkup=markup;}
+  }
   closeStatus({restoreFocus=true}={}){
     this.statusUnitId=null;
     this.statusMarkup="";
@@ -256,20 +279,23 @@ export class BattleUI{
 
   // Same native BattleUI and inspector, receiving a *visible* server snapshot.
   // The PvP presenter never calls local runtime combat/input functions.
-  presentOnline(snapshot,{cores=snapshot?.cores||[],stage=null,phase=null,seat=0}={}){
+  presentOnline(snapshot,{cores=snapshot?.cores||[],stage=null,phase=null,seat=0,battleLog=[]}={}){
     if(!snapshot)return;
     this.onlineSnapshot=snapshot;this.onlineStage=stage;
     this.onlinePhase=phase;this.onlineSeat=seat;
+    this.onlineLogEntries=Array.isArray(battleLog)?battleLog:[];
     if(this.heldInspection?.unit&&!snapshot.units?.some(u=>u.id===this.heldInspection.unit.id))
       this.setContextOpen(false);
     presentBattleOverview({snapshot,cores,stage,phase,seat,online:true});
     presentBattleWeather(snapshot);
     this.renderView();
     this.renderContext();
+    this.refreshOnlineStatus();
     this.renderLog();
   }
   leaveOnline(){
     this.onlineSnapshot=null;this.onlineStage=null;this.onlinePhase=null;
+    this.onlineLogEntries=[];this.onlineLogTab="BATTLE";
     this.endTurn.hidden=false;
     q('nextUnit').hidden=false;
     if(this.statusUnitId)this.closeStatus({restoreFocus:false});
@@ -457,7 +483,9 @@ export class BattleUI{
   renderLog(){
     if(!this.logShell?.classList.contains("active"))return;
     const model=document.body.dataset.battleMode==='PVP'
-      ?{active:'BATTLE',entries:[]} :this.runtime?.getBattleLog?.();if(!model)return;
+      ?{active:this.onlineLogTab,entries:globalThis.BattleLog?.list?.({
+        active:this.onlineLogTab,entries:this.onlineLogEntries},this.onlineLogTab)||[]}
+      :this.runtime?.getBattleLog?.();if(!model)return;
     const entries=model.entries||[],tail=entries[entries.length-1]||null;
     if(this.logRenderedTail===tail&&this.logRenderedLength===entries.length&&this.logRenderedTab===model.active)return;
     this.logRenderedTail=tail;this.logRenderedLength=entries.length;this.logRenderedTab=model.active;
@@ -517,33 +545,14 @@ export class BattleUI{
 
   renderEngagement(){
     const model=this.runtime?.getEngagementPresentation?.();if(!model)return;
-    const bar=q("skillBar");
-    bar.innerHTML="";
-    bar.classList.add("engagement-overlay");
-    const title=document.createElement("strong");
-    title.textContent=model.mode==="support-select"?"我方交戰準備":"敵方攻擊・選擇應對";bar.appendChild(title);
-    const incoming=document.createElement("div");incoming.className="engagement-threat";
-    const actor=document.createElement("strong");actor.textContent=`${model.attackerName||"未知"} → ${model.defenderName||"未知"}`;
-    const skill=document.createElement("span");
-    skill.textContent=`使用技能：${model.skillName||"未知技能"}${model.attackType?`｜${model.attackType}`:""}`;
-    incoming.append(actor,skill);bar.appendChild(incoming);
-    const forecast=this.renderCombatForecast(model.forecast,{isEnemyTurn:model.mode!=="support-select"});
-    if(forecast)bar.appendChild(forecast);
-
-
-    for(const group of model.groups||[]){
-      const wrap=document.createElement("div");wrap.className="support-choice";
-      const label=document.createElement("div");label.textContent=group.title;wrap.appendChild(label);
-      for(const action of group.actions||[])wrap.appendChild(this.engagementButton(action));
-      bar.appendChild(wrap);
-    }
-    for(const action of model.actions||[])bar.appendChild(this.engagementButton(action));
+    this.renderEngagementModel(model,(id,payload)=>this.runtime.handleEngagementUIAction(id,payload));
+  }
+  renderEngagementModel(model,onAction){
+    const presenter=new BattleCommandMenuUI(q('skillBar'));
+    const forecast=this.renderCombatForecast(model.forecast,{
+      isEnemyTurn:model.mode!=='support-select'
+    });
+    presenter.renderEngagementModel(model,{forecast,onAction});
   }
 
-  engagementButton(action){
-    const button=document.createElement("button");
-    button.type="button";button.textContent=action.label;button.disabled=!!action.disabled;
-    button.onclick=()=>this.runtime.handleEngagementUIAction(action.id,action.payload||{});
-    return button;
-  }
 }

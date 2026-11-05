@@ -5,18 +5,16 @@
  * identifiers published by the canonical server, never local rule outcomes.
  */
 import { CardDatabase } from './card-database.js';
+import './card-phase-controller.js';
 import { SkillDatabase } from './skill-database.js';
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from './coordinate-system.js';
-import { BattleCommandMenuUI, battleCommandEntries, battleSkillCategory, battleSkillButtonLabel, enchantmentRecipientGroups, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from './battle-command-menu-ui.js';
+import { BattleCommandMenuUI, battleCommandEntries, battleSkillCategory, battleSkillButtonLabel, battleItemMenuEntries, enchantmentRecipientGroups, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from './battle-command-menu-ui.js';
 
 const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTICAL_PHASE',
   'ENEMY_CARD_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING','MATCH_ENDED']);
 const UNIT_TEAM=['P','E'];
 const CARD_PHASE=['PLAYER_CARD_PHASE','ENEMY_CARD_PHASE'];
 const TACTICAL_PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
-const TARGET_SPELLS=new Set(['AREA_HEAL','AREA_BUFF','DISPEL','AREA_RELATION','HYDROLOGY_FLOOD',
-  'WHIRLPOOL','AREA_FIRE','AREA_PUSH','AREA_DAMAGE']);
-const INSTANT_SPELLS=new Set(['WEATHER','STEAL_HAND']);
 const nameOf=unit=>unit?.name||unit?.character?.name||unit?.characterId||unit?.id||'角色';
 const skillChoices=(unit,followup)=>{
   const skills=unit?.attackSkills||[];
@@ -76,9 +74,10 @@ export class PvpTacticalUI {
     if(CardDatabase.isCharacter(card)){
       this.mode='DEPLOY';this.target={cardId};this.update();return 'TARGET';
     }
-    if(CardDatabase.isSpell(card)&&INSTANT_SPELLS.has(card.effect?.type))
+    const commandKind=globalThis.CardPhaseController?.commandKind?.(card);
+    if(commandKind==='INSTANT')
       return this.request({type:'PLAY_INSTANT_CARD',cardId})?'SENT':false;
-    if(CardDatabase.isSpell(card)&&TARGET_SPELLS.has(card.effect?.type)){
+    if(commandKind==='TARGETED'){
       this.mode='TARGET_CARD';this.target={cardId};this.update();return 'TARGET';
     }
     // Unknown types fail closed; the server owns its allowed card actions.
@@ -251,20 +250,31 @@ export class PvpTacticalUI {
     this.add('取消',()=>{this.cancelTarget();this.update();});
   }
   renderReaction(options){
-    this.menuUI.clear({reaction:true});
-    this.menuUI.heading('敵方攻擊・選擇應對');
     const {choices=[],defenses=[],counters=[],guardians=[]}=options||{};
-    const response=(reaction,extra={})=>this.request({type:'REACT_ATTACK',reaction,...extra});
-    for(const kind of choices){
-      if(kind==='ACCEPT')this.add('承受攻擊',()=>response('ACCEPT'));
-      if(kind==='EVADE')this.add('迴避',()=>response('EVADE'));
-    }
-    for(const skill of defenses)this.add(`防禦｜${skill.name}`,()=>response('DEFENSE',{methodId:skill.id}));
-    for(const skill of counters)this.add(`反擊｜${skill.name}`,()=>response('COUNTER',{skillId:skill.id}),{skill});
-    for(const guard of guardians)for(const method of guard.methods||[])
-      this.add(`援護｜${guard.guardianId}｜${method.name}`,
-        ()=>response('GUARD',{guardianId:guard.guardianId,methodId:method.id}));
-    if(!this.root.children.length)this.menuUI.heading('等待伺服器合法反應');
+    const view=this.match?.view||{},pending=view.pendingAttack||{};
+    const actor=view.units?.find(unit=>unit.id===options?.attackerId);
+    const defender=view.units?.find(unit=>unit.id===options?.targetId);
+    const model={mode:'enemy-reaction',
+      attackerName:actor?nameOf(actor):'未知敵方',
+      defenderName:defender?nameOf(defender):'我方角色',
+      skillName:knownSkill(options?.skillId||pending.skillId)?.name||'交戰',
+      actions:[]};
+    const actions=model.actions;
+    if(choices.includes('ACCEPT'))actions.push({id:'ACCEPT',label:'承受攻擊'});
+    if(choices.includes('EVADE'))actions.push({id:'EVADE',label:'迴避'});
+    for(const skill of defenses)
+      actions.push({id:'DEFENSE',label:`防禦｜${skill.name}`,payload:{methodId:skill.id}});
+    for(const skill of counters)
+      actions.push({id:'COUNTER',label:`反擊｜${skill.name}`,payload:{skillId:skill.id}});
+    for(const guard of guardians)
+      for(const method of guard.methods||[])
+        actions.push({id:'GUARD',label:`援護｜${guard.guardianId}｜${method.name}`,
+          payload:{guardianId:guard.guardianId,methodId:method.id}});
+    // The shared UI never fabricates a combat prediction: only the original
+    // server-provided options may become clickable actions.
+    this.menuUI.renderEngagementModel(model,{
+      onAction:(reaction,payload)=>this.request({type:'REACT_ATTACK',reaction,...payload})
+    });
   }
   renderSpecial(unit){
     const u=unit.id;
@@ -429,24 +439,31 @@ export class PvpTacticalUI {
       }
       this.menuBack();return;
     }
-    if(this.menu==='items'){
+    if(this.menu==='items'||this.menu==='item-manage'){
       this.menuUI.close(()=>{this.menu='closed';this.update();});
-      if(!actor.itemChoices?.length)this.add('沒有可用道具',()=>{}, {disabled:true});
-      for(const item of actor.itemChoices||[]){
-        this.add(`使用｜${item.name}`,()=>this.request({type:'USE_BATTLE_ITEM',unitId:actor.id,payloadId:item.payloadId}),
-          {disabled:item.usable!==true});
-        this.add(`丟下｜${item.name}`,()=>this.request({type:'DROP_BATTLE_ITEM',unitId:actor.id,payloadId:item.payloadId}),
-          {disabled:!actor.itemInteractionAvailable});
-        for(const recipient of actor.itemTransferTargets||[])
-          this.add(`轉交｜${item.name} → ${recipient.name}`,
-            ()=>this.request({type:'TRANSFER_BATTLE_ITEM',unitId:actor.id,payloadId:item.payloadId,targetUnitId:recipient.unitId}),
-            {disabled:!actor.itemInteractionAvailable});
+      const items=(actor.itemChoices||[]).map(item=>({
+        payloadId:item.payloadId,name:item.name,usable:item.usable===true
+      }));
+      const ground=(actor.groundItemChoices||[]).map(item=>({
+        groundId:item.groundId,name:item.name,usable:!!actor.itemInteractionAvailable
+      }));
+      const allies=(actor.itemTransferTargets||[]).map(item=>({
+        unitId:item.unitId,name:item.name
+      }));
+      for(const entry of battleItemMenuEntries({mode:this.menu==='items'?'item-menu':'item-manage',
+        items,ground,allies,interactionAvailable:!!actor.itemInteractionAvailable})){
+        const actions={
+          USE:()=>this.request({type:'USE_BATTLE_ITEM',unitId:actor.id,payloadId:entry.payloadId}),
+          PICKUP:()=>this.request({type:'PICKUP_BATTLE_ITEM',unitId:actor.id,groundId:entry.groundId}),
+          OPEN_MANAGE:()=>{this.menu='item-manage';this.update();},
+          DROP:()=>this.request({type:'DROP_BATTLE_ITEM',unitId:actor.id,payloadId:entry.payloadId}),
+          TRANSFER:()=>this.request({type:'TRANSFER_BATTLE_ITEM',unitId:actor.id,
+            payloadId:entry.payloadId,targetUnitId:entry.targetUnitId}),
+          EMPTY:()=>{}
+        };
+        this.add(entry.label,actions[entry.id],{disabled:entry.disabled});
       }
-      for(const ground of actor.groundItemChoices||[])
-        this.add(`拾取｜${ground.name}`,
-          ()=>this.request({type:'PICKUP_BATTLE_ITEM',unitId:actor.id,groundId:ground.groundId}),
-          {disabled:!actor.itemInteractionAvailable});
-      this.menuBack();return;
+      this.menuBack(this.menu==='item-manage'?'items':'command');return;
     }
     if(this.menu==='special'){
       this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});

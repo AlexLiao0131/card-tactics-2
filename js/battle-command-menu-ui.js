@@ -23,6 +23,30 @@ export function battleCommandEntries({capture=null,canAttack=true,
   return entries;
 }
 
+/** One original item-menu hierarchy for offline, Gemini, and PvP.
+ * All availability booleans are certified by the caller's official rule engine;
+ * this function never checks resources, adjacency or inventory itself.
+ */
+export function battleItemMenuEntries({mode='item-menu',items=[],ground=[],allies=[],interactionAvailable=false}={}){
+  const result=[];
+  if(mode==='item-menu'){
+    if(!items.length&&!ground.length)result.push({id:'EMPTY',label:'沒有可用道具',disabled:true});
+    for(const item of items)result.push({id:'USE',payloadId:item.payloadId,
+      label:`使用｜${item.name}`,disabled:item.usable!==true});
+    for(const entry of ground)result.push({id:'PICKUP',groundId:entry.groundId,
+      label:`拾取｜${entry.name}`,disabled:entry.usable!==true});
+    if(items.length)result.push({id:'OPEN_MANAGE',label:'放下／轉交',disabled:!interactionAvailable});
+  }else if(mode==='item-manage'){
+    for(const item of items){
+      result.push({id:'DROP',payloadId:item.payloadId,
+        label:`放下｜${item.name}`,disabled:!interactionAvailable});
+      for(const ally of allies)result.push({id:'TRANSFER',payloadId:item.payloadId,targetUnitId:ally.unitId,
+        label:`交給 ${ally.name}｜${item.name}`,disabled:!interactionAvailable||ally.canReceive===false});
+    }
+  }
+  return result;
+}
+
 /** The SkillDatabase category is the only classification source. */
 export function battleSkillCategory(skill) {
   if(!skill || !['ATTACK','MAGIC','SPECIAL'].includes(skill.category))return null;
@@ -117,6 +141,33 @@ export class BattleCommandMenuUI {
     const heading=document.createElement('strong');
     heading.textContent=String(text);this.root.appendChild(heading);
     return heading;
+  }
+  // The SAME engagement panel used by solo/Gemini and the remote authority.
+  // The caller supplies official actions and, when available, official preview.
+  renderEngagementModel(model,{forecast=null,onAction=()=>{}}={}){
+    this.clear({reaction:model?.mode!=='support-select'});
+    this.root.classList.add('engagement-overlay');
+    this.heading(model?.mode==='support-select'?'我方交戰準備':'敵方攻擊・選擇應對');
+    const incoming=document.createElement('div');incoming.className='engagement-threat';
+    const actor=document.createElement('strong');
+    actor.textContent=`${model?.attackerName||'未知'} → ${model?.defenderName||'未知'}`;
+    const skill=document.createElement('span');
+    skill.textContent=`使用技能：${model?.skillName||'未知技能'}${model?.attackType?`｜${model.attackType}`:''}`;
+    incoming.appendChild(actor);incoming.appendChild(skill);this.root.appendChild(incoming);
+    if(forecast)this.root.appendChild(forecast);
+    const actionButton=action=>{
+      const button=document.createElement('button');
+      button.type='button';button.textContent=action.label;button.disabled=!!action.disabled;
+      button.onclick=()=>{if(!button.disabled)onAction(action.id,action.payload||{});};
+      return button;
+    };
+    for(const group of model?.groups||[]){
+      const wrap=document.createElement('div');wrap.className='support-choice';
+      const label=document.createElement('div');label.textContent=group.title;wrap.appendChild(label);
+      for(const action of group.actions||[])wrap.appendChild(actionButton(action));
+      this.root.appendChild(wrap);
+    }
+    for(const action of model?.actions||[])this.root.appendChild(actionButton(action));
   }
   close(onClick){
     const button=document.createElement('button');

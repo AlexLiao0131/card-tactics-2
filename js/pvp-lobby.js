@@ -363,7 +363,8 @@ export class PvpLobbyController {
       deploymentPoints:snapshot?.presentation?.deploymentPoints||[],
       generatedBattlefield:{size:this.match?.view?.battlefield?.meta?.size}};
     if(this.battleUI)this.battleUI.presentOnline(snapshot,{cores:snapshot?.cores||[],stage,
-      phase:this.match?.view?.phase,seat:this.session?.seat});
+      phase:this.match?.view?.phase,seat:this.session?.seat,
+      battleLog:this.match?.view?.battleLog||[]});
     else{
       presentBattleOverview({snapshot,cores:snapshot?.cores||[],stage,
         phase:this.match?.view?.phase,seat:this.session?.seat,online:true});
