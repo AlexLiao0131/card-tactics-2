@@ -265,20 +265,22 @@ export class PvpLobbyController {
     const view=this.match?.view;
     const opening=view?.phase==='OPENING_HAND';
     const cardPhase=['PLAYER_CARD_PHASE','ENEMY_CARD_PHASE'].includes(view?.phase);
-    // Do not show any online hand over a local game, a room, or another screen.
-    if(!this.battleVisible||(!opening&&!cardPhase)){
+    const tacticalPhase=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING'].includes(view?.phase);
+    // The original CardHandUI stays mounted through tactical and reaction phases.
+    // The authority's private hand must never be replaced by the offline hand.
+    if(!this.battleVisible||(!opening&&!cardPhase&&!tacticalPhase)){
       this.cardUI.clearRemoteCards();
       delete document.body.dataset.pvpPhase;
       return;
     }
-    document.body.dataset.pvpPhase=opening?'OPENING_HAND':'CARD_PHASE';
+    document.body.dataset.pvpPhase=opening?'OPENING_HAND':cardPhase?'CARD_PHASE':'TACTICAL_PHASE';
     this.cardUI.setRemoteCards({
-      phase:opening?'OPENING_HAND':'CARD_PHASE',
+      phase:opening?'OPENING_HAND':cardPhase?'CARD_PHASE':'TACTICAL_PHASE',
       matchId:this.session.code,seat:this.session.seat,
       hand:view.own?.hand||[],deckCount:view.own?.deckCount,
       opponentHandCount:view.opponent?.handCount,
       crystals:cardPhase?view.own?.crystals??null:null,
-      canAct:view.activeSeat===this.session.seat&&
+      canAct:(opening||cardPhase)&&view.activeSeat===this.session.seat&&
         (!opening||view.own?.openingDecisionAvailable===true)&&
         this.isConnected()&&!this.commandInFlight,
       onDecision:action=>this.sendCommand(action),
@@ -287,6 +289,18 @@ export class PvpLobbyController {
       onCancel:()=>this.tacticalUI?.cancelCardTarget()
     });
     if(opening)$('turnStatus').textContent='PVP｜起手牌確認';
+  }
+  // Same original Core presenter, updated from the lightweight authority view.
+  // It must not depend on completion of an unrelated Babylon rendering cycle.
+  syncMatchCoreHud(){
+    if(!this.battleVisible||!this.match?.view?.battlefield?.cores)return;
+    const view=this.match.view,battlefield=view.battlefield;
+    const stage={mode:'VERSUS',ruleset:'CORE_CAPTURE',
+      deploymentPoints:battlefield.deploymentPoints||[],
+      generatedBattlefield:{size:battlefield.meta?.size,seed:battlefield.meta?.seed}};
+    presentBattleOverview({snapshot:{units:this.tacticalUI?.serverSnapshot?.units||[],
+      map:battlefield.map,presentation:{deploymentPoints:stage.deploymentPoints}},
+      cores:battlefield.cores,stage,phase:view.phase,seat:this.session?.seat,online:true});
   }
   createTacticalUI(){
     if(this.tacticalUI)return this.tacticalUI;
@@ -336,6 +350,7 @@ export class PvpLobbyController {
       this.readyToBattle=true;
       this.createTacticalUI().receiveMatch(data);
       this.syncNativeCards();
+      this.syncMatchCoreHud();
       if(view.phase==='BATTLEFIELD_READY'&&this.session.seat===0)
         this.sendCommand({type:'BEGIN_BATTLE'});
       if(!this.battleVisible&&!this.suspendedBattle)this.enterBattle();
@@ -352,6 +367,7 @@ export class PvpLobbyController {
     document.body.dataset.battleMode='PVP';
     this.syncNativeCards();
     this.shell.show('battleScreen');
+    this.syncMatchCoreHud();
     this.tacticalUI?.setPresented(true);
     if(this.pendingRender){
       const latest=this.pendingRender;this.pendingRender=null;
@@ -361,14 +377,16 @@ export class PvpLobbyController {
   presentServerBattle(snapshot){
     // HUD is the SAME presenter used by the single-player BattleUI. Server
     // presentation is read-only; this never derives or changes battle rules.
+    const battlefield=this.match?.view?.battlefield;
+    const cores=battlefield?.cores||snapshot?.cores||[];
     const stage={mode:'VERSUS',ruleset:'CORE_CAPTURE',
-      deploymentPoints:snapshot?.presentation?.deploymentPoints||[],
-      generatedBattlefield:{size:this.match?.view?.battlefield?.meta?.size}};
-    if(this.battleUI)this.battleUI.presentOnline(snapshot,{cores:snapshot?.cores||[],stage,
+      deploymentPoints:battlefield?.deploymentPoints||snapshot?.presentation?.deploymentPoints||[],
+      generatedBattlefield:{size:battlefield?.meta?.size,seed:battlefield?.meta?.seed}};
+    if(this.battleUI)this.battleUI.presentOnline(snapshot,{cores,stage,
       phase:this.match?.view?.phase,seat:this.session?.seat,
       battleLog:this.match?.view?.battleLog||[]});
     else{
-      presentBattleOverview({snapshot,cores:snapshot?.cores||[],stage,
+      presentBattleOverview({snapshot,cores,stage,
         phase:this.match?.view?.phase,seat:this.session?.seat,online:true});
       presentBattleWeather(snapshot);
     }

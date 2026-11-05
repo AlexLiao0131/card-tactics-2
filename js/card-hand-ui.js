@@ -237,7 +237,7 @@ export class CardHandUI{
    */
   setRemoteCards({phase,matchId,seat,hand,deckCount,opponentHandCount,
     crystals=null,canAct,onDecision,onPlayCard,onEndCard,onCancel}={}){
-    if(!['OPENING_HAND','CARD_PHASE'].includes(phase)||
+    if(!['OPENING_HAND','CARD_PHASE','TACTICAL_PHASE'].includes(phase)||
        typeof matchId!=="string"||!matchId||![0,1].includes(seat)||
        !Array.isArray(hand)||hand.some(card=>typeof card?.id!=="string"||!globalThis.CardDatabase?.get(card.id))||
        !Number.isSafeInteger(deckCount)||deckCount<0||
@@ -246,7 +246,7 @@ export class CardHandUI{
        typeof onDecision!=="function"||typeof onPlayCard!=="function"||
        typeof onEndCard!=="function"||typeof onCancel!=="function")throw Error("PVP_PRIVATE_CARD_VIEW_INVALID");
     const handIds=hand.map(card=>card.id);
-    const handKey=JSON.stringify([matchId,seat,phase,handIds]);
+    const handKey=JSON.stringify([matchId,seat,phase==='OPENING_HAND'?'OPENING_HAND':'BATTLE',handIds]);
     const previous=this.remoteCards;
     if(previous?.handKey!==handKey){
       this.mulligan.clear();this.openingHandRef=null;
@@ -346,7 +346,7 @@ export class CardHandUI{
     if(!button||!this.host.contains(button)||button.disabled)return;
     const remote=this.remoteCards,r=this.runtime;
     const state=remote?{zones:{hand:remote.handIds}}:r?.getCardState();
-    const phase=remote?"CARD_PHASE":r?.getPhase();
+    const phase=remote?(remote.phase==='TACTICAL_PHASE'?'PLAYER_TURN':'CARD_PHASE'):r?.getPhase();
     if(!r||!state)return;
     const opening=remote?remote.phase==='OPENING_HAND':
       (phase==="CARD_PHASE"&&state.mulliganAvailable&&!state.mulliganDone);
@@ -424,7 +424,7 @@ export class CardHandUI{
       mulliganDone:remote.phase!=='OPENING_HAND',
       active:remote.phase==='CARD_PHASE',crystals:remote.crystals
     }:r.getCardState();
-    const phase=remote?"CARD_PHASE":r.getPhase();
+    const phase=remote?(remote.phase==='TACTICAL_PHASE'?'PLAYER_TURN':'CARD_PHASE'):r.getPhase();
     const pending=remote?.pendingCardId?globalThis.CardDatabase.get(remote.pendingCardId):
       remote?null:r.getPendingCard();
     const enemy=remote?null:r.getEnemyCardState?.();
@@ -452,7 +452,7 @@ export class CardHandUI{
     const enemyMotion=phase==="ENEMY_TURN"?(view?.kind==="DRAW"?"enemy-draw":view?.kind==="CARD_SELECT"?"enemy-select":"enemy-thinking"):"";
     const enemyHtml=remote?`<div class="opponent-hand">${Array.from({length:remote.opponentHandCount},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-(remote.opponentHandCount-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">對手手牌 ${remote.opponentHandCount} 張｜${remote.canAct?"輪到你操作":"等待對手"}</div>`
       :enemy?`<div class="opponent-hand ${enemyMotion}">${Array.from({length:enemy.zones?.hand?.length||0},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-((enemy.zones?.hand?.length||1)-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">敵方　💎 ${enemy.crystals||0}/${enemy.crystalCapacity||0}　牌庫 ${enemy.zones?.deck?.length||0}</div>${phase==="ENEMY_TURN"?`<div class="opponent-message">${esc(view?.message||"敵方思考中…")}</div>`:""}`:"";
-    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=remote?(!remote.canAct||!!pending||(opening?c.mulliganEligible===false:
+    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=remote?(remote.phase==='TACTICAL_PHASE'||!remote.canAct||!!pending||(opening?c.mulliganEligible===false:
       !globalThis.CardPhaseEngine.canPlay(state,c))):
       (opening?c.mulliganEligible===false:!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c)))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" data-hand-index="${i}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
     const art=preview?cardArt(preview):null,heroPreview=isHeroCard(preview);

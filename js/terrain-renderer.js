@@ -596,7 +596,7 @@ export class TerrainRenderer{
     this.updateCounts.surfaceBuilds++;
     const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
-    const boundaryBase=minElevation-.75;
+    const boundaryBase=minElevation-this.surfaceResolver.maxVisualSlopeDelta-.75;
     let skippedDegenerate=0;
     let minNormalY=1;
     let ruggedSurfaceEdges=0;
@@ -789,7 +789,7 @@ export class TerrainRenderer{
     // existing spatial light allocator, not another mesh or lighting pass.
     const lightRegions=[];
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
-    const boundaryBase=minElevation-.75;
+    const boundaryBase=minElevation-this.surfaceResolver.maxVisualSlopeDelta-.75;
     const EH=ELEVATION_HEIGHT;
 
     // The gameplay grid remains the rule boundary, while rendering uses the same
