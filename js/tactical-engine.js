@@ -15,6 +15,28 @@ export const TacticalEngine=(()=>{
     }
     return index.byKey.get(K(x,y))||null;
   }
+  // Authored LINE movement geometry is shared by the original browser
+  // TacticalActionController and the server headless authority.
+  // Crossed occupants are valid hit targets; they must not block transit.
+  function lineTiles(m,attacker,end){
+    const dx=Math.sign(end.x-attacker.x),dy=Math.sign(end.y-attacker.y);
+    if(dx&&dy||!dx&&!dy)return[];
+    const out=[];let x=attacker.x+dx,y=attacker.y+dy;
+    while(x!==end.x||y!==end.y){out.push(tile(m,x,y));x+=dx;y+=dy;}
+    out.push(tile(m,end.x,end.y));return out.filter(Boolean);
+  }
+  function canTraverseMoveLine(m,attacker,end){
+    const path=lineTiles(m,attacker,end);
+    if(!path.length)return false;
+    let previous=tile(m,attacker.x,attacker.y);
+    for(const step of path){
+      if(!step||!canOccupyTerrain(attacker,step)||
+         isBlockedByObject(m,step.x,step.y,attacker)||
+         !canTraverseElevation(previous,step,attacker))return false;
+      previous=step;
+    }
+    return true;
+  }
   function objectAt(m,x,y){return (m?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null}
   function occupied(us,x,y,id){return us.some(u=>u.alive&&u.id!==id&&u.occupiesTile!==false&&u.x===x&&u.y===y)}
   function elevation(t){return Number(t?.elevation||0)}
@@ -371,6 +393,6 @@ export const TacticalEngine=(()=>{
   function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

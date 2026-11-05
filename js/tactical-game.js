@@ -1,5 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
-import { BattleCommandMenuUI } from "./battle-command-menu-ui.js";
+import { BattleCommandMenuUI, battleCommandEntries, battleSkillsForMenu, battleSkillButtonLabel } from "./battle-command-menu-ui.js";
 import { createBattleAreaFieldEngine,createBattleAreaFieldState } from "./battle-area-field-engine.js";
 import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle-perception-engine.js";
 (()=>{
@@ -410,19 +410,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function directVerticalActions(unit){if(!unit?.alive||unit.acted||!globalThis.VerticalMobilityEngine)return[];const tile=TacticalEngine.tile(map,unit.x,unit.y);if(!tile)return[];const current=VerticalMobilityEngine.describe(unit,tile)?.mode||unit.verticalState?.mode||null;const ids=window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills,out=[];for(const parent of SkillDatabase.list(ids||[])){for(const variant of skillVariants(parent)){const skill=resolvedSkill(parent,variant),action=skill?.utilityAction;if(skill.target!=="SELF"||action?.type!=="SET_VERTICAL_MODE"||!canUseSkill(unit,skill))continue;const preview=VerticalMobilityEngine.describe(unit,tile,{mode:action.mode,...(action.options||{})});if(!preview||preview.mode===current)continue;out.push({parent,variant,skill,mode:preview.mode});}}return out;}
   function executeSelfUtilityVariant(unit,parent,variant){const skill=resolvedSkill(parent,variant);if(skill.target!=="SELF"||!skill.utilityAction)return false;selectedSkillVariant=variant;selectedSkill=skill;commitPendingMove(unit);prepareAttack(unit,unit,skill);return true;}
   function effectiveSkill(attacker,skill){let out=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(attacker,skill)||skill;const passives=SkillDatabase.passiveList(attacker?.character?.passives);const tile=TacticalEngine.tile(map,attacker.x,attacker.y);const weapon=attacker?.character?.weapons?.[skill?.weapon];const ambush=passives.find(p=>p.id==="AMBUSH");if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){out={...out,power:Number(out.power||0)*Number(ambush.powerMultiplier||1),speed:Number(out.speed||0)+Number(ambush.speedBonus||0),modifiers:{...(out.modifiers||{})}};out.ambushActive=true;}return out;}
-  function lineTiles(attacker,end){const dx=Math.sign(end.x-attacker.x),dy=Math.sign(end.y-attacker.y);if(dx&&dy)return[];const out=[];let x=attacker.x+dx,y=attacker.y+dy;while(x!==end.x||y!==end.y){out.push(map.tiles.find(t=>t.x===x&&t.y===y));x+=dx;y+=dy;}out.push(map.tiles.find(t=>t.x===end.x&&t.y===end.y));return out.filter(Boolean);}
-  function canTraverseMoveLine(attacker,end){
-    const path=lineTiles(attacker,end);
-    if(!path.length)return false;
-    let previous=TacticalEngine.tile(map,attacker.x,attacker.y);
-    for(const tile of path){
-      if(!tile||!TacticalEngine.canOccupyTerrain(attacker,tile)||TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker))return false;
-      if(!TacticalEngine.canTraverseElevation(previous,tile,attacker))return false;
-      previous=tile;
-    }
-    // Units along the route are targets, not movement/landing positions.
-    return true;
-  }
+  function lineTiles(attacker,end){return TacticalEngine.lineTiles(map,attacker,end);}
+  function canTraverseMoveLine(attacker,end){return TacticalEngine.canTraverseMoveLine(map,attacker,end);}
   function aoeTiles(center,radius){return TacticalEngine.aoeTiles(map,center,radius);}
   function logEnvironmentEvent(...args){return environmentController.logEnvironmentEvent(...args);}
   function selectNextAvailableUnit(){
@@ -722,14 +711,28 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     if(selected.acted)return;
     if(mode==="command"){
       if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();if(selected.moved&&actionController.pendingMove()?.unitId===selected.id)addActionButton("取消移動",cancelPendingMove);
-      if(stage?.ruleset==="CORE_CAPTURE"&&canUnitCapture(selected)){const point=capturePointForUnit(selected);addActionButton(`佔領｜${point.name}`,()=>executeCapture(selected));}
-      directVerticalActions(selected).forEach(({parent,variant})=>addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant),false,resolvedSkill(parent,variant)));
-      if(selected.canAttack!==false)addActionButton("攻擊",()=>{selectedSkill=null;mode="attack-menu";render();});
-      addActionButton("狀態",()=>window.TacticalUIController?.openStatus?.(selected.id));
-      addActionButton("道具",()=>{mode="item-menu";render();});
-      addActionButton("對話",()=>{pushLog(`${selected.character.name}｜目前沒有可對話目標。`);render();});
-      addActionButton("魔法／特殊技能",()=>{selectedSkill=null;mode="special-menu";render();});
-      addActionButton("待機",()=>{commitPendingMove(selected);finishUnit(selected,"待機，行動結束。",{waited:true});render();});return;
+      const capture=stage?.ruleset==="CORE_CAPTURE"&&canUnitCapture(selected)
+        ?capturePointForUnit(selected):null;
+      const commands={
+        CAPTURE:()=>executeCapture(selected),
+        ATTACK:()=>{selectedSkill=null;mode="attack-menu";render();},
+        STATUS:()=>window.TacticalUIController?.openStatus?.(selected.id),
+        ITEMS:()=>{mode="item-menu";render();},
+        DIALOGUE:()=>{pushLog(`${selected.character.name}｜目前沒有可對話目標。`);render();},
+        SPECIAL:()=>{selectedSkill=null;mode="special-menu";render();},
+        WAIT:()=>{commitPendingMove(selected);finishUnit(selected,"待機，行動結束。",{waited:true});render();}
+      };
+      let verticalRendered=false;
+      for(const entry of battleCommandEntries({capture,canAttack:selected.canAttack!==false})){
+        // Same official order: capture, direct vertical variants, commands.
+        if(!verticalRendered&&entry.id!=='CAPTURE'){
+          directVerticalActions(selected).forEach(({parent,variant})=>
+            addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant),false,resolvedSkill(parent,variant)));
+          verticalRendered=true;
+        }
+        addActionButton(entry.label,commands[entry.id]);
+      }
+      return;
     }
     if(mode==="item-menu"){
       addCommandPanelClose();const entries=itemEntries(selected),ground=groundItemEntries(selected);if(!entries.length&&!ground.length)addActionButton("沒有可用道具",()=>{},true);
@@ -785,10 +788,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }
     const memoryIds=new Set(EffectEngine.bloodMemorySkills(selected).map(skill=>skill.id));
     const allSkills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills);
-    const isSpecial=skill=>skill.category!=="ATTACK";
-    const shownSkills=mode==="blood-memory-menu"?allSkills.filter(skill=>memoryIds.has(skill.id)):
-      mode==="special-menu"?allSkills.filter(skill=>isSpecial(skill)&&!memoryIds.has(skill.id)):
-      mode==="attack-menu"?allSkills.filter(skill=>!isSpecial(skill)&&!memoryIds.has(skill.id)):[];
+    const shownSkills=battleSkillsForMenu(allSkills,{mode,memoryIds});
     if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){
       pendingCopySkill.options.forEach(skill=>addActionButton(`${skill.name}｜血能 ${UnitRuntimeEngine.bloodMemoryCost(skill)}`,()=>{
@@ -800,7 +800,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }
     if(mode==="attack-menu"||mode==="special-menu"||mode==="blood-memory-menu"){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();if(mode==="special-menu"&&selected._bloodAwakened&&EffectEngine.bloodMemorySkills(selected).length)
       addActionButton(`血液記憶（${EffectEngine.bloodMemorySkills(selected).length}）`,()=>{mode="blood-memory-menu";render();});
-    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(`${skill.name}｜射程 ${range.min}-${range.max}｜${resourceLabel(selected,skill)}`,()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
+    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(battleSkillButtonLabel(skill,range,resourceLabel(selected,skill)),()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"&&Number(range.max||0)===0){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
     if((mode==="map-target"||mode==="attack")&&selectedSkill){
       if(actionController.enchantmentFollowup()?.unitId===selected.id){
         addActionButton("返回攻擊選擇",backFromTargeting);

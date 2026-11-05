@@ -6,7 +6,7 @@
  */
 import { CardDatabase } from './card-database.js';
 import { SkillDatabase } from './skill-database.js';
-import { BattleCommandMenuUI } from './battle-command-menu-ui.js';
+import { BattleCommandMenuUI, battleCommandEntries, battleSkillCategory, battleSkillButtonLabel } from './battle-command-menu-ui.js';
 
 const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTICAL_PHASE',
   'ENEMY_CARD_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING','MATCH_ENDED']);
@@ -22,6 +22,9 @@ const skillChoices=(unit,followup)=>{
   return followup?.unitId===unit?.id
     ?skills.filter(skill=>skill.weaponSlot===followup.weaponSlot):skills;
 };
+const knownSkill=id=>{try{return SkillDatabase.get(id);}catch{return null;}};
+const supportedSkillsForSection=(unit,section)=>skillChoices(unit)
+  .filter(entry=>battleSkillCategory(knownSkill(entry.id))===section);
 
 export class PvpTacticalUI {
   constructor({root,canvas,seat,sendCommand,isConnected=()=>true,createBridge,ensureBabylon,
@@ -158,20 +161,43 @@ export class PvpTacticalUI {
       if(this.request({type,unitId:u,...payload})){this.cancelTarget();this.update();}
     };
     const tile=(type,payload)=>()=>this.targetAction(type,{unitId:u,...payload});
-    for(const skill of unit.effectSkills||[])this.add(skill.name,
-      tile('CAST_EFFECT_SKILL',{skillId:skill.id}),{skill});
+    // Magic and SPECIAL enemy-target attacks stay in the official special
+    // category. They are never guessed to be ordinary physical attacks.
+    for(const skill of supportedSkillsForSection(unit,'special'))
+      this.add(battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
+        tile('DECLARE_ATTACK',{skillId:skill.id}),{skill,disabled:skill.usable===false});
+    for(const skill of unit.effectSkills||[])this.add(
+      battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
+      skill.target==='SELF'
+        ?direct('CAST_EFFECT_SKILL',{skillId:skill.id,targetId:u})
+        :tile('CAST_EFFECT_SKILL',{skillId:skill.id,effectTarget:skill.target}),
+      {skill,disabled:skill.usable===false});
+    for(const skill of unit.selfUtilitySkills||[])this.add(
+      `${skill.name}`,direct('CAST_SELF_UTILITY',
+        {skillId:skill.id,variantId:skill.variantId}),
+      {skill,disabled:skill.usable===false});
     for(const choice of unit.enchantmentOptions||[])this.add(
       `${choice.skillName}｜${choice.targetName}｜${choice.weaponName}`,
       direct('CAST_ENCHANTMENT',{skillId:choice.skillId,variantId:choice.variantId,
         targetId:choice.targetId,weaponSlot:choice.weaponSlot}));
+    for(const entry of unit.pickpocketOptions||[])this.add(
+      `${entry.skillName} → ${entry.targetName}`,
+      direct('CAST_PICKPOCKET',{skillId:entry.skillId,targetId:entry.targetId}));
     for(const entry of unit.bloodShadowOptions||[])this.add(`${entry.skillName} → ${entry.targetName}`,
       direct('CAST_BLOOD_SHADOW',{skillId:entry.skillId,targetId:entry.targetId}));
     for(const skill of unit.bloodBurstSkills||[])
       this.add(skill.name,direct('CAST_BLOOD_BURST',{skillId:skill.id}),{skill});
     for(const skill of unit.areaFieldSkills||[])
       this.add(skill.name,direct('CAST_AREA_FIELD',{skillId:skill.id}),{skill});
-    for(const skill of unit.mapSkills||[])
+    for(const skill of unit.mapSkills||[]){
+      if(skill.category==='ATTACK')continue;
       this.add(skill.name,tile('CAST_MAP_SKILL',{skillId:skill.id}),{skill});
+    }
+    for(const choice of unit.chargeOptions||[]){
+      if(choice.target!=='ALLY')continue;
+      this.add(choice.name,tile('CAST_CHARGE',{skillId:choice.skillId,
+        variantId:choice.variantId,chargeTarget:'ALLY'}));
+    }
     for(const entry of unit.transportOptions||[])
       this.add(`${entry.skillName} → ${entry.targetName}`,
         tile('CAST_TRANSPORT',{skillId:entry.skillId,targetId:entry.targetId}));
@@ -183,13 +209,19 @@ export class PvpTacticalUI {
   }
   renderCommand(unit){
     this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
-    if(!unit.moved)this.add('移動',()=>this.targetAction('MOVE_UNIT',{unitId:unit.id}));
-    if(skillChoices(unit).length)this.add('攻擊',()=>{this.menu='attack';this.update();});
-    this.add('狀態',()=>this.onInspect(unit.id));
-    this.add('道具',()=>{this.menu='items';this.update();});
-    this.add('魔法／特殊技能',()=>{this.menu='special';this.update();});
-    if(unit.capturePoint)this.add(`佔領｜${unit.capturePoint.name}`,()=>this.request({type:'CAPTURE_POINT',unitId:unit.id}));
-    this.add('待機',()=>this.request({type:'WAIT_UNIT',unitId:unit.id}));
+    const commands={
+      CAPTURE:()=>this.request({type:'CAPTURE_POINT',unitId:unit.id}),
+      ATTACK:()=>{this.menu='attack';this.update();},
+      STATUS:()=>this.onInspect(unit.id),
+      ITEMS:()=>{this.menu='items';this.update();},
+      DIALOGUE:()=>{}, // Original game has no conversation target in this battle.
+      SPECIAL:()=>{this.menu='special';this.update();},
+      WAIT:()=>this.request({type:'WAIT_UNIT',unitId:unit.id})
+    };
+    for(const entry of battleCommandEntries({capture:unit.capturePoint,
+      canAttack:unit.canAttack!==false&&(supportedSkillsForSection(unit,'attack').length>0||
+        unit.mapSkills?.some(s=>s.category==='ATTACK'))}))
+      this.add(entry.label,commands[entry.id],{disabled:entry.id==='DIALOGUE'});
   }
   update(){
     if(this.closed||!this.presented||!this.isActive())return;
@@ -230,7 +262,6 @@ export class PvpTacticalUI {
     if(!actor||actor.team!==UNIT_TEAM[this.seat]||actor.acted&&!followup){
       this.selectedUnitId=null;
       this.add('點選自己的角色',()=>{}, {disabled:true});
-      this.add('結束戰棋階段',()=>this.endPhase());
       return;
     }
     if(this.mode!=='SELECT'){
@@ -239,17 +270,24 @@ export class PvpTacticalUI {
     if(followup){
       this.menuUI.heading('元素附魔・追加攻擊');
       for(const skill of skillChoices(actor,followup))this.add(`攻擊｜${skill.name}`,
-        ()=>this.targetAction('DECLARE_ATTACK',{unitId:actor.id,skillId:skill.id}),{skill});
+        ()=>this.targetAction('DECLARE_ATTACK',{unitId:actor.id,skillId:skill.id}),{skill,disabled:skill.usable===false});
       this.add('保留附魔並待機',()=>this.request({type:'END_ENCHANT_FOLLOWUP',unitId:actor.id}));
       return;
     }
     if(this.menu==='closed')return;
     if(this.menu==='attack'){
       this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
-      for(const skill of skillChoices(actor)){
-        this.add(`攻擊｜${skill.name}`,()=>this.targetAction('DECLARE_ATTACK',
-          {unitId:actor.id,skillId:skill.id}),{skill});
-        this.add(`攻擊 Core｜${skill.name}`,()=>this.targetAction('ATTACK_CORE',
+      for(const skill of supportedSkillsForSection(actor,'attack'))
+        this.add(battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
+          ()=>this.targetAction('DECLARE_ATTACK',{unitId:actor.id,skillId:skill.id}),{skill,disabled:skill.usable===false});
+      for(const choice of actor.chargeOptions||[]){
+        if(choice.target!=='ENEMY')continue;
+        this.add(choice.name,()=>this.targetAction('CAST_CHARGE',
+          {unitId:actor.id,skillId:choice.skillId,variantId:choice.variantId,chargeTarget:'ENEMY'}));
+      }
+      for(const skill of actor.mapSkills||[]){
+        if(skill.category!=='ATTACK')continue;
+        this.add(skill.name,()=>this.targetAction('CAST_MAP_SKILL',
           {unitId:actor.id,skillId:skill.id}),{skill});
       }
       this.menuBack();return;
@@ -292,15 +330,29 @@ export class PvpTacticalUI {
       action={type:'PLAY_TARGET_CARD',cardId:choice.cardId,x,y};
     else if(this.isTacticalPhase()&&choice?.unitId){
       if(type==='MOVE_UNIT')action={type,unitId:choice.unitId,x,y};
-      else if(type==='DECLARE_ATTACK'&&unit&&unit.team!==UNIT_TEAM[this.seat])
-        action={type,attackerId:choice.unitId,targetId:unit.id,skillId:choice.skillId};
-      else if(type==='ATTACK_CORE'){
-        const core=v.battlefield?.cores?.find(c=>c.x===x&&c.y===y);
-        if(core)action={type,unitId:choice.unitId,skillId:choice.skillId,coreOwner:core.owner};
-      }else if(type==='CAST_EFFECT_SKILL'&&unit&&unit.team===UNIT_TEAM[this.seat])
+      else if(type==='DECLARE_ATTACK'){
+        if(unit&&unit.team!==UNIT_TEAM[this.seat])
+          action={type,attackerId:choice.unitId,targetId:unit.id,skillId:choice.skillId};
+        else {
+          const core=v.battlefield?.cores?.find(c=>c.x===x&&c.y===y);
+          const attacker=v.units?.find(u=>u.id===choice.unitId);
+          if(core&&attacker?.coreAttackSkillIds?.includes(choice.skillId))
+            action={type:'ATTACK_CORE',unitId:choice.unitId,skillId:choice.skillId,coreOwner:core.owner};
+          else if(!unit&&!core&&attacker?.environmentContactSkillIds?.includes(choice.skillId))
+            action={type:'CAST_ENVIRONMENT_CONTACT',unitId:choice.unitId,skillId:choice.skillId,x,y};
+        }
+      }else if(type==='CAST_EFFECT_SKILL'&&unit&&(
+        choice.effectTarget==='ENEMY'?unit.team!==UNIT_TEAM[this.seat]:
+        choice.effectTarget==='SELF'?unit.id===choice.unitId:
+        choice.effectTarget==='ALLY'&&unit.team===UNIT_TEAM[this.seat]))
         action={type,unitId:choice.unitId,skillId:choice.skillId,targetId:unit.id};
       else if(type==='CAST_MAP_SKILL'||type==='ATTACK_ENCHANTED_TERRAIN')
         action={type,unitId:choice.unitId,skillId:choice.skillId,x,y};
+      else if(type==='CAST_CHARGE'&&unit&&unit.id!==choice.unitId&&(
+        choice.chargeTarget==='ENEMY'?unit.team!==UNIT_TEAM[this.seat]:
+        choice.chargeTarget==='ALLY'&&unit.team===UNIT_TEAM[this.seat]))
+        action={type,unitId:choice.unitId,skillId:choice.skillId,
+          variantId:choice.variantId,targetId:unit.id};
       else if(type==='CAST_PERCEPTION'&&unit&&unit.team!==UNIT_TEAM[this.seat])
         action={type,unitId:choice.unitId,skillId:choice.skillId,targetId:unit.id};
       else if(type==='CAST_TRANSPORT')

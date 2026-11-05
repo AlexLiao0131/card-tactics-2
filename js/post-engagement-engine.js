@@ -111,6 +111,43 @@ export const PostEngagementEngine=(()=>{
     }
     return{queue,results}
   }
-  return Object.freeze({process,forcedMove,resolveLanding,groundZ,syncGroundZ,fallDamage,FALL_THRESHOLD:FallEngine.FALL_THRESHOLD,FALL_DAMAGE_PER_LEVEL:FallEngine.FALL_DAMAGE_PER_LEVEL});
+  // One canonical extension of a finished BattleResolution engagement.
+  // The primary target's actual hit determines whether the authored Holy
+  // cross explodes. Both offline TacticalActionController and headless PvP
+  // invoke this exact function. No PvP-specific blast rules or copied numbers.
+  function canResolveVerdictCross(skill){
+    const cross=skill?.verdictCross;
+    return !!cross&&typeof cross==='object'&&!Array.isArray(cross)&&
+      Object.keys(cross).sort().join('|')==='blastPower|radius'&&
+      Number.isSafeInteger(cross.radius)&&cross.radius>0&&
+      Number.isFinite(cross.blastPower)&&cross.blastPower>0&&
+      skill.pureHoly===true&&skill.element==='HOLY'&&
+      skill.offenseStat==='ATK'&&skill.skipInherentMagic===true;
+  }
+  function resolveVerdictCross({attacker,defender,skill,engagement,units,random,onLog,onDefeated}={}){
+    if(!canResolveVerdictCross(skill))throw new Error('UNSUPPORTED_VERDICT_CROSS');
+    const primary=engagement?.results?.find(e=>e.role==='INITIATOR'&&e.actor?.id===attacker?.id);
+    if(!primary?.result?.hit||!defender?.character)return [];
+    const {radius,blastPower:power}=skill.verdictCross;
+    const center={x:defender.x,y:defender.y},blast={...skill,
+      attackType:'MAGIC',offenseStat:'ATK',pureHoly:true,power,skipInherentMagic:true};
+    const multiplier=Number(primary.vengeanceMultiplier||1),resolved=[];
+    for(const target of units||[]){
+      if(!target?.alive||target.team===attacker.team)continue;
+      const dx=Math.abs(target.x-center.x),dy=Math.abs(target.y-center.y);
+      if(!((dx===0&&dy<=radius)||(dy===0&&dx<=radius)))continue;
+      const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true,random});
+      const damage=Math.round(roll.damage*multiplier);
+      const result=EffectEngine.applyDamage(target,damage,{source:attacker,damageType:'MAGIC'});
+      globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:result.hpLoss,
+        components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true},
+        element:'HOLY',skillId:skill.id});
+      onLog?.(`${attacker.character.name}｜裁決十字聖光 → ${target.character.name}｜${result.hpLoss} 神聖傷害${roll.crit?'｜爆擊':''}。`,'BATTLE');
+      resolved.push({targetId:target.id,damage:result.hpLoss,crit:roll.crit===true});
+      if(target.hp<=0){target.alive=false;onDefeated?.(target,attacker,skill);}
+    }
+    return resolved;
+  }
+  return Object.freeze({process,forcedMove,resolveLanding,canResolveVerdictCross,resolveVerdictCross,groundZ,syncGroundZ,fallDamage,FALL_THRESHOLD:FallEngine.FALL_THRESHOLD,FALL_DAMAGE_PER_LEVEL:FallEngine.FALL_DAMAGE_PER_LEVEL});
 })();
 globalThis.PostEngagementEngine=PostEngagementEngine;

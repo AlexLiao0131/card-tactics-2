@@ -3,7 +3,8 @@
 // new effect types must first have a real EffectEngine.apply handler.
 const STANDALONE_DIRECT_EFFECT_TYPES=new Set([
   'HEAL','SHIELD','RESTORE_MANA','HEAL_OVER_TIME','DISPEL',
-  'BUFF','ATTRIBUTE_OVERRIDE','ATTRIBUTE_MODIFIER'
+  'BUFF','ATTRIBUTE_OVERRIDE','ATTRIBUTE_MODIFIER',
+  'DAMAGE_OVER_TIME' // EffectEngine.apply and tick both own this status lifecycle.
 ]);
 export function isStandaloneDirectEffectType(type){
   return typeof type==='string'&&STANDALONE_DIRECT_EFFECT_TYPES.has(type);

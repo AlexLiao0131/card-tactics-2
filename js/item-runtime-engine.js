@@ -31,8 +31,15 @@ export const ItemRuntimeEngine=(()=>{
   }
   function trackPreparationConsumption(unit,payload){
     if(payload?.source!=="PVP_PREPARATION")return;
+    // Keep the original per-unit audit contract for established tests and
+    // diagnostics; the provenance ledger determines which seat gets debited.
     unit.itemConsumptions??={};
     unit.itemConsumptions[payload.itemId]=Number(unit.itemConsumptions[payload.itemId]||0)+1;
+    if(['P','E'].includes(payload.preparationTeam)){
+      unit.itemConsumptionsByTeam??={};
+      const amounts=unit.itemConsumptionsByTeam[payload.preparationTeam]??={};
+      amounts[payload.itemId]=Number(amounts[payload.itemId]||0)+1;
+    }
   }
   function use(unit,payloadOrItemId){
     const payload=findPayload(unit,payloadOrItemId),item=payload&&ItemDatabase.get(payload.itemId);if(!canUse(unit,payloadOrItemId))return{ok:false,reason:"CANNOT_USE"};

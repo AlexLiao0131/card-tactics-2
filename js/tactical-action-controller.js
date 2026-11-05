@@ -1122,26 +1122,6 @@
       executeEngagement(attacker,defender,skill,selectedSupportActions());
     }
 
-    function resolveVerdictCross(attacker,defender,skill,engagement){
-      const primary=engagement.results.find(e=>e.role==="INITIATOR"&&e.actor.id===attacker.id);
-      if(!primary?.result?.hit||!skill.verdictCross||!defender?.character)return;
-      const {units}=state(),radius=Number(skill.verdictCross.radius),power=Number(skill.verdictCross.blastPower);
-      const center={x:defender.x,y:defender.y};
-      const blast={...skill,attackType:"MAGIC",offenseStat:"ATK",pureHoly:true,power,skipInherentMagic:true};
-      const multiplier=Number(primary.vengeanceMultiplier||1);
-      for(const target of units){
-        if(!target?.alive||target.team===attacker.team)continue;
-        const dx=Math.abs(target.x-center.x),dy=Math.abs(target.y-center.y);
-        if(!((dx===0&&dy<=radius)||(dy===0&&dx<=radius)))continue;
-        const roll=BattleEngine.calculate(attacker.character,target.character,blast,{forceHit:true,random:ctx.random});
-        const damage=Math.round(roll.damage*multiplier),result=EffectEngine.applyDamage(target,damage,{source:attacker,damageType:"MAGIC"});
-        globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:result.hpLoss,
-          components:{physical:0,magic:result.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true},element:"HOLY",skillId:skill.id});
-        ctx.pushLog(`${attacker.character.name}｜裁決十字聖光 → ${target.character.name}｜${result.hpLoss} 神聖傷害${roll.crit?"｜爆擊":""}。`,"BATTLE");
-        if(target.hp<=0){target.alive=false;ctx.handleDefeated(target,attacker,skill);}
-      }
-    }
-
     function executeEngagement(attacker,defender,skill,actions,reaction=null){
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
@@ -1150,7 +1130,10 @@
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
-      if(skill.verdictCross)resolveVerdictCross(attacker,defender,skill,engagement);
+      if(skill.verdictCross)PostEngagementEngine.resolveVerdictCross({
+        attacker,defender,skill,engagement,units,
+        random:ctx.random,onLog:ctx.pushLog,onDefeated:ctx.handleDefeated
+      });
       if(skill.bloodShadow){
         const attack=engagement.results.find(entry=>entry.actor.id===attacker.id&&entry.skill.bloodShadow);
         const drained=Math.max(0,Number(attack?.result?.damage||0));
@@ -1187,7 +1170,7 @@
       reset,pendingMove:()=>pendingMove,bloodShadowLanding,
       attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
-      backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,
+      backFromTargeting,finishActiveSkill,executeEffectSkill,executeUtilitySkill,approachForSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
       beginEnchantment,enchantmentCandidates,commitCandidateEnchantment,executeEnchantmentChoice,
       executeChannelSkill,
