@@ -294,13 +294,15 @@ test('same original native item menu handles drop, pickup and ally transfer with
    groundItemChoices:[{groundId:'ground-torch',itemId:'torch',name:'火把'}],
    itemTransferTargets:[{unitId:'friend',name:'友軍'}]};
   f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',80,[actor]));clickActor(f);f.click('道具');
-  f.click('丟下｜小型生命藥水');
+  f.click('放下／轉交');
+  f.click('放下｜小型生命藥水');
+  f.click('交給 友軍｜小型生命藥水');
+  f.click('返回');
   f.click('拾取｜火把');
-  f.click('轉交｜小型生命藥水 → 友軍');
   assert.deepEqual(f.commands,[
    {type:'DROP_BATTLE_ITEM',unitId:'unit1',payloadId:'owned-potion'},
-   {type:'PICKUP_BATTLE_ITEM',unitId:'unit1',groundId:'ground-torch'},
-   {type:'TRANSFER_BATTLE_ITEM',unitId:'unit1',payloadId:'owned-potion',targetUnitId:'friend'}
+   {type:'TRANSFER_BATTLE_ITEM',unitId:'unit1',payloadId:'owned-potion',targetUnitId:'friend'},
+   {type:'PICKUP_BATTLE_ITEM',unitId:'unit1',groundId:'ground-torch'}
   ]);
   assert.equal(f.root.id,'skillBar');
  }finally{f.restore()}
