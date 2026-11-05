@@ -88,7 +88,7 @@ function snapshotUnit(u){return {
 function serverCallbacks(game,engine){
   const logs=game.events??=([]);
   const pushLog=(message,type='SYSTEM')=>{
-    logs.push({type,text:String(message)});
+    logs.push({type,text:String(message),seat:game.activeSeat});
     if(logs.length>160)logs.splice(0,logs.length-160);
   };
   const stageEvent=event=>{
@@ -457,7 +457,17 @@ export function tacticalDebugProjection(game,seat){
       cores:game.battlefield.cores,stage,environmentState:game.environmentState};
     const visible=game.units.filter(u=>u.team===UNIT_TEAM[seat]||
       TacticalEngine.teamCanIdentifyUnit(world,UNIT_TEAM[seat],u,game.environmentState));
-    return {phase:game.phase,activeSeat:game.activeSeat,round:game.round,
+    // A private command log is never the global authority event stream.
+    // Limit entries to actions from this player's seat and omit any mention of
+    // an opponent the OFFICIAL LOS engine says is currently hidden.
+    const hidden=game.units.filter(u=>u.alive&&u.team!==UNIT_TEAM[seat]&&
+      !TacticalEngine.teamCanIdentifyUnit(world,UNIT_TEAM[seat],u));
+    const hiddenNames=hidden.map(u=>u.character?.name).filter(Boolean);
+    const battleLog=(game.events||[]).filter(e=>e?.seat===seat&&
+      ['BATTLE','SYSTEM','DETAIL'].includes(e.type)&&typeof e.text==='string'&&
+      !hiddenNames.some(name=>e.text.includes(name)))
+      .slice(-160).map(e=>({type:e.type,text:e.text}));
+    return {phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
       // Only the owning seat receives its unit's battle skill options.
       // The resolved runtime character (loadout + effects) is the authority,
       // not the raw CharacterDatabase template.
