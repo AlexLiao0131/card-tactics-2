@@ -308,3 +308,21 @@ test('official move reachability is projected privately, and the original move c
  assert.equal(game.pendingMove,null);
  assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id},0),{code:'NO_CANCELABLE_MOVE'});
 });
+
+
+test('facing changes do not discard the server-authoritative pending move cancellation',()=>{
+ const game=make();deployment(game);resolveCanonicalPlayerCommand(game,{type:'END_CARD_PHASE'},0);
+ const unit=game.units[0];unit.moved=false;unit.acted=false;unit.waited=false;
+ const legal=[...TacticalEngine.reachable(game.battlefield.map,game.units,unit).keys()];
+ assert.ok(legal.length);
+ const before={x:unit.x,y:unit.y};
+ const [x,y]=legal[0].split(',').map(Number);
+ assert.equal(resolveCanonicalPlayerCommand(game,{type:'MOVE_UNIT',unitId:unit.id,x,y},0).accepted,true);
+ assert.equal(game.pendingMove?.unitId,unit.id);
+ assert.equal(resolveCanonicalPlayerCommand(game,{type:'ROTATE_UNIT',unitId:unit.id,steps:1},0).accepted,true);
+ assert.equal(game.pendingMove?.unitId,unit.id,'rotating is not committing the move');
+ assert.equal(tacticalDebugProjection(game,0).pendingMoveUnitId,unit.id);
+ assert.equal(resolveCanonicalPlayerCommand(game,{type:'CANCEL_MOVE',unitId:unit.id},0).accepted,true);
+ assert.deepEqual({x:unit.x,y:unit.y},before);
+ assert.equal(unit.moved,false);
+});

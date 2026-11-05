@@ -378,7 +378,9 @@ test('native movement highlight comes only from server-certified reachable tiles
     assert.deepEqual(f.commands,[],'selecting a unit is purely local presentation');
     assert.ok(published.length);
     // No legal server tile -> no forged move command.
-    assert.equal(f.ui.tilePicked({seat:0,x:5,y:3}),false);
+    assert.equal(f.ui.tilePicked({seat:0,x:5,y:3}),true,'empty non-reachable tile only closes original menu');
+    assert.deepEqual(f.commands,[],'no forged move command for non-reachable tile');
+    assert.equal(f.root.children.length,0,'no leftover PvP menu column');
     assert.equal(f.ui.tilePicked({seat:0,x:3,y:3}),true);
   }finally{f.restore()}
 });
@@ -393,5 +395,44 @@ test('server committed move offers original Cancel Move in the SAME command pane
     const committed=game(0,'PLAYER_TACTICAL_PHASE',122,[moved]);
     f.ui.receiveMatch(committed);
     assert.equal(f.root.children.some(x=>x.textContent==='取消移動'),false);
+  }finally{f.restore()}
+});
+
+
+test('card targeting uses only the native CardHandUI strip, never a second floating PvP skill column',()=>{
+  const f=fixture();try{
+    const match=game(0,'PLAYER_CARD_PHASE',140);
+    match.view.own.hand.push({id:'starfall_card',name:'星隕',cost:10});
+    f.ui.receiveMatch(match);
+    assert.equal(f.ui.chooseCard('starfall_card'),'TARGET');
+    assert.equal(f.root.children.length,0,'only CardHandUI owns card-target cancellation');
+    assert.equal(f.ui.tilePicked({seat:0,x:7,y:7}),true);
+    assert.deepEqual(f.commands,[{type:'PLAY_TARGET_CARD',cardId:'starfall_card',x:7,y:7}]);
+  }finally{f.restore()}
+});
+
+test('no dead online tactical control bar while it is the opponent turn',()=>{
+  const f=fixture();try{
+    const m=game(0,'ENEMY_TACTICAL_PHASE',142);m.view.activeSeat=1;
+    f.ui.receiveMatch(m);
+    assert.equal(f.controls.endTurn.hidden,true);
+    assert.equal(f.controls.nextUnit.hidden,true);
+    assert.equal(f.root.children.length,0);
+    const mine=game(0,'PLAYER_TACTICAL_PHASE',143);
+    f.ui.receiveMatch(mine);
+    assert.equal(f.controls.endTurn.hidden,false);
+    assert.equal(f.controls.nextUnit.hidden,false);
+  }finally{f.restore()}
+});
+
+test('native PvP aim shows only original cancel-cast button, no fabricated instructional prompt',()=>{
+  const f=fixture();try{
+    const caster={...soldier,attackSkills:[{id:'slash',name:'劍斬'}]};
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',144,[caster]));
+    f.ui.selectUnit(caster.id);f.click('攻擊');f.click('劍斬');
+    assert.equal(f.root.children.length,1);
+    f.click('取消施放');
+    assert.equal(f.root.children.some(x=>x.textContent==='請點選地圖上的合法目標'),false);
+    assert.ok(f.root.children.some(x=>x.textContent==='攻擊'));
   }finally{f.restore()}
 });
