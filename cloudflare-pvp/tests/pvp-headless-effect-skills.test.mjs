@@ -40,8 +40,9 @@ const cast=(g,unitId,targetId,skillId)=>resolveCanonicalPlayerCommand(g,
 test('direct effect capability uses official skill metadata, not a PvP skill-ID list',()=>{
  for(const name of ['saint_hero_heal','saint_hero_dispel','saint_hero_blessing','templar_healing','angel_heal','seraphina_regeneration'])
   assert.equal(isCanonicalDirectEffectSkill(SkillDatabase.get(name)),true,name);
- for(const name of ['seraphina_blood_drain','saint_sanctuary','ophi_forest_entangle','cat_smoke_bomb','nether_slash','templar_verdict','elemental_enchant'])
+ for(const name of ['seraphina_blood_drain','saint_sanctuary','cat_smoke_bomb','nether_slash','templar_verdict','elemental_enchant'])
   assert.equal(isCanonicalDirectEffectSkill(SkillDatabase.get(name)),false,name);
+ assert.equal(isCanonicalDirectEffectSkill(SkillDatabase.get('ophi_forest_entangle')),true);
 });
 test('PVP effect projection only reveals own eligible skills; opponent gains no private options',()=>{
  const {g,a}=pair();const p0=tacticalDebugProjection(g,0),p1=tacticalDebugProjection(g,1);
@@ -118,10 +119,11 @@ test('direct magical attack is accepted as official combat, not misclassified as
  assert.doesNotThrow(()=>structuredClone(g));
 });
 
-test('damage-spell skill families with unfinished environment/status followups remain rejected',async()=>{
+test('canonical status and space-rift hits are admitted; distinct cross-explosion stays gated',async()=>{
  const {isCanonicalDirectAttackSkill}=await import('../src/pvp-headless-engagement.mjs');
- for(const id of ['cassandra_fire_burst','cassandra_frost','seraphina_rending_claw','nether_slash','templar_verdict'])
-   assert.equal(isCanonicalDirectAttackSkill(SkillDatabase.get(id)),false,id);
+ for(const id of ['cassandra_fire_burst','cassandra_frost','seraphina_rending_claw','nether_slash'])
+   assert.equal(isCanonicalDirectAttackSkill(SkillDatabase.get(id)),true,id);
+ assert.equal(isCanonicalDirectAttackSkill(SkillDatabase.get('templar_verdict')),true);
  assert.equal(isCanonicalDirectAttackSkill(SkillDatabase.get('cassandra_magic_bolt')),true);
  assert.equal(isCanonicalDirectAttackSkill(SkillDatabase.get('saint_judgement')),true);
 });

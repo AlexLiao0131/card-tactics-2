@@ -266,3 +266,20 @@ test('flying altitude uses official VerticalMobilityEngine range, and stays priv
  assert.throws(()=>resolveCanonicalPlayerCommand(game,{type:'ADJUST_FLIGHT_ALTITUDE',unitId:standard.id,steps:1},0),{code:'FLIGHT_ALTITUDE_UNAVAILABLE'});
  assert.doesNotThrow(()=>structuredClone(game));
 });
+
+test('the server projects canonical skill names, resource labels and certified Core eligibility',()=>{
+  const game=make();deployment(game);
+  const view=tacticalDebugProjection(game,0),unit=view.units.find(u=>u.team==='P');
+  assert.ok(unit);
+  const bow=unit.attackSkills.find(skill=>skill.id==='imperial_bow_shot');
+  assert.ok(bow,'must use current official resolved archer skills');
+  assert.equal(bow.name,'帝國弓射');
+  assert.deepEqual(bow.range,{min:2,max:4});
+  assert.equal(typeof bow.resourceLabel,'string');
+  assert.equal(bow.usable,true);
+  assert.ok(unit.coreAttackSkillIds.includes('imperial_bow_shot'));
+  assert.equal(unit.coreAttackSkillIds.includes('nether_slash'),false,
+    'not certified by the same actual Core resolver');
+  assert.equal(view.units.some(u=>u.team==='E'&&'attackSkills' in u),false,
+    'opponent private skill options must not leak');
+});

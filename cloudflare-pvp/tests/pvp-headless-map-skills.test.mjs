@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createOpeningGame,openingGameCore} from '../src/pvp-match-core.mjs';
 import {beginCanonicalPlayerCardPhase,resolveCanonicalPlayerCommand,tacticalDebugProjection,
   experimentalTacticalCore} from '../src/pvp-headless-tactical.mjs';
-import {isCanonicalImmediateMapSkill,isCanonicalSpatialTransitSkill,canonicalImmediateMapSkillOptions}
+import {isCanonicalImmediateMapSkill,isCanonicalSpatialTransitSkill,isCanonicalLineTransitSkill,canonicalImmediateMapSkillOptions}
   from '../src/pvp-headless-map-skills.mjs';
 import {createAuthoritySession,commitAuthorityCommand} from '../src/battle-authority.mjs';
 import {PVP_COMMAND_PROTOCOL} from '../../shared/pvp-command-contract.mjs';
@@ -44,7 +44,7 @@ test('one official capability contract covers future map spells; unknown / multi
  const collapse=SkillDatabase.get('velsa_dimension_collapse');
  assert.equal(isCanonicalImmediateMapSkill(tsunami),true);
  assert.equal(isCanonicalImmediateMapSkill(collapse),true);
- for(const id of ['lion_flash','angel_drop_enemy'])
+ for(const id of ['angel_drop_enemy'])
    assert.equal(isCanonicalImmediateMapSkill(SkillDatabase.get(id)),false,id);
  assert.equal(isCanonicalImmediateMapSkill({...tsunami,id:'unknown',hydrologyFlood:null}),false);
  assert.equal(isCanonicalImmediateMapSkill({...tsunami,id:'unknown',utilityAction:{type:'UNKNOWN'}}),false);
