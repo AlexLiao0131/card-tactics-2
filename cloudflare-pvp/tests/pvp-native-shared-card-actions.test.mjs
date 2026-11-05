@@ -9,7 +9,7 @@ test('native online card choice is server-bound and cannot mutate a local hand',
   const ui={seat:0,match:{view:{phase:'PLAYER_CARD_PHASE',activeSeat:0,own:{hand:[
       {id:'imperial_swordsman_card'},{id:'fog_card'},{id:'starfall_card'}]}}},
     isCardPhase:()=>true,myTurn:()=>true,isConnected:()=>true,
-    update(){},request(action){orders.push(action);return true;}};
+    update(){},refreshNativePresentation(){},request(action){orders.push(action);return true;}};
   assert.equal(PvpTacticalUI.prototype.chooseCard.call(ui,'imperial_swordsman_card'),'TARGET');
   assert.deepEqual(ui.target,{cardId:'imperial_swordsman_card'});
   assert.equal(PvpTacticalUI.prototype.chooseCard.call(ui,'fog_card'),'SENT');
