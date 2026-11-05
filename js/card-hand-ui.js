@@ -257,6 +257,13 @@ export class CardHandUI{
       pendingCardId:previous?.handKey===handKey?previous.pendingCardId:null};
     this.render();
   }
+  /** Only committed card actions clear the remote target, not socket sends. */
+  acceptRemoteCardTarget(){
+    if(!this.remoteCards?.pendingCardId)return false;
+    this.remoteCards.pendingCardId=null;
+    this.previewId=null;this.detailsOpen=false;
+    this.render();return true;
+  }
   clearRemoteCards(){
     if(!this.remoteCards)return;
     this.remoteCards=null;this.mulligan.clear();this.openingHandRef=null;

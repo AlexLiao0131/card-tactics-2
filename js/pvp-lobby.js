@@ -475,12 +475,23 @@ export class PvpLobbyController {
           this.status(`權威 3D 畫面產生失敗：${packet.error}`,true);
         }
         if(packet.type==='MATCH_ACK'){
+          const pending=this.lastCommand?.envelope;
+          if(pending && packet.commandId!==pending.commandId)return;
+          // Server committed the requested card, not merely received a socket
+          // frame. Only NOW may the shared hand and battlefield exit aiming.
+          if(pending?.commandId===packet.commandId &&
+              ['DEPLOY_CARD','PLAY_TARGET_CARD'].includes(pending.action?.type)){
+            this.tacticalUI?.cancelCardTarget();
+            this.cardUI?.acceptRemoteCardTarget?.();
+          }
           this.commandInFlight=false;
           this.lastCommand=null;
           this.syncNativeCards();
         }
         if(packet.type==='ERROR'){
+          // A declined deployment does NOT consume the card or end targeting.
           this.commandInFlight=false;
+          this.lastCommand=null;
           this.syncNativeCards();
           this.status(`伺服器拒絕操作：${packet.error}`,true);
           this.tacticalUI?.update();

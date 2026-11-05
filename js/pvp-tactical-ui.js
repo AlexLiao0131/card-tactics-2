@@ -5,6 +5,8 @@
  * identifiers published by the canonical server, never local rule outcomes.
  */
 import { CardDatabase } from './card-database.js';
+import './terrain-database.js';
+import { DeploymentEngine } from './deployment-engine.js';
 import './card-phase-controller.js';
 import { SkillDatabase } from './skill-database.js';
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from './coordinate-system.js';
@@ -84,6 +86,23 @@ export class PvpTacticalUI {
     return false;
   }
   cancelCardTarget(){this.cancelTarget();this.update();this.refreshNativePresentation();}
+  /** The seat-private server projection is authoritative. Older Workers that
+   * predate deployableTiles can be shown via the SAME official DeploymentEngine,
+   * using only server-published map/ownership. The server still validates each
+   * command, so this read-only compatibility path grants no gameplay authority.
+   */
+  deploymentTiles(){
+    const v=this.match?.view;
+    if(Array.isArray(v?.deployableTiles))return v.deployableTiles;
+    const battlefield=v?.battlefield;
+    const map=battlefield?.map||this.serverSnapshot?.map;
+    const stage={deploymentPoints:battlefield?.deploymentPoints};
+    if(!Array.isArray(map?.tiles)||!Array.isArray(stage.deploymentPoints))return null;
+    const owner=this.seat===0?'PLAYER':'ENEMY';
+    return DeploymentEngine.area(stage,owner).filter(tile=>
+      DeploymentEngine.canDeploy({stage,map,units:v?.units||[],owner,x:tile.x,y:tile.y}));
+  }
+
   request(action){
     if(!this.isConnected())return false;
     if(!this.myTurn()&&!(action?.type==='BEGIN_BATTLE'&&
@@ -124,7 +143,7 @@ export class PvpTacticalUI {
     const deploying=this.isCardPhase()&&this.myTurn()&&
       this.mode==='DEPLOY'&&!!this.target?.cardId;
     const deployable=new Set(deploying
-      ?(this.match.view.deployableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
+      ?(this.deploymentTiles()||[]).map(t=>`${t.x},${t.y}`):[]);
     const tiles=source.map.tiles.map(tile=>({
       ...tile,reachable:reachable.has(`${tile.x},${tile.y}`),
       // The canonical server owns legality. Do not tint every colored home
@@ -498,7 +517,13 @@ export class PvpTacticalUI {
     if(this.isCardPhase()&&type==='DEPLOY'&&choice?.cardId){
       // Reject unlit cells locally. The server will independently recompute
       // the exact same DeploymentEngine.canDeploy before spending crystals.
-      if(!(v.deployableTiles||[]).some(tile=>tile.x===x&&tile.y===y))return false;
+      const legal=this.deploymentTiles();
+      if(!legal){
+        const status=document.getElementById('turnStatus');
+        if(status)status.textContent='PVP 部署地格資料尚未同步，請重新連線並確認 Worker 版本。';
+        return false;
+      }
+      if(!legal.some(tile=>tile.x===x&&tile.y===y))return false;
       action={type:'DEPLOY_CARD',cardId:choice.cardId,x,y};
     }
     else if(this.isCardPhase()&&type==='TARGET_CARD'&&choice?.cardId)
@@ -535,7 +560,12 @@ export class PvpTacticalUI {
     }
     if(action){
       const sent=this.request(action);
-      if(sent){this.cancelTarget();this.update();this.refreshNativePresentation();}
+      // Single-player resolves synchronously, but the PVP Worker does not:
+      // an accepted WebSocket send is NOT an accepted gameplay command.
+      // Keep card target mode on rejection so the player can retry.
+      if(sent && !['DEPLOY','TARGET_CARD'].includes(type)){
+        this.cancelTarget();this.update();this.refreshNativePresentation();
+      }
       return sent;
     }
     if(type!=='SELECT')return false;
