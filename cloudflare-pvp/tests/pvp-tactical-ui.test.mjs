@@ -36,7 +36,8 @@ const soldier={id:'unit1',team:'P',characterId:'imperial_swordsman',x:2,y:3,
 const game=(seat,phase,revision,units=[soldier])=>({revision,view:{seat,phase,round:2,
   activeSeat:phase==='BATTLEFIELD_READY'?null:seat,
   own:{hand:[{id:'imperial_swordsman_card',name:'帝國劍士',cost:1}],crystals:4},
-  opponent:{handCount:5},units,battlefield:{cores:[{owner:'E',x:8,y:7}]}}});
+  opponent:{handCount:5},units,deployableTiles:phase==='PLAYER_CARD_PHASE'||phase==='ENEMY_CARD_PHASE'?[{x:1,y:2}]:[],
+  battlefield:{cores:[{owner:'E',x:8,y:7}]}}});
 const clickActor=(f,unit=soldier)=>f.ui.tilePicked({seat:f.ui.seat,x:unit.x,y:unit.y});
 
 // The HTML is the same as the original local/Gemini tactical menu; its
@@ -435,4 +436,42 @@ test('native PvP aim shows only original cancel-cast button, no fabricated instr
     assert.equal(f.root.children.some(x=>x.textContent==='請點選地圖上的合法目標'),false);
     assert.ok(f.root.children.some(x=>x.textContent==='攻擊'));
   }finally{f.restore()}
+});
+
+
+test('PVP deployment highlights ONLY server-certified legal cells and never sends rejected coordinates',()=>{
+ const f=fixture();try{
+   const match=game(0,'PLAYER_CARD_PHASE',201);
+   match.view.deployableTiles=[{x:1,y:2},{x:1,y:3}];
+   f.ui.receiveMatch(match);
+   const published=[];
+   f.ui.bridge={renderer:{
+     highlights:{sync:view=>published.push(view)},unitHud:{sync:()=>{}},
+     syncActionAnchor:()=>{}
+   }};
+   f.ui.serverSnapshot={revision:201,map:{tiles:[{x:1,y:2},{x:1,y:3},{x:2,y:2}]},units:[]};
+   assert.equal(f.ui.chooseCard('imperial_swordsman_card'),'TARGET');
+   const view=published.at(-1);
+   assert.equal(view.map.tiles.find(t=>t.x===1&&t.y===2).deployable,true);
+   assert.equal(view.map.tiles.find(t=>t.x===2&&t.y===2).deployable,false);
+   assert.equal(f.ui.tilePicked({seat:0,x:2,y:2}),false);
+   assert.deepEqual(f.commands,[],'outside legal projected cells never reaches the socket');
+   assert.equal(f.ui.mode,'DEPLOY','invalid tile leaves selected card ready');
+   assert.equal(f.ui.tilePicked({seat:0,x:1,y:3}),true);
+   assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:1,y:3}]);
+   assert.equal(published.at(-1).map.tiles.some(t=>t.deployable),false,
+     'after sending the command, highlight clears without leaving another toolbar');
+ }finally{f.restore()}
+});
+
+test('seat one accepts only its authenticated server deployment coordinates',()=>{
+ const f=fixture(1);try{
+   const match=game(1,'ENEMY_CARD_PHASE',202,[]);
+   match.view.deployableTiles=[{x:9,y:8}];
+   f.ui.receiveMatch(match);
+   assert.equal(f.ui.chooseCard('imperial_swordsman_card'),'TARGET');
+   assert.equal(f.ui.tilePicked({seat:1,x:1,y:2}),false);
+   assert.equal(f.ui.tilePicked({seat:1,x:9,y:8}),true);
+   assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:9,y:8}]);
+ }finally{f.restore()}
 });

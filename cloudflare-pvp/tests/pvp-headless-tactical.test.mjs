@@ -326,3 +326,21 @@ test('facing changes do not discard the server-authoritative pending move cancel
  assert.deepEqual({x:unit.x,y:unit.y},before);
  assert.equal(unit.moved,false);
 });
+
+
+test('tactical seat view projects only actually legal deployment locations and clears after phase',()=>{
+ const g=make();
+ const own=tacticalDebugProjection(g,0).deployableTiles;
+ assert.ok(own.length>0);
+ assert.deepEqual(tacticalDebugProjection(g,1).deployableTiles,[],
+   'inactive opponent never receives an actionable deployment area');
+ const picked=own[0];
+ deployment(g,picked);
+ assert.equal(tacticalDebugProjection(g,0).deployableTiles.some(t=>t.x===picked.x&&t.y===picked.y),false);
+ resolveCanonicalPlayerCommand(g,{type:'END_CARD_PHASE'},0);
+ assert.deepEqual(tacticalDebugProjection(g,0).deployableTiles,[]);
+ resolveCanonicalPlayerCommand(g,{type:'END_TACTICAL_PHASE'},0);
+ const enemy=tacticalDebugProjection(g,1).deployableTiles;
+ assert.ok(enemy.length>0,'opponent receives its own side of the official map');
+ assert.equal(enemy.some(t=>t.x===picked.x&&t.y===picked.y),false);
+});

@@ -163,3 +163,20 @@ test('PvP opening hand uses the original CardHandUI on battleScreen, never a sec
     assert.deepEqual(commands.at(-1).envelope.action,{type:'END_CARD_PHASE'});
   }finally{restore();}
 });
+
+
+test('a rejected PVP move/deployment is NOT presented as a network disconnect',()=>{
+ const {node,restore}=fakeDom();
+ try{
+   const controller=new PvpLobbyController({
+     shell:{show:()=>{}},cardUI:{setRemoteCards:()=>{},clearRemoteCards:()=>{}},
+     createSharedRenderer:()=>({sync(){}})
+   });
+   controller.battleVisible=true;
+   controller.status('伺服器拒絕操作：ILLEGAL_DEPLOY_TILE',true);
+   assert.equal(node('turnStatus').textContent,'伺服器拒絕操作：ILLEGAL_DEPLOY_TILE');
+   assert.equal(node('lobbyStatus').dataset.error,'true');
+   controller.status('連線中斷，重試中…',true);
+   assert.equal(node('turnStatus').textContent,'連線中斷，重試中…');
+ }finally{restore()}
+});
