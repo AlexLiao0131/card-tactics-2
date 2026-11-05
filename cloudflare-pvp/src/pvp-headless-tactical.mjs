@@ -147,6 +147,22 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
   requireReady(game);
   if(!seatOwner(game,seat))fail('NOT_YOUR_TURN');
   return withCanonicalEngines(game,engine=>{
+    if(game.pendingMove&&action?.type!=='CANCEL_MOVE')game.pendingMove=null;
+    if(action?.type==='CANCEL_MOVE'){
+      if(game.phase!==TACTICAL_PHASE[seat]||
+         !sameKeys(action,['type','unitId'])||typeof action.unitId!=='string')
+        fail('INVALID_CANCEL_MOVE_COMMAND');
+      const origin=game.pendingMove;
+      const unit=game.units.find(u=>u.id===action.unitId&&u.team===UNIT_TEAM[seat]&&u.alive);
+      if(!unit||origin?.unitId!==unit.id||origin.seat!==seat||unit.acted||!unit.moved)
+        fail('NO_CANCELABLE_MOVE');
+      if(game.units.some(u=>u.alive&&u.id!==unit.id&&u.x===origin.x&&u.y===origin.y))
+        fail('MOVE_ORIGIN_OCCUPIED');
+      if(globalThis.TacticalActionController?.restorePendingMove(unit,origin)!==true)
+        fail('CANONICAL_MOVE_RESTORE_FAILED');
+      game.pendingMove=null;
+      return {accepted:true,state:game,unitId:unit.id};
+    }
     engine.unitRuntime.syncLiveRoster(game.units);
     const hooks=serverCallbacks(game,engine);
     // A blood-shadow attack has already committed teleport/drain before the
@@ -328,11 +344,13 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       if(!path.length||path.at(-1)?.x!==action.x||path.at(-1)?.y!==action.y)
         fail('ILLEGAL_MOVE_PATH');
       const environment=createCanonicalEnvironmentController(game,hooks);
-      const initial={x:unit.x,y:unit.y};
+      const initial={unitId:unit.id,seat,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};
       const movement=environment.traverseUnitPath(unit,path);
       createCanonicalAreaFields(game,engine,hooks).syncSmokeCover(unit);
       if(unit.alive && (unit.x!==initial.x||unit.y!==initial.y))engine.effect.interruptChannel(unit,'MOVE');
       unit.moved=true;
+      // As in the local game, an interrupted/forced movement is committed.
+      game.pendingMove=unit.alive&&movement?.completed===true?initial:null;
       return {accepted:true,state:game,movement};
     }
     if(action?.type==='END_TACTICAL_PHASE'){
@@ -481,6 +499,11 @@ export function tacticalDebugProjection(game,seat){
             return point&&DeploymentEngine.canCapture({stage,units:game.units,unit,point})
               ?{id:point.id,name:point.name}:null;
           })(),
+          reachableTiles:game.activeSeat===seat&&game.phase===TACTICAL_PHASE[seat]&&
+            !unit.acted&&!unit.moved&&!unit.waited
+              ?[...TacticalEngine.reachable(world.map,game.units,unit).entries()].map(([key,cost])=>{
+                const [x,y]=key.split(',').map(Number);return{x,y,cost};
+              }):[],
           flightControl:(()=>{
             const range=VerticalMobilityEngine.flightAltitudeRange(unit);
             const tile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
@@ -508,6 +531,7 @@ export function tacticalDebugProjection(game,seat){
             .map(skill=>({id:skill.id,name:skill.name,weaponSlot:skill.weapon}))
         }:{})
       })),
+      pendingMoveUnitId:game.pendingMove?.seat===seat?game.pendingMove.unitId:null,
       own:{crystals:game.cards[seat].crystals,hand:[...game.cards[seat].zones.hand]},
       opponent:{handCount:game.cards[1-seat].zones.hand.length},
       reactionOptions:game.pendingAttack?.defendingSeat===seat
