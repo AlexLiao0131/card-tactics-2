@@ -13,6 +13,7 @@ import { ItemInventoryEngine } from '../../js/item-inventory-engine.js';
 import { createOpeningGame, openingGameCore } from './pvp-match-core.mjs';
 import { pvpAuthoritativeMatchCore } from './pvp-authoritative-match-core.mjs';
 import { rendererEnvelopeForSeat } from './pvp-render-snapshot-transport.mjs';
+import { createRenderUpdate } from '../../js/pvp-render-delta.js';
 import { createAuthoritySession, commitAuthorityCommand, projectAuthoritySession }
   from './battle-authority.mjs';
 import { BATTLE_STORAGE_KEY } from './battle-store.mjs';
@@ -156,6 +157,8 @@ export default {
 };
 
 export class PvpRoom extends DurableObject {
+  // Ephemeral per-socket baselines: after DO hibernation/reconnect, send FULL again.
+  renderBaselines=new WeakMap();
   // One delivery boundary for every room socket. A broken connection must
   // never roll back an already-committed battle or prevent delivery to the
   // other authenticated seat. The closed seat can rejoin with a fresh ticket.
@@ -308,7 +311,10 @@ export class PvpRoom extends DurableObject {
       // Durable Object's own room code may label the render stream.
       if (typeof roomCode !== 'string' || roomCode.length !== 8) return;
       try {
-        this.sendSocketFrame(ws,rendererEnvelopeForSeat({session,seat,matchId:roomCode}));
+        const full=rendererEnvelopeForSeat({session,seat,matchId:roomCode});
+        const previous=this.renderBaselines.get(ws);
+        const frame=createRenderUpdate(previous,full);
+        if(this.sendSocketFrame(ws,frame))this.renderBaselines.set(ws,full);
       } catch (error) {
         // A presentation failure must not undo an already committed game
         // command or corrupt its revision; the client may reconnect/retry.
@@ -341,6 +347,18 @@ export class PvpRoom extends DurableObject {
     const seat=ws.deserializeAttachment()?.seat;
     if (seat!==0 && seat!==1) {
       this.sendSocketFrame(ws,{type:'ERROR',error:'UNAUTHORIZED'});return;
+    }
+    // Idempotent recovery path for a missed, incompatible or discarded delta.
+    // Never alter the authoritative battle or trust client-supplied revisions.
+    if (action.type==='REQUEST_RENDER_SNAPSHOT') {
+      const room=await this.ctx.storage.get('room');
+      const session=await this.ctx.storage.get(BATTLE_STORAGE_KEY);
+      if(!room||!session||!this.tacticalTestEnabled()) {
+        this.sendSocketFrame(ws,{type:'ERROR',error:'RENDER_UNAVAILABLE'});return;
+      }
+      this.renderBaselines.delete(ws);
+      this.sendMatchState(ws,session,seat,room.code);
+      return;
     }
     if (action.type==='MATCH_COMMAND') {
       let result,latest;
