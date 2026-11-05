@@ -70,7 +70,9 @@ export class PvpLobbyController {
     $('lobbyStatus').textContent=message;
     $('lobbyStatus').dataset.error=String(bad);
     if(this.battleVisible&&bad){const display=$('turnStatus');
-      if(display)display.textContent=`連線失敗：${message}`;}
+      // Server command rejection is not a dropped socket. Preserve the exact
+      // reason instead of mislabeling every gameplay validation as a disconnect.
+      if(display)display.textContent=message;}
   }
   async api(path,{name,token,cards,inventory}={}){
     const origin=apiOrigin();if(!origin)throw Error('PVP_SERVER_NOT_CONFIGURED');

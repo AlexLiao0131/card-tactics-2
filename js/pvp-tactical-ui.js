@@ -72,7 +72,7 @@ export class PvpTacticalUI {
     if(!available.some(card=>card.id===cardId))return false;
     const card=CardDatabase.get(cardId);
     if(CardDatabase.isCharacter(card)){
-      this.mode='DEPLOY';this.target={cardId};this.update();return 'TARGET';
+      this.mode='DEPLOY';this.target={cardId};this.update();this.refreshNativePresentation();return 'TARGET';
     }
     const commandKind=globalThis.CardPhaseController?.commandKind?.(card);
     if(commandKind==='INSTANT')
@@ -83,7 +83,7 @@ export class PvpTacticalUI {
     // Unknown types fail closed; the server owns its allowed card actions.
     return false;
   }
-  cancelCardTarget(){this.cancelTarget();this.update();}
+  cancelCardTarget(){this.cancelTarget();this.update();this.refreshNativePresentation();}
   request(action){
     if(!this.isConnected())return false;
     if(!this.myTurn()&&!(action?.type==='BEGIN_BATTLE'&&
@@ -121,8 +121,15 @@ export class PvpTacticalUI {
     const unit=this.isTacticalPhase()&&this.myTurn()?this.selectedUnit():null;
     const reachable=new Set(unit&&!unit.moved&&!unit.acted
       ?(unit.reachableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
+    const deploying=this.isCardPhase()&&this.myTurn()&&
+      this.mode==='DEPLOY'&&!!this.target?.cardId;
+    const deployable=new Set(deploying
+      ?(this.match.view.deployableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
     const tiles=source.map.tiles.map(tile=>({
-      ...tile,reachable:reachable.has(`${tile.x},${tile.y}`)
+      ...tile,reachable:reachable.has(`${tile.x},${tile.y}`),
+      // The canonical server owns legality. Do not tint every colored home
+      // area as selectable: some cells are blocked, occupied or enemy-owned.
+      deployable:deployable.has(`${tile.x},${tile.y}`)
     }));
     const view={...source,map:{...source.map,tiles},units:source.units.map(u=>({
       ...u,selected:!!(unit&&u.id===unit.id)
@@ -488,8 +495,12 @@ export class PvpTacticalUI {
     const unit=v.units?.find(candidate=>candidate.x===x&&candidate.y===y&&candidate.alive!==false);
     const type=this.mode,choice=this.target;
     let action=null;
-    if(this.isCardPhase()&&type==='DEPLOY'&&choice?.cardId)
+    if(this.isCardPhase()&&type==='DEPLOY'&&choice?.cardId){
+      // Reject unlit cells locally. The server will independently recompute
+      // the exact same DeploymentEngine.canDeploy before spending crystals.
+      if(!(v.deployableTiles||[]).some(tile=>tile.x===x&&tile.y===y))return false;
       action={type:'DEPLOY_CARD',cardId:choice.cardId,x,y};
+    }
     else if(this.isCardPhase()&&type==='TARGET_CARD'&&choice?.cardId)
       action={type:'PLAY_TARGET_CARD',cardId:choice.cardId,x,y};
     else if(this.isTacticalPhase()&&choice?.unitId){
@@ -524,7 +535,7 @@ export class PvpTacticalUI {
     }
     if(action){
       const sent=this.request(action);
-      if(sent){this.cancelTarget();this.update();}
+      if(sent){this.cancelTarget();this.update();this.refreshNativePresentation();}
       return sent;
     }
     if(type!=='SELECT')return false;
