@@ -147,7 +147,11 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
   requireReady(game);
   if(!seatOwner(game,seat))fail('NOT_YOUR_TURN');
   return withCanonicalEngines(game,engine=>{
-    if(game.pendingMove&&action?.type!=='CANCEL_MOVE')game.pendingMove=null;
+    // Viewing/rotating the moved actor is NOT a tactical commitment.
+    // Preserve the official pending-move origin until an actual action
+    // commits it, or until CANCEL_MOVE explicitly restores it.
+    if(game.pendingMove&& !['CANCEL_MOVE','ROTATE_UNIT','ADJUST_FLIGHT_ALTITUDE'].includes(action?.type))
+      game.pendingMove=null;
     if(action?.type==='CANCEL_MOVE'){
       if(game.phase!==TACTICAL_PHASE[seat]||
          !sameKeys(action,['type','unitId'])||typeof action.unitId!=='string')
