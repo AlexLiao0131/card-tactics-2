@@ -23,7 +23,12 @@ test('native app has one Babylon battle canvas, original deck and preparation sc
   assert.match(main,/new ShellUI\(runtime,null\)/);
   assert.match(main,/new PvpLobbyController\(\{shell,createSharedRenderer:sharedBattleRenderer,cardUI,battleUI,unitControlUI\}\)/);
   assert.match(main,/onTilePicked:\(x,y\)=>pvp\?\.isBattleActive\(\)/);
-  assert.match(read('js/shell-ui.js'),/this\.shell\.openDeck|this\.pvp\?\.openLobby|this\.pvp\?\.suspendForLocalBattle/);
+  // The PVP controller owns original deck-screen entry; ShellUI only forwards navigation.
+  const shell=read('js/shell-ui.js'),pvpLobby=read('js/pvp-lobby.js');
+  assert.match(shell,/attachPvp\(controller\)\{this\.pvp=controller/);
+  assert.match(shell,/this\.pvp\?\.openLobby\(/);
+  assert.match(shell,/this\.pvp\?\.suspendForLocalBattle\(/);
+  assert.match(pvpLobby,/this\.shell\.openDeck\(/);
   assert.match(read('js/card-hand-ui.js'),/setRemoteCards\(/);
   assert.doesNotMatch(read('js/pvp-lobby.js'),/displayOpening\(|mulliganOpening|openingHand/);
 });

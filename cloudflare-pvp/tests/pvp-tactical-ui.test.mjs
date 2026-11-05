@@ -129,11 +129,11 @@ test('native UnitControlUI shares online selection, orientation and flight butto
 
 test('original SkillDatabase long-press registry is shared with PvP buttons',()=>{
   const f=fixture();try{
-    const actor={...soldier,attackSkills:[{id:'imperial_sword_slash',name:'劍斬'}]};
+    const actor={...soldier,attackSkills:[{id:'slash',name:'劍斬'}]};
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',63,[actor]));
     f.ui.selectUnit(actor.id);f.click('攻擊');
-    const button=f.button('攻擊｜劍斬');
-    assert.equal(BattleCommandMenuUI.skillRegistry.get(button)?.id,'imperial_sword_slash');
+    const button=f.button('劍斬');
+    assert.equal(BattleCommandMenuUI.skillRegistry.get(button)?.id,'slash');
   }finally{f.restore()}
 });
 
@@ -141,7 +141,8 @@ test('native actor command, movement and end turn only propose canonical instruc
   const f=fixture();try{
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',6));clickActor(f);
     f.click('狀態');assert.deepEqual(f.inspect,['unit1']);
-    f.click('移動');f.ui.tilePicked({seat:0,x:3,y:3});
+    assert.equal(f.root.children.some(x=>x.textContent==='移動'),false);
+    f.ui.tilePicked({seat:0,x:3,y:3});
     f.ui.endPhase();
     assert.deepEqual(f.commands,[{type:'MOVE_UNIT',unitId:'unit1',x:3,y:3},{type:'END_TACTICAL_PHASE'}]);
     f.click('道具');assert.equal(f.button('沒有可用道具').disabled,true);
@@ -156,21 +157,21 @@ test('original battlefield command mode allows map movement without a second MOV
 });
 test('offensive skill choice survives display refresh, attacks enemy, or targets original core',()=>{
   const f=fixture();try{
-    const actor={...soldier,attackSkills:[{id:'slash',name:'斬擊'},{id:'special_slash',name:'特殊斬擊'}]};
+    const actor={...soldier,coreAttackSkillIds:['slash','heavy_slash'],attackSkills:[{id:'slash',name:'斬擊'},{id:'heavy_slash',name:'特殊斬擊'}]};
     const enemy={...soldier,id:'victim',team:'E',x:3,y:3};
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',8,[actor,enemy]));clickActor(f);
-    f.click('攻擊');f.click('攻擊｜特殊斬擊');
+    f.click('攻擊');f.click('特殊斬擊');
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',9,[actor,enemy]));
     f.ui.tilePicked({seat:0,x:3,y:3});
-    assert.deepEqual(f.commands,[{type:'DECLARE_ATTACK',attackerId:'unit1',targetId:'victim',skillId:'special_slash'}]);
-    f.click('攻擊');f.click('攻擊 Core｜斬擊');
+    assert.deepEqual(f.commands,[{type:'DECLARE_ATTACK',attackerId:'unit1',targetId:'victim',skillId:'heavy_slash'}]);
+    f.click('攻擊');f.click('斬擊');
     f.ui.tilePicked({seat:0,x:8,y:7});
     assert.deepEqual(f.commands.at(-1),{type:'ATTACK_CORE',unitId:'unit1',skillId:'slash',coreOwner:'E'});
   }finally{f.restore()}
 });
 test('native special skill menu uses official ally heal and map-target magic options',()=>{
   const f=fixture();try{
-    const caster={...soldier,effectSkills:[{id:'heal',name:'治療'}],mapSkills:[{id:'wave',name:'海嘯'}]};
+    const caster={...soldier,effectSkills:[{id:'heal',name:'治療',target:'ALLY'}],mapSkills:[{id:'wave',name:'海嘯'}]};
     const ally={...soldier,id:'ally',x:3,y:3};
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',10,[caster,ally]));clickActor(f);
     f.click('魔法／特殊技能');f.click('治療');f.ui.tilePicked({seat:0,x:3,y:3});
@@ -178,6 +179,18 @@ test('native special skill menu uses official ally heal and map-target magic opt
     f.click('魔法／特殊技能');f.click('海嘯');f.ui.tilePicked({seat:0,x:5,y:4});
     assert.deepEqual(f.commands.at(-1),{type:'CAST_MAP_SKILL',unitId:'unit1',skillId:'wave',x:5,y:4});
   }finally{f.restore()}
+});
+test('enemy-target status spell can be selected only on enemy and sent without forged targeting data',()=>{
+ const f=fixture();try{
+   const caster={...soldier,effectSkills:[{id:'ophi_forest_entangle',name:'森之束縛',target:'ENEMY'}]};
+   const enemy={...soldier,id:'enemy',team:'E',x:3,y:3};
+   f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',17,[caster,enemy]));clickActor(f);
+   f.click('魔法／特殊技能');f.click('森之束縛');
+   assert.equal(f.ui.tilePicked({seat:0,x:2,y:3}),false);
+   assert.equal(f.commands.length,0);
+   assert.equal(f.ui.tilePicked({seat:0,x:3,y:3}),true);
+   assert.deepEqual(f.commands.at(-1),{type:'CAST_EFFECT_SKILL',unitId:'unit1',skillId:'ophi_forest_entangle',targetId:'enemy'});
+ }finally{f.restore()}
 });
 test('native special commands handle enchant, terrain, shadow, burst, area field, perception and transport',()=>{
   const f=fixture();try{
@@ -206,8 +219,8 @@ test('native special commands handle enchant, terrain, shadow, burst, area field
 });
 test('pending enchantment only offers original weapon followup and finish',()=>{
   const f=fixture();try{
-    const actor={...soldier,attackSkills:[{id:'black',name:'黑劍',weaponSlot:'sword'},
-      {id:'bow',name:'弓',weaponSlot:'bow'}]};
+    const actor={...soldier,attackSkills:[{id:'black_slash',name:'黑劍',weaponSlot:'sword'},
+      {id:'bow_shot',name:'弓',weaponSlot:'bow'}]};
     const match=game(0,'PLAYER_TACTICAL_PHASE',12,[actor]);
     match.view.enchantmentFollowup={unitId:'unit1',weaponSlot:'sword'};
     f.ui.receiveMatch(match);f.ui.selectUnit('unit1');
@@ -288,4 +301,52 @@ test('same original native item menu handles drop, pickup and ally transfer with
   ]);
   assert.equal(f.root.id,'skillBar');
  }finally{f.restore()}
+});
+
+test('the native skill category, name, range and resources are shared by online PVP',()=>{
+  const f=fixture();try{
+    const actor={...soldier,attackSkills:[
+      {id:'slash',name:'制式斬擊',range:{min:1,max:1},resourceLabel:'不消耗',usable:true},
+      {id:'magic_bolt',name:'魔力彈',range:{min:2,max:4},resourceLabel:'10 MP',usable:true}
+    ]};
+    const enemy={...soldier,id:'enemy1',team:'E',x:4,y:3};
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',99,[actor,enemy]));clickActor(f);
+    f.click('攻擊');
+    assert.ok(f.button('制式斬擊｜射程 1-1｜不消耗'));
+    assert.equal(f.root.children.some(x=>x.textContent?.includes('魔力彈')),false,
+      'MAGIC must not be silently reclassified as ATTACK');
+    f.click('返回');f.click('魔法／特殊技能');
+    assert.ok(f.button('魔力彈｜射程 2-4｜10 MP'));
+    assert.equal(f.root.children.some(x=>x.textContent?.includes('攻擊 Core')),false,
+      'no invented extra Core button');
+    f.click('魔力彈｜射程 2-4｜10 MP');
+    f.ui.tilePicked({seat:0,x:4,y:3});
+    assert.deepEqual(f.commands,[{type:'DECLARE_ATTACK',attackerId:'unit1',targetId:'enemy1',skillId:'magic_bolt'}]);
+  }finally{f.restore()}
+});
+
+test('a missing server capability cannot fabricate Core attacks or an illegal skill choice',()=>{
+  const f=fixture();try{
+    const actor={...soldier,attackSkills:[{id:'invalid_future_skill',name:'錯誤技能'},
+      {id:'slash',name:'制式斬擊'}]};
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',101,[actor]));clickActor(f);
+    f.click('攻擊');assert.ok(f.button('制式斬擊'));
+    assert.equal(f.root.children.some(x=>x.textContent==='錯誤技能'),false);
+    f.click('制式斬擊');
+    assert.equal(f.ui.tilePicked({seat:0,x:8,y:7}),false,
+      'server has not certified this actor and skill for core attack');
+    assert.deepEqual(f.commands,[]);
+    assert.equal(f.root.children.some(x=>x.textContent==='結束戰棋階段'),false,
+      'the original end-turn button is the sole command');
+  }finally{f.restore()}
+});
+
+test('native no-selection PvP menu never fabricates an additional end-turn button',()=>{
+  const f=fixture();try{
+    f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',106,[soldier]));
+    assert.ok(f.controls.endTurn.hidden===false);
+    assert.equal(f.root.children.some(x=>x.textContent==='結束戰棋階段'),false);
+    assert.equal(f.ui.endPhase(),true);
+    assert.deepEqual(f.commands,[{type:'END_TACTICAL_PHASE'}]);
+  }finally{f.restore()}
 });
