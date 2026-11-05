@@ -129,10 +129,17 @@ export class PvpTacticalUI {
     }))};
     // No terrain/water redraw for a local selection. Reuse the exact native
     // overlay/HUD/anchor consumers and their existing geometry/DOM nodes.
-    renderer.highlights?.sync(view);
-    renderer.unitHud?.sync(view);
-    renderer.syncActionAnchor?.(view);
-    renderer.lastState=view;
+    // Delegate every interactive overlay to the SAME BabylonRenderer used by
+    // local/Gemini. Do not maintain a parallel online HUD/highlight renderer.
+    if(typeof renderer.syncInteractionPresentation==='function'){
+      if(renderer.syncInteractionPresentation(view)!==true)return false;
+    }else{
+      // Lightweight test adapters expose the native sub-renderers directly.
+      renderer.highlights?.sync(view);
+      renderer.unitHud?.sync(view);
+      renderer.syncActionAnchor?.(view);
+      renderer.lastState=view;
+    }
     this.onRendered(view);
     if(this.enchantCandidates.length)this.syncEnchantmentMarkers(this.enchantCandidates,this.selectedUnit());
     return true;
@@ -244,10 +251,11 @@ export class PvpTacticalUI {
   menuBack(to='command'){
     this.add('返回',()=>{this.cancelTarget();this.menu=to;this.update();});
   }
+  // CardHandUI already owns its original targeting bar. For tactical
+  // aim the ORIGINAL battle menu only needs the cancel action: no extra
+  // online-only heading, status column or disabled prompt.
   renderTargetPrompt(){
-    this.menuUI.heading('選擇目標');
-    this.add('請點選地圖上的合法目標',()=>{}, {disabled:true});
-    this.add('取消',()=>{this.cancelTarget();this.update();});
+    this.add('取消施放',()=>{this.cancelTarget();this.update();});
   }
   renderReaction(options){
     const {choices=[],defenses=[],counters=[],guardians=[]}=options||{};
@@ -379,8 +387,10 @@ export class PvpTacticalUI {
     const v=this.match.view,canAct=this.myTurn()&&this.isConnected();
     this.menuUI.clear();
     const end=document.getElementById('endTurn'),next=document.getElementById('nextUnit');
-    if(end){end.hidden=!this.isTacticalPhase();end.disabled=!canAct||!this.isTacticalPhase();}
-    if(next){next.hidden=!this.isTacticalPhase();next.disabled=!canAct||!this.isTacticalPhase();}
+    // Original controls belong to the actionable tactical phase only.
+    // Hide rather than leave a dead PvP control column on the opponent turn.
+    if(end){end.hidden=!this.isTacticalPhase()||!canAct;end.disabled=!canAct||!this.isTacticalPhase();}
+    if(next){next.hidden=!this.isTacticalPhase()||!canAct;next.disabled=!canAct||!this.isTacticalPhase();}
     if(v.phase==='MATCH_ENDED')return;
     if(v.phase==='BATTLEFIELD_READY')return;
     if(v.phase==='PVP_REACTION_PENDING'){
@@ -388,8 +398,8 @@ export class PvpTacticalUI {
       return;
     }
     if(this.isCardPhase()){
-      // One native CardHandUI is also the only card action UI.
-      if(this.mode==='DEPLOY'||this.mode==='TARGET_CARD')this.renderTargetPrompt();
+      // CardHandUI already renders the ORIGINAL bottom targeting strip,
+      // including cancellation. A second floating #skillBar duplicates it.
       return;
     }
     if(!this.isTacticalPhase()||!canAct)return;
@@ -525,6 +535,12 @@ export class PvpTacticalUI {
     if(this.isTacticalPhase()&&actor&&!actor.acted&&!actor.moved&&!unit&&
        actor.reachableTiles?.some(tile=>tile.x===x&&tile.y===y))
       return this.request({type:'MOVE_UNIT',unitId:actor.id,x,y});
+    // Same native command-panel collapse as the local game: tapping an empty
+    // non-actionable tile dismisses the menu, not the actor or its movement
+    // range. Re-selecting that actor opens the original command menu again.
+    if(this.isTacticalPhase()&&actor&&!unit&&this.menu!=='closed'){
+      this.menu='closed';this.update();return true;
+    }
     return false;
   }
   // Local renderer computes the anchor position. PvP supplies only its

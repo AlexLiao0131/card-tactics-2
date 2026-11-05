@@ -564,6 +564,24 @@ export class BabylonRenderer{
     }
   }
 
+  // Native interactive view refresh for every game mode. Online selection
+  // carries only read-only, server-certified movement tiles and the selected
+  // unit flag. This deliberately skips terrain, water, effects and game rules;
+  // the official full snapshot sync() owns those systems.
+  syncInteractionPresentation(state){
+    if(!state?.map?.tiles||!Array.isArray(state.units))return false;
+    const stages=[
+      ['highlights',()=>this.highlights.sync(state)],
+      ['unitHud',()=>this.unitHud.sync(state)],
+      ['actionAnchor',()=>this.syncActionAnchor(state)]
+    ];
+    let complete=true;
+    for(const [name,run] of stages)
+      if(!this.syncSubsystem(name,run))complete=false;
+    if(complete)this.lastState=state;
+    return complete;
+  }
+
   sync(state,presentationEvents=[]){
     const commitStarted=performance.now();
     const owners=()=>({
