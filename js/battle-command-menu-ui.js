@@ -47,6 +47,37 @@ export function battleSkillButtonLabel(skill,range=null,resourceLabel=null){
   return `${skill.name}｜射程 ${range.min}-${range.max}｜${resourceLabel}`;
 }
 
+
+// One roster-order identity/recipient grouping model for local and PvP weapon enchanting.
+// Presentation only: the server or TacticalActionController certifies all choices.
+export const ENCHANT_RECIPIENT_DIGITS=Object.freeze(["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"]);
+export function enchantmentRecipientGroups(candidates=[],toTarget=entry=>entry.target,toWeapon=entry=>entry.weapon){
+  const groups=new Map();
+  for(const entry of candidates){
+    const target=toTarget(entry),weapon=toWeapon(entry);
+    if(!target?.id||!weapon)continue;
+    if(!groups.has(target.id))groups.set(target.id,{target,weapons:[]});
+    groups.get(target.id).weapons.push(weapon);
+  }
+  return [...groups.values()];
+}
+export function enchantRecipientMark(ordinal){return ENCHANT_RECIPIENT_DIGITS[ordinal-1]||`#${ordinal}`;}
+export const enchantWeaponIcon=kind=>({BOW:"🏹",POLEARM:"🔱",TRIDENT:"🔱",HAMMER:"🔨",KNIFE:"🗡",RAPIER:"🗡",GREATSWORD:"⚔",SWORD:"⚔"}[String(kind||'').toUpperCase()]||"⚔");
+
+/** Same native numbered map marker used by local TacticalGame and PvP.
+ * Pure DOM presentation. No new scene, renderer, calculation or game state. */
+export function createEnchantmentRecipientMarker({self=false,identity=null,onSelect=()=>{}}={}){
+  const marker=document.createElement('button');marker.type='button';
+  marker.className='enchant-recipient-marker';
+  marker.textContent=self?'自己':identity?.mark||'?';
+  marker.title=`${self?'自己':`${identity?.name||'角色'} ${identity?.mark||''}`}｜點選查看附魔武器`;
+  marker.setAttribute('aria-label',marker.title);
+  marker.style.cssText='position:fixed;transform:translate(-50%,-100%);min-width:30px;height:30px;z-index:120;border:2px solid #6f9bb8;border-radius:50%;color:#fff3ca;background:#10283ce8;font:bold 14px system-ui;pointer-events:auto;touch-action:manipulation;padding:2px 5px;white-space:nowrap;';
+  marker.addEventListener('pointerdown',event=>event.stopPropagation());
+  marker.addEventListener('click',event=>{event.stopPropagation();onSelect();});
+  return marker;
+}
+
 export class BattleCommandMenuUI {
   // The original TacticalGame long-press inspector watches this one registry.
   // Both its local buttons and PvP buttons register official SkillDatabase

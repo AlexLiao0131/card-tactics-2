@@ -6,7 +6,8 @@
  */
 import { CardDatabase } from './card-database.js';
 import { SkillDatabase } from './skill-database.js';
-import { BattleCommandMenuUI, battleCommandEntries, battleSkillCategory, battleSkillButtonLabel } from './battle-command-menu-ui.js';
+import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from './coordinate-system.js';
+import { BattleCommandMenuUI, battleCommandEntries, battleSkillCategory, battleSkillButtonLabel, enchantmentRecipientGroups, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from './battle-command-menu-ui.js';
 
 const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTICAL_PHASE',
   'ENEMY_CARD_PHASE','ENEMY_TACTICAL_PHASE','PVP_REACTION_PENDING','MATCH_ENDED']);
@@ -38,7 +39,10 @@ export class PvpTacticalUI {
     this.onRendered=onRendered;this.onInspect=onInspect;this.onSelection=onSelection;
     this.match=null;this.bridge=null;this.closed=false;this.presented=false;
     this.selectedUnitId=null;this.mode='SELECT';this.menu='command';this.target=null;
-    this.renderToken=0;this.newestRender=null;
+    this.renderToken=0;this.newestRender=null;this.serverSnapshot=null;
+    this.enchantIdentities=new Map();this.enchantCounters=new Map();
+    this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
+    this.enchantMarkerScene=null;this.enchantMarkerObserver=null;this.enchantCandidates=[];
   }
   isActive(){return GAME_PHASES.has(this.match?.view?.phase);}
   myTurn(){return this.match?.view?.activeSeat===this.seat;}
@@ -47,8 +51,8 @@ export class PvpTacticalUI {
   selectedUnit(){return this.match?.view?.units?.find(unit=>unit.id===this.selectedUnitId)||null;}
   setPresented(value){
     this.presented=!!value;
-    if(!this.presented){this.menuUI.clear();this.onSelection(null,{canAct:false});return;}
-    this.update();this.publishSelection();
+    if(!this.presented){this.clearEnchantmentMarkers();this.menuUI.clear();this.onSelection(null,{canAct:false});return;}
+    this.update();this.publishSelection();this.refreshNativePresentation();
   }
   receiveMatch(match){
     if(this.closed||match?.view?.seat!==this.seat||!Number.isSafeInteger(match.revision))return false;
@@ -58,7 +62,7 @@ export class PvpTacticalUI {
     const selected=this.selectedUnit();
     if(previous!==match.view.phase || (this.selectedUnitId&&!selected))this.cancelTarget({clearSelection:!selected});
     if(selected?.acted&&!match.view.enchantmentFollowup && this.mode!=='SELECT')this.cancelTarget();
-    this.update();this.publishSelection();return true;
+    this.update();this.publishSelection();this.refreshNativePresentation();return true;
   }
   cancelTarget({clearSelection=false}={}){
     this.mode='SELECT';this.menu='command';this.target=null;
@@ -94,7 +98,7 @@ export class PvpTacticalUI {
     if(!units.length)return false;
     const index=units.findIndex(unit=>unit.id===this.selectedUnitId);
     this.selectedUnitId=units[(index+1)%units.length].id;
-    this.cancelTarget();this.update();this.publishSelection();return true;
+    this.cancelTarget();this.clearEnchantmentMarkers();this.update();this.publishSelection();this.refreshNativePresentation();return true;
   }
   endPhase(){
     if(this.isTacticalPhase()&&this.myTurn())return this.request({type:'END_TACTICAL_PHASE'});
@@ -103,11 +107,118 @@ export class PvpTacticalUI {
   selectUnit(unitId){
     const unit=this.match?.view?.units?.find(candidate=>candidate.id===unitId);
     if(!unit||unit.alive===false||unit.team!==UNIT_TEAM[this.seat])return false;
-    this.selectedUnitId=unit.id;this.cancelTarget();this.update();this.publishSelection();return true;
+    this.selectedUnitId=unit.id;this.cancelTarget();this.update();this.publishSelection();this.refreshNativePresentation();return true;
   }
   publishSelection(){
     const unit=this.presented&&this.isTacticalPhase()?this.selectedUnit():null;
     this.onSelection(unit,{canAct:!!(unit&&!unit.acted&&!unit.waited&&this.myTurn()&&this.isConnected())});
+  }
+  // The ORIGINAL HighlightRenderer and UnitHudOverlay consume the official
+  // Babylon snapshot. Selection is a local view choice; reachability is
+  // computed by the SERVER's own TacticalEngine and never guessed here.
+  refreshNativePresentation(){
+    const renderer=this.bridge?.renderer,source=this.serverSnapshot;
+    if(!this.presented||!renderer||!source||source.revision!==this.match?.revision)return false;
+    const unit=this.isTacticalPhase()&&this.myTurn()?this.selectedUnit():null;
+    const reachable=new Set(unit&&!unit.moved&&!unit.acted
+      ?(unit.reachableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
+    const tiles=source.map.tiles.map(tile=>({
+      ...tile,reachable:reachable.has(`${tile.x},${tile.y}`)
+    }));
+    const view={...source,map:{...source.map,tiles},units:source.units.map(u=>({
+      ...u,selected:!!(unit&&u.id===unit.id)
+    }))};
+    // No terrain/water redraw for a local selection. Reuse the exact native
+    // overlay/HUD/anchor consumers and their existing geometry/DOM nodes.
+    renderer.highlights?.sync(view);
+    renderer.unitHud?.sync(view);
+    renderer.syncActionAnchor?.(view);
+    renderer.lastState=view;
+    this.onRendered(view);
+    if(this.enchantCandidates.length)this.syncEnchantmentMarkers(this.enchantCandidates,this.selectedUnit());
+    return true;
+  }
+  enchantIdentity(target){
+    if(!target?.id)return null;
+    if(!this.enchantIdentities.has(target.id)){
+      const type=target.characterId||target.name||target.id;
+      const ordinal=(this.enchantCounters.get(type)||0)+1;
+      this.enchantCounters.set(type,ordinal);
+      this.enchantIdentities.set(target.id,{ordinal,mark:enchantRecipientMark(ordinal)});
+    }
+    return this.enchantIdentities.get(target.id);
+  }
+  clearEnchantmentMarkers(){
+    if(this.enchantMarkerScene&&this.enchantMarkerObserver)
+      this.enchantMarkerScene.onAfterRenderObservable.remove(this.enchantMarkerObserver);
+    this.enchantMarkerScene=null;this.enchantMarkerObserver=null;
+    this.enchantMarkers?.clear();this.enchantCandidates=[];
+    this.enchantMarkerRoot?.remove();this.enchantMarkerRoot=null;
+  }
+  focusEnchantmentRecipient(id){
+    const key=String(id);
+    for(const [targetId,marker] of this.enchantMarkers){
+      const active=targetId===key;
+      marker.style.opacity=active?'1':'.55';
+      marker.style.borderColor=active?'#fff0a0':'#6f9bb8';
+      marker.setAttribute('aria-pressed',String(active));
+    }
+    for(const button of this.root.querySelectorAll?.('[data-enchant-recipient]')||[]){
+      const active=button.dataset.enchantRecipient===key;
+      button.style.borderColor=active?'#ffe197':'#42566a';
+      button.style.background=active?'#304157':'#132130';
+      if(active)button.scrollIntoView?.({block:'nearest',inline:'nearest'});
+    }
+  }
+  updateEnchantmentMarkerPositions(){
+    const renderer=this.bridge?.renderer;
+    if(!this.presented||!renderer?.scene||!renderer?.camera?.camera||!renderer.engine)return;
+    const {scene,engine,canvas}=renderer,camera=renderer.camera.camera;
+    const viewport=camera.viewport.toGlobal(engine.getRenderWidth(),engine.getRenderHeight());
+    const rect=canvas.getBoundingClientRect();
+    const transform=scene.getTransformMatrix();
+    const sx=rect.width/Math.max(1,engine.getRenderWidth()),sy=rect.height/Math.max(1,engine.getRenderHeight());
+    for(const {target} of this.enchantCandidates){
+      const marker=this.enchantMarkers.get(String(target.id));if(!marker)continue;
+      const source=this.serverSnapshot?.units?.find(u=>u.id===target.id)||target;
+      if(!source||source.alive===false){marker.hidden=true;continue;}
+      const z=Number(source.renderZ??source.z??0);
+      const world=new BABYLON.Vector3(Number(source.x)*TILE_SIZE,z*ELEVATION_HEIGHT+UNIT_VISUAL_HEIGHT+.35,Number(source.y)*TILE_SIZE);
+      const projected=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),transform,viewport);
+      if(projected.z<0||projected.z>1){marker.hidden=true;continue;}
+      const x=rect.left+projected.x*sx,y=rect.top+projected.y*sy;
+      marker.hidden=x<rect.left-14||x>rect.right+14||y<rect.top-14||y>rect.bottom+14;
+      if(!marker.hidden){marker.style.left=`${x}px`;marker.style.top=`${y}px`;}
+    }
+  }
+  syncEnchantmentMarkers(groups,actor){
+    if(!groups.length||!this.presented||typeof document.body?.appendChild!=='function'){
+      this.clearEnchantmentMarkers();return;
+    }
+    if(!this.enchantMarkerRoot){
+      const root=document.createElement('div');root.className='enchantment-recipient-markers';
+      root.style.cssText='position:fixed;inset:0;z-index:119;pointer-events:none;overflow:hidden;';
+      document.body.appendChild(root);this.enchantMarkerRoot=root;
+    }
+    this.enchantCandidates=groups;
+    const desired=new Set(groups.map(group=>String(group.target.id)));
+    for(const [key,marker] of this.enchantMarkers)
+      if(!desired.has(key)){marker.remove();this.enchantMarkers.delete(key);}
+    for(const {target} of groups){
+      const key=String(target.id);if(this.enchantMarkers.has(key))continue;
+      const self=target.id===actor.id,identity=this.enchantIdentity(target);
+      const marker=createEnchantmentRecipientMarker({self,identity:{...identity,name:target.name},
+        onSelect:()=>this.focusEnchantmentRecipient(target.id)});
+      this.enchantMarkerRoot.appendChild(marker);this.enchantMarkers.set(key,marker);
+    }
+    const scene=this.bridge?.renderer?.scene;
+    if(scene&&scene!==this.enchantMarkerScene){
+      if(this.enchantMarkerScene&&this.enchantMarkerObserver)
+        this.enchantMarkerScene.onAfterRenderObservable.remove(this.enchantMarkerObserver);
+      this.enchantMarkerScene=scene;
+      this.enchantMarkerObserver=scene.onAfterRenderObservable.add(()=>this.updateEnchantmentMarkerPositions());
+    }
+    this.updateEnchantmentMarkerPositions();
   }
   rotateFacing(steps){
     const unit=this.selectedUnit();
@@ -176,10 +287,36 @@ export class PvpTacticalUI {
       `${skill.name}`,direct('CAST_SELF_UTILITY',
         {skillId:skill.id,variantId:skill.variantId}),
       {skill,disabled:skill.usable===false});
-    for(const choice of unit.enchantmentOptions||[])this.add(
-      `${choice.skillName}｜${choice.targetName}｜${choice.weaponName}`,
-      direct('CAST_ENCHANTMENT',{skillId:choice.skillId,variantId:choice.variantId,
-        targetId:choice.targetId,weaponSlot:choice.weaponSlot}));
+    // Same recipient -> weapon grouping and ①-⑳ identity as TacticalGame.
+    // No independently invented attack/enchantment choices: use the server's
+    // certified candidate list, only change its presentation.
+    const targets=new Map((this.match?.view?.units||[]).map(other=>[other.id,other]));
+    const groups=enchantmentRecipientGroups(unit.enchantmentOptions||[],
+      option=>targets.get(option.targetId)||{
+        id:option.targetId,name:option.targetName,characterId:null},
+      option=>option);
+    for(const {target,weapons} of groups){
+      const self=target.id===unit.id,identity=this.enchantIdentity(target);
+      const header=this.add(self?'自己':`${target.name||target.characterId||target.id} ${identity.mark}`,
+        ()=>this.focusEnchantmentRecipient(target.id));
+      header.dataset.enchantRecipient=String(target.id);
+      header.style.cssText+=';text-align:left;border:1px solid #42566a;background:#132130;font-weight:bold;';
+      const portrait=globalThis.VisualDatabase?.characterHudPortrait?.(target.characterId);
+      if(portrait&&typeof header.prepend==='function'){
+        const img=document.createElement('img');img.src=new URL(portrait,document.baseURI).href;
+        img.alt='';img.loading='lazy';
+        img.style.cssText='width:26px;height:26px;object-fit:cover;object-position:50% 17%;border-radius:5px;float:left;margin-right:7px;';
+        header.prepend(img);
+      }
+      for(const choice of weapons){
+        const character=globalThis.CharacterDatabase?.get?.(target.characterId);
+        const kind=choice.weaponKind||character?.weapons?.[choice.weaponSlot]?.weaponKind||choice.weaponSlot;
+        this.add(`　${enchantWeaponIcon(kind)} ${choice.weaponName}｜${choice.skillName}`,
+          direct('CAST_ENCHANTMENT',{skillId:choice.skillId,variantId:choice.variantId,
+            targetId:choice.targetId,weaponSlot:choice.weaponSlot}));
+      }
+    }
+    this.syncEnchantmentMarkers(groups,unit);
     for(const entry of unit.pickpocketOptions||[])this.add(
       `${entry.skillName} → ${entry.targetName}`,
       direct('CAST_PICKPOCKET',{skillId:entry.skillId,targetId:entry.targetId}));
@@ -209,6 +346,8 @@ export class PvpTacticalUI {
   }
   renderCommand(unit){
     this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
+    if(this.match?.view?.pendingMoveUnitId===unit.id&&unit.moved&&!unit.acted)
+      this.add('取消移動',()=>this.request({type:'CANCEL_MOVE',unitId:unit.id}));
     const commands={
       CAPTURE:()=>this.request({type:'CAPTURE_POINT',unitId:unit.id}),
       ATTACK:()=>{this.menu='attack';this.update();},
@@ -225,16 +364,15 @@ export class PvpTacticalUI {
   }
   update(){
     if(this.closed||!this.presented||!this.isActive())return;
+    if(this.menu!=='special'||this.mode!=='SELECT'||!this.isTacticalPhase())
+      this.clearEnchantmentMarkers();
     const v=this.match.view,canAct=this.myTurn()&&this.isConnected();
     this.menuUI.clear();
     const end=document.getElementById('endTurn'),next=document.getElementById('nextUnit');
     if(end){end.hidden=!this.isTacticalPhase();end.disabled=!canAct||!this.isTacticalPhase();}
     if(next){next.hidden=!this.isTacticalPhase();next.disabled=!canAct||!this.isTacticalPhase();}
     if(v.phase==='MATCH_ENDED')return;
-    if(v.phase==='BATTLEFIELD_READY'){
-      if(this.seat===0&&this.isConnected())this.add('開始戰鬥',()=>this.request({type:'BEGIN_BATTLE'}));
-      return;
-    }
+    if(v.phase==='BATTLEFIELD_READY')return;
     if(v.phase==='PVP_REACTION_PENDING'){
       if(canAct)this.renderReaction(v.reactionOptions);
       return;
@@ -261,7 +399,6 @@ export class PvpTacticalUI {
     const actor=this.selectedUnit();
     if(!actor||actor.team!==UNIT_TEAM[this.seat]||actor.acted&&!followup){
       this.selectedUnitId=null;
-      this.add('點選自己的角色',()=>{}, {disabled:true});
       return;
     }
     if(this.mode!=='SELECT'){
@@ -368,7 +505,8 @@ export class PvpTacticalUI {
     // Same as the original command mode: an empty reachable tile proposes
     // movement without forcing a separate Move submenu. Server checks range.
     const actor=this.selectedUnit();
-    if(this.isTacticalPhase()&&actor&&!actor.acted&&!actor.moved&&!unit)
+    if(this.isTacticalPhase()&&actor&&!actor.acted&&!actor.moved&&!unit&&
+       actor.reachableTiles?.some(tile=>tile.x===x&&tile.y===y))
       return this.request({type:'MOVE_UNIT',unitId:actor.id,x,y});
     return false;
   }
@@ -393,7 +531,11 @@ export class PvpTacticalUI {
       });
       if(this.closed||token!==this.renderToken)return false;
       const updated=this.bridge.accept(packet);
-      if(updated){this.anchorMenu();this.onRendered(packet.snapshot);this.publishSelection();}
+      if(updated){
+        this.serverSnapshot=packet.snapshot;
+        this.refreshNativePresentation();
+        this.publishSelection();
+      }
       return updated;
     }catch(error){
       const node=document.getElementById('turnStatus');
@@ -403,7 +545,8 @@ export class PvpTacticalUI {
   }
   close(){
     if(this.closed)return;
-    this.closed=true;this.renderToken++;
+    this.closed=true;this.renderToken++;this.serverSnapshot=null;
+    this.clearEnchantmentMarkers();
     this.bridge?.close();this.bridge=null;
     this.menuUI.clear();this.onSelection(null,{canAct:false});
   }

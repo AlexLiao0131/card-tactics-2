@@ -46,8 +46,10 @@ function weaponIconKind(weapon){
   return"WEAPON";
 }
 function equipmentIcons(unit){
-  const live=globalThis.UnitRuntimeEngine?.getLiveUnit?.(unit.id);
-  const character=live?.character||unit.character;
+  const live=typeof document!=='undefined'&&document.body?.dataset?.battleMode==='PVP'
+    ?null:globalThis.UnitRuntimeEngine?.getLiveUnit?.(unit.id);
+  const character=live?.character||unit.character||
+    globalThis.CharacterDatabase?.get?.(unit.characterId);
   if(!character)return[];
   const icons=[],seen=new Set();
   const append=(item,group,key,label,typeLabel="")=>{

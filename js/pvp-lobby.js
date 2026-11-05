@@ -334,6 +334,8 @@ export class PvpLobbyController {
       this.readyToBattle=true;
       this.createTacticalUI().receiveMatch(data);
       this.syncNativeCards();
+      if(view.phase==='BATTLEFIELD_READY'&&this.session.seat===0)
+        this.sendCommand({type:'BEGIN_BATTLE'});
       if(!this.battleVisible&&!this.suspendedBattle)this.enterBattle();
     }else{
       this.syncNativeCards();
@@ -367,7 +369,14 @@ export class PvpLobbyController {
         phase:this.match?.view?.phase,seat:this.session?.seat,online:true});
       presentBattleWeather(snapshot);
     }
-    $('turnStatus').textContent=`PVP｜Round ${snapshot.round}｜${this.match?.view?.phase||''}`;
+    const phase=this.match?.view?.phase||'',seat=this.session?.seat;
+    const mine=this.match?.view?.activeSeat===seat;
+    const phaseLabel=phase==='MATCH_ENDED'?'戰鬥結束':
+      phase==='PVP_REACTION_PENDING'?'交戰應對':
+      phase==='BATTLEFIELD_READY'?'準備進入戰場':
+      phase.includes('CARD_PHASE')?`${mine?'我方':'敵方'}卡牌階段`:
+      phase.includes('TACTICAL_PHASE')?`${mine?'我方':'敵方'}戰棋階段`:'對戰中';
+    $('turnStatus').textContent=`Round ${snapshot.round}｜${phaseLabel}`;
   }
   tilePicked(x,y){
     if(this.battleVisible)this.tacticalUI?.tilePicked({seat:this.session?.seat,x,y});
@@ -412,6 +421,8 @@ export class PvpLobbyController {
         this.reconnects=0;
         this.status('已連上房間。');
         this.refreshRoom();this.tacticalUI?.update();this.syncNativeCards();
+        if(this.match?.view?.phase==='BATTLEFIELD_READY'&&session.seat===0)
+          this.sendCommand({type:'BEGIN_BATTLE'});
       };
       socket.onmessage=event=>{
         if(socket!==this.socket)return;

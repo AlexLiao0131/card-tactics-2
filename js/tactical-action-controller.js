@@ -1,6 +1,16 @@
 (()=>{
   "use strict";
 
+  // Shared by the original local controller and the authenticated PvP command host.
+  // This is the same movement-undo rule, not a second network movement engine.
+  function restorePendingMove(unit,origin){
+    if(!unit||!origin||origin.unitId!==unit.id||unit.acted||!unit.moved)return false;
+    unit.x=origin.x;unit.y=origin.y;unit.z=origin.z;
+    if(origin.facing)unit.facing=origin.facing;
+    unit.moved=false;
+    return true;
+  }
+
   function create(ctx){
     let pendingMove=null,pendingTransport=null,pendingEnchantment=null,enchantmentFollowup=null;
     const MAP_TRANSIT_ACTIONS=new Set(["TELEPORT_TO_TILE","WORMHOLE_TRANSIT"]);
@@ -920,8 +930,8 @@
     function cancelPendingMove(){
       const {selected}=state();
       if(!selected||pendingMove?.unitId!==selected.id||selected.acted)return false;
-      selected.x=pendingMove.x;selected.y=pendingMove.y;selected.z=pendingMove.z;if(pendingMove.facing)selected.facing=pendingMove.facing;
-      selected.moved=false;pendingMove=null;ctx.setCommandPanelCollapsed(false);ctx.setMode("command");
+      if(!restorePendingMove(selected,pendingMove))return false;
+      pendingMove=null;ctx.setCommandPanelCollapsed(false);ctx.setMode("command");
       ctx.pushLog(`${selected.character.name} 取消移動，返回原位置。`,"SYSTEM");ctx.render();ctx.emitState();return true;
     }
 
@@ -1180,5 +1190,5 @@
     });
   }
 
-  globalThis.TacticalActionController=Object.freeze({create});
+  globalThis.TacticalActionController=Object.freeze({create,restorePendingMove});
 })();

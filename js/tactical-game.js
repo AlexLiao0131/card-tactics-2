@@ -1,5 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
-import { BattleCommandMenuUI, battleCommandEntries, battleSkillsForMenu, battleSkillButtonLabel } from "./battle-command-menu-ui.js";
+import { BattleCommandMenuUI, battleCommandEntries, battleSkillsForMenu, battleSkillButtonLabel, enchantmentRecipientGroups as groupEnchantRecipients, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from "./battle-command-menu-ui.js";
 import { createBattleAreaFieldEngine,createBattleAreaFieldState } from "./battle-area-field-engine.js";
 import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle-perception-engine.js";
 (()=>{
@@ -351,7 +351,6 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   // Stable per-battle identity: a unit retains its ordinal even if it moves,
   // finishes its turn, is defeated or leaves the current enchantment range.
   const enchantIdentityById=new Map(),enchantIdentityCounters=new Map();
-  const ENCHANT_DIGITS=["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
   function registerEnchantIdentity(unit){
     if(!unit||enchantIdentityById.has(unit.id))return;
     const type=String(unit.character?.name||unit.characterId||"友軍");
@@ -363,7 +362,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     for(const entry of units||[])if(entry.team===TEAM.PLAYER)registerEnchantIdentity(entry);
     const identity=enchantIdentityById.get(unit.id);
     const ordinal=identity?.ordinal||1;
-    return{ordinal,mark:ENCHANT_DIGITS[ordinal-1]||`#${ordinal}`,
+    return{ordinal,mark:enchantRecipientMark(ordinal),
       name:identity?.type||unit.character?.name||"友軍"};
   }
   function onUnitCreated(unit){if(unit){EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);}return unit;}
@@ -525,14 +524,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   document.body.appendChild(enchantMarkerRoot);
   const enchantMarkerButtons=new Map();
   let enchantMenuCandidates=[];
-  function enchantRecipientGroups(pending){
-    const groups=new Map();
-    for(const entry of pending?.candidates||[]){
-      if(!groups.has(entry.target.id))groups.set(entry.target.id,{target:entry.target,weapons:[]});
-      groups.get(entry.target.id).weapons.push(entry.weapon);
-    }
-    return [...groups.values()];
-  }
+  function enchantRecipientGroups(pending){return groupEnchantRecipients(pending?.candidates||[]); }
   function focusEnchantmentRecipient(id){
     const pending=actionController?.enchantmentSelection?.();
     if(!pending||!pending.candidates.some(entry=>entry.target.id===id))return false;
@@ -595,14 +587,9 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       const key=String(group.target.id);
       if(enchantMarkerButtons.has(key))continue;
       const identity=enchantIdentity(group.target),self=group.target.id===pending.attacker.id;
-      const marker=document.createElement("button");marker.type="button";
-      marker.className="enchant-recipient-marker";
-      marker.textContent=self?"自己":identity.mark;
-      marker.title=`${self?"自己":`${identity.name} ${identity.mark}`}｜點選查看附魔武器`;
-      marker.setAttribute("aria-label",marker.title);
-      marker.style.cssText="position:fixed;transform:translate(-50%,-100%);min-width:30px;height:30px;z-index:120;border:2px solid #6f9bb8;border-radius:50%;color:#fff3ca;background:#10283ce8;font:bold 14px system-ui;pointer-events:auto;touch-action:manipulation;padding:2px 5px;white-space:nowrap;";
-      marker.addEventListener("pointerdown",event=>event.stopPropagation());
-      marker.addEventListener("click",event=>{event.stopPropagation();focusEnchantmentRecipient(group.target.id);});
+      const marker=createEnchantmentRecipientMarker({self,
+        identity:{...identity,name:identity.name},
+        onSelect:()=>focusEnchantmentRecipient(group.target.id)});
       enchantMarkerButtons.set(key,marker);enchantMarkerRoot.appendChild(marker);
     }
     const renderer=globalThis.CardTacticsRenderer;
@@ -763,7 +750,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
           header.prepend(img);
         }
         for(const weapon of weapons){
-          const btn=addActionButton(`　${({BOW:"🏹",POLEARM:"🔱",TRIDENT:"🔱",HAMMER:"🔨",KNIFE:"🗡",RAPIER:"🗡",GREATSWORD:"⚔",SWORD:"⚔"}[weapon.kind]||"⚔")} ${weapon.name}｜確認附魔`,()=>
+          const btn=addActionButton(`　${enchantWeaponIcon(weapon.kind)} ${weapon.name}｜確認附魔`,()=>
             actionController.commitCandidateEnchantment(target.id,weapon.slot),false,pending.skill);
           btn.dataset.enchantRecipient=String(target.id);
           btn.addEventListener("pointerenter",()=>focusEnchantmentRecipient(target.id));
