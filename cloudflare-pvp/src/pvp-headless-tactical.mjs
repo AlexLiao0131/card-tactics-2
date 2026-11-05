@@ -29,6 +29,8 @@ import { createCanonicalEnvironmentController } from './pvp-environment-controll
 import {declareCanonicalAttack,reactCanonicalAttack,pendingReactionOptions,canonicalDirectAttackSkillOptions} from './pvp-headless-engagement.mjs';
 import {advanceCanonicalRound} from './pvp-headless-turns.mjs';
 import {castCanonicalDirectEffectSkill,canonicalDirectEffectSkillOptions} from './pvp-headless-effect-skills.mjs';
+import {castCanonicalSelfUtility,canonicalSelfUtilityOptions} from './pvp-headless-self-utility.mjs';
+import {castCanonicalEnvironmentContact,canonicalEnvironmentContactOptions} from './pvp-headless-environment-contact.mjs';
 import {castCanonicalEnchantment,completeCanonicalEnchantmentFollowup,canonicalEnchantmentOptions,createOfficialEnchantmentController} from './pvp-headless-enchantment.mjs';
 import {playCanonicalInstantCard} from './pvp-headless-instant-cards.mjs';
 import {playCanonicalTargetedCard} from './pvp-headless-targeted-cards.mjs';
@@ -37,6 +39,8 @@ import {castCanonicalBloodBurst,canonicalBloodBurstSkills} from './pvp-headless-
 import {castCanonicalAreaField,canonicalAreaFieldSkillOptions,createCanonicalAreaFields} from './pvp-field-controller.mjs';
 import {castCanonicalMapSkill,canonicalImmediateMapSkillOptions} from './pvp-headless-map-skills.mjs';
 import {castCanonicalTransport,canonicalTransportOptions} from './pvp-headless-transport.mjs';
+import {castCanonicalCharge,canonicalChargeOptions} from './pvp-headless-charge.mjs';
+import {castCanonicalPickpocket,canonicalPickpocketOptions} from './pvp-headless-pickpocket.mjs';
 import {createCanonicalPerception,castCanonicalPerception,canonicalPerceptionOptions,canonicalWorldForViewer} from './pvp-perception-controller.mjs';
 import './pvp-canonical-setup.mjs';
 import '../../js/tactical-action-controller.js';
@@ -59,6 +63,22 @@ function requireReady(game){
 function seatOwner(game,seat){
   if(seat!==0&&seat!==1)fail('BAD_SEAT');
   return game.activeSeat===seat;
+}
+/** Core attacks have a stricter official orchestration contract than a
+ * normal direct engagement. This predicate is shared by the command reducer
+ * and the seat-private menu projection: the client does not infer eligibility.
+ */
+export function isCanonicalCoreAttackSkill(unit,skill){
+  return !!skill&&skill.category==='ATTACK'&&skill.target==='ENEMY'&&
+    (!skill.targetType||skill.targetType==='SINGLE')&&!!skill.weapon&&
+    !skill.utilityAction&&!skill.approach&&!skill.bloodShadow&&!skill.channel&&
+    !skill.effects&&!skill.relationEffects&&!skill.verdictCross&&
+    !skill.affixes?.length&&!unit.character?.passives?.includes('AMBUSH');
+}
+function officialSkillView(unit,skill,engine){
+  const range=TacticalEngine.range(skill);
+  return {id:skill.id,name:skill.name,range:{min:range.min,max:range.max},
+    resourceLabel:engine.unitRuntime.resourceLabel(unit,skill)};
 }
 function snapshotUnit(u){return {
   id:u.id,team:u.team,characterId:u.character?.id,x:u.x,y:u.y,z:u.z,
@@ -151,6 +171,10 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
     }
     if(action?.type==='CAST_PERCEPTION')return castCanonicalPerception(
       game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
+    if(action?.type==='CAST_PICKPOCKET')return castCanonicalPickpocket(
+      game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
+    if(action?.type==='CAST_CHARGE')return castCanonicalCharge(
+      game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
     if(action?.type==='CAST_TRANSPORT')return castCanonicalTransport(
       game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
     if(action?.type==='CAST_MAP_SKILL')return castCanonicalMapSkill(
@@ -191,6 +215,10 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
     if(action?.type==='PLAY_TARGET_CARD')return playCanonicalTargetedCard(
       game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
     if(action?.type==='PLAY_INSTANT_CARD')return playCanonicalInstantCard(
+      game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
+    if(action?.type==='CAST_ENVIRONMENT_CONTACT')return castCanonicalEnvironmentContact(
+      game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
+    if(action?.type==='CAST_SELF_UTILITY')return castCanonicalSelfUtility(
       game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
     if(action?.type==='CAST_EFFECT_SKILL')return castCanonicalDirectEffectSkill(
       game,action,seat,engine,hooks,matchObjectiveAuthority(game,hooks).checkMatchEnd);
@@ -344,11 +372,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       // UnitRuntimeEngine and TacticalEngine are canonical sources; complex
       // variant/ambush/enchantment follow-ups are not yet permitted here.
       const skill=globalThis.SkillDatabase.list(unit.character.skills).find(x=>x.id===action.skillId);
-      if(!skill||skill.category!=='ATTACK'||skill.target!=='ENEMY'||
-        (skill.targetType&&skill.targetType!=='SINGLE')||!skill.weapon||
-        skill.utilityAction||skill.approach||skill.bloodShadow||skill.channel||
-        skill.effects||skill.relationEffects||skill.verdictCross||skill.affixes?.length||
-        unit.character.passives?.includes('AMBUSH'))fail('FULL_CORE_SKILL_ORCHESTRATION_REQUIRED');
+      if(!isCanonicalCoreAttackSkill(unit,skill))fail('FULL_CORE_SKILL_ORCHESTRATION_REQUIRED');
       if(!TacticalEngine.canTarget(game.battlefield.map,unit,target,skill,game.environmentState))
         fail('ILLEGAL_CORE_ATTACK_TARGET');
       if(!engine.unitRuntime.canUseSkill(unit,skill))fail('ATTACK_RESOURCES_UNAVAILABLE');
@@ -427,11 +451,13 @@ export function tacticalDebugProjection(game,seat){
             .filter(skill=>engine.unitRuntime.canUseSkill(unit,skill))
             .map(skill=>({id:skill.id,name:skill.name})),
           transportOptions:canonicalTransportOptions(game,unit,engine),
+          chargeOptions:canonicalChargeOptions(unit,engine),
+          pickpocketOptions:canonicalPickpocketOptions(game,unit,engine),
           perceptionSkills:canonicalPerceptionOptions(unit,engine)
             .map(skill=>({id:skill.id,name:skill.name})),
           mapSkills:canonicalImmediateMapSkillOptions(unit,engine)
             .filter(skill=>engine.unitRuntime.canUseSkill(unit,skill))
-            .map(skill=>({id:skill.id,name:skill.name})),
+            .map(skill=>({id:skill.id,name:skill.name,category:skill.category})),
           bloodBurstSkills:canonicalBloodBurstSkills(unit,engine,game.units,{map:world.map,environmentState:game.environmentState})
             .map(skill=>({id:skill.id,name:skill.name})),
           // The same DeploymentEngine legality drives the offline and online
@@ -462,10 +488,20 @@ export function tacticalDebugProjection(game,seat){
             const info=VerticalMobilityEngine.describe(unit,tile);
             return {...range,altitude:info.flightAltitude,mode:info.mode};
           })(),
+          // Exactly the same official skill metadata as the offline menu,
+          // intersected with actual server-implemented command contracts.
           attackSkills:canonicalDirectAttackSkillOptions(unit)
-            .map(skill=>({id:skill.id,name:skill.name,weaponSlot:skill.weapon})),
+            .map(skill=>({...officialSkillView(unit,skill,engine),weaponSlot:skill.weapon,
+              usable:engine.unitRuntime.canUseSkill(unit,skill)})),
+          coreAttackSkillIds:SkillDatabase.list(unit.character.skills)
+            .filter(skill=>isCanonicalCoreAttackSkill(unit,skill)&&engine.unitRuntime.canUseSkill(unit,skill))
+            .map(skill=>skill.id),
+          selfUtilitySkills:canonicalSelfUtilityOptions(unit,engine,game.battlefield.map),
+          environmentContactSkillIds:canonicalEnvironmentContactOptions(unit,engine)
+            .map(skill=>skill.id),
           effectSkills:canonicalDirectEffectSkillOptions(unit,engine)
-            .map(skill=>({id:skill.id,name:skill.name,target:skill.target})),
+            .map(skill=>({...officialSkillView(unit,skill,engine),target:skill.target,
+              usable:engine.unitRuntime.canUseSkill(unit,skill)})),
           enchantmentOptions:canonicalEnchantmentOptions(game,unit,engine,serverCallbacks(game,engine)),
           enchantedTerrainSkills:canonicalDirectAttackSkillOptions(unit)
             .filter(skill=>engine.effect.weaponEnchantment(unit,skill.weapon))

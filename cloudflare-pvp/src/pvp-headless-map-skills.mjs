@@ -58,8 +58,29 @@ export function isCanonicalSpatialTransitSkill(skill){
 }
 
 /** All other synchronous map AOEs use exactly the same original controller. */
+/** Original immediate LINE strike, authored by SkillDatabase. Uses the
+ * SAME TacticalActionController.executeMapSkill / TacticalEngine geometry as
+ * the browser; no new PVP damage, traversal, or enchantment formulas. */
+export function isCanonicalLineTransitSkill(skill){
+  return !!skill&&skill.category==='ATTACK'&&skill.target==='TILE'&&
+    skill.targetType==='AOE'&&skill.shape==='LINE'&&
+    skill.moveToTarget===true&&skill.range&&
+    Number.isSafeInteger(skill.range.min)&&Number.isSafeInteger(skill.range.max)&&
+    skill.range.min>=1&&skill.range.max>=skill.range.min&&
+    Number.isFinite(skill.power)&&skill.power>0&&
+    typeof skill.weapon==='string'&&skill.weapon.length>0&&
+    typeof skill.attackType==='string'&&skill.attackType.length>0&&
+    !skill.utilityAction&&!skill.approach&&!skill.effects&&!skill.relationEffects&&
+    !skill.statusEffects?.length&&!skill.postEffects?.length&&
+    !skill.afterUseEffects?.length&&!skill.variants?.length&&!skill.channel&&
+    !skill.sanctuary&&!skill.smokeField&&!skill.bloodShadow&&!skill.bloodBurst&&
+    !skill.trapPlacement&&!skill.terrainTargeting&&!skill.environmentTarget&&
+    !skill.waterContact&&!skill.environmentForces&&!skill.hydrologyFlood&&
+    !skill.areaDamage&&!skill.aoeDamage&&!skill.stance&&!skill.verdictCross&&
+    !skill.affixes?.length;
+}
 export function isCanonicalImmediateMapSkill(skill){
-  if(isCanonicalSpatialTransitSkill(skill))return true;
+  if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill))return true;
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
      skill.target!=='TILE'||skill.targetType!=='AOE'||
      !Number.isFinite(Number(skill.radius))||Number(skill.radius)<0||
@@ -116,6 +137,8 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
     unitAt:(x,y)=>game.units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y)||null,
     coreAt:(x,y)=>game.battlefield.cores.find(c=>c.hp>0&&c.x===x&&c.y===y)||null,
     aoeTiles:(center,radius)=>TacticalEngine.aoeTiles(game.battlefield.map,center,radius),
+    lineTiles:(u,end)=>TacticalEngine.lineTiles(game.battlefield.map,u,end),
+    canTraverseMoveLine:(u,end)=>TacticalEngine.canTraverseMoveLine(game.battlefield.map,u,end),
     logEnvironmentEvent:environment.logEnvironmentEvent,
     resolveEnvironmentEvents:environment.resolveEnvironmentEvents,
     applyEnvironmentHazardToUnit:environment.applyEnvironmentHazardToUnit,

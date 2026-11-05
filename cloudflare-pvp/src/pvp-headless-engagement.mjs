@@ -1,9 +1,11 @@
+import {isCanonicalEnvironmentContactSkill} from './pvp-headless-environment-contact.mjs';
 /**
  * Experimental server-owned ATTACK -> DEFENDER_REACTION -> OFFICIAL RESOLUTION.
  * This is an orchestration adapter, not an alternative combat rules engine.
  * The production Worker must remain gated until full tactical/event/UI parity.
  */
 import {SkillDatabase} from '../../js/skill-database.js';
+import {resolveCanonicalChargeVariant} from './pvp-headless-charge.mjs';
 import {chooseAutonomousBattleReaction} from '../../js/battle-reaction-decision-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import '../../js/post-engagement-engine.js';
@@ -20,9 +22,15 @@ const exact=(o,keys)=>!!o&&typeof o==='object'&&!Array.isArray(o)&&
   Object.keys(o).sort().join('|')===keys.slice().sort().join('|');
 
 function combatant(game,id,team){return game.units?.find(u=>u.id===id&&u.alive&&u.team===team)||null;}
-/** A direct weapon or single-target magic attack. All damage and reactions use
- * the original BattleResolution; abilities needing additional orchestration
- * (movement, AoE, post-engagement terrain or enchantment) remain unavailable.
+/** One direct-target engagement uses the canonical BattleResolution for its
+ * COMPLETE result, not only its first damage number. Statuses, inherent
+ * multi-hits, hit/backstab rules, passive effects and forced displacement are
+ * executed by BattleResolution / PostEngagementEngine. No separate PVP skill
+ * IDs or numeric combat rules are maintained here.
+ *
+ * Skills with a separate map/choice/approach/cross-explosion operation must
+ * continue through their own canonical command; accepting them as a direct
+ * attack would silently discard part of the original skill.
  */
 export function isCanonicalDirectAttackSkill(skill){
   return !!skill&&['ATTACK','MAGIC','SPECIAL'].includes(skill.category)&&
@@ -30,10 +38,18 @@ export function isCanonicalDirectAttackSkill(skill){
     !!skill.weapon&&Number(skill.power)>0&&!!skill.attackType&&
     !skill.utilityAction&&!skill.approach&&!skill.moveToTarget&&!skill.bloodShadow&&
     !skill.channel&&!skill.effects&&!skill.relationEffects&&!skill.bloodBurst&&
-    !skill.verdictCross&&!skill.waterContact&&!skill.terrainTargeting&&
-    !skill.hydrologyFlood&&!skill.areaDamage&&!skill.highDimensional&&
-    !skill.postEffects?.length&&!skill.statusEffects?.length&&
-    !skill.afterUseEffects?.length&&!skill.affixes?.length;
+    (!skill.verdictCross||globalThis.PostEngagementEngine?.canResolveVerdictCross?.(skill))&&
+    !skill.terrainTargeting&&!skill.hydrologyFlood&&
+    !skill.areaDamage&&!skill.aoeDamage&&!skill.trapPlacement&&
+    !skill.environmentForces&&!skill.shape&&!skill.sanctuary&&!skill.smokeField&&
+    // Water-bullet's optional burning-terrain target is a separate map action;
+    // do not advertise the entire skill while that second route is absent.
+    (!skill.environmentTarget||isCanonicalEnvironmentContactSkill(skill))&&
+    (!skill.postEffects||skill.postEffects.every(e=>
+      (e.type==='KNOCKBACK'||e.type==='PULL')&&Number.isFinite(e.distance)))&&
+    (!skill.statusEffects||Array.isArray(skill.statusEffects))&&
+    (!skill.afterUseEffects||Array.isArray(skill.afterUseEffects))&&
+    (!skill.affixes||Array.isArray(skill.affixes));
 }
 export function canonicalDirectAttackSkillOptions(actor){
   if(!actor?.alive)return[];
@@ -147,10 +163,34 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
       if(entry.enchantment)enchantedImpact.resolveEnchantmentImpact(entry);
     },
     onPostEffect:entry=>{
-      if(entry?.result?.applied)fail('POST_ENGAGEMENT_FOLLOWUP_NOT_CONNECTED');
+      // Mirrors tactical-game.js logPostEffect: the core has already moved
+      // the target and resolved fall damage. The environment now receives
+      // collisions and the destination tile exactly once, including traps,
+      // water/current, smoke interaction and stage enter-tile events.
+      const {source,target,effect,result}=entry||{};
+      if(!result?.applied)return;
+      const moved=result.steps?.length||0;
+      if(moved>0)globalThis.EffectEngine?.interruptChannel?.(target,'FORCED_MOVE');
+      const visit=(event,mover)=>{
+        for(const collision of event?.collisions||[]){
+          environment.resolveCollisionRuntime(collision,{mover,source});
+          if(collision.chain&&collision.surface?.unit)
+            visit(collision.chain,collision.surface.unit);
+        }
+      };
+      visit(result,target);
+      callbacks.pushLog(`${source.character.name} → ${target.character.name}：${effect.type==='PULL'?'拉近':'擊退'} ${moved} 格。`,'BATTLE');
+      if(result.falls?.length)callbacks.pushLog(`${target.character.name} 墜落傷害 ${result.fallDamage||0}｜HP ${target.hp}。`,'BATTLE');
+      if(target.alive)environment.enterTile(target);
     }
   });
   if(!outcome.results.length)fail('OFFICIAL_COMBAT_RESOLUTION_EMPTY');
+  // Authored verdict's second hit is never a second action or a made-up PvP
+  // area attack: reuse exactly the offline PostEngagementEngine cross effect.
+  const verdict=skill.verdictCross?globalThis.PostEngagementEngine.resolveVerdictCross({
+    attacker,defender,skill,engagement:outcome,units:game.units,
+    random:engine.random,onLog:callbacks.pushLog,onDefeated:callbacks.handleDefeated
+  }):[];
   attacker.moved=true;attacker.acted=true;attacker.waited=true;
   if(game.pendingEnchantmentFollowup?.unitId===attacker.id)
     game.pendingEnchantmentFollowup=null;
@@ -159,7 +199,7 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
   game.activeSeat=p.attackingSeat;
   callbacks.pushLog(`${attacker.character.name} → ${defender.character.name}｜${skill.name}｜${results.map(e=>e.damage).join('/')} HP 損失`,'BATTLE');
   checkMatchEnd?.();
-  return {accepted:true,state:game,engagement:results};
+  return {accepted:true,state:game,engagement:results,verdict};
 }
 
 export function reactCanonicalAttack(game,action,seat,engine,callbacks,checkMatchEnd){
@@ -171,7 +211,12 @@ export function reactCanonicalAttack(game,action,seat,engine,callbacks,checkMatc
   const attacker=combatant(game,p.attackerId,TEAM[p.attackingSeat]);
   const defender=combatant(game,p.targetId,TEAM[p.defendingSeat]);
   if(!attacker||!defender)fail('PENDING_COMBATANT_MISSING');
-  const skill=basicAttackSkill(attacker,p.skillId);
+  const charged=p.kind==='CHARGE';
+  const charge=charged?resolveCanonicalChargeVariant(attacker,p.skillId,p.variantId,engine):null;
+  if(charged&&(!charge||charge.target!=='ENEMY'))fail('CANONICAL_CHARGE_SKILL_REQUIRED');
+  const skill=charged?{...charge,range:{min:1,max:1},approach:null,approachCommitted:true}
+    :basicAttackSkill(attacker,p.skillId);
+  if(charged&&!engine.unitRuntime.canUseSkill(attacker,skill))fail('CHARGE_RESOURCES_UNAVAILABLE');
   if(!TacticalEngine.canTarget(game.battlefield.map,attacker,defender,skill,game.environmentState))
     fail('ATTACK_TARGET_NO_LONGER_VALID');
   const opt=pendingReactionOptions(game,seat,engine);

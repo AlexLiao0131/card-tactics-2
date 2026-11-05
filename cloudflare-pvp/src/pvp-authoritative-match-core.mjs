@@ -36,14 +36,25 @@ export const pvpAuthoritativeMatchCore=Object.freeze({
     const view=experimentalTacticalCore.project(state,seat);
     const hand=state.cards[seat].zones.hand;
     const itemConsumptions={};
+    const team=seat===0?'P':'E';
     for(const unit of state.units||[]){
-      if(unit.team!==(seat===0?'P':'E'))continue;
-      for(const [id,count] of Object.entries(unit.itemConsumptions||{}))
+      // The original itemConsumptions field is a per-unit audit total.
+      // Subtract already-attributed uses before assigning legacy uses to the
+      // current team's seat, or a stolen potion would be double-charged.
+      if(unit.team===team)for(const [id,count] of Object.entries(unit.itemConsumptions||{})){
+        const attributed=['P','E'].reduce((sum,owner)=>
+          sum+Number(unit.itemConsumptionsByTeam?.[owner]?.[id]||0),0);
+        itemConsumptions[id]=(itemConsumptions[id]||0)+Math.max(0,count-attributed);
+      }
+      // The preparer's seat pays for a prepared item regardless of which
+      // unit ended up using it after theft, transfer or ground pickup.
+      for(const [id,count] of Object.entries(unit.itemConsumptionsByTeam?.[team]||{}))
         itemConsumptions[id]=(itemConsumptions[id]||0)+count;
     }
     return {
       ...view,stageId:state.stageId,seat,
-      own:{...view.own,itemConsumptions,hand:hand.map(id=>({
+      own:{...view.own,itemConsumptions,matchGold:state.matchRewards?.goldByTeam?.[team]||0,
+        hand:hand.map(id=>({
         id,name:CardDatabase.get(id)?.name||id,
         cost:CardDatabase.get(id)?.cost??null,
         type:CardDatabase.get(id)?.type||'UNKNOWN'

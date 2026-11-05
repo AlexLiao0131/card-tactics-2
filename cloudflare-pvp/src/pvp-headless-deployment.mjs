@@ -89,6 +89,8 @@ export function deployCanonicalCard(game, action, seat) {
     const loaded=ItemRuntimeEngine.initializeUnitInventory(created,selected.items,
       {owned:false,source:'PVP_PREPARATION'});
     if(loaded.length!==selected.items.length)throw new PvpCommandError('CANONICAL_ITEM_SETUP_FAILED');
+    // Preserve original preparation ownership even across theft, drop and pickup.
+    for(const {payload} of loaded)payload.preparationTeam=created.team;
   }
   // RuntimeEngine owns live state and keeps a map reference. The Durable
   // Object must store only the per-room structural state, not a map copy per

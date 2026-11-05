@@ -6,6 +6,8 @@
  * This bridge is temporary until all rule modules accept explicit DI.
  */
 import {createUnitRuntimeEngine} from '../../js/unit-runtime-engine.js';
+import {RewardEngine} from '../../js/reward-engine.js';
+import '../../js/reward-database.js';
 import {createEffectEngine} from '../../js/effect-engine.js';
 import {createBattleResolution} from '../../js/battle-resolution.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
@@ -47,7 +49,7 @@ export function withCanonicalEngines(state, execute) {
     globalThis.UnitRuntimeEngine=engine.unitRuntime;
     globalThis.BattleResolution=engine.battleResolution;
     // Do NOT use an async callback here: globals are restored on return.
-    const result=execute({...engine,random});
+    const result=RewardEngine.withMatchRewards(state,()=>execute({...engine,random}));
     if(result&&typeof result.then==='function')throw new PvpCommandError('ASYNCHRONOUS_GAME_CORE_FORBIDDEN');
     return result;
   } finally {

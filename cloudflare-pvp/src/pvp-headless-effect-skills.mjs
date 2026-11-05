@@ -17,19 +17,37 @@ const PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
 const exact=(obj,fields)=>!!obj&&typeof obj==='object'&&!Array.isArray(obj)&&
   Object.keys(obj).sort().join('|')===fields.slice().sort().join('|');
 
+/** A stance can travel through the existing effect pipeline only when its
+ * physical collision and defense profiles are carried by its applied BUFF.
+ * This is a structural contract, not an ID or character whitelist. */
+function isCanonicalAppliedStance(skill){
+  if(!skill?.stance)return false;
+  const rule=skill.stance;
+  if(typeof rule.type!=='string'||!rule.type||
+     !Array.isArray(skill.effects)||skill.effects.length!==1)return false;
+  const effect=skill.effects[0];
+  return skill.target==='SELF'&&effect?.type==='BUFF'&&
+    effect.id===rule.type&&Number.isInteger(effect.duration)&&effect.duration>0&&
+    effect.collision?.solid===true&&Array.isArray(effect.defenseProfiles)&&
+    effect.defenseProfiles.length>0&&
+    Object.keys(rule).every(k=>['type','protectsBehind','blocksEnemyRoute','enhancedGuard'].includes(k))&&
+    Object.values(rule).slice(1).every(value=>typeof value==='boolean');
+}
 export function isCanonicalDirectEffectSkill(skill){
+  const stance=isCanonicalAppliedStance(skill);
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
-      !['SELF','ALLY'].includes(skill.target)||
+      !['SELF','ALLY','ENEMY'].includes(skill.target)||
       (skill.targetType&&skill.targetType!=='SINGLE')||
       !Array.isArray(skill.effects)||!skill.effects.length||
       !skill.effects.every(e=>EffectEngine.isStandaloneDirectEffectType(e?.type))||
       Number(skill.power||0)!==0||skill.weapon||skill.attackType||
       skill.utilityAction||skill.channel||skill.sanctuary||skill.smokeField||
       skill.bloodBurst||skill.bloodShadow||skill.moveToTarget||skill.approach||
-      skill.stance||skill.areaDamage||skill.terrainTargeting||skill.highDimensional||
+      (skill.stance&&!stance)||skill.areaDamage||skill.terrainTargeting||skill.highDimensional||
       skill.hydrologyFlood||skill.waterContact||skill.relationEffects||
       skill.postEffects?.length||skill.afterUseEffects?.length||
-      skill.statusEffects?.length||skill.variants?.length||skill.affixes?.length)
+      skill.statusEffects?.length||skill.variants?.length||
+      (skill.affixes?.length&&!skill.targeting?.requiresObservationNetwork&&!stance))
     return false;
   return true;
 }
