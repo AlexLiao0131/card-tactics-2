@@ -24,7 +24,8 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
     const map=game.battlefield.map,cores=game.battlefield.cores;
     const context={
       TEAM:{PLAYER:'P',ENEMY:'E',NEUTRAL:'N'},
-      PHASE:{PLAYER:'PLAYER_TACTICAL_PHASE',CARD:'PLAYER_CARD_PHASE'},
+      PHASE:{PLAYER:seat===0?'PLAYER_TACTICAL_PHASE':'ENEMY_TACTICAL_PHASE',
+        CARD:seat===0?'PLAYER_CARD_PHASE':'ENEMY_CARD_PHASE'},
       viewerTeam:seat===0?'P':'E',
       state:()=>({map,cores,stage,environmentState:game.environmentState,
         units:game.units,round:game.round,phase:game.phase,
