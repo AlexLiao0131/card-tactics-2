@@ -134,22 +134,45 @@ export class PvpTacticalUI {
   // The ORIGINAL HighlightRenderer and UnitHudOverlay consume the official
   // Babylon snapshot. Selection is a local view choice; reachability is
   // computed by the SERVER's own TacticalEngine and never guessed here.
+  // The smaller MATCH_STATE is intentionally delivered before the expensive
+  // 3D render. The existing geometry can still show the NEW authority's
+  // reachable/owned cells while the corresponding full snapshot is in flight.
+  samePublicBattlefield(snapshot){
+    const expected=this.match?.view?.battlefield?.map,actual=snapshot?.map;
+    return !!(expected&&actual&&typeof expected.id==='string'&&
+      actual.id===expected.id&&actual.width===expected.width&&
+      actual.height===expected.height);
+  }
   refreshNativePresentation(){
     const renderer=this.bridge?.renderer,source=this.serverSnapshot;
-    if(!this.presented||!renderer||!source||source.revision!==this.match?.revision)return false;
+    if(!this.presented||!renderer||!source||!this.match||
+       source.revision>this.match.revision||!this.samePublicBattlefield(source))return false;
     const unit=this.isTacticalPhase()&&this.myTurn()?this.selectedUnit():null;
-    const reachable=new Set(unit&&!unit.moved&&!unit.acted
+    const reachable=new Set(unit&&!unit.moved&&!unit.acted&&!unit.waited
       ?(unit.reachableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
     const deploying=this.isCardPhase()&&this.myTurn()&&
       this.mode==='DEPLOY'&&!!this.target?.cardId;
     const deployable=new Set(deploying
       ?(this.deploymentTiles()||[]).map(t=>`${t.x},${t.y}`):[]);
-    const tiles=source.map.tiles.map(tile=>({
-      ...tile,reachable:reachable.has(`${tile.x},${tile.y}`),
-      // The canonical server owns legality. Do not tint every colored home
-      // area as selectable: some cells are blocked, occupied or enemy-owned.
-      deployable:deployable.has(`${tile.x},${tile.y}`)
-    }));
+    // MATCH_STATE already carries the public, server-owned sites. Reconcile
+    // their current owners even if a rendered frame is one revision behind;
+    // do not infer colors from seat or invent a client deployment rule.
+    const areaOwner=new Map();
+    for(const point of this.match.view.battlefield?.deploymentPoints||[]){
+      if(!['PLAYER','ENEMY','NEUTRAL'].includes(point.owner))continue;
+      for(const cell of point.area||[]){
+        const key=`${cell.x},${cell.y}`;
+        if(!areaOwner.has(key))areaOwner.set(key,point.owner);
+      }
+    }
+    const tiles=source.map.tiles.map(tile=>{
+      const key=`${tile.x},${tile.y}`;
+      return {...tile,reachable:reachable.has(key),
+        deploymentAreaOwner:areaOwner.get(key)??tile.deploymentAreaOwner??null,
+        // The canonical server owns legality. Not every colored home area is
+        // selectable (some cells are blocked, occupied or enemy-owned).
+        deployable:deployable.has(key)};
+    });
     const view={...source,map:{...source.map,tiles},units:source.units.map(u=>({
       ...u,selected:!!(unit&&u.id===unit.id)
     }))};
@@ -594,7 +617,8 @@ export class PvpTacticalUI {
   }
   async receiveRender(packet){
     if(this.closed||!this.match||packet?.seat!==this.seat||
-       !Number.isSafeInteger(packet.revision)||packet.revision<this.match.revision)return false;
+       !Number.isSafeInteger(packet.revision)||
+       (packet.revision<this.match.revision&&!this.samePublicBattlefield(packet.snapshot)))return false;
     this.newestRender=packet;
     const token=++this.renderToken;
     try{

@@ -953,8 +953,12 @@ export class EnvironmentRenderer{
     const night=environment.timeOfDay==="NIGHT",mist=weather==="FOG"?1:weather==="BLIZZARD"?.7:0;
     const alive=new Set(),byKey=new Map((state?.map?.tiles||[]).map(tile=>[`${tile.x},${tile.y}`,tile]));
     const focus=this.scene.activeCamera?.getTarget?.()||{x:0,z:0};
-    const candidates=(environment.lightSources||[]).filter(source=>source.visible!==false&&Number(source.transmission||0)>0);
     const isStructure=source=>source.source==="CORE_LIGHT"||source.source==="CAPTURE_LIGHT";
+    // Cores and captured sites are PUBLIC, permanent world lights, not enemy
+    // units. A distant team's zero tactical lightTransmission must never
+    // delete their Babylon glow or make the red Core go dark before deployment.
+    const candidates=(environment.lightSources||[]).filter(source=>
+      source.visible!==false&&(isStructure(source)||Number(source.transmission||0)>0));
     // Persistent structures must never be evicted by dozens of fire clusters.
     const structures=candidates.filter(isStructure),others=candidates.filter(source=>!isStructure(source))
       .sort((a,b)=>Math.hypot(a.x*TILE_SIZE-focus.x,a.y*TILE_SIZE-focus.z)-Math.hypot(b.x*TILE_SIZE-focus.x,b.y*TILE_SIZE-focus.z))
@@ -985,8 +989,11 @@ export class EnvironmentRenderer{
       mesh.position.set(source.x*TILE_SIZE,surfaceOf(tile||{})*ELEVATION_HEIGHT+(structure?.85:.8),source.y*TILE_SIZE);
       mesh.scaling.setAll(structure?Math.min(3.4,1.65+Number(source.radius||1)*.13)
         :(1.6+mist*1.7)*Math.max(1,Number(source.radius||1)/2));
-      mesh.visibility=structure?Math.min(night?.62:.28,.16+Number(source.transmission||0)*(night?.46:.13))
-        :Math.min(.7,Number(source.transmission||0)*(.45+mist*.25));
+      // Physical structure glow is public information and uses the original
+      // day/night profile. Other sources still obey real optical transmission.
+      const transmission=structure?1:Number(source.transmission||0);
+      mesh.visibility=structure?Math.min(night?.62:.28,.16+transmission*(night?.46:.13))
+        :Math.min(.7,transmission*(.45+mist*.25));
     }
     for(const [key,mesh] of this.fireGlows)if(!alive.has(key)){mesh.dispose();this.fireGlows.delete(key);}
   }
