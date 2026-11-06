@@ -460,8 +460,15 @@ test('PVP deployment highlights ONLY server-certified legal cells and never send
    assert.equal(f.ui.mode,'DEPLOY','invalid tile leaves selected card ready');
    assert.equal(f.ui.tilePicked({seat:0,x:1,y:3}),true);
    assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:1,y:3}]);
+   assert.equal(published.at(-1).map.tiles.some(t=>t.deployable),true,
+      'WebSocket send is not a server commit; highlight stays until authoritative MATCH_STATE');
+   const committed=game(0,'PLAYER_CARD_PHASE',202);
+   committed.view.deployableTiles=[{x:1,y:2},{x:1,y:3}];
+   committed.view.own.hand=[];
+   assert.equal(f.ui.receiveMatch(committed),true);
+   assert.equal(f.ui.mode,'SELECT','authoritative consumed card clears pending deployment');
    assert.equal(published.at(-1).map.tiles.some(t=>t.deployable),false,
-     'after sending the command, highlight clears without leaving another toolbar');
+      'after server commit the deployment highlight and target selection clear');
  }finally{f.restore()}
 });
 
@@ -492,5 +499,18 @@ for(const seat of [0,1])test(`enchantment steps remain native for seat ${seat} a
     assert.equal(f.commands.length,0);
     f.click('雷元素');assert.ok(f.button('　⚔ 劍｜確認附魔'));
     f.click('取消附魔（未消耗 MP）');assert.deepEqual(f.commands,[]);
+  }finally{f.restore()}
+});
+
+test('PVP rejected deployment stays selected until a real server card consumption',()=>{
+  const f=fixture();try{
+    f.ui.receiveMatch(game(0,'PLAYER_CARD_PHASE',220));
+    assert.equal(f.ui.chooseCard('imperial_swordsman_card'),'TARGET');
+    assert.equal(f.ui.tilePicked({seat:0,x:1,y:2}),true);
+    assert.equal(f.ui.mode,'DEPLOY');
+    // A reconnect/refresh can advance the revision without consuming this card.
+    assert.equal(f.ui.receiveMatch(game(0,'PLAYER_CARD_PHASE',221)),true);
+    assert.equal(f.ui.mode,'DEPLOY');
+    assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:1,y:2}]);
   }finally{f.restore()}
 });

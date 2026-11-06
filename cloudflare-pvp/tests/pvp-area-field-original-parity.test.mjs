@@ -6,16 +6,14 @@ import {initializeCanonicalWorld} from '../src/pvp-canonical-setup.mjs';
 import {createBattleAreaFieldEngine,createBattleAreaFieldState} from '../../js/battle-area-field-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 
-// Compare against the *exact* main version of the original field flood fill.
-// This baseline is executable original code, not a hand-written duplicate.
-const path=new URL('../../ROLLBACK_MAIN/js/tactical-game.js',import.meta.url);
-const content=fs.readFileSync(path,'utf8');
-const gitBlob=crypto.createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0`).update(content).digest('hex');
-assert.equal(gitBlob,'606ecc8dc1c6bd59dc4970ce417f2ef3bf9db885','canonical parity baseline must match the GitHub main SHA');
-const begin=content.indexOf('  function sanctuaryTiles(center,radius){');
-const end=content.indexOf('  // Battle smoke is a stationary terrain field',begin);
-assert.ok(begin>0&&end>begin);
-const originalSource=content.slice(begin,end);
+// Original canonical source fragment extracted from GitHub blob
+// 606ecc8dc1c6bd59dc4970ce417f2ef3bf9db885. Its immutable test-only
+// fixture is checked into this repo, not read from an untracked ROLLBACK_MAIN.
+const source=new URL('./fixtures/original-sanctuaryTiles-606ecc8d.txt',import.meta.url);
+const originalSource=fs.readFileSync(source,'utf8');
+assert.equal(crypto.createHash('sha256').update(originalSource).digest('hex'),
+  '6ae59443c7b550df921b631132b7ff64cbc9991d175761d0a2eafab60933dbf6',
+  'canonical original sanctuary flood-fill fixture must not drift');
 const original=new Function('TacticalEngine','map','sanctuaryKey',
   `${originalSource}; return sanctuaryTiles;`);
 const decks=[Array(20).fill('imperial_swordsman_card'),Array(20).fill('imperial_swordsman_card')];
