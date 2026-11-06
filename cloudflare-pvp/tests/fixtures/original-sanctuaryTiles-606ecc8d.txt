@@ -1,1 +1,22 @@
-
+  function sanctuaryTiles(center,radius){
+    const origin=TacticalEngine.tile(map,center.x,center.y);
+    if(!origin||origin.terrain==="WALL")return[];
+    const limit=Math.max(0,Number(radius||0)),seen=new Set([sanctuaryKey(origin.x,origin.y)]),queue=[origin],result=[];
+    for(let i=0;i<queue.length;i++){
+      const current=queue[i],distance=Math.abs(current.x-origin.x)+Math.abs(current.y-origin.y);
+      if(distance>limit)continue;
+      result.push(current);
+      if(distance===limit)continue;
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const next=TacticalEngine.tile(map,current.x+dx,current.y+dy);
+        if(!next||next.terrain==="WALL")continue;
+        const key=sanctuaryKey(next.x,next.y);
+        if(seen.has(key)||Math.abs(next.x-origin.x)+Math.abs(next.y-origin.y)>limit)continue;
+        // Use authoritative terrain elevation, never a screen-space mesh height.
+        // A discontinuity of more than one terrain level is a blocking cliff.
+        if(Math.abs(TacticalEngine.elevation(current)-TacticalEngine.elevation(next))>1)continue;
+        seen.add(key);queue.push(next);
+      }
+    }
+    return result;
+  }
