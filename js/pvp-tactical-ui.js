@@ -49,6 +49,9 @@ export class PvpTacticalUI {
     this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
     this.enchantMarkerScene=null;this.enchantMarkerObserver=null;this.enchantCandidates=[];
     this.lastProjectionWarningRevision=null;
+    // Await authoritative MATCH_STATE before treating a WebSocket card send
+    // as committed. Retain the original card selection on a rejected command.
+    this.pendingCardCommit=null;
   }
   isActive(){return GAME_PHASES.has(this.match?.view?.phase);}
   myTurn(){return this.match?.view?.activeSeat===this.seat;}
@@ -65,6 +68,12 @@ export class PvpTacticalUI {
     if(this.match&&match.revision<this.match.revision)return false;
     const previous=this.match?.view?.phase;
     this.match=match;
+    const pending=this.pendingCardCommit;
+    if(pending&&match.revision>pending.revision){
+      const remaining=(match.view.own?.hand||[]).filter(card=>card.id===pending.cardId).length;
+      this.pendingCardCommit=null;
+      if(remaining<pending.handCount)this.cancelTarget();
+    }
     const selected=this.selectedUnit();
     if(previous!==match.view.phase || (this.selectedUnitId&&!selected))this.cancelTarget({clearSelection:!selected});
     if(selected?.acted&&!match.view.enchantmentFollowup && this.mode!=='SELECT')this.cancelTarget();
@@ -94,12 +103,14 @@ export class PvpTacticalUI {
   }
   cancelTarget({clearSelection=false}={}){
     this.mode='SELECT';this.menu='command';this.target=null;
+    this.pendingCardCommit=null;
     if(clearSelection)this.selectedUnitId=null;
   }
   chooseCard(cardId){
     if(!this.isCardPhase()||!this.myTurn()||!this.isConnected())return false;
     const available=this.match.view.own?.hand||[];
     if(!available.some(card=>card.id===cardId))return false;
+    this.pendingCardCommit=null;
     const card=CardDatabase.get(cardId);
     if(CardDatabase.isCharacter(card)){
       this.mode='DEPLOY';this.target={cardId};this.update();
@@ -741,6 +752,10 @@ export class PvpTacticalUI {
       // Single-player resolves synchronously, but the PVP Worker does not:
       // an accepted WebSocket send is NOT an accepted gameplay command.
       // Keep card target mode on rejection so the player can retry.
+      if(sent && ['DEPLOY','TARGET_CARD'].includes(type)){
+        this.pendingCardCommit={revision:this.match.revision,cardId:choice.cardId,
+          handCount:(v.own?.hand||[]).filter(card=>card.id===choice.cardId).length};
+      }
       if(sent && !['DEPLOY','TARGET_CARD'].includes(type)){
         this.cancelTarget();this.update();this.refreshNativePresentation();
       }
