@@ -471,7 +471,10 @@ export function tacticalDebugProjection(game,seat){
       ['BATTLE','SYSTEM','DETAIL'].includes(e.type)&&typeof e.text==='string'&&
       !hiddenNames.some(name=>e.text.includes(name)))
       .slice(-160).map(e=>({type:e.type,text:e.text}));
-    return {phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
+    // Authenticated MATCH_STATE contract marker: lets mobile clients detect
+    // that a deployed Worker is older than the canonical tactical projection.
+    return {tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V2',
+      phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
        // Authenticated seat's official current deployable tiles.
        deployableTiles:game.phase===CARD_PHASE[seat]&&game.activeSeat===seat
          ?projectLegalDeploymentTiles(game,seat):[],
