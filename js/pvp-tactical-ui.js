@@ -17,6 +17,10 @@ const GAME_PHASES=new Set(['BATTLEFIELD_READY','PLAYER_CARD_PHASE','PLAYER_TACTI
 const UNIT_TEAM=['P','E'];
 const CARD_PHASE=['PLAYER_CARD_PHASE','ENEMY_CARD_PHASE'];
 const TACTICAL_PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
+// MATCH_STATE proves that the deployed Worker implements the same private
+// tactical projection contract as this client; an old Worker cannot silently
+// turn missing move/skill options into empty arrays.
+const PVP_TACTICAL_PROJECTION_CONTRACT='CT2_NATIVE_TACTICAL_V2';
 const nameOf=unit=>unit?.name||unit?.character?.name||unit?.characterId||unit?.id||'角色';
 const skillChoices=(unit,followup)=>{
   const skills=unit?.attackSkills||[];
@@ -44,6 +48,7 @@ export class PvpTacticalUI {
     this.enchantIdentities=new Map();this.enchantCounters=new Map();
     this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
     this.enchantMarkerScene=null;this.enchantMarkerObserver=null;this.enchantCandidates=[];
+    this.lastProjectionWarningRevision=null;
   }
   isActive(){return GAME_PHASES.has(this.match?.view?.phase);}
   myTurn(){return this.match?.view?.activeSeat===this.seat;}
@@ -63,7 +68,29 @@ export class PvpTacticalUI {
     const selected=this.selectedUnit();
     if(previous!==match.view.phase || (this.selectedUnitId&&!selected))this.cancelTarget({clearSelection:!selected});
     if(selected?.acted&&!match.view.enchantmentFollowup && this.mode!=='SELECT')this.cancelTarget();
+    this.verifyTacticalProjection();
     this.update();this.publishSelection();this.refreshNativePresentation();return true;
+  }
+  verifyTacticalProjection(){
+    if(!this.myTurn()||!this.isTacticalPhase())return true;
+    const view=this.match.view;
+    const own=(view.units||[]).filter(unit=>unit.team===UNIT_TEAM[this.seat]);
+    const missing=['reachableTiles','skillCatalog','enchantmentOptions'].filter(key=>
+      own.some(unit=>!Array.isArray(unit[key])));
+    if(view.tacticalProjectionContract!==PVP_TACTICAL_PROJECTION_CONTRACT)
+      missing.unshift('tacticalProjectionContract');
+    if(!missing.length)return true;
+    if(this.lastProjectionWarningRevision!==this.match.revision){
+      this.lastProjectionWarningRevision=this.match.revision;
+      globalThis.CardTacticsDiagnostics?.push?.('PVP_TACTICAL_PROJECTION_MISMATCH',{
+        seat:this.seat,revision:this.match.revision,phase:view.phase,
+        serverContract:view.tacticalProjectionContract??null,
+        expectedContract:PVP_TACTICAL_PROJECTION_CONTRACT,missing
+      });
+    }
+    const status=document.getElementById('turnStatus');
+    if(status)status.textContent=`PVP 伺服器版本／技能投影未同步（${missing.join('、')}）；請重新部署 Cloudflare PVP Worker。`;
+    return false;
   }
   cancelTarget({clearSelection=false}={}){
     this.mode='SELECT';this.menu='command';this.target=null;
@@ -138,8 +165,10 @@ export class PvpTacticalUI {
       seat:this.seat,revision:this.match.revision,phase:this.match.view.phase,
       unitId:unit.id,moved:!!unit.moved,acted:!!unit.acted,waited:!!unit.waited,
       reachableTiles:Array.isArray(unit.reachableTiles)?unit.reachableTiles.length:null,
+      projectionContract:this.match.view.tacticalProjectionContract??null,
       renderRevision:this.serverSnapshot?.revision??null
     });
+    this.verifyTacticalProjection();
     if(!this.refreshNativePresentation()&&this.presented&&
        (!this.bridge?.renderer||!this.serverSnapshot||!this.samePublicBattlefield(this.serverSnapshot)))
       this.reportRenderFailure('PVP_SELECTION_RENDER_NOT_READY');
@@ -389,36 +418,16 @@ export class PvpTacticalUI {
       `${skill.name}`,direct('CAST_SELF_UTILITY',
         {skillId:skill.id,variantId:skill.variantId}),
       {skill,disabled:skill.usable===false});
-    // Same recipient -> weapon grouping and ①-⑳ identity as TacticalGame.
-    // No independently invented attack/enchantment choices: use the server's
-    // certified candidate list, only change its presentation.
-    const targets=new Map((this.match?.view?.units||[]).map(other=>[other.id,other]));
-    const groups=enchantmentRecipientGroups(unit.enchantmentOptions||[],
-      option=>targets.get(option.targetId)||{
-        id:option.targetId,name:option.targetName,characterId:null},
-      option=>option);
-    for(const {target,weapons} of groups){
-      const self=target.id===unit.id,identity=this.enchantIdentity(target);
-      const header=this.add(self?'自己':`${target.name||target.characterId||target.id} ${identity.mark}`,
-        ()=>this.focusEnchantmentRecipient(target.id));
-      header.dataset.enchantRecipient=String(target.id);
-      header.style.cssText+=';text-align:left;border:1px solid #42566a;background:#132130;font-weight:bold;';
-      const portrait=globalThis.VisualDatabase?.characterHudPortrait?.(target.characterId);
-      if(portrait&&typeof header.prepend==='function'){
-        const img=document.createElement('img');img.src=new URL(portrait,document.baseURI).href;
-        img.alt='';img.loading='lazy';
-        img.style.cssText='width:26px;height:26px;object-fit:cover;object-position:50% 17%;border-radius:5px;float:left;margin-right:7px;';
-        header.prepend(img);
-      }
-      for(const choice of weapons){
-        const character=globalThis.CharacterDatabase?.get?.(target.characterId);
-        const kind=choice.weaponKind||character?.weapons?.[choice.weaponSlot]?.weaponKind||choice.weaponSlot;
-        this.add(`　${enchantWeaponIcon(kind)} ${choice.weaponName}｜${choice.skillName}`,
-          direct('CAST_ENCHANTMENT',{skillId:choice.skillId,variantId:choice.variantId,
-            targetId:choice.targetId,weaponSlot:choice.weaponSlot}));
-      }
+    // Like the original TacticalGame special-menu: show each enchantment
+    // SKILL once. Its official variants and then recipient/weapon candidates
+    // are separate selection steps; no direct CAST command at this level.
+    const enchantOptions=unit.enchantmentOptions||[];
+    const enchantSkillIds=[...new Set(enchantOptions.map(option=>option.skillId))];
+    for(const skillId of enchantSkillIds){
+      const skill=knownSkill(skillId)||unit.skillCatalog?.find(entry=>entry.id===skillId);
+      this.add(skill?.name||enchantOptions.find(entry=>entry.skillId===skillId)?.skillName||skillId,
+        ()=>this.beginEnchantment(unit,skillId),{skill});
     }
-    this.syncEnchantmentMarkers(groups,unit);
     for(const entry of unit.pickpocketOptions||[])this.add(
       `${entry.skillName} → ${entry.targetName}`,
       direct('CAST_PICKPOCKET',{skillId:entry.skillId,targetId:entry.targetId}));
@@ -471,6 +480,80 @@ export class PvpTacticalUI {
     }
     this.menuBack();
   }
+  enchantmentChoices(unit,skillId,variantId=undefined){
+    return (unit.enchantmentOptions||[]).filter(option=>
+      option.skillId===skillId &&
+      (variantId===undefined||(option.variantId??null)===variantId));
+  }
+  beginEnchantment(unit,skillId){
+    if(!this.enchantmentChoices(unit,skillId).length)return false;
+    const skill=knownSkill(skillId);
+    this.mode='SELECT';this.target={skillId};
+    this.menu=skill?.variants?.length?'enchant-variant':'enchant-weapon';
+    this.update();return true;
+  }
+  chooseEnchantmentVariant(variantId){
+    const unit=this.selectedUnit(),skillId=this.target?.skillId;
+    if(!unit||!this.enchantmentChoices(unit,skillId,variantId).length)return false;
+    this.target={skillId,variantId};this.menu='enchant-weapon';this.update();return true;
+  }
+  renderEnchantmentVariants(unit){
+    const skillId=this.target?.skillId;
+    const options=this.enchantmentChoices(unit,skillId);
+    if(!options.length){this.cancelTarget();this.menu='special';this.update();return;}
+    this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
+    const parent=knownSkill(skillId);
+    const variants=parent?.variants?.length?parent.variants:
+      [...new Set(options.map(option=>option.variantId??null))].map(id=>({
+        id,name:options.find(option=>(option.variantId??null)===id)?.skillName||String(id)
+      }));
+    for(const variant of variants){
+      const skill=parent?SkillDatabase.resolveVariant(parent,variant.id):null;
+      this.add(variant.name||variant.id,()=>this.chooseEnchantmentVariant(variant.id),
+        {skill,disabled:!this.enchantmentChoices(unit,skillId,variant.id).length});
+    }
+    this.add('返回',()=>{this.cancelTarget();this.menu='special';this.update();});
+  }
+  renderEnchantmentWeapons(unit){
+    const skillId=this.target?.skillId,variantId=this.target?.variantId??null;
+    const choices=this.enchantmentChoices(unit,skillId,variantId);
+    if(!choices.length){this.cancelTarget();this.menu='special';this.update();return;}
+    this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
+    this.add('選擇友軍與武器（尚未扣 MP）',()=>{}, {disabled:true});
+    const targets=new Map((this.match?.view?.units||[]).map(other=>[other.id,other]));
+    const groups=enchantmentRecipientGroups(choices,
+      option=>targets.get(option.targetId)||{
+        id:option.targetId,name:option.targetName,characterId:null},
+      option=>option);
+    for(const {target,weapons} of groups){
+      const self=target.id===unit.id,identity=this.enchantIdentity(target);
+      const header=this.add(self?'自己':`${target.name||target.characterId||target.id} ${identity.mark}`,
+        ()=>this.focusEnchantmentRecipient(target.id));
+      header.dataset.enchantRecipient=String(target.id);
+      header.style.cssText+=';text-align:left;border:1px solid #42566a;background:#132130;font-weight:bold;';
+      const portrait=globalThis.VisualDatabase?.characterHudPortrait?.(target.characterId);
+      if(portrait&&typeof header.prepend==='function'){
+        const img=document.createElement('img');img.src=new URL(portrait,document.baseURI).href;
+        img.alt='';img.loading='lazy';
+        img.style.cssText='width:26px;height:26px;object-fit:cover;object-position:50% 17%;border-radius:5px;float:left;margin-right:7px;';
+        header.prepend(img);
+      }
+      for(const choice of weapons){
+        const character=globalThis.CharacterDatabase?.get?.(target.characterId);
+        const kind=choice.weaponKind||character?.weapons?.[choice.weaponSlot]?.weaponKind||choice.weaponSlot;
+        const button=this.add(`　${enchantWeaponIcon(kind)} ${choice.weaponName}｜確認附魔`,()=>{
+          if(this.request({type:'CAST_ENCHANTMENT',unitId:unit.id,
+            skillId:choice.skillId,variantId:choice.variantId,
+            targetId:choice.targetId,weaponSlot:choice.weaponSlot})){
+            this.cancelTarget();this.update();
+          }
+        },{skill:knownSkill(skillId)});
+        button.dataset.enchantRecipient=String(target.id);
+      }
+    }
+    this.syncEnchantmentMarkers(groups,unit);
+    this.add('取消附魔（未消耗 MP）',()=>{this.cancelTarget();this.menu='special';this.update();});
+  }
   renderCommand(unit){
     this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
     if(this.match?.view?.pendingMoveUnitId===unit.id&&unit.moved&&!unit.acted)
@@ -491,7 +574,7 @@ export class PvpTacticalUI {
   }
   update(){
     if(this.closed||!this.presented||!this.isActive())return;
-    if(this.menu!=='special'||this.mode!=='SELECT'||!this.isTacticalPhase())
+    if(this.menu!=='enchant-weapon'||this.mode!=='SELECT'||!this.isTacticalPhase())
       this.clearEnchantmentMarkers();
     const v=this.match.view,canAct=this.myTurn()&&this.isConnected();
     this.menuUI.clear();
@@ -598,6 +681,8 @@ export class PvpTacticalUI {
       this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
       this.renderSpecial(actor);return;
     }
+    if(this.menu==='enchant-variant'){this.renderEnchantmentVariants(actor);return;}
+    if(this.menu==='enchant-weapon'){this.renderEnchantmentWeapons(actor);return;}
     this.renderCommand(actor);
   }
   tilePicked({seat,x,y}={}){
