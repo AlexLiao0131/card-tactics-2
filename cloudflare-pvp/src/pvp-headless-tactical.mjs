@@ -495,6 +495,15 @@ export function tacticalDebugProjection(game,seat){
             .map(skill=>({id:skill.id,name:skill.name,category:skill.category})),
           bloodBurstSkills:canonicalBloodBurstSkills(unit,engine,game.units,{map:world.map,environmentState:game.environmentState})
             .map(skill=>({id:skill.id,name:skill.name})),
+           // Full official loadout catalog for the same native skill menu as
+           // single-player. Capability-specific option lists below remain the
+           // only authority for actionable commands and target legality.
+           // Never silently make an owned skill disappear merely because
+           // a conditional command has no targets this frame.
+           skillCatalog:SkillDatabase.list(engine.effect.skillIds(unit)).map(skill=>({
+             ...officialSkillView(unit,skill,engine),category:skill.category,
+             usable:engine.unitRuntime.canUseSkill(unit,skill)
+           })),
           // The same DeploymentEngine legality drives the offline and online
           // command menu. A capture option is absent until a real point is legal.
           itemInteractionAvailable:ItemRuntimeEngine.interactionAvailable(unit),
