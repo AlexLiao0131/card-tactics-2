@@ -36,8 +36,8 @@ const soldier={id:'unit1',team:'P',characterId:'imperial_swordsman',x:2,y:3,
 const game=(seat,phase,revision,units=[soldier])=>({revision,view:{seat,phase,round:2,
   activeSeat:phase==='BATTLEFIELD_READY'?null:seat,
   own:{hand:[{id:'imperial_swordsman_card',name:'帝國劍士',cost:1}],crystals:4},
-  opponent:{handCount:5},units,deployableTiles:phase==='PLAYER_CARD_PHASE'||phase==='ENEMY_CARD_PHASE'?[{x:1,y:2}]:[],
-  battlefield:{cores:[{owner:'E',x:8,y:7}]}}});
+  opponent:{handCount:5},tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V2',units,deployableTiles:phase==='PLAYER_CARD_PHASE'||phase==='ENEMY_CARD_PHASE'?[{x:1,y:2}]:[],
+  battlefield:{map:{id:'map',width:10,height:10},cores:[{owner:'E',x:8,y:7}]}}});
 const clickActor=(f,unit=soldier)=>f.ui.tilePicked({seat:f.ui.seat,x:unit.x,y:unit.y});
 
 // The HTML is the same as the original local/Gemini tactical menu; its
@@ -198,7 +198,7 @@ test('enemy-target status spell can be selected only on enemy and sent without f
 });
 test('native special commands handle enchant, terrain, shadow, burst, area field, perception and transport',()=>{
   const f=fixture();try{
-    const caster={...soldier,enchantmentOptions:[{skillId:'enchant',skillName:'火元素',variantId:'FIRE',
+    const caster={...soldier,enchantmentOptions:[{skillId:'elemental_enchant',skillName:'火元素',variantId:'ENCHANT_FIRE',
       targetId:'unit1',targetName:'自己',weaponSlot:'sword',weaponName:'劍'}],
       enchantedTerrainSkills:[{id:'slash',name:'斬擊'}],
       bloodShadowOptions:[{skillId:'shadow',skillName:'血影瞬襲',targetId:'enemy',targetName:'敵軍'}],
@@ -207,7 +207,8 @@ test('native special commands handle enchant, terrain, shadow, burst, area field
       transportOptions:[{skillId:'carry',skillName:'空運',targetId:'ally',targetName:'友軍'}]};
     const enemy={...soldier,id:'enemy',team:'E',x:5,y:3};
     f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',11,[caster,enemy]));clickActor(f);
-    f.click('魔法／特殊技能');assert.ok(f.root.children.some(x=>x.textContent==='自己'));f.click('　⚔ 劍｜火元素');
+    f.click('魔法／特殊技能');f.click('元素附魔');f.click('火元素');
+    assert.ok(f.root.children.some(x=>x.textContent==='自己'));f.click('　⚔ 劍｜確認附魔');
     f.click('魔法／特殊技能');f.click('血影瞬襲 → 敵軍');
     f.click('魔法／特殊技能');f.click('血爆');
     f.click('魔法／特殊技能');f.click('聖域');
@@ -216,8 +217,8 @@ test('native special commands handle enchant, terrain, shadow, burst, area field
     f.click('魔法／特殊技能');f.click('空運 → 友軍');f.ui.tilePicked({seat:0,x:6,y:3});
     assert.deepEqual(f.commands.map(c=>c.type),['CAST_ENCHANTMENT','CAST_BLOOD_SHADOW',
       'CAST_BLOOD_BURST','CAST_AREA_FIELD','ATTACK_ENCHANTED_TERRAIN','CAST_PERCEPTION','CAST_TRANSPORT']);
-    assert.deepEqual(f.commands[0],{type:'CAST_ENCHANTMENT',unitId:'unit1',skillId:'enchant',
-      variantId:'FIRE',targetId:'unit1',weaponSlot:'sword'});
+    assert.deepEqual(f.commands[0],{type:'CAST_ENCHANTMENT',unitId:'unit1',skillId:'elemental_enchant',
+      variantId:'ENCHANT_FIRE',targetId:'unit1',weaponSlot:'sword'});
     assert.deepEqual(f.commands.at(-1),{type:'CAST_TRANSPORT',unitId:'unit1',skillId:'carry',targetId:'ally',x:6,y:3});
   }finally{f.restore()}
 });
@@ -367,7 +368,7 @@ test('native movement highlight comes only from server-certified reachable tiles
       highlights:{sync:s=>highlights.push(s)},unitHud:{sync:s=>unitHuds.push(s)},
       syncActionAnchor:()=>{}
     }};
-    const serverFrame={revision:120,round:2,map:{id:'map',tiles:[
+    const serverFrame={revision:120,round:2,map:{id:'map',width:10,height:10,tiles:[
       {x:2,y:3,reachable:false},{x:3,y:3,reachable:false},{x:4,y:3,reachable:false},
       {x:5,y:3,reachable:false}]},units:[{id:'unit1',selected:false}],cores:[],presentation:{}};
     f.ui.serverSnapshot=serverFrame;
@@ -449,7 +450,7 @@ test('PVP deployment highlights ONLY server-certified legal cells and never send
      highlights:{sync:view=>published.push(view)},unitHud:{sync:()=>{}},
      syncActionAnchor:()=>{}
    }};
-   f.ui.serverSnapshot={revision:201,map:{tiles:[{x:1,y:2},{x:1,y:3},{x:2,y:2}]},units:[]};
+   f.ui.serverSnapshot={revision:201,map:{id:'map',width:10,height:10,tiles:[{x:1,y:2},{x:1,y:3},{x:2,y:2}]},units:[]};
    assert.equal(f.ui.chooseCard('imperial_swordsman_card'),'TARGET');
    const view=published.at(-1);
    assert.equal(view.map.tiles.find(t=>t.x===1&&t.y===2).deployable,true);
@@ -474,4 +475,22 @@ test('seat one accepts only its authenticated server deployment coordinates',()=
    assert.equal(f.ui.tilePicked({seat:1,x:9,y:8}),true);
    assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:9,y:8}]);
  }finally{f.restore()}
+});
+
+for(const seat of [0,1])test(`enchantment steps remain native for seat ${seat} and cancel spends no MP`,()=>{
+  const f=fixture(seat);try{
+    const actor={...soldier,team:seat===0?'P':'E',enchantmentOptions:[
+      {skillId:'elemental_enchant',skillName:'火元素',variantId:'ENCHANT_FIRE',
+        targetId:'unit1',targetName:'自己',weaponSlot:'sword',weaponName:'劍'},
+      {skillId:'elemental_enchant',skillName:'雷元素',variantId:'ENCHANT_THUNDER',
+        targetId:'unit1',targetName:'自己',weaponSlot:'sword',weaponName:'劍'}]};
+    f.ui.receiveMatch(game(seat,seat===0?'PLAYER_TACTICAL_PHASE':'ENEMY_TACTICAL_PHASE',215,[actor]));
+    f.ui.selectUnit('unit1');f.click('魔法／特殊技能');
+    assert.ok(f.button('元素附魔'));
+    assert.equal(f.root.children.some(x=>x.textContent?.includes('確認附魔')),false);
+    f.click('元素附魔');assert.ok(f.button('火元素'));assert.ok(f.button('雷元素'));
+    assert.equal(f.commands.length,0);
+    f.click('雷元素');assert.ok(f.button('　⚔ 劍｜確認附魔'));
+    f.click('取消附魔（未消耗 MP）');assert.deepEqual(f.commands,[]);
+  }finally{f.restore()}
 });
