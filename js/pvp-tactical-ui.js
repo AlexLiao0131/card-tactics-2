@@ -29,7 +29,7 @@ const supportedSkillsForSection=(unit,section)=>skillChoices(unit)
 
 export class PvpTacticalUI {
   constructor({root,canvas,seat,sendCommand,isConnected=()=>true,createBridge,ensureBabylon,
-    onRendered=()=>{},onInspect=()=>{},onSelection=()=>{}}={}){
+    onRendered=()=>{},onInspect=()=>{},onSelection=()=>{},onRenderFailure=()=>{}}={}){
     if(!root||root.id!=='skillBar'||!canvas||![0,1].includes(seat)||
        typeof sendCommand!=='function'||typeof createBridge!=='function'||typeof ensureBabylon!=='function')
       throw Error('NATIVE_TACTICAL_MENU_REQUIRED');
@@ -37,6 +37,7 @@ export class PvpTacticalUI {
     this.canvas=canvas;this.seat=seat;this.sendCommand=sendCommand;
     this.isConnected=isConnected;this.createBridge=createBridge;this.ensureBabylon=ensureBabylon;
     this.onRendered=onRendered;this.onInspect=onInspect;this.onSelection=onSelection;
+    this.onRenderFailure=onRenderFailure;
     this.match=null;this.bridge=null;this.closed=false;this.presented=false;
     this.selectedUnitId=null;this.mode='SELECT';this.menu='command';this.target=null;
     this.renderToken=0;this.newestRender=null;this.serverSnapshot=null;
@@ -74,7 +75,11 @@ export class PvpTacticalUI {
     if(!available.some(card=>card.id===cardId))return false;
     const card=CardDatabase.get(cardId);
     if(CardDatabase.isCharacter(card)){
-      this.mode='DEPLOY';this.target={cardId};this.update();this.refreshNativePresentation();return 'TARGET';
+      this.mode='DEPLOY';this.target={cardId};this.update();
+      if(!this.refreshNativePresentation()&&this.presented&&
+         (!this.bridge?.renderer||!this.serverSnapshot||!this.samePublicBattlefield(this.serverSnapshot)))
+        this.reportRenderFailure('PVP_DEPLOYMENT_RENDER_NOT_READY');
+      return 'TARGET';
     }
     const commandKind=globalThis.CardPhaseController?.commandKind?.(card);
     if(commandKind==='INSTANT')
@@ -125,7 +130,30 @@ export class PvpTacticalUI {
   selectUnit(unitId){
     const unit=this.match?.view?.units?.find(candidate=>candidate.id===unitId);
     if(!unit||unit.alive===false||unit.team!==UNIT_TEAM[this.seat])return false;
-    this.selectedUnitId=unit.id;this.cancelTarget();this.update();this.publishSelection();this.refreshNativePresentation();return true;
+    this.selectedUnitId=unit.id;this.cancelTarget();this.update();this.publishSelection();
+    // Log the server-owned action flags alongside the render revision. If
+    // movement is absent, the exported diagnostics now identify whether the
+    // authority locked this unit or Babylon failed to publish its overlay.
+    globalThis.CardTacticsDiagnostics?.push?.('PVP_MOVE_SELECTION',{
+      seat:this.seat,revision:this.match.revision,phase:this.match.view.phase,
+      unitId:unit.id,moved:!!unit.moved,acted:!!unit.acted,waited:!!unit.waited,
+      reachableTiles:Array.isArray(unit.reachableTiles)?unit.reachableTiles.length:null,
+      renderRevision:this.serverSnapshot?.revision??null
+    });
+    if(!this.refreshNativePresentation()&&this.presented&&
+       (!this.bridge?.renderer||!this.serverSnapshot||!this.samePublicBattlefield(this.serverSnapshot)))
+      this.reportRenderFailure('PVP_SELECTION_RENDER_NOT_READY');
+    return true;
+  }
+  reportRenderFailure(reason){
+    const revision=this.match?.revision;
+    if(!this.presented||!Number.isSafeInteger(revision))return false;
+    globalThis.CardTacticsDiagnostics?.push?.('PVP_RENDER_REJECTED',{
+      seat:this.seat,revision,reason,
+      rendererStages:[...(this.bridge?.renderer?.presentationCommitHistory?.at(-1)?.failedStages||[])]
+    });
+    this.onRenderFailure({seat:this.seat,revision},new Error(reason));
+    return true;
   }
   publishSelection(){
     const unit=this.presented&&this.isTacticalPhase()?this.selectedUnit():null;
@@ -181,7 +209,14 @@ export class PvpTacticalUI {
     // Delegate every interactive overlay to the SAME BabylonRenderer used by
     // local/Gemini. Do not maintain a parallel online HUD/highlight renderer.
     if(typeof renderer.syncInteractionPresentation==='function'){
-      if(renderer.syncInteractionPresentation(view)!==true)return false;
+      // A failed native overlay commit is NOT a successful selection. The
+      // canonical renderer already knows which subsystem failed; ask the same
+      // WebSocket authority for another full presentation instead of silently
+      // leaving the actor with no reachable cells or deployment color.
+      if(renderer.syncInteractionPresentation(view)!==true){
+        this.reportRenderFailure('PVP_INTERACTION_RENDER_INCOMPLETE');
+        return false;
+      }
     }else{
       // Lightweight test adapters expose the native sub-renderers directly.
       renderer.highlights?.sync(view);
@@ -409,6 +444,31 @@ export class PvpTacticalUI {
       this.add(skill.name,tile('CAST_PERCEPTION',{skillId:skill.id}),{skill});
     for(const skill of unit.enchantedTerrainSkills||[])
       this.add(`地形｜${skill.name}`,tile('ATTACK_ENCHANTED_TERRAIN',{skillId:skill.id}),{skill});
+    // Native/Gemini draws the complete SkillDatabase list, including skills
+    // whose target or resource condition is not met. PvP must not silently hide
+    // those official loadout entries behind the current command-option filter.
+    // Only server-certified action options above are clickable. This fallback
+    // deliberately does NOT manufacture a new PvP execution route.
+    const surfaced=new Set([
+      ...supportedSkillsForSection(unit,'special').map(entry=>entry.id),
+      ...(unit.effectSkills||[]).map(entry=>entry.id),
+      ...(unit.selfUtilitySkills||[]).map(entry=>entry.id),
+      ...(unit.enchantmentOptions||[]).map(entry=>entry.skillId),
+      ...(unit.pickpocketOptions||[]).map(entry=>entry.skillId),
+      ...(unit.bloodShadowOptions||[]).map(entry=>entry.skillId),
+      ...(unit.bloodBurstSkills||[]).map(entry=>entry.id),
+      ...(unit.areaFieldSkills||[]).map(entry=>entry.id),
+      ...(unit.mapSkills||[]).filter(entry=>entry.category!=='ATTACK').map(entry=>entry.id),
+      ...(unit.chargeOptions||[]).filter(entry=>entry.target==='ALLY').map(entry=>entry.skillId),
+      ...(unit.transportOptions||[]).map(entry=>entry.skillId),
+      ...(unit.perceptionSkills||[]).map(entry=>entry.id),
+      ...(unit.enchantedTerrainSkills||[]).map(entry=>entry.id)
+    ]);
+    for(const skill of unit.skillCatalog||[]){
+      if(battleSkillCategory(knownSkill(skill.id))!=='special'||surfaced.has(skill.id))continue;
+      this.add(`${skill.name}｜${skill.usable===false?'條件不足':'目前無合法操作目標／待確認 PVP 接線'}`,
+        ()=>{}, {skill,disabled:true});
+    }
     this.menuBack();
   }
   renderCommand(unit){
@@ -495,6 +555,16 @@ export class PvpTacticalUI {
         if(skill.category!=='ATTACK')continue;
         this.add(skill.name,()=>this.targetAction('CAST_MAP_SKILL',
           {unitId:actor.id,skillId:skill.id}),{skill});
+      }
+      const surfaced=new Set([
+        ...supportedSkillsForSection(actor,'attack').map(entry=>entry.id),
+        ...(actor.chargeOptions||[]).filter(entry=>entry.target==='ENEMY').map(entry=>entry.skillId),
+        ...(actor.mapSkills||[]).filter(entry=>entry.category==='ATTACK').map(entry=>entry.id)
+      ]);
+      for(const skill of actor.skillCatalog||[]){
+        if(skill.category!=='ATTACK'||surfaced.has(skill.id))continue;
+        this.add(`${skill.name}｜${skill.usable===false?'條件不足':'目前無合法操作目標／待確認 PVP 接線'}`,
+          ()=>{}, {skill,disabled:true});
       }
       this.menuBack();return;
     }
@@ -638,6 +708,8 @@ export class PvpTacticalUI {
     }catch(error){
       const node=document.getElementById('turnStatus');
       if(node)node.textContent=`3D 畫面無法建立：${error.message}`;
+      if(!this.closed&&token===this.renderToken)
+        this.onRenderFailure(packet,error);
       return false;
     }
   }

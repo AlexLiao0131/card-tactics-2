@@ -63,6 +63,7 @@ export class PvpLobbyController {
     this.pendingRender=null;
     this.renderBaseline=null;
     this.renderResyncPending=false;
+    this.renderFailureRevisions=new Map();
   }
   isBattleActive(){return !!(this.session&&this.battleVisible);}
   isConnected(){return this.socket?.readyState===WebSocket.OPEN;}
@@ -312,6 +313,7 @@ export class PvpLobbyController {
       onSelection:(unit,options)=>this.unitControlUI?.renderOnline(unit,options),
       sendCommand:action=>this.sendCommand(action),
       isConnected:()=>this.isConnected(),
+       onRenderFailure:(packet,error)=>this.handleRenderFailure(packet,error),
       ensureBabylon:async()=>{
         if(typeof globalThis.BABYLON?.Engine!=='function')throw Error('BABYLON_RUNTIME_NOT_LOADED');
       },
@@ -416,6 +418,28 @@ export class PvpLobbyController {
     }};
     try{this.socket.send(JSON.stringify(this.lastCommand));return true;}
     catch(error){this.commandInFlight=false;this.syncNativeCards();this.status(`提交操作失敗：${error.message}`,true);return false;}
+  }
+  // Rendering failure is not a successful network delta commit. A frame can
+  // be decoded but rejected by Babylon's existing subsystem commit audit.
+  // Request the SAME authoritative frame again; never synthesize tiles/units.
+  // Bounded per-revision retry prevents a permanently invalid WebGL frame from
+  // creating an unbounded WebSocket resynchronization loop.
+  handleRenderFailure(packet,error){
+    if(!this.battleVisible||!this.session||packet?.seat!==this.session.seat)return false;
+    const revision=Number(packet.revision);
+    if(!Number.isSafeInteger(revision))return false;
+    const reason=String(error?.message||error||'RENDER_FAILED');
+    const count=this.renderFailureRevisions.get(revision)||0;
+    if(count>=2){
+      this.status(`PVP 3D 畫面未完成（版本 ${revision}）：${reason}`,true);
+      return false;
+    }
+    this.renderFailureRevisions.set(revision,count+1);
+    if(this.renderFailureRevisions.size>12)
+      this.renderFailureRevisions.delete(this.renderFailureRevisions.keys().next().value);
+    this.renderBaseline=null;
+    this.renderResyncPending=false;
+    return this.requestFullRender();
   }
   requestFullRender(){
     if(this.renderResyncPending||!this.isConnected()||!this.session)return false;
