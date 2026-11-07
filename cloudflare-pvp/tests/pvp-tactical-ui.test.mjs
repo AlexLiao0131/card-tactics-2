@@ -244,17 +244,29 @@ test('pending blood memory uses same native action menu with optional skip',()=>
       {type:'CHOOSE_BLOOD_MEMORY',unitId:'unit1',skillId:null}]);
   }finally{f.restore()}
 });
-test('enemy reaction uses the exact original enemy-reaction-panel, no separate select/confirm',()=>{
+test('reaction uses original multi-stage counter/defense/guard menu, no flat parallel PVP controls',()=>{
   const f=fixture();try{
     const match=game(0,'PVP_REACTION_PENDING',14,[soldier]);
-    match.view.reactionOptions={choices:['ACCEPT','EVADE'],defenses:[{id:'parry',name:'長劍招架'}],
-      counters:[{id:'slash',name:'斬擊'}],guardians:[{guardianId:'ally',methods:[{id:'block',name:'格擋'}]}]};
+    match.view.pendingAttack={attackerId:'enemy',targetId:'unit1',skillId:'slash'};
+    match.view.reactionOptions={attackerId:'enemy',targetId:'unit1',skillId:'slash',
+      choices:['ACCEPT','EVADE','DEFENSE','COUNTER','GUARD'],
+      defenses:[{id:'parry',name:'長劍招架'}],counters:[{id:'slash',name:'斬擊'}],
+      guardians:[{guardianId:'ally',methods:[{id:'block',name:'格擋'}]}]};
     f.ui.receiveMatch(match);
     assert.equal(f.root.classList.contains('enemy-reaction-panel'),true);
-    f.click('防禦｜長劍招架');f.click('反擊｜斬擊');f.click('援護｜ally｜格擋');f.click('迴避');
-    assert.deepEqual(f.commands,[{type:'REACT_ATTACK',reaction:'DEFENSE',methodId:'parry'},
+    assert.ok(f.button('反擊'));assert.ok(f.button('防禦'));assert.ok(f.button('迴避'));
+    assert.ok(f.button('援護防禦'));
+    f.click('防禦');f.click('長劍招架');f.click('返回');
+    f.click('反擊');f.click('斬擊');f.click('返回');
+    f.click('援護防禦');f.click('ally｜格擋');f.click('格擋');
+    f.click('援護承受｜原目標不反擊');
+    f.click('原目標反擊｜斬擊');f.click('返回防禦方式');
+    f.click('返回');f.click('返回');f.click('迴避');
+    assert.deepEqual(f.commands,[
+      {type:'REACT_ATTACK',reaction:'DEFENSE',methodId:'parry'},
       {type:'REACT_ATTACK',reaction:'COUNTER',skillId:'slash'},
       {type:'REACT_ATTACK',reaction:'GUARD',guardianId:'ally',methodId:'block'},
+      {type:'REACT_ATTACK',reaction:'GUARD',guardianId:'ally',methodId:'block',counterSkillId:'slash'},
       {type:'REACT_ATTACK',reaction:'EVADE'}]);
   }finally{f.restore()}
 });
@@ -513,4 +525,53 @@ test('PVP rejected deployment stays selected until a real server card consumptio
     assert.equal(f.ui.mode,'DEPLOY');
     assert.deepEqual(f.commands,[{type:'DEPLOY_CARD',cardId:'imperial_swordsman_card',x:1,y:2}]);
   }finally{f.restore()}
+});
+
+for(const seat of [0,1])test(`native aim overlays use only server-certified range and targets, seat ${seat}`,()=>{
+ const f=fixture(seat);try{
+  const actor={...soldier,id:`aim${seat}`,team:seat===0?'P':'E',x:2,y:3,
+    aimOptions:[{type:'DECLARE_ATTACK',skillId:'slash',
+      tiles:[{x:4,y:3},{x:4,y:4}],actionableTiles:[{x:4,y:4}]},
+      {type:'CAST_MAP_SKILL',skillId:'meteor',tiles:[{x:5,y:3}],actionableTiles:[{x:5,y:3}]}]};
+  const scene={revision:8,round:2,map:{id:'map',width:10,height:10,
+    tiles:[{x:2,y:3},{x:4,y:3},{x:4,y:4},{x:5,y:3}]},
+    units:[{id:actor.id,x:2,y:3,team:actor.team}],cores:[],presentation:{}};
+  let published=null;
+  f.ui.bridge={renderer:{syncInteractionPresentation:state=>(published=state,true)}};
+  f.ui.serverSnapshot=scene;
+  f.ui.receiveMatch(game(seat,seat===0?'PLAYER_TACTICAL_PHASE':'ENEMY_TACTICAL_PHASE',8,[actor]));
+  f.ui.selectUnit(actor.id);
+  f.ui.targetAction('DECLARE_ATTACK',{unitId:actor.id,skillId:'slash'});
+  const tile=(x,y)=>published.map.tiles.find(t=>t.x===x&&t.y===y);
+  assert.equal(tile(4,3).targetRange,true);assert.equal(tile(4,3).attackable,false);
+  assert.equal(tile(4,4).targetRange,true);assert.equal(tile(4,4).attackable,true);
+  assert.equal(tile(5,3).targetRange,false);
+  f.ui.targetAction('CAST_MAP_SKILL',{unitId:actor.id,skillId:'meteor'});
+  assert.equal(tile(5,3).targetRange,true);assert.equal(tile(5,3).attackable,true);
+  assert.equal(tile(4,4).targetRange,false);
+  f.ui.cancelTarget();assert.equal(tile(4,4).targetRange,false);
+ }finally{f.restore()}
+});
+
+test('native PVP bridge forwards one revision event once, not an unseen enemy attack or duplicate retry',async()=>{
+ const f=fixture();try{
+  const actor={...soldier,id:'unit1'};f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',22,[actor]));
+  const presentationEvents=[];let last=-1;
+  f.ui.bridge={renderer:null,accept(packet){
+    if(packet.revision<=last)return false;last=packet.revision;
+    presentationEvents.push(packet.presentationEvents||[]);return true;
+  },close(){}};
+  const frame=revision=>({seat:0,revision,matchId:'room',snapshot:{revision,
+    map:{id:'map',width:10,height:10,tiles:[]},units:[{id:'unit1',team:'PLAYER'}],cores:[],
+    presentation:{battleEvents:[
+      {type:'UNIT_FLOAT_TEXT',sequence:1,unitId:'unit1',kind:'DAMAGE',value:9},
+      {type:'UNIT_ANIMATION',sequence:2,unitId:'hiddenEnemy',state:'ATTACK'},
+      {type:'UNIT_ANIMATION',sequence:3,unitId:'unit1',state:'HURT'}]}}});
+  assert.equal(await f.ui.receiveRender(frame(22)),true);
+  assert.deepEqual(presentationEvents.at(-1),[],'first frame cannot replay unseen prior turns');
+  assert.equal(await f.ui.receiveRender(frame(23)),true);
+  assert.deepEqual(presentationEvents.at(-1).map(e=>e.sequence),[1,3]);
+  assert.equal(await f.ui.receiveRender(frame(23)),false);
+  assert.equal(presentationEvents.length,2);
+ }finally{f.restore()}
 });
