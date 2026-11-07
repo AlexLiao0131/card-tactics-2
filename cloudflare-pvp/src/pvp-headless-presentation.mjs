@@ -42,6 +42,12 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
     if(snapshot?.presentation?.enemyHandCount!==game.cards[1-seat].zones.hand.length)
       throw new PvpCommandError('PRESENTATION_PRIVACY_FAILURE');
     const record=game.lastPresentation;
+    // Always publish a seat-scoped event contract, including no-event turns.
+    // The count below is taken AFTER visibility filtering; no hidden combat
+    // event counts or identities leak into the opposing seat's snapshot.
+    snapshot.presentation.battleEvents=[];
+    snapshot.presentation.battleEventStream='CT2_BATTLE_EVENTS_V1';
+    snapshot.presentation.battleEventRevision=revision;
     if(record?.revision===revision&&Array.isArray(record.events)){
       const visible=new Set(snapshot.units.map(u=>u.id));
       const previous=new Set(record.visibleBefore?.[seat]||[]);
@@ -64,6 +70,7 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
       }
       snapshot.presentation.battleEvents=safe;
     }
+    snapshot.presentation.battleEventCount=snapshot.presentation.battleEvents.length;
     return snapshot;
   });
 }

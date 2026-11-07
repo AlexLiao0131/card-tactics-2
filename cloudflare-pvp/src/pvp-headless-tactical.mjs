@@ -483,7 +483,7 @@ export function tacticalDebugProjection(game,seat){
       .slice(-160).map(e=>({type:e.type,text:e.text}));
     // Authenticated MATCH_STATE contract marker: lets mobile clients detect
     // that a deployed Worker is older than the canonical tactical projection.
-    return {tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V2',
+    return {tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V3',
       phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
        // Authenticated seat's official current deployable tiles.
        deployableTiles:game.phase===CARD_PHASE[seat]&&game.activeSeat===seat
@@ -616,7 +616,8 @@ export const experimentalTacticalCore=Object.freeze({
     const toVisual=()=>game.units.map(u=>({id:u.id,team:u.team,x:u.x,y:u.y,z:u.z,
       renderZ:u.renderZ??u.z,hp:u.hp,alive:u.alive,facing:u.facing,
       visualId:u.character?.visualId,characterId:u.character?.id,
-      effects:u.effects||[],waterInteractionState:u.waterInteraction?.state||null}));
+      effects:(u.effects||[]).map(effect=>({...effect})),
+      waterInteractionState:u.waterInteraction?.state||null}));
     const initialVisibility=[0,1].map(viewer=>{
       const world=canonicalWorldForViewer(game,viewer),viewTeam=UNIT_TEAM[viewer];
       return world.units.filter(u=>u.alive&&
