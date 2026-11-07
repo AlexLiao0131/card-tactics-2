@@ -11,6 +11,7 @@ import {TacticalEngine} from '../../js/tactical-engine.js';
 import '../../js/tactical-action-controller.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
+import {createCanonicalEnvironmentController} from './pvp-environment-controller.mjs';
 import {commitCanonicalTargetApproach} from './pvp-headless-engagement.mjs';
 
 const fail=code=>{throw new PvpCommandError(code)};
@@ -71,10 +72,18 @@ export function isCanonicalSelfChannelSkill(skill){
     !skill.statusEffects?.length && !skill.variants?.length;
 }
 
+export function isCanonicalSubmergeSkill(skill){
+  return !!skill&&skill.category==='SPECIAL'&&skill.target==='ENEMY'&&
+    (!skill.targetType||skill.targetType==='SINGLE')&&skill.power===0&&
+    skill.requirements?.diving===true&&skill.utilityAction?.type==='SUBMERGE_ENEMY'&&
+    skill.utilityAction.consumeTurn===true&&
+    !skill.effects&&!skill.relationEffects&&!skill.approach&&!skill.bloodShadow&&
+    !skill.channel&&!skill.postEffects?.length&&!skill.afterUseEffects?.length;
+}
 export function canonicalDirectEffectSkillOptions(unit,engine){
   if(!unit?.alive)return[];
   const ids=engine.effect.skillIds?.(unit)||unit.character?.skills||[];
-  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill));
+  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill)||isCanonicalSubmergeSkill(skill));
 }
 
 export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,checkMatchEnd){
@@ -102,6 +111,7 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     return {accepted:true,state:game,movement:approach.movement,castInterrupted:true};
   }
   const hpBefore=target.hp,manaBefore=caster.mana;
+  const environment=isCanonicalSubmergeSkill(skill)?createCanonicalEnvironmentController(game,hooks):null;
   const actionController=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:'P',ENEMY:'E'},
     actionState:()=>({map:game.battlefield.map,units:game.units,
@@ -111,13 +121,16 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     effectiveSkill:(u,s)=>engine.unitRuntime.applyResourceScaling(u,s),
     checkMatchEnd:checkMatchEnd||(()=>false),
     maybeAutoEndPlayerTurn:()=>false,
+    applyForcedMovement:environment?.applyForcedMovement,
     clearEngagement:()=>{},setSelectedSkill:()=>{},
     setSelectedSkillVariant:()=>{},setMode:()=>{},render:()=>{},
     pushLog:hooks.pushLog
   });
-  if((isCanonicalSelfChannelSkill(skill)
-        ?(caster.id===target.id&&actionController.executeChannelSkill(caster,skill))
-        :actionController.executeEffectSkill(caster,target,skill))!==true)
+  if((isCanonicalSubmergeSkill(skill)
+        ?actionController.executeUtilitySkill(caster,target,skill)
+        :isCanonicalSelfChannelSkill(skill)
+          ?(caster.id===target.id&&actionController.executeChannelSkill(caster,skill))
+          :actionController.executeEffectSkill(caster,target,skill))!==true)
     fail('OFFICIAL_EFFECT_SKILL_REJECTED');
   return {accepted:true,state:game,casterId:caster.id,targetId:target.id,
     skillId:skill.id,targetHpBefore:hpBefore,targetHpAfter:target.hp,

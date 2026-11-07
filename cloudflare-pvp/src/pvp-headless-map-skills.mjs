@@ -104,8 +104,15 @@ export function isCanonicalImmediateMapSkill(skill){
     Number(skill.hydrologyFlood.surfaceRise)>0;
   const forces=Array.isArray(skill.environmentForces)&&skill.environmentForces.length>0;
   const flat=Number.isFinite(Number(skill.aoeDamage))&&Number(skill.aoeDamage)>0;
+  const whirlpool=skill.whirlpool?.onlyEnemies===true&&
+    Number.isSafeInteger(skill.whirlpool?.duration)&&skill.whirlpool.duration>0&&
+    Number(skill.radius)>0&&Number(skill.power||0)===0;
+  // These owned effects run exclusively via the original map controller.
+  if(skill.whirlpool&&!whirlpool)return false;
+  if(skill.tsunamiWave&&!(floods&&Number.isSafeInteger(skill.tsunamiWave.width)&&
+      skill.tsunamiWave.width>0))return false;
   if(skill.attackType&&!damages)return false;
-  return !!(damages||floods||forces||flat);
+  return !!(damages||floods||forces||flat||whirlpool);
 }
 export function canonicalImmediateMapSkillOptions(unit,engine){
   if(!unit?.alive||unit.acted||unit.waited)return[];

@@ -7,6 +7,8 @@ import '../../js/environment-contact-engine.js';
 import '../../js/displacement-engine.js';
 import '../../js/collision-engine.js';
 import '../../js/fall-engine.js';
+import '../../js/trajectory-engine.js';
+import '../../js/post-engagement-engine.js';
 import '../../js/battle-environment-controller.js';
 import { StageDatabase } from '../../js/stage-database.js';
 import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
