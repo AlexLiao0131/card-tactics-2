@@ -176,3 +176,60 @@ test('serialized world passes map and climate to official line-of-sight, never r
     assert.deepEqual(g.units.map(u=>u.hp),before.units.map(u=>u.hp));
   }finally{TacticalEngine.teamCanSee=original;}
 });
+
+test('blood burst automatically resolves the lone bleeding center and its nearby victims even with unfavorable attack accuracy RNG',()=>{
+  const game=build({extraBleeding:false});
+  const [caster,bleeder,other,victim,friend]=game.units;
+  // Deterministic room RNG: the first two draws are 0.9951 and 0.9987.
+  // Ordinary attack rolls can MISS both, but an already-bleeding target must
+  // still detonate without asking the player to pick a victim or roll to hit.
+  game.randomState=7119;
+  const before={bleeder:bleeder.hp,victim:victim.hp,other:other.hp,friend:friend.hp};
+  const outcome=cast(game);
+  assert.equal(outcome.accepted,true);
+  assert.ok(bleeder.hp<before.bleeder,'auto-detected bleeding center must take damage');
+  assert.ok(victim.hp<before.victim,'nearby non-bleeding enemy is hit by the same blast');
+  assert.equal(other.hp,before.other,'outside blast radius stays unharmed');
+  assert.equal(friend.hp,before.friend,'allies stay unharmed');
+  assert.ok(bleeder.effects.some(e=>e.id==='BLEEDING'),'detonation does not remove bleed');
+});
+
+test('blood burst automatically detects bleeding applied by another friendly unit, without targeting that unit',()=>{
+  const game=build({bleeding:false,extraBleeding:false});
+  withCanonicalEngines(game,e=>{
+    const [caster,bleeder,other,,friend]=game.units;
+    const bleed=SkillDatabase.get('cat_dual_slash').statusEffects[0];
+    e.effect.apply({source:friend,target:bleeder,effect:bleed});
+    e.unitRuntime.syncLiveRoster(game.units);
+    assert.equal(e.effect.bloodBurstCenters(caster,game.units,SkillDatabase.get('seraphina_blood_burst'),
+      {map:game.battlefield.map,environmentState:game.environmentState}).map(u=>u.id).join(','),'bleeder');
+  });
+  assert.equal(tacticalDebugProjection(game,0).units.find(u=>u.id==='vampire').bloodBurstSkills.some(s=>s.id==='seraphina_blood_burst'),true);
+  assert.equal(cast(game).accepted,true);
+});
+
+test('native offline self-cast uses the same auto-acquired bleeding centers and guaranteed detonation',()=>{
+  const game=build({bleeding:false,extraBleeding:false});
+  const map=game.battlefield.map,environmentState=game.environmentState;
+  withCanonicalEngines(game,engine=>{
+    const [actor,bleeder,,,ally]=game.units;
+    const bleed=SkillDatabase.get('cat_dual_slash').statusEffects[0];
+    engine.effect.apply({source:ally,target:bleeder,effect:bleed});
+    engine.unitRuntime.syncLiveRoster(game.units);
+    const hp=bleeder.hp,mana=actor.mana,log=[];
+    const controller=globalThis.TacticalActionController.create({
+      actionState:()=>({map,units:game.units,environmentState}),
+      canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s,{map,environmentState}),
+      consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s,{map,environmentState}),
+      effectiveSkill:(u,s)=>engine.unitRuntime.applyResourceScaling(u,s),
+      setSelectedSkill:()=>{},setSelectedSkillVariant:()=>{},setMode:()=>{},
+      pushLog:msg=>log.push(msg),render:()=>{},checkMatchEnd:()=>false,
+      maybeAutoEndPlayerTurn:()=>false,handleDefeated:()=>{},random:()=>.999999
+    });
+    assert.equal(controller.executeEffectSkill(actor,actor,SkillDatabase.get('seraphina_blood_burst')),true);
+    assert.ok(bleeder.hp<hp);
+    assert.equal(actor.mana,mana-SkillDatabase.get('seraphina_blood_burst').manaCost);
+    assert.equal(actor.acted,true);
+    assert.ok(log.some(t=>t.includes('血爆｜1 個流血爆點')));
+  });
+});

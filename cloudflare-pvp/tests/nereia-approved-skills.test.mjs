@@ -10,6 +10,19 @@ import {TacticalEngine} from '../../js/tactical-engine.js';
 import {HydrologyEngine} from '../../js/hydrology-engine.js';
 import {WaterInteractionEngine} from '../../js/battle-environment-controller.js';
 import {createCanonicalEnvironmentController} from '../src/pvp-environment-controller.mjs';
+import {readFileSync} from 'node:fs';
+
+test('humidity HUD has dedicated sea-blue color distinct from MP and cache-busted CSS entry',()=>{
+ const css=readFileSync(new URL('../../css/unit-hud.css',import.meta.url),'utf8');
+ const html=readFileSync(new URL('../../index.html',import.meta.url),'utf8');
+ const mp=css.match(/\.unit-hud-mana-fill\{background:(#[\da-fA-F]{6})\}/);
+ const humidity=css.match(/\.unit-hud-resource\[data-resource="humidity"\] \.unit-hud-fill\{background:(#[\da-fA-F]{6})\}/);
+ assert.ok(mp,'MP bar uses its official color');
+ assert.equal(humidity?.[1]?.toLowerCase(),'#14b8e6');
+ assert.notEqual(humidity[1].toLowerCase(),mp[1].toLowerCase());
+ assert.match(html,/\.\/css\/unit-hud\.css\?v=20261107-humidity-seablue/);
+});
+
 const deck=Array(20).fill('imperial_swordsman_card');
 const create=()=>initializeCanonicalWorld({seed:1234,mapSize:'SMALL',decks:[deck,deck]});
 const unit=(world,id,team,characterId,x,y)=>UnitRuntimeEngine.create({id,team,characterId,loadoutId:characterId==='nereia'?'nereia_default':null,x,y,map:world.battlefield.map});
