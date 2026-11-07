@@ -32,7 +32,7 @@ import {advanceCanonicalRound} from './pvp-headless-turns.mjs';
 import {castCanonicalDirectEffectSkill,canonicalDirectEffectSkillOptions} from './pvp-headless-effect-skills.mjs';
 import {castCanonicalSelfUtility,canonicalSelfUtilityOptions} from './pvp-headless-self-utility.mjs';
 import {castCanonicalEnvironmentContact,canonicalEnvironmentContactOptions} from './pvp-headless-environment-contact.mjs';
-import {castCanonicalEnchantment,completeCanonicalEnchantmentFollowup,canonicalEnchantmentOptions,createOfficialEnchantmentController} from './pvp-headless-enchantment.mjs';
+import {castCanonicalEnchantment,completeCanonicalEnchantmentFollowup,canonicalEnchantmentOptions,createOfficialEnchantmentController,canonicalEnchantmentImpactHooks} from './pvp-headless-enchantment.mjs';
 import {playCanonicalInstantCard} from './pvp-headless-instant-cards.mjs';
 import {playCanonicalTargetedCard} from './pvp-headless-targeted-cards.mjs';
 import {castCanonicalBloodShadow,chooseCanonicalBloodMemory,canonicalBloodShadowTargets,bloodMemoryOptionsForSeat} from './pvp-headless-blood-shadow.mjs';
@@ -96,7 +96,34 @@ function serverCallbacks(game,engine){
   };
   const stageEvent=event=>{
     if(!eventTypes.has(event?.type))fail('CANONICAL_STAGE_EVENT_UNSUPPORTED');
-    const spawned=()=>fail('STAGE_SPAWN_NOT_CONNECTED');
+    // Script spawns follow tactical-game.spawnFromScript one-to-one, but the
+    // resulting unit is persisted in the authoritative room rather than a
+    // browser-local roster. StageEngine is still the only script dispatcher.
+    const spawned=action=>{
+      const requested=String(action.team||'ENEMY').toUpperCase();
+      const team=requested==='PLAYER'?'P':requested==='NEUTRAL'?'N':'E';
+      // A neutral character needs its original autonomous actor turn before
+      // committing a room that cannot legally advance to the next round.
+      if(team==='N')fail('CANONICAL_NEUTRAL_ACTOR_TURN_REQUIRED');
+      if(game.units.some(u=>u.alive&&u.x===action.x&&u.y===action.y))return null;
+      const character=globalThis.CHARACTERS?.[action.characterId];
+      if(!character)return null;
+      const prefix=team==='P'?'p':team==='N'?'n':'e';
+      let n=0,id;
+      do{id=`${prefix}s${n++}`;}while(game.units.some(u=>u.id===id));
+      const created=engine.unitRuntime.create({id,team,
+        characterId:action.characterId,x:action.x,y:action.y,
+        map:game.battlefield.map});
+      if(!created)return null;
+      const {_runtimeMap,...unit}=created;
+      game.units.push(unit);
+      engine.unitRuntime.syncLiveRoster(game.units);
+      engine.effect.syncConditionalPassives([unit],game.environmentState);
+      if(game.fieldState?.smokeFields?.length)
+        createCanonicalAreaFields(game,engine,{pushLog,handleDefeated}).syncSmokeCover(unit);
+      pushLog(`${character.name} 出現在 (${action.x},${action.y})。`);
+      return unit;
+    };
     StageEngine.run(game.stageState,event,{units:game.units,
       log:pushLog,spawn:spawned,onObjectiveChanged:()=>{}});
   };
@@ -417,12 +444,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         clearEngagement:()=>{},setSelectedSkill:()=>{},setSelectedSkillVariant:()=>{},
         setMode:()=>{},render:()=>{},maybeAutoEndPlayerTurn:()=>false,
         pushLog:hooks.pushLog,
-        aoeTiles:()=>fail('ENCHANTMENT_FOLLOWUP_NOT_CONNECTED'),
-        resolveEnvironmentEvents:()=>fail('ENCHANTMENT_FOLLOWUP_NOT_CONNECTED'),
-        logEnvironmentEvent:()=>fail('ENCHANTMENT_FOLLOWUP_NOT_CONNECTED'),
-        unitAt:()=>fail('ENCHANTMENT_FOLLOWUP_NOT_CONNECTED'),
-        applyEnvironmentHazardToUnit:()=>fail('ENCHANTMENT_FOLLOWUP_NOT_CONNECTED'),
-        damageUnitFlat:hooks.damageUnitFlat};
+        ...canonicalEnchantmentImpactHooks(game,hooks)};
       const hpBefore=enemyCore.hp;
       const success=globalThis.TacticalActionController.create(ctx).resolveDirectTargetAttack(unit,target,skill);
       if(success!==true)fail('OFFICIAL_CORE_ATTACK_REJECTED');

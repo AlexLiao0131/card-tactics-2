@@ -13,6 +13,7 @@ import '../../js/post-engagement-engine.js';
 import '../../js/trajectory-engine.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 import {createCanonicalEnvironmentController} from './pvp-environment-controller.mjs';
+import {applyCanonicalPostEngagementEffect} from './pvp-headless-post-effect.mjs';
 import {createCanonicalAreaFields} from './pvp-field-controller.mjs';
 import '../../js/tactical-action-controller.js';
 import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
@@ -202,27 +203,7 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
       // Never recompute this as PvP-only elemental damage.
       if(entry.enchantment)enchantedImpact.resolveEnchantmentImpact(entry);
     },
-    onPostEffect:entry=>{
-      // Mirrors tactical-game.js logPostEffect: the core has already moved
-      // the target and resolved fall damage. The environment now receives
-      // collisions and the destination tile exactly once, including traps,
-      // water/current, smoke interaction and stage enter-tile events.
-      const {source,target,effect,result}=entry||{};
-      if(!result?.applied)return;
-      const moved=result.steps?.length||0;
-      if(moved>0)globalThis.EffectEngine?.interruptChannel?.(target,'FORCED_MOVE');
-      const visit=(event,mover)=>{
-        for(const collision of event?.collisions||[]){
-          environment.resolveCollisionRuntime(collision,{mover,source});
-          if(collision.chain&&collision.surface?.unit)
-            visit(collision.chain,collision.surface.unit);
-        }
-      };
-      visit(result,target);
-      callbacks.pushLog(`${source.character.name} → ${target.character.name}：${effect.type==='PULL'?'拉近':'擊退'} ${moved} 格。`,'BATTLE');
-      if(result.falls?.length)callbacks.pushLog(`${target.character.name} 墜落傷害 ${result.fallDamage||0}｜HP ${target.hp}。`,'BATTLE');
-      if(target.alive)environment.enterTile(target);
-    }
+    onPostEffect:entry=>applyCanonicalPostEngagementEffect(entry,environment,callbacks)
   });
   if(!outcome.results.length)fail('OFFICIAL_COMBAT_RESOLUTION_EMPTY');
   // Authored verdict's second hit is never a second action or a made-up PvP

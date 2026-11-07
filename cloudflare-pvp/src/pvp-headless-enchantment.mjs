@@ -29,8 +29,22 @@ export function isCanonicalEnchantmentSkill(skill){
     !skill.postEffects?.length && !skill.afterUseEffects?.length;
 }
 
-export function createOfficialEnchantmentController(game,engine,hooks,checkMatchEnd,selected=null){
+/** Shared ORIGINAL environmental callbacks for every weapon-enchantment impact,
+ * including a Core hit. The same BattlefieldEnvironmentController handles
+ * splash damage, thunder conduction, flames and any environmental casualty. */
+export function canonicalEnchantmentImpactHooks(game,hooks){
   const environment=createCanonicalEnvironmentController(game,hooks);
+  return {
+    aoeTiles:(center,radius)=>TacticalEngine.aoeTiles(game.battlefield.map,center,radius),
+    unitAt:(x,y)=>game.units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y)||null,
+    damageUnitFlat:hooks.damageUnitFlat,
+    logEnvironmentEvent:environment.logEnvironmentEvent,
+    resolveEnvironmentEvents:environment.resolveEnvironmentEvents,
+    applyEnvironmentHazardToUnit:environment.applyEnvironmentHazardToUnit
+  };
+}
+
+export function createOfficialEnchantmentController(game,engine,hooks,checkMatchEnd,selected=null){
   return globalThis.TacticalActionController.create({
     TEAM:{PLAYER:'P',ENEMY:'E'},
     actionState:()=>({map:game.battlefield.map,units:game.units,
@@ -41,12 +55,7 @@ export function createOfficialEnchantmentController(game,engine,hooks,checkMatch
     checkMatchEnd:checkMatchEnd||(()=>false),maybeAutoEndPlayerTurn:()=>false,
     setSelectedSkill:()=>{},setSelectedSkillVariant:()=>{},setMode:()=>{},render:()=>{},
     pushLog:hooks.pushLog,
-    aoeTiles:(center,radius)=>TacticalEngine.aoeTiles(game.battlefield.map,center,radius),
-    unitAt:(x,y)=>game.units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y)||null,
-    damageUnitFlat:hooks.damageUnitFlat,
-    logEnvironmentEvent:environment.logEnvironmentEvent,
-    resolveEnvironmentEvents:environment.resolveEnvironmentEvents,
-    applyEnvironmentHazardToUnit:environment.applyEnvironmentHazardToUnit
+    ...canonicalEnchantmentImpactHooks(game,hooks)
   });
 }
 

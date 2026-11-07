@@ -8,6 +8,7 @@
 import {SkillDatabase} from '../../js/skill-database.js';
 import '../../js/tactical-action-controller.js';
 import {createCanonicalEnvironmentController} from './pvp-environment-controller.mjs';
+import {applyCanonicalPostEngagementEffect} from './pvp-headless-post-effect.mjs';
 import {createOfficialEnchantmentController} from './pvp-headless-enchantment.mjs';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 
@@ -63,9 +64,9 @@ function officialController(game,engine,hooks,checkMatchEnd,actor){
       environment.resolveWaterSkillHit(entry);
       if(entry.enchantment)enchantment.resolveEnchantmentImpact(entry);
     },
-    logPostEffect:entry=>{
-      if(entry?.result?.applied)fail('POST_ENGAGEMENT_FOLLOWUP_NOT_CONNECTED');
-    },
+    // The very same collision/hazard hook as a normal direct engagement;
+    // blood-shadow displacement cannot be dropped or re-simulated in PvP.
+    logPostEffect:entry=>applyCanonicalPostEngagementEffect(entry,environment,hooks),
     setPendingCopySkill:pending=>{
       if(!pending){game.pendingBloodMemoryChoice=null;return;}
       if(pending.attacker.id!==actor.id)fail('BLOOD_MEMORY_ACTOR_MISMATCH');
