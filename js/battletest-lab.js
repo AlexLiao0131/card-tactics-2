@@ -38,11 +38,13 @@ function buildPanel(){
         <div class="bt-lab-row three"><label>陣營<select id="labOwner"><option value="PLAYER">我方</option><option value="ENEMY">敵方</option><option value="NEUTRAL">中立</option></select></label>
           <label>X<input id="labSpawnX" type="number" min="0" max="19" step="1" value="2"></label>
           <label>Y<input id="labSpawnY" type="number" min="0" max="13" step="1" value="2"></label></div>
+        <button id="labPickSpawn" class="bt-pick-map" type="button" style="width:100%">點擊 3D 地圖選召喚座標</button>
         <button id="labSpawn" type="button" style="width:100%">在指定座標生成角色</button></section>
       <section><h4>已生成角色／重設站位</h4><select id="labUnits" aria-label="現有角色"></select>
         <div class="bt-lab-row three"><label>X<input id="labMoveX" type="number" min="0" max="19" step="1" value="0"></label>
           <label>Y<input id="labMoveY" type="number" min="0" max="13" step="1" value="0"></label>
-          <button id="labMove" type="button" style="align-self:end">移到座標</button></div></section>
+          <button id="labMove" type="button" style="align-self:end">移到座標</button></div>
+        <button id="labPickMove" class="bt-pick-map" type="button" style="width:100%">點擊 3D 地圖選移動座標</button></section>
       <section><h4>氣候與環境回合</h4><div class="bt-lab-row"><select id="labWeather" aria-label="氣候">
           <option value="CLEAR">晴朗</option><option value="FOG">迷霧</option><option value="RAIN">下雨</option><option value="HEAVY_RAIN">豪雨</option><option value="THUNDERSTORM">雷雨</option><option value="TYPHOON">颱風</option><option value="SNOW">降雪</option><option value="BLIZZARD">暴風雪</option><option value="SCORCHING_SUN">烈日</option>
         </select><button id="labSetWeather" type="button">切換天氣</button></div>
@@ -55,8 +57,13 @@ function buildPanel(){
       </section><p id="labStatus" class="bt-lab-status" role="status" aria-live="polite">啟動測試場...</p>
     </div>`;
   const toggle=document.createElement('button');toggle.className='bt-lab-toggle';toggle.id='labRestore';toggle.type='button';toggle.hidden=true;toggle.textContent='開啟 TEST 控制台';
-  document.body.append(panel,toggle);
-  return {panel,toggle};
+  const picker=document.createElement('div');picker.className='bt-pick-banner';picker.id='labPickBanner';picker.hidden=true;
+  picker.setAttribute('role','status');picker.setAttribute('aria-live','polite');
+  const prompt=document.createElement('span');prompt.id='labPickPrompt';
+  const cancel=document.createElement('button');cancel.id='labCancelPick';cancel.type='button';cancel.textContent='取消選格';
+  picker.append(prompt,cancel);
+  document.body.append(panel,toggle,picker);
+  return {panel,toggle,picker};
 }
 
 async function start(){
@@ -72,17 +79,27 @@ async function start(){
   await new Promise(resolve=>requestAnimationFrame(resolve));
   window.dispatchEvent(new CustomEvent('cardtactics:battle-screen-enter'));
   $('battleBack').onclick=()=>window.location.assign('./index.html');
-  const {panel,toggle}=buildPanel();
+  const {panel,toggle,picker}=buildPanel();
   const find=id=>panel.querySelector('#'+id);
+  const setPanelVisible=shown=>{
+    panel.hidden=!shown;
+    toggle.hidden=shown;
+    document.body.classList.toggle('bt-lab-open',shown);
+  };
+  setPanelVisible(true);
   const info=(message,bad=false)=>{
     const target=find('labStatus');target.textContent=message;target.classList.toggle('error',bad);
   };
   const valid=(x,y)=>Number.isInteger(x)&&Number.isInteger(y)&&!!regionAt(x,y);
   const coords=(xId,yId)=>[xId,yId].map(id=>{const v=find(id).value;return v===''?NaN:Number(v);});
   const buttons=new Map();
-  const chooseCell=(x,y)=>{
-    for(const id of ['labSpawnX','labMoveX'])find(id).value=x;
-    for(const id of ['labSpawnY','labMoveY'])find(id).value=y;
+  const chooseCell=(x,y,target='both')=>{
+    if(target==='both'||target==='spawn'){
+      find('labSpawnX').value=x;find('labSpawnY').value=y;
+    }
+    if(target==='both'||target==='move'){
+      find('labMoveX').value=x;find('labMoveY').value=y;
+    }
     for(const [key,b] of buttons)b.classList.toggle('selected',key===`${x},${y}`);
     const region=regionAt(x,y);
     find('labCellInfo').textContent=`選擇 (${x},${y})｜${region?.name||'超出範圍'}｜${region?.terrain||'—'}`;
@@ -96,6 +113,48 @@ async function start(){
     buttons.set(`${x},${y}`,button);
   }
   chooseCell(2,2);
+  // Only one coordinate capture at a time. The ONE native Babylon canvas
+  // supplies tile X/Y via js/main.js, and this consumes exactly that click.
+  // Outside this explicit selection mode, every map tap remains normal combat.
+  let pickMode=null;
+  const stopPicking=()=>{
+    pickMode=null;picker.hidden=true;
+    document.body.classList.remove('bt-lab-is-picking');
+    setPanelVisible(true);
+  };
+  const beginPicking=mode=>{
+    if(!['spawn','move'].includes(mode))return;
+    pickMode=mode;
+    picker.querySelector('#labPickPrompt').textContent=mode==='spawn'
+      ?'請點選 3D 戰場格子，設定召喚 X/Y（不會執行戰鬥操作）'
+      :'請點選 3D 戰場格子，設定移動 X/Y（不會執行戰鬥操作）';
+    setPanelVisible(false);
+    toggle.hidden=true;picker.hidden=false;
+    document.body.classList.add('bt-lab-is-picking');
+  };
+  find('labPickSpawn').onclick=()=>beginPicking('spawn');
+  find('labPickMove').onclick=()=>beginPicking('move');
+  picker.querySelector('#labCancelPick').onclick=()=>{
+    stopPicking();info('已取消地圖選格，未移動或召喚角色。');
+  };
+  window.addEventListener('keydown',event=>{
+    if(pickMode&&event.key==='Escape'){
+      event.preventDefault();stopPicking();info('已取消地圖選格。');
+    }
+  });
+  globalThis.CardTacticsBattleTest=Object.freeze({onTilePicked(x,y){
+    if(!pickMode)return false;
+    const mode=pickMode;
+    if(!valid(x,y)){
+      stopPicking();info('所選地格無效，請重新選擇。',true);
+      return true;
+    }
+    chooseCell(x,y,mode);
+    stopPicking();
+    const name=regionAt(x,y)?.name||'未知地形';
+    info(`已從 3D 地圖填入${mode==='spawn'?'召喚':'移動'}座標 (${x},${y})｜${name}。確認後按對應的生成／移動按鈕。`);
+    return true;
+  }});
   const allCards=Object.values(globalThis.CARDS).filter(c=>
     globalThis.CardDatabase?.isCharacter?.(c)||c.type==='CHARACTER').sort((a,b)=>
       Number(b.unitType==='HERO')-Number(a.unitType==='HERO')||a.name.localeCompare(b.name,'zh-Hant'));
@@ -162,8 +221,8 @@ async function start(){
     game.resetBattle();refreshUnits(false);info('已清空角色並重建固定方形測試場。');
   };
   find('labExit').onclick=()=>window.location.assign('./index.html');
-  find('labHide').onclick=()=>{panel.hidden=true;toggle.hidden=false;};
-  toggle.onclick=()=>{panel.hidden=false;toggle.hidden=true;};
+  find('labHide').onclick=()=>setPanelVisible(false);
+  toggle.onclick=()=>setPanelVisible(true);
   $('resetMap').onclick=()=>{game.resetBattle();refreshUnits(false);info('固定測試場已重置。');};
   window.addEventListener('cardtactics:state',()=>refreshUnits());
   refreshUnits(false);

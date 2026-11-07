@@ -67,8 +67,13 @@ try{
     if(surface!==canvas)throw Error('NATIVE_BATTLE_CANVAS_REQUIRED');
     if(!renderer){
       renderer=new BabylonRenderer(canvas,snapshot,{
-        onTilePicked:(x,y)=>pvp?.isBattleActive()
-          ?pvp.tilePicked(x,y):runtime.clickBattleTile(x,y)
+        onTilePicked:(x,y)=>{
+          if(pvp?.isBattleActive())return pvp.tilePicked(x,y);
+          // Test-only input consumer. When absent/inactive, the original
+          // tactical click remains the single owner of battlefield actions.
+          if(document.body.classList.contains('battletest-page')&&globalThis.CardTacticsBattleTest?.onTilePicked?.(x,y)===true)return true;
+          return runtime.clickBattleTile(x,y);
+        }
       });
       globalThis.CardTacticsRenderer=renderer;
       shell.renderer=renderer;
