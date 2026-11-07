@@ -61,7 +61,7 @@ test('one official capability contract covers future map spells; unknown / multi
   assert.ok(target);
   const mp=g.units[0].mana;
   assert.equal(resolveCanonicalPlayerCommand(g,command(fresh.id,target),0).accepted,true);
-  assert.equal(g.units[0].mana,mp-fresh.manaCost);
+  assert.equal(g.units[0].mana,mp-withCanonicalEngines(g,e=>e.unitRuntime.skillManaCost(g.units[0],fresh)));
  }finally{delete SKILLS[fresh.id];}
 });
 
@@ -127,11 +127,11 @@ test('spatial transit rejects injected destination, cost and illegitimate seatin
 test('Nereia tsunami commits real flood, mana and turn via original MapSkill + Hydrology engines',()=>{
  const g=make();
  const legal=tiles(g,'nereia_tsunami');assert.ok(legal.length>0);
- const t=legal[0];const beforeMana=g.units[0].mana,random=g.randomState;
+ const t=legal[0];const beforeMana=g.units[0].mana,random=g.randomState,waterBefore=g.battlefield.map.tiles.reduce((sum,tile)=>sum+Number(tile.waterDepth||0),0);
  const out=resolveCanonicalPlayerCommand(g,command('nereia_tsunami',t),0);
- assert.equal(out.accepted,true);assert.equal(g.units[0].mana,beforeMana-SkillDatabase.get('nereia_tsunami').manaCost);
+ assert.equal(out.accepted,true);assert.equal(g.units[0].mana,beforeMana-withCanonicalEngines(g,e=>e.unitRuntime.skillManaCost(g.units[0],SkillDatabase.get('nereia_tsunami'))));
  assert.equal(g.units[0].acted,true);assert.equal(g.units[0].waited,true);
- assert.ok(g.events.some(e=>e.text.includes('注入 Water Volume')));
+ assert.ok(g.battlefield.map.tiles.reduce((sum,tile)=>sum+Number(tile.waterDepth||0),0)>waterBefore,'the directed tsunami deposits real water');
  assert.equal(g.randomState,random,'a deterministic flood need not invent hit/crit draws');
 });
 

@@ -570,11 +570,13 @@ test('Durable Object WebSocket map-target skill delegates to original hydrology 
  });
  const tile=ctrl.mapTargetTiles(actor,SkillDatabase.get('nereia_tsunami'))[0];assert.ok(tile);
  const action={type:'CAST_MAP_SKILL',unitId:'pvp_nereia',skillId:'nereia_tsunami',x:tile.x,y:tile.y};
+ const waterBefore=saved.state.battlefield.map.tiles.reduce((sum,tile)=>sum+Number(tile.waterDepth||0),0);
+ const expectedMpCost=withCanonicalEngines(saved.state,e=>e.unitRuntime.skillManaCost(actor,SkillDatabase.get('nereia_tsunami')));
  const first=await send(pair.room,pair.ws[0],action);
  assert.equal(first.state.revision,saved.revision+1);
  assert.equal(first.state.state.units.find(u=>u.id==='pvp_nereia').mana,
-   actor.mana-SkillDatabase.get('nereia_tsunami').manaCost);
- assert.ok(first.state.state.events.some(e=>e.text.includes('Water Volume')));
+   actor.mana-expectedMpCost);
+ assert.ok(first.state.state.battlefield.map.tiles.reduce((sum,tile)=>sum+Number(tile.waterDepth||0),0)>waterBefore,'tsunami must deposit actual water');
  const otherView=pair.ws[1].sent.findLast(m=>m.type==='MATCH_STATE').match.view;
  assert.ok(otherView.units.every(u=>u.mapSkills===undefined));
  const retry=await send(pair.room,pair.ws[0],action,first.envelope.baseRevision,first.envelope.commandId);

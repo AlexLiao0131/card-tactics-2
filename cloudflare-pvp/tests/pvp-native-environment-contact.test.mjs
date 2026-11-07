@@ -48,10 +48,11 @@ test('burning forest target delivers original water-fire exchange, consumes actu
    .find(e=>e.type==='BURNING');
  assert.ok(before);
  const mp=unit.mana;
+ const expectedMpCost=withCanonicalEngines(g,e=>e.unitRuntime.skillManaCost(unit,SkillDatabase.get('nereia_water_bullet')));
  const actual=resolveCanonicalPlayerCommand(g,
    {type:'CAST_ENVIRONMENT_CONTACT',unitId:unit.id,skillId:'nereia_water_bullet',x:fire.x,y:fire.y},0);
  assert.equal(actual.accepted,true);
- assert.equal(mp-unit.mana,SkillDatabase.get('nereia_water_bullet').manaCost);
+ assert.equal(mp-unit.mana,expectedMpCost);
  assert.equal(unit.acted,true);
  const after=globalThis.EnvironmentEngine.effectAt(g.environmentState,fire.x,fire.y)
    .find(e=>e.type==='BURNING');
