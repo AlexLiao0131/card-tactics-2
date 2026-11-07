@@ -57,7 +57,7 @@ export class PvpBattleRenderBridge {
     if(!Array.isArray(presentationEvents))throw Error('PVP_PRESENTATION_EVENTS_INVALID');
     const fresh=[],freshKeys=[];
     for(const [index,event] of presentationEvents.entries()){
-      if(!event||!['UNIT_ANIMATION','UNIT_FLOAT_TEXT'].includes(event.type))continue;
+      if(!event||!['UNIT_ANIMATION','UNIT_FLOAT_TEXT','TEMPLAR_VERDICT_IMPACT'].includes(event.type))continue;
       const key=`${revision}:${event.sequence??index}`;
       if(this.seenPresentationEvents.has(key)||freshKeys.includes(key))continue;
       freshKeys.push(key);

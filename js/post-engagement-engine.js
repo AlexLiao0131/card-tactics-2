@@ -129,7 +129,14 @@ export const PostEngagementEngine=(()=>{
     const primary=engagement?.results?.find(e=>e.role==='INITIATOR'&&e.actor?.id===attacker?.id);
     if(!primary?.result?.hit||!defender?.character)return [];
     const {radius,blastPower:power}=skill.verdictCross;
-    const center={x:defender.x,y:defender.y},blast={...skill,
+    const center={x:defender.x,y:defender.y};
+    // Presentation-only result: the canonical primary hit already succeeded.
+    // Both offline and PvP consume this same event; no renderer may decide hit.
+    globalThis.UnitAnimationEngine?.emitPresentation?.('TEMPLAR_VERDICT_IMPACT',{
+      unitId:attacker.id,targetId:defender.id,skillId:skill.id,
+      targetX:center.x,targetY:center.y
+    });
+    const blast={...skill,
       attackType:'MAGIC',offenseStat:'ATK',pureHoly:true,power,skipInherentMagic:true};
     const multiplier=Number(primary.vengeanceMultiplier||1),resolved=[];
     for(const target of units||[]){

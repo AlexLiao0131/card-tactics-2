@@ -2,6 +2,7 @@ import { BattleCamera } from "./battle-camera.js";
 import { TerrainRenderer } from "./terrain-renderer.js";
 import { WaterRenderer } from "./water-renderer.js";
 import { UnitRenderer } from "./unit-renderer.js";
+import { TemplarVerdictVfx } from "./templar-verdict-vfx.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -155,6 +156,7 @@ export class BabylonRenderer{
     this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment,terrain:this.terrain});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
+    this.verdictVfx=new TemplarVerdictVfx(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -181,6 +183,7 @@ export class BabylonRenderer{
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
+      this.verdictVfx.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -619,6 +622,7 @@ export class BabylonRenderer{
     publish("water",()=>this.water.sync(state,presentationEvents));
     publish("mapObjects",()=>this.mapObjects.sync(state));
     publish("units",()=>this.units.sync(state,presentationEvents));
+    publish("verdictVfx",()=>this.verdictVfx.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -785,6 +789,7 @@ export class BabylonRenderer{
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
       units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},
+      verdictVfx:this.verdictVfx.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };
