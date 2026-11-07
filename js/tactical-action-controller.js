@@ -447,6 +447,8 @@
         }
         if(skill.trapPlacement&&(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false))return false;
         if(skill.requiresVision!==false&&!TacticalEngine.canSee(map,attacker,tile,environmentState))return false;
+        if(skill.whirlpool&&!HydrologyEngine.isWater(tile))return false;
+        if(skill.tsunamiWave&&!EnvironmentEngine.planTsunami(map,attacker,tile,{width:skill.tsunamiWave.width,surfaceRise:skill.hydrologyFlood?.surfaceRise}).cells.length)return false;
         if(skill.environmentRequirement==="CONDUCTIVE"&&!EnvironmentEngine.isConductive(map,environmentState,tile.x,tile.y))return false;
         return true;
       });
@@ -620,6 +622,58 @@
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
         ctx.consumeSkill(attacker,skill);ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${result.state.mode}。`,"SYSTEM");
         return action.consumeTurn===true?finishActiveSkill(attacker):finishFreeUtility(attacker);
+      }
+      if(action.type==="SUBMERGE_ENEMY"){
+        if(!target?.alive||target.team===attacker.team||
+           String(attacker.verticalState?.mode||"")!=="DIVING"||
+           Math.abs(attacker.x-target.x)+Math.abs(attacker.y-target.y)!==1||
+           !TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState))
+          return skillFailure(attacker,skill,"DRAG_REQUIRES_ADJACENT_TARGET",target);
+        const waterRules=globalThis.WaterInteractionEngine?.activeWaterRules?.(target)||{};
+        if(target.character?.terrainTraits?.includes("AQUATIC")||waterRules.preventSinking)
+          return skillFailure(attacker,skill,"TARGET_CANNOT_BE_SUBMERGED",target);
+        if(!globalThis.WaterInteractionEngine?.forceSubmerge)
+          return skillFailure(attacker,skill,"WATER_RUNTIME_UNAVAILABLE",target);
+        const body=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(target)||2);
+        let tile=TacticalEngine.tile(map,target.x,target.y);
+        if(Number(HydrologyEngine.waterDepth(tile)||0)<body){
+          // Shoreline grab: pull the enemy into an UNOCCUPIED adjacent deep
+          // water cell using the existing official displacement/collision rules.
+          const possible=[[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dy])=>
+            TacticalEngine.tile(map,target.x+dx,target.y+dy)).filter(next=>
+            next&&HydrologyEngine.waterDepth(next)>=body&&
+            TacticalEngine.canOccupyTerrain(target,next)&&
+            !TacticalEngine.isBlockedByObject(map,next.x,next.y,target)&&
+            !units.some(u=>u.alive&&u.occupiesTile!==false&&u.id!==target.id&&
+              u.x===next.x&&u.y===next.y)).sort((a,b)=>
+            Math.abs(a.x-attacker.x)+Math.abs(a.y-attacker.y)-
+            (Math.abs(b.x-attacker.x)+Math.abs(b.y-attacker.y))||a.y-b.y||a.x-b.x);
+          const landing=possible[0];
+          if(!landing||!ctx.applyForcedMovement)return skillFailure(attacker,skill,"NO_DEEP_WATER_LANDING",target);
+          const resistance=globalThis.DisplacementEngine?.resistance?.(target);
+          if(resistance?.weightClass==="IMMOVABLE")return skillFailure(attacker,skill,"TARGET_IMMOVABLE",target);
+          // A collision can still defeat the defender. Commit the full action
+          // BEFORE applying the official displacement, never give a free hit.
+          if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+          globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+          const force=1+Math.max(0,Number(resistance?.value||0));
+          const moved=ctx.applyForcedMovement(landing,target,force,{name:"深潛拖拽",damage:0,type:"PULL",damageType:"WATER",resistAxes:{horizontal:true,vertical:true}});
+          if(!moved?.steps?.length||target.x!==landing.x||target.y!==landing.y){
+            ctx.pushLog(`${skill.name}：敵人受到地形或碰撞阻擋，無法拉入深水。`,"BATTLE");
+            return finishActiveSkill(attacker);
+          }
+          if(!target.alive)return finishActiveSkill(attacker);
+          tile=TacticalEngine.tile(map,target.x,target.y);
+        }else{
+          if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+          globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        }
+        // Submersion changes posture without HP loss at contact; the regular
+        // environmental clock owns subsequent drowning damage.
+        const result=WaterInteractionEngine.forceSubmerge(target,tile,{turns:1,impactDamage:0});
+        if(!result.applied){ctx.pushLog(`${skill.name}：目標未成功沉沒（${result.reason||"UNKNOWN"}）。`,"BATTLE");return finishActiveSkill(attacker);}
+        ctx.pushLog(`${attacker.character.name} 將 ${target.character.name} 拉入水下，後續由真實水深與呼吸規則判定。`,"BATTLE");
+        return finishActiveSkill(attacker);
       }
       if(action.type==="ENTER_STEALTH"){
         ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
@@ -795,6 +849,13 @@
         ctx.activateSmoke(attacker,skill);
         return finishActiveSkill(attacker);
       }
+      // The single canonical cast must validate its actual water/terrain
+      // footprint before committing resources.
+      const tsunamiPlan=skill.tsunamiWave?EnvironmentEngine.planTsunami(map,attacker,center,{
+        width:skill.tsunamiWave.width,surfaceRise:skill.hydrologyFlood?.surfaceRise}):null;
+      if(skill.tsunamiWave&&!tsunamiPlan?.cells.length)return skillFailure(attacker,skill,"TSUNAMI_PATH_BLOCKED",center);
+      if(skill.whirlpool&&!HydrologyEngine.isWater(TacticalEngine.tile(map,center.x,center.y)))
+        return skillFailure(attacker,skill,"WHIRLPOOL_REQUIRES_WATER",center);
       const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
@@ -806,6 +867,43 @@
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+      if(skill.tsunamiWave){
+        // Stage 1: contact and knockback, before adding water. This keeps
+        // wave impact independent of the hydro's steady water depths.
+        const pulse={type:"TSUNAMI_WAVE",sourceUnitId:attacker.id,sourceTeam:attacker.team,
+          fronts:tsunamiPlan.fronts,cells:tsunamiPlan.cells.map(t=>({x:t.x,y:t.y})),
+          dx:tsunamiPlan.dx,dy:tsunamiPlan.dy,shieldHp:Math.max(0,Math.round(Number(attacker.character?.combat?.matk||0))),
+          pushDistance:1,waveHeight:.8,durationMs:1600,contactProfile:"WAVE_VOLUME"};
+        ctx.resolveEnvironmentEvents?.([pulse],{reason:`${skill.name} 迎面巨浪`});
+        // Stage 2: deposit the original authored 1.25 rise as REAL water
+        // volume along swept, traversable terrain, not a flat surface cap.
+        const floodEvents=[],rise=Math.max(0,Number(skill.hydrologyFlood?.surfaceRise||0)),
+          fireKeys=EnvironmentEngine.largeFireKeys(environmentState);
+        for(const tile of tsunamiPlan.cells){
+          const remaining=EnvironmentEngine.exchangeWaterFire(map,environmentState,tile,rise,floodEvents,{source:skill.id,clusterKeys:fireKeys});
+          if(remaining>0)HydrologyEngine.addWater(tile,remaining,floodEvents);
+        }
+        HydrologyEngine.redistribute(map,{source:skill.id,events:floodEvents});
+        EnvironmentEngine.resolveStandingWaterFire(map,environmentState,floodEvents,{source:skill.id});
+        floodEvents.forEach(ctx.logEnvironmentEvent);
+        ctx.resolveEnvironmentEvents?.(floodEvents,{reason:`${skill.name} 浪後淹水`});
+        ctx.pushLog(`${attacker.character.name} 施放海嘯｜浪牆寬度 ${skill.tsunamiWave.width}、沿地形推進 ${tsunamiPlan.cells.length} 格。`,"BATTLE");
+        UnitRuntimeEngine.endBloodTransaction(attacker);
+        return finishActiveSkill(attacker);
+      }
+      if(skill.whirlpool){
+        if(!environmentState||!HydrologyEngine.isWater(TacticalEngine.tile(map,center.x,center.y))){
+          UnitRuntimeEngine.endBloodTransaction(attacker);return skillFailure(attacker,skill,"WHIRLPOOL_REQUIRES_WATER",center);
+        }
+        const events=EnvironmentEngine.createWhirlpool(environmentState,map,center.x,center.y,{
+          duration:skill.whirlpool.duration,radius:skill.radius,sourceTeam:attacker.team,
+          sourceUnitId:attacker.id,onlyEnemies:skill.whirlpool.onlyEnemies===true,damage:0
+        });
+        events.forEach(ctx.logEnvironmentEvent);
+        ctx.resolveEnvironmentEvents?.(events,{reason:`${skill.name} 形成漩渦`});
+        UnitRuntimeEngine.endBloodTransaction(attacker);
+        return finishActiveSkill(attacker);
+      }
       if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
         const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
         ctx.pushLog(`${attacker.character.name} 在 (${center.x},${center.y}) 設置「${trap?.name||skill.name}」。`,"BATTLE");

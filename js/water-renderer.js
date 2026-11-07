@@ -194,6 +194,7 @@ export class WaterRenderer{
     this.runoffTexture=runoff.texture;
     this.foamMaterial=this.makeSideMaterial("water-foam",new BABYLON.Color3(.78,.93,1),.52);
     this.rogueFoamMaterial=this.makeSideMaterial("rogue-wave-foam",new BABYLON.Color3(.90,.98,1),.86);
+    this.tsunamiWallMaterial=this.makeSideMaterial("tsunami-wave-water",new BABYLON.Color3(.16,.54,.75),.76);
 
     this.beforeRender=this.scene.onBeforeRenderObservable.add(()=>{
       const dt=Math.min(.05,Math.max(0,Number(this.scene.getEngine().getDeltaTime()||16)/1000));
@@ -707,6 +708,49 @@ export class WaterRenderer{
     entry.specialActive=true;if(mesh.metadata)mesh.metadata.waterSpecialActive=true;
   }
 
+  createTsunamiWallVisual(wave,parent){
+    // A SINGLE lightweight, curl-profiled water wall; it never owns hydrology.
+    const root=new BABYLON.TransformNode(`tsunami-wall-${wave.token}`,this.scene);
+    root.parent=parent;
+    const columns=16,levels=9,span=Math.max(TILE_SIZE,
+      Number(wave.maxPerp-wave.minPerp||0)+TILE_SIZE);
+    const height=Math.max(ELEVATION_HEIGHT*.85,wave.amplitude*2.65);
+    const positions=[],uvs=[],indices=[];
+    for(let x=0;x<=columns;x++){
+      const alongWidth=x/columns-.5;
+      for(let y=0;y<=levels;y++){
+        const h=y/levels,side=alongWidth*span;
+        const crestCurl=height*(.08*h+.37*h*h*h);
+        const taper=Math.sin(Math.PI*(.06+.88*(x/columns)));
+        positions.push(-wave.dz*side+wave.dx*crestCurl,
+          height*h*taper,wave.dx*side+wave.dz*crestCurl);
+        uvs.push(x/columns,h);
+        if(x<columns&&y<levels){
+          const a=x*(levels+1)+y,b=(x+1)*(levels+1)+y;
+          indices.push(a,b,a+1,b,b+1,a+1);
+        }
+      }
+    }
+    const normals=[],vertex=new BABYLON.VertexData();
+    BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+    vertex.positions=positions;vertex.normals=normals;vertex.uvs=uvs;vertex.indices=indices;
+    const mesh=new BABYLON.Mesh(`tsunami-body-${wave.token}`,this.scene);
+    vertex.applyToMesh(mesh);mesh.parent=root;
+    mesh.material=this.tsunamiWallMaterial;mesh.isPickable=false;
+    mesh.metadata={presentationOnly:true,kind:"tsunami-wave-wall",usesAuthoritativeHydrology:true};
+    const crestPoints=[];
+    for(let i=0;i<=columns;i++){
+      const t=i/columns,side=(t-.5)*span;
+      crestPoints.push(new BABYLON.Vector3(-wave.dz*side+wave.dx*height*.45,
+        height*Math.sin(Math.PI*(.06+.88*t)),wave.dx*side+wave.dz*height*.45));
+    }
+    const foam=BABYLON.MeshBuilder.CreateTube(`tsunami-crest-${wave.token}`,{
+      path:crestPoints,radius:Math.max(.03,height*.045),tessellation:5
+    },this.scene);
+    foam.parent=root;foam.material=this.rogueFoamMaterial;foam.isPickable=false;
+    root.setEnabled(false);
+    return root;
+  }
   createRogueWaveVisual(wave){
     if(!globalThis.BABYLON||!wave?.cells?.length)return null;
     // The rogue wave itself is the animated water mesh. Presentation meshes
@@ -719,8 +763,9 @@ export class WaterRenderer{
       droplet.parent=root;droplet.material=this.rogueFoamMaterial;droplet.isPickable=false;droplet.visibility=0;droplet.metadata={phase:hash01(`${wave.token}:spray:${i}`)*Math.PI*2};
       spray.push(droplet);
     }
-    root.metadata={kind:"rogue-wave-spray",presentationOnly:true,waterMeshIsWaveBody:true,noFoamRibbon:true};
-    return{root,spray,dispose:()=>root.dispose(false,false)};
+    const wall=wave.tsunami===true?this.createTsunamiWallVisual(wave,root):null;
+    root.metadata={kind:wall?"tsunami-wave-spray":"rogue-wave-spray",presentationOnly:true,waterMeshIsWaveBody:!wall,noFoamRibbon:!wall};
+    return{root,spray,wall,dispose:()=>root.dispose(false,false)};
   }
 
   updateRogueWaveVisual(wave,age){
@@ -734,6 +779,13 @@ export class WaterRenderer{
       const sampled=[],last=front.length-1,count=visual.spray.length;
       for(let i=0;i<count;i++)sampled.push(front[Math.round(i*last/Math.max(1,count-1))]);
       front=sampled;
+    }
+    if(visual.wall){
+      const mid=(wave.minPerp+wave.maxPerp)*.5;
+      visual.wall.position.set(wave.dx*crestBase-wave.dz*mid,wave.surfaceY,
+        wave.dz*crestBase+wave.dx*mid);
+      visual.wall.scaling.y=.82+.14*Math.sin(age*5);
+      visual.wall.setEnabled(fade>.03);
     }
     for(let i=0;i<visual.spray.length;i++){
       const droplet=visual.spray[i],cell=front[i];
@@ -753,14 +805,14 @@ export class WaterRenderer{
       const cells=event.cells||[],dx=Number(event.dx||0),dz=Number(event.dy||0),length=Math.hypot(dx,dz);if(!cells.length||length<=EPSILON)continue;
       const ux=dx/length,uz=dz/length,px=-uz,pz=ux,cellKeys=new Set(cells.map(cell=>keyOf(cell.x,cell.y))),surfaceIds=new Set();
       for(const[id,entry]of this.surfaceAnimations)if([...entry.tileKeys].some(tileKey=>cellKeys.has(tileKey)))surfaceIds.add(id);
-      if(!surfaceIds.size)continue;
+      if(!surfaceIds.size&&String(event.source||"")!=="TSUNAMI")continue;
       const stateTiles=new Map(tilesOf(state).map(tile=>[keyOf(tile.x,tile.y),tile]));
       const world=cells.map(cell=>{
         const x=Number(cell.x)*TILE_SIZE,z=Number(cell.y)*TILE_SIZE,tile=stateTiles.get(keyOf(cell.x,cell.y)),surfaceY=tile?logicalSurface(tile)*ELEVATION_HEIGHT+SURFACE_OFFSET:0;
         return{key:keyOf(cell.x,cell.y),x,z,along:x*ux+z*uz,perp:x*px+z*pz,surfaceY};
       });
       const along=world.map(point=>point.along),perp=world.map(point=>point.perp),surfaces=world.map(point=>point.surfaceY).filter(Number.isFinite),surfaceY=surfaces.length?average(surfaces):0;
-      const wave={token,surfaceIds,cells:world,dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime,surfaceY,phase:hash01(token)*Math.PI*2};
+      const wave={token,surfaceIds,cells:world,tsunami:String(event.source||"")==="TSUNAMI",dx:ux,dz:uz,startAlong:Math.min(...along)-TILE_SIZE*.75,endAlong:Math.max(...along)+TILE_SIZE*.75,minPerp:Math.min(...perp),maxPerp:Math.max(...perp),amplitude:ELEVATION_HEIGHT*clamp(event.waveHeight??.45,.25,.90),duration:Math.max(.9,Number(event.durationMs||1600)/1000),startedAt:this.waveTime,surfaceY,phase:hash01(token)*Math.PI*2};
       wave.visual=this.createRogueWaveVisual(wave);this.rogueWaves.push(wave);
     }
   }

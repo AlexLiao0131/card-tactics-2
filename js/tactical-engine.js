@@ -252,8 +252,15 @@ export const TacticalEngine=(()=>{
       return ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
     });
   }
+  function underwaterTargetVisibleTo(observer,target){
+    if(!target?.character||observer?.team===target?.team)return true;
+    if(String(target?.verticalState?.mode||"")!=="DIVING")return true;
+    // Two submerged actors can perceive each other normally inside the water;
+    // observers above the water line cannot directly lock a diver.
+    return String(observer?.verticalState?.mode||"")==="DIVING";
+  }
   function canSee(m,observer,target,environmentState=null){
-    if(!m||!observer||!target)return false;
+    if(!m||!observer||!target||!underwaterTargetVisibleTo(observer,target))return false;
     if(target?.character&&observer?.team!==target?.team&&globalThis.EffectEngine?.isStealthed?.(target)){
       const proximityVisible=globalThis.EffectEngine?.directTargetAllowed?.(observer,target)===true;
       const networkVisible=observationNetworkCanObserve(m,observer,target,{revealStealth:true});
@@ -307,6 +314,8 @@ export const TacticalEngine=(()=>{
   // stealth detection, weather-limited sight, or a smoke/steam optical barrier.
   function teamCanIdentifyUnit(world,team,target,environmentState=world?.environmentState){
     if(!target?.alive)return false;
+    if(target?.character&&target.team!==team&&String(target?.verticalState?.mode||"")==="DIVING")
+      return (world?.units||[]).some(observer=>observer?.alive&&observer.team===team&&underwaterTargetVisibleTo(observer,target)&&canSee(world.map,observer,target,environmentState));
     if(target.team===team)return true;
     const map=world?.map;if(!map)return false;
     const mode=world?.stage?.intelMode||(world?.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
@@ -390,7 +399,7 @@ export const TacticalEngine=(()=>{
       return rule.diagonals===true?Math.max(dx,dy)<=radius:dx+dy<=radius;
     });
   }
-  function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
+  function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(!underwaterTargetVisibleTo(u,target)&&(s?.targetType||"SINGLE")==="SINGLE")return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
   return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}

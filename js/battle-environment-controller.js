@@ -56,7 +56,7 @@ function resolve(unit,tile,{trigger="CHECK"}={}){
   let damage=0;
   if(next.state===STATE.SINKING){
     if(trigger==="TICK"&&!rules.breathing)damage=Number(TICK_DAMAGE[next.weight]??TICK_DAMAGE.LIGHT);
-    else if(trigger==="ENTER"||trigger==="CHANGE"||trigger==="WAVE"){const newlySinking=previous.state!==STATE.SINKING;if(newlySinking||ice?.broke||trigger==="WAVE")damage=Number(ENTRY_DAMAGE[next.weight]??ENTRY_DAMAGE.LIGHT);}
+    else if(trigger==="ENTER"||trigger==="CHANGE"){const newlySinking=previous.state!==STATE.SINKING;if(newlySinking||ice?.broke)damage=Number(ENTRY_DAMAGE[next.weight]??ENTRY_DAMAGE.LIGHT);}
   }
   if(unit){
     const forcedBefore=Math.max(0,Number(unit?.waterInteraction?.forcedSubmergeTurns||0)),forcedAfter=trigger==="TICK"?Math.max(0,forcedBefore-1):forcedBefore;
@@ -181,7 +181,11 @@ function create(ctx){
   const s=state();if(!unit?.alive||unit._currentResolving||!globalThis.ClimateEngine)return false;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",{type:"CURRENT"}))return false;const current=ClimateEngine.currentForce(tile,s.environmentState);if(!current)return false;
   unit._currentResolving=true;try{const source={x:unit.x-current.flowX,y:unit.y-current.flowY};ctx.pushLog(`${unit.character.name} 遭${reason}沖刷｜流速 ${current.speed.toFixed(2)}｜位移力 ${current.distance}。`,"BATTLE");applyForcedMovement(source,unit,current.distance,{name:"暴漲溪流",damage:Math.max(0,Math.round((current.speed-1)*8)),damageType:"WATER"});return true;}finally{delete unit._currentResolving;}
  }
- function enterTile(unit){const s=state();if(!unit?.alive)return;ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const spotted=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];spotted.filter(({observer})=>observer.team===ctx.TEAM?.PLAYER).forEach(({observer,target})=>ctx.pushLog(`${observer.character.name} 近身察覺 ${target.character.name}，但目標仍處於潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
+ function enterTile(unit){const s=state();if(!unit?.alive)return;
+  const vortex=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y).find(effect=>
+    effect.type===EnvironmentEngine.EFFECT.WHIRLPOOL&&
+    (effect.onlyEnemies!==true||effect.sourceTeam!==unit.team));
+  if(!vortex)globalThis.EffectEngine?.removeEffectById?.(unit,"WHIRLPOOL_TRAPPED");ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const spotted=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];spotted.filter(({observer})=>observer.team===ctx.TEAM?.PLAYER).forEach(({observer,target})=>ctx.pushLog(`${observer.character.name} 近身察覺 ${target.character.name}，但目標仍處於潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
  function traverseUnitPath(unit,path,{kind="UNIT"}={}){
   const s=state();
   if((path||[]).length&&globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(unit)){ctx.pushLog(`${unit.character.name} 被堆積物困住，無法移動。`,"BATTLE");return{completed:false,reason:"BURIED"};}
@@ -266,31 +270,94 @@ function create(ctx){
   }
   return count;
  }
+ function resolveTsunamiWave(event){
+  const s=state(),fronts=event.fronts||[];
+  if(!fronts.length)return 0;
+  // The water renderer consumes the same documented ROGUE_WAVE presentation
+  // primitive, but this gameplay event retains its separate enemy/ally rules.
+  globalThis.UnitAnimationEngine?.emitPresentation?.("ROGUE_WAVE",{
+    cells:event.cells||[],dx:event.dx,dy:event.dy,
+    waveHeight:Number(event.waveHeight||.8),durationMs:Number(event.durationMs||1600),
+    source:"TSUNAMI",sourceUnitId:event.sourceUnitId
+  });
+  const hitIds=new Set();let affected=0;
+  const source=(s.units||[]).find(u=>u.id===event.sourceUnitId)||null;
+  for(const row of fronts){
+    const keys=new Set(row.map(tile=>`${tile.x},${tile.y}`));
+    const contacted=(s.units||[]).filter(unit=>unit?.alive&&
+      !hitIds.has(unit.id)&&keys.has(`${unit.x},${unit.y}`));
+    for(const unit of contacted){
+      hitIds.add(unit.id);
+      if(unit.team===event.sourceTeam){
+        const amount=Math.max(0,Math.round(Number(event.shieldHp||0)));
+        if(amount>0&&globalThis.EffectEngine){
+          const shield=EffectEngine.apply({source,target:unit,effect:{
+            type:"SHIELD",id:"NEREIA_TSUNAMI_WATER_SHIELD",name:"水盾",classification:"POSITIVE",
+            duration:2,amount
+          }});
+          if(shield?.applied)ctx.pushLog(`${unit.character.name} 被海嘯浪潮掃過｜獲得水盾 ${amount} HP，持續 2 回合。`,"BATTLE");
+        }
+      }else{
+        const sourcePoint={x:unit.x-Number(event.dx||0),y:unit.y-Number(event.dy||0)};
+        // The authoritative displacement engine subtracts target resistance.
+        // Deliver one wave-driven grid step only when the existing weight/
+        // collision rules permit it; do not teleport or bypass the resolver.
+        const resistance=globalThis.DisplacementEngine?.resistance?.(unit);
+        const push=Number(event.pushDistance||1)+Math.max(0,Number(resistance?.value||0));
+        applyForcedMovement(sourcePoint,unit,push,{
+          name:"海嘯",damage:0,damageType:"WATER",resistAxes:{horizontal:true,vertical:true}
+        });
+      }
+      affected++;
+    }
+  }
+  return affected;
+ }
  function resolveWhirlpool(event){
   const s=state(),cells=event.cells||[],cellKeys=new Set(cells.map(point=>`${point.x},${point.y}`));if(!cellKeys.size)return 0;
   globalThis.UnitAnimationEngine?.emitPresentation?.("WHIRLPOOL_PULSE",{...event});
   const center={x:Number(event.centerX),y:Number(event.centerY)},initial=(s.units||[]).filter(unit=>unit?.alive&&cellKeys.has(`${unit.x},${unit.y}`));let count=0;
   for(const unit of initial){
     if(!unit.alive||globalThis.VerticalMobilityEngine?.ignoresWaterInteraction?.(unit))continue;
+    if(event.onlyEnemies===true&&unit.team===event.sourceTeam)continue;
     let tile=TacticalEngine.tile(s.map,unit.x,unit.y),profile=globalThis.EnvironmentContactEngine?.PROFILE?.WAVE_VOLUME||"WAVE_VOLUME";if(!profileContacts(unit,tile,profile,event))continue;
     const distance=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y),pull=Math.max(0,Math.min(Number(event.pullDistance||1),Math.ceil(distance)));
-    if(pull>0&&distance>0)applyForcedMovement(center,unit,pull,{name:"漩渦",damage:Math.max(0,Number(event.damage||0)),damageType:"WATER",type:"PULL",resistAxes:{horizontal:true,vertical:true}});
+    if(pull>0&&distance>0)applyForcedMovement(center,unit,pull,{name:"漩渦",damage:0,damageType:"WATER",type:"PULL",resistAxes:{horizontal:true,vertical:true}});
     if(!unit.alive){count++;continue;}
     tile=TacticalEngine.tile(s.map,unit.x,unit.y);const atCore=unit.x===center.x&&unit.y===center.y,nearCore=Math.abs(unit.x-center.x)+Math.abs(unit.y-center.y)<=1;
-    if((atCore||nearCore)&&profileContacts(unit,tile,profile,event)){
+    if((atCore||nearCore)&&profileContacts(unit,tile,profile,event)&&
+       HydrologyEngine.waterDepth(tile)>=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(unit)||2)){
       const result=globalThis.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
       if(result?.applied)ctx.pushLog(`${unit.character.name} 被漩渦拖入水下｜進入沉沒狀態。`,"BATTLE");
       else if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被捲入漩渦核心，但水生體質能維持水下姿態。`,"DETAIL");
     }
+    // A pulse binds only units actually still in the vortex's water cells.
+    const landed=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y).find(effect=>
+      effect.type===EnvironmentEngine.EFFECT.WHIRLPOOL&&
+      (effect.onlyEnemies!==true||unit.team!==effect.sourceTeam));
+    if(landed)globalThis.EffectEngine?.addEffect?.(unit,{type:"BUFF",id:"WHIRLPOOL_TRAPPED",name:"漩渦束縛",classification:"NEGATIVE",duration:1,movementRules:{immobilized:true}},null);
     count++;
   }
   return count;
  }
  function applyEnvironmentHazards({reason="持續環境傷害"}={}){const s=state(),environmentEvents=EnvironmentEngine.advanceEnvironmentTurn?.(s.map,s.environmentState)||[];globalThis.EffectEngine?.syncConditionalPassives?.(s.units,s.environmentState);environmentEvents.forEach(logEnvironmentEvent);resolveEnvironmentEvents(environmentEvents,{reason:"天候／環境變化"});
+   // Expired or escaped vortices cannot keep a movement lock alive.
+   for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.EffectEngine?.hasEffect?.(unit,"WHIRLPOOL_TRAPPED"))){
+     const active=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y).find(effect=>
+       effect.type===EnvironmentEngine.EFFECT.WHIRLPOOL&&
+       (effect.onlyEnemies!==true||effect.sourceTeam!==unit.team));
+     if(!active)EffectEngine.removeEffectById(unit,"WHIRLPOOL_TRAPPED");
+   }
    const wetEvents=[];
    for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyEnvironmentHazardToUnit(unit,{reason,waterTrigger:"TICK",waterReactionEvents:wetEvents});
    settleUnitWetEvents(wetEvents,"角色燃燒與積水交換");
-   for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});}
+   for(const unit of (s.units||[]).filter(unit=>unit?.alive))applyCurrentToUnit(unit,{reason:"暴漲水流"});
+   // One humidity update per environmental step; real hydrology depth + climate.
+   for(const unit of (s.units||[]).filter(unit=>unit?.alive)){
+     const tile=TacticalEngine.tile(s.map,unit.x,unit.y);
+     globalThis.UnitRuntimeEngine?.advanceHumidity?.(unit,tile,s.environmentState);
+   }
+ }
  function resolveEnvironmentEvents(events,{reason="環境連鎖"}={}){
   const list=events||[],s=state();if(!list.length)return 0;let affected=0;
   const hasElectric=list.some(event=>event.type==="ELECTRIC_CONDUCTION"),hydrologyChanged=list.some(event=>["ELEVATION_CHANGED","WATER_FLOW","WATER_ACCUMULATED","WATER_REDUCED","BASIN_FILLED","BASIN_DRAINED","HYDROLOGY_REBALANCED","FLOOD_AREA_RESOLVED","WATER_EVAPORATION","WATER_DRAINED_OFF_MAP","SNOWMELT_WATER","ICE_MELT","ICE_THINNED","WATER_FROZEN","CLIMATE_WATER_CHANGED","FREEZE_PULSE","ICE_THAW","WATER_TORNADO_FORMED","TORNADO_WATER_ENTRAINED","TORNADO_WATER_DEPOSITED"].includes(event.type));
@@ -323,6 +390,7 @@ function create(ctx){
   if(boilingTiles.size)for(const unit of (s.units||[]).filter(unit=>unit?.alive&&boilingTiles.has(`${unit.x},${unit.y}`))){const damage=applyEnvironmentHazardToUnit(unit,{reason:"水體受高熱影響",waterTrigger:"CHECK",includeElectric:false,includeBoiling:true,includeFire:false});if(damage>0)affected++;}
   for(const tornado of list.filter(event=>event.type==="TORNADO_ADVANCED"))affected+=resolveTornadoAdvance(tornado);
   for(const wave of list.filter(event=>event.type==="ROGUE_WAVE"))affected+=resolveRogueWave(wave);
+  for(const wave of list.filter(event=>event.type==="TSUNAMI_WAVE"))affected+=resolveTsunamiWave(wave);
   for(const vortex of list.filter(event=>event.type==="WHIRLPOOL_PULSE"))affected+=resolveWhirlpool(vortex);
   for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
   const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
@@ -392,7 +460,7 @@ function create(ctx){
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
   else if(event.type==="AVALANCHE")ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜衝擊 ${event.damage||0}。`,"SYSTEM");
  }
- return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
+ return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveTsunamiWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
 globalThis.BattleEnvironmentController=Object.freeze({create});
 })();

@@ -113,6 +113,9 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const shield=resolveIncomingDamage(target,amount,{kind});
     target.hp=Math.max(0,hpBefore-shield.damage);
     const hpLoss=hpBefore-target.hp;
+    // Humidity responds to real HP loss from magic, after all shields and immunity.
+    if(hpLoss>0&&damageType==="MAGIC"&&kind!=="INTERNAL")
+      globalThis.UnitRuntimeEngine?.changeHumidity?.(target,-Math.min(15,Math.round(hpLoss*.10)));
     if(hpLoss&&source?.alive&&source.team!==target.team)globalThis.UnitRuntimeEngine?.changeFaith?.(source,-hpLoss);
     if(source?.alive&&source.team!==target.team&&globalThis.UnitRuntimeEngine?.bloodUser?.(source)&&hpLoss>0){
       const credit=charge==="BLEED"?hpLoss/2:charge==="DIRECT"?hpLoss:0;
@@ -211,6 +214,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       const restored=SkillDatabase.getPassive("PATIENT")?.bloodRestoration?.values||{};
       for(const [key,value] of Object.entries(restored))unit.character.attributes[key]=Number(value);
     }
+    unit.character.combat.mdef+=Number(globalThis.UnitRuntimeEngine?.humidityMdefBonus?.(unit)||0);
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
     globalThis.UnitRuntimeEngine?.syncMana?.(unit);

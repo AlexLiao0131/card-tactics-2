@@ -233,7 +233,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const markTarget=(c.interception&&a.role==="INITIATOR"?c.originalTarget:a.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
         if(result.hit){
-          if(!followup&&a.role==="INITIATOR"&&Number(skill.holyPowerOnHit||0)>0)
+          if(!followup&&Number(skill.holyPowerOnHit||0)>0)
             bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
           if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,a.target);
         }

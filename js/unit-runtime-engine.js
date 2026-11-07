@@ -40,6 +40,38 @@ export function createUnitRuntimeEngine(){
     }
     return unit.resources;
   }
+  function humidityValue(unit){
+    if(!unit?.character?.resourceRules?.humidity)return null;
+    syncResources(unit);
+    return Number(unit.resources.humidity.value||0);
+  }
+  function changeHumidity(unit,delta){
+    if(!unit?.character?.resourceRules?.humidity||!Number.isFinite(Number(delta)))return 0;
+    syncResources(unit);
+    const entry=unit.resources.humidity,before=Number(entry.value||0);
+    entry.value=Math.max(0,Math.min(entry.max,before+Number(delta)));
+    if(before!==entry.value)globalThis.EffectEngine?.syncModifiers?.(unit);
+    return entry.value-before;
+  }
+  function humidityMdefBonus(unit){
+    const humidity=humidityValue(unit),rule=unit?.character?.resourceRules?.humidity;
+    if(humidity===null||!rule)return 0;
+    const base=Number(unit._effectBaseCombat?.mdef??unit.character?.combat?.mdef??0);
+    return Math.round(base*Math.max(0,Number(rule.magicDefenseMaxBonus||0))*humidity/Math.max(1,Number(rule.max||100)));
+  }
+  function advanceHumidity(unit,tile,environmentState){
+    if(!unit?.alive||!unit?.character?.resourceRules?.humidity||!environmentState)return 0;
+    const weather=globalThis.EnvironmentEngine?.legacyWeather?.(environmentState)||"CLEAR";
+    const weatherDelta={CLEAR:0,FOG:3,RAIN:5,HEAVY_RAIN:10,THUNDERSTORM:10,TYPHOON:12,SNOW:3,BLIZZARD:5,SCORCHING_SUN:-8};
+    const depth=Math.max(0,Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0));
+    return changeHumidity(unit,Number(weatherDelta[weather]||0)+(depth>=2?10:depth>0?5:0));
+  }
+  function skillManaCost(unit,skill){
+    const base=manaCost(skill),rule=unit?.character?.resourceRules?.humidity;
+    if(!base||!skill?.waterMagic||!rule)return base;
+    const humidity=humidityValue(unit);
+    return Math.max(1,Math.ceil(base*(1-Math.max(0,Number(rule.waterManaDiscountMax||0))*humidity/Math.max(1,Number(rule.max||100)))));
+  }
   function resourceSnapshot(unit){
     syncResources(unit);
     return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:state.label||key.toUpperCase()}]));
@@ -136,7 +168,7 @@ export function createUnitRuntimeEngine(){
       for(const effect of passive.openingEffects||[])unit.effects.push(clone(effect));
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
-    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});reconcileBlood(unit);
+    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});if(unit.character.resourceRules?.humidity)globalThis.EffectEngine?.syncModifiers?.(unit);reconcileBlood(unit);
     const target=initialFacingTarget(team,cores??globalThis.CardTacticsRuntime?.getCores?.());
     if(target)TacticalEngine.faceToward(unit,target);
     else TacticalEngine.ensureFacing(unit);
@@ -171,7 +203,7 @@ export function createUnitRuntimeEngine(){
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);
     const extras=resourceCosts(skill);
-    return{type:Object.keys(extras).length?"MULTI":"MANA",cost:manaCost(skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
+    return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill,world=null){
     if(skill?.sanctuary){
@@ -187,9 +219,10 @@ export function createUnitRuntimeEngine(){
     if(req.carrying===true&&!unit?.carryingUnitId)return false;
     if(req.notCarrying===true&&!!unit?.carryingUnitId)return false;
     if(req.notMoved===true&&!!unit?.moved)return false;
+    if(req.diving===true&&String(unit?.verticalState?.mode||"")!=="DIVING")return false;
     if(req.water===true){const runtimeMap=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.(),tile=runtimeMap?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
     syncMana(unit);syncResources(unit);
-    if(unit.mana<manaCost(skill))return false;
+    if(unit.mana<skillManaCost(unit,skill))return false;
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key];if(!rule)return false;if(rule.allowOverdraft!==true&&Number(unit.resources?.[key]?.value||0)<cost)return false;}
     return true;
   }
@@ -197,14 +230,14 @@ export function createUnitRuntimeEngine(){
     if(!canUseSkill(unit,skill,world))return null;
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
-    const mana=manaCost(skill);unit.mana=Math.max(0,unit.mana-mana);
+    const mana=skillManaCost(unit,skill);unit.mana=Math.max(0,unit.mana-mana);
     const spent={};for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
-    syncMana(unit);syncResources(unit);const labels=[],mana=manaCost(skill);if(mana>0)labels.push(`MP ${mana}`);
+    syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);if(mana>0)labels.push(`MP ${mana}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
   }
@@ -252,7 +285,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

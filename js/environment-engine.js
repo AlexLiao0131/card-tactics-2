@@ -886,6 +886,38 @@ export const EnvironmentEngine=(()=>{
     climate.waveFronts=active;
     return events;
   }
+  // Magic tsunami is a forward wave front, not a flood rectangle.
+  // A single canonical footprint is consumed by combat, hydrology and visuals.
+  function planTsunami(map,origin,target,{width=5,surfaceRise=1.25}={}){
+    if(!map||!origin||!target||width!==5)return{fronts:[],cells:[],dx:0,dy:0};
+    const diffX=Number(target.x)-Number(origin.x),diffY=Number(target.y)-Number(origin.y);
+    const steps=Math.max(Math.abs(diffX),Math.abs(diffY));
+    if(steps<1)return{fronts:[],cells:[],dx:0,dy:0};
+    const distance=Math.hypot(diffX,diffY),dx=diffX/distance,dy=diffY/distance;
+    const leftX=-dy,leftY=dx,blocked=new Set(),fronts=[],all=[],seen=new Set();
+    let previous=new Map();
+    for(let step=1;step<=steps;step++){
+      const row=[],current=new Map();
+      for(let lane=-2;lane<=2;lane++){
+        if(blocked.has(lane))continue;
+        const x=Math.round(Number(origin.x)+diffX*step/steps+leftX*lane);
+        const y=Math.round(Number(origin.y)+diffY*step/steps+leftY*lane);
+        const tile=tileAt(map,x,y),from=previous.get(lane)||tileAt(map,
+          Math.round(Number(origin.x)+leftX*lane),Math.round(Number(origin.y)+leftY*lane))||
+          tileAt(map,origin.x,origin.y);
+        const barrier=tile&&globalThis.TacticalEngine?.isBlockedByObject?.(map,x,y);
+        const highStep=tile&&from&&elevation(tile)>elevation(from)+Math.max(0,Number(surfaceRise||0));
+        if(!tile||TERRAINS[tile.terrain]?.passable===false||barrier||highStep){blocked.add(lane);continue;}
+        current.set(lane,tile);
+        const key=`${x},${y}`;
+        if(!seen.has(key)){seen.add(key);row.push({x,y});all.push(tile);}
+      }
+      if(row.length)fronts.push(row);
+      previous=current;
+      if(blocked.size===5)break;
+    }
+    return{fronts,cells:all,dx,dy};
+  }
   function nextWhirlpoolId(state){state.whirlpoolSerial=Math.max(0,Number(state.whirlpoolSerial||0))+1;return`whirlpool-${state.whirlpoolSerial}`;}
   function whirlpoolGroups(map,state){
     const byId=new Map();
@@ -896,15 +928,15 @@ export const EnvironmentEngine=(()=>{
     }
     return[...byId.entries()].map(([vortexId,cells])=>({vortexId,cells}));
   }
-  function createWhirlpool(state,map,x,y,{duration=2,radius=2,strength=2.4,pullDistance=1,submergeTurns=1,damage=10}={}){
+  function createWhirlpool(state,map,x,y,{duration=2,radius=2,strength=2.4,pullDistance=1,submergeTurns=1,damage=10,sourceTeam=null,sourceUnitId=null,onlyEnemies=false}={}){
     if(!state?.effects||!map)return[];const center=tileAt(map,x,y);
     if(!center||!HydrologyEngine.isWater(center))return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NOT_WATER"}];
     const vortexId=nextWhirlpoolId(state),r=Math.max(1,Number(radius||2)),connected=HydrologyEngine.connectedWaterBody?.(map,x,y)||waterComponents(map).find(group=>group.some(tile=>tile===center))||[center];
     const cells=connected.filter(tile=>Math.hypot(Number(tile.x)-Number(x),Number(tile.y)-Number(y))<=r+.001).map(tile=>({x:Number(tile.x),y:Number(tile.y),depth:Number(waterDepth(tile)||0)}));
     if(!cells.length)return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NO_CONNECTED_WATER"}];
     const avgDepth=cells.reduce((sum,cell)=>sum+cell.depth,0)/cells.length,depthFactor=Math.max(.65,Math.min(1.45,.72+avgDepth*.42)),resolvedStrength=Math.max(.5,Number(strength||2.4))*depthFactor,resolvedPull=Math.max(1,Math.min(3,Math.round(Number(pullDistance||1)+(resolvedStrength>=3.2?1:0))));
-    for(const cell of cells)addEffect(state,cell.x,cell.y,{type:EFFECT.WHIRLPOOL,duration:Math.max(1,Number(duration||2)),vortexId,centerX:Number(x),centerY:Number(y),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true});
-    const pulse={type:"WHIRLPOOL_PULSE",vortexId,centerX:Number(x),centerY:Number(y),cells:cells.map(({x,y})=>({x,y})),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true};
+    for(const cell of cells)addEffect(state,cell.x,cell.y,{type:EFFECT.WHIRLPOOL,duration:Math.max(1,Number(duration||2)),vortexId,centerX:Number(x),centerY:Number(y),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true,sourceTeam,sourceUnitId,onlyEnemies});
+    const pulse={type:"WHIRLPOOL_PULSE",vortexId,centerX:Number(x),centerY:Number(y),cells:cells.map(({x,y})=>({x,y})),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true,sourceTeam,sourceUnitId,onlyEnemies};
     return[{...pulse,type:"WHIRLPOOL_CREATED"},pulse];
   }
   function advanceWhirlpools(map,state,events=[]){
@@ -915,7 +947,7 @@ export const EnvironmentEngine=(()=>{
         valid.push({x:entry.x,y:entry.y});sample??=entry.effect;
       }
       if(!sample||!valid.length)continue;
-      events.push({type:"WHIRLPOOL_PULSE",vortexId:group.vortexId,centerX:Number(sample.centerX),centerY:Number(sample.centerY),cells:valid,radius:Number(sample.radius||2),strength:Number(sample.strength||2.4),pullDistance:Number(sample.pullDistance||1),submergeTurns:Number(sample.submergeTurns||1),damage:Number(sample.damage||0),contactProfile:"WAVE_VOLUME",waterOnly:true});
+      events.push({type:"WHIRLPOOL_PULSE",vortexId:group.vortexId,centerX:Number(sample.centerX),centerY:Number(sample.centerY),cells:valid,radius:Number(sample.radius||2),strength:Number(sample.strength||2.4),pullDistance:Number(sample.pullDistance||1),submergeTurns:Number(sample.submergeTurns||1),damage:Number(sample.damage||0),contactProfile:"WAVE_VOLUME",waterOnly:true,sourceTeam:sample.sourceTeam??null,sourceUnitId:sample.sourceUnitId??null,onlyEnemies:sample.onlyEnemies===true});
     }
     return events;
   }
@@ -1040,6 +1072,6 @@ export const EnvironmentEngine=(()=>{
     return range;
   }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,planTsunami,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;
