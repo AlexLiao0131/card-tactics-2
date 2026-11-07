@@ -55,19 +55,13 @@ export class PvpBattleRenderBridge {
     // its UnitRenderer commits death/removal. A later UI-only enqueue loses
     // the deceased figure and cannot show the official death animation.
     if(!Array.isArray(presentationEvents))throw Error('PVP_PRESENTATION_EVENTS_INVALID');
-    const fresh=[];
+    const fresh=[],freshKeys=[];
     for(const [index,event] of presentationEvents.entries()){
       if(!event||!['UNIT_ANIMATION','UNIT_FLOAT_TEXT'].includes(event.type))continue;
       const key=`${revision}:${event.sequence??index}`;
-      if(this.seenPresentationEvents.has(key))continue;
-      this.seenPresentationEvents.add(key);
+      if(this.seenPresentationEvents.has(key)||freshKeys.includes(key))continue;
+      freshKeys.push(key);
       fresh.push(event);
-    }
-    // A render retry must not replay an already-enqueued hit/attack animation.
-    // The bounded set covers only recent revisions of this one match.
-    if(this.seenPresentationEvents.size>1024){
-      const old=[...this.seenPresentationEvents].slice(0,this.seenPresentationEvents.size-512);
-      for(const key of old)this.seenPresentationEvents.delete(key);
     }
     this.renderer.sync(snapshot,fresh);
     // The original renderer reports complete/incomplete subsystem commits.
@@ -77,6 +71,12 @@ export class PvpBattleRenderBridge {
     if(committed?.revision===revision&&committed.complete===false)
       throw Error(`PVP_RENDER_INCOMPLETE:${(committed.failedStages||[]).join(',')}`);
     this.renderer.unitHud?.presentEvents?.(fresh);
+    // Commit only AFTER both scene and HUD consumers have accepted the frame.
+    for(const key of freshKeys)this.seenPresentationEvents.add(key);
+    if(this.seenPresentationEvents.size>1024){
+      const old=[...this.seenPresentationEvents].slice(0,this.seenPresentationEvents.size-512);
+      for(const key of old)this.seenPresentationEvents.delete(key);
+    }
     this.matchId=matchId;
     this.revision=revision;
     return true;

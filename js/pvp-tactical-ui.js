@@ -20,7 +20,7 @@ const TACTICAL_PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
 // MATCH_STATE proves that the deployed Worker implements the same private
 // tactical projection contract as this client; an old Worker cannot silently
 // turn missing move/skill options into empty arrays.
-const PVP_TACTICAL_PROJECTION_CONTRACT='CT2_NATIVE_TACTICAL_V2';
+const PVP_TACTICAL_PROJECTION_CONTRACT='CT2_NATIVE_TACTICAL_V3';
 const nameOf=unit=>unit?.name||unit?.character?.name||unit?.characterId||unit?.id||'角色';
 const skillChoices=(unit,followup)=>{
   const skills=unit?.attackSkills||[];
@@ -50,7 +50,7 @@ export class PvpTacticalUI {
     this.enchantIdentities=new Map();this.enchantCounters=new Map();
     this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
     this.enchantMarkerScene=null;this.enchantMarkerObserver=null;this.enchantCandidates=[];
-    this.lastProjectionWarningRevision=null;
+    this.lastProjectionWarningRevision=null;this.lastEventAuditRevision=null;this.lastAimAuditKey=null;
     this.reactionStage='overview';this.reactionGuard=null;this.reactionMethod=null;this.reactionAttackKey=null;
     // Await authoritative MATCH_STATE before treating a WebSocket card send
     // as committed. Retain the original card selection on a rejected command.
@@ -236,6 +236,19 @@ export class PvpTacticalUI {
     // targetRange is the original native preview; attackable is legal contact.
     const range=new Set((aim?.tiles||[]).map(t=>`${t.x},${t.y}`));
     const attackable=new Set((aim?.actionableTiles||[]).map(t=>`${t.x},${t.y}`));
+    if(unit&&this.mode!=='SELECT'&&this.target?.skillId){
+      const key=`${this.match.revision}:${unit.id}:${this.mode}:${this.target.skillId}`;
+      if(this.lastAimAuditKey!==key){
+        this.lastAimAuditKey=key;
+        globalThis.CardTacticsDiagnostics?.push?.('PVP_NATIVE_AIM_PRESENTATION',{
+          seat:this.seat,revision:this.match.revision,unitId:unit.id,
+          command:this.mode,skillId:this.target.skillId,
+          sourceHasAimOptions:Array.isArray(unit.aimOptions),
+          matchedAim:!!aim,rangeTiles:range.size,actionableTiles:attackable.size,
+          sourceRevision:source.revision
+        });
+      }
+    }
     const deploying=this.isCardPhase()&&this.myTurn()&&
       this.mode==='DEPLOY'&&!!this.target?.cardId;
     const deployable=new Set(deploying
@@ -864,6 +877,19 @@ export class PvpTacticalUI {
       const events=(packet.snapshot?.presentation?.battleEvents||[])
         .filter(event=>previousIds.has(String(event.unitId))&&
           (currentIds.has(String(event.unitId))||event.afterDeath||event.state==='DEATH'));
+      const stream=packet.snapshot?.presentation;
+      if(this.lastEventAuditRevision!==packet.revision){
+        this.lastEventAuditRevision=packet.revision;
+        globalThis.CardTacticsDiagnostics?.push?.('PVP_BATTLE_EVENT_STREAM',{
+          seat:this.seat,revision:packet.revision,
+          contract:stream?.battleEventStream??null,
+          declaredCount:stream?.battleEventCount??null,
+          deliveredCount:Array.isArray(stream?.battleEvents)?stream.battleEvents.length:null,
+          eligibleCount:events.length,
+          previousVisibleUnits:previousIds.size,
+          currentVisibleUnits:currentIds.size
+        });
+      }
       const updated=this.bridge.accept({...packet,presentationEvents:events});
       if(updated){
         this.serverSnapshot=packet.snapshot;
