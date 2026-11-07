@@ -1,0 +1,30 @@
+/* Dedicated diagnostic page only; never loaded by index.html or the PvP room. */
+body.battletest-page #versusCoreHud{display:none!important}
+body.battletest-page #battleBack{background:#23384b}
+.bt-lab{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:75;width:min(310px,calc(100vw - 20px));max-height:min(82vh,720px);display:flex;flex-direction:column;border:1px solid #5a8095;border-radius:12px;background:rgba(12,23,35,.96);color:#e8f6ff;font:13px/1.42 system-ui,sans-serif;box-shadow:0 8px 28px #050c17aa;backdrop-filter:blur(8px)}
+.bt-lab[hidden]{display:none!important}
+.bt-lab *{box-sizing:border-box}
+.bt-lab>header{display:flex;align-items:center;gap:6px;padding:10px 12px;background:#193248;border-radius:11px 11px 0 0}
+.bt-lab>header strong{flex:1;font-size:14px}
+.bt-lab button{background:#234459;color:#eaffff;border:1px solid #42718b;border-radius:6px;padding:7px;cursor:pointer;min-height:31px}
+.bt-lab button:focus-visible,.bt-lab select:focus-visible,.bt-lab input:focus-visible{outline:2px solid #7fdff8;outline-offset:1px}
+.bt-lab button:active{background:#276d87}
+.bt-lab .bt-lab-body{padding:9px 11px 12px;overflow-y:auto;min-height:0;overscroll-behavior:contain}
+.bt-lab .bt-lab-body>section{border-bottom:1px solid #2f4d5e;padding-bottom:10px;margin-bottom:10px}
+.bt-lab h4{margin:0 0 6px;color:#7edbeb;font-size:12px;letter-spacing:.02em}
+.bt-lab label{display:block;color:#adc6d2;font-size:11px;margin:3px 0}
+.bt-lab select,.bt-lab input{width:100%;min-height:31px;background:#0e2738;color:#e8f6ff;border:1px solid #466577;border-radius:5px;padding:5px;font-size:13px}
+.bt-lab .bt-lab-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:6px 0}
+.bt-lab .bt-lab-row.three{grid-template-columns:1fr 1fr 1fr}
+.bt-lab .bt-lab-grid{display:grid;grid-template-columns:repeat(20,minmax(0,1fr));gap:1px;background:#192a38;padding:3px;border-radius:4px;touch-action:manipulation;max-width:280px}
+.bt-lab .bt-lab-grid button{min-width:0;min-height:0;aspect-ratio:1;border:0;border-radius:0;padding:0;box-shadow:none}
+.bt-lab .bt-lab-grid button.selected{outline:2px solid white;outline-offset:-1px;position:relative;z-index:1}
+.bt-lab .bt-lab-grid button:focus-visible{outline:2px solid #fff;position:relative;z-index:2}
+.bt-lab .bt-lab-legend{font-size:11px;color:#b6d3de;margin:4px 0}
+.bt-lab .bt-lab-status{border:1px solid #365f72;border-radius:5px;padding:6px;color:#9bd4e1;margin-top:6px;overflow-wrap:anywhere}
+.bt-lab .bt-lab-status.error{border-color:#a76e71;color:#ffc0bd}
+.bt-lab .bt-lab-hint{color:#b7cbd1;font-size:11px;margin:4px 0}
+.bt-lab-collapsed .bt-lab-body{display:none}
+.bt-lab-toggle{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:74;min-height:36px;border:1px solid #5a8095;border-radius:8px;background:#164563;color:#e7faff;padding:7px 12px;font-weight:700}
+.bt-lab-toggle[hidden]{display:none}
+@media(max-width:700px){.bt-lab{max-height:65dvh;top:calc(45px + env(safe-area-inset-top,0px));width:min(286px,calc(100vw - 20px))}.bt-lab-toggle{top:calc(45px + env(safe-area-inset-top,0px))}}
