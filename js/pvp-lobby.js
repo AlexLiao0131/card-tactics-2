@@ -308,6 +308,8 @@ export class PvpLobbyController {
     const seat=this.session.seat;
     this.tacticalUI=new PvpTacticalUI({
       onRendered:snapshot=>this.presentServerBattle(snapshot),
+      renderOfficialEngagement:(model,onAction)=>
+        this.battleUI?.renderEngagementModel?.(model,onAction),
       root:$('skillBar'),canvas:$('battleCanvas'),seat,
       onInspect:id=>this.battleUI?.openStatus(id),
       onSelection:(unit,options)=>this.unitControlUI?.renderOnline(unit,options),

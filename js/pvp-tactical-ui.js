@@ -33,7 +33,8 @@ const supportedSkillsForSection=(unit,section)=>skillChoices(unit)
 
 export class PvpTacticalUI {
   constructor({root,canvas,seat,sendCommand,isConnected=()=>true,createBridge,ensureBabylon,
-    onRendered=()=>{},onInspect=()=>{},onSelection=()=>{},onRenderFailure=()=>{}}={}){
+    onRendered=()=>{},onInspect=()=>{},onSelection=()=>{},onRenderFailure=()=>{},
+    renderOfficialEngagement=null}={}){
     if(!root||root.id!=='skillBar'||!canvas||![0,1].includes(seat)||
        typeof sendCommand!=='function'||typeof createBridge!=='function'||typeof ensureBabylon!=='function')
       throw Error('NATIVE_TACTICAL_MENU_REQUIRED');
@@ -42,6 +43,7 @@ export class PvpTacticalUI {
     this.isConnected=isConnected;this.createBridge=createBridge;this.ensureBabylon=ensureBabylon;
     this.onRendered=onRendered;this.onInspect=onInspect;this.onSelection=onSelection;
     this.onRenderFailure=onRenderFailure;
+    this.renderOfficialEngagement=typeof renderOfficialEngagement==='function'?renderOfficialEngagement:null;
     this.match=null;this.bridge=null;this.closed=false;this.presented=false;
     this.selectedUnitId=null;this.mode='SELECT';this.menu='command';this.target=null;
     this.renderToken=0;this.newestRender=null;this.serverSnapshot=null;
@@ -49,6 +51,7 @@ export class PvpTacticalUI {
     this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
     this.enchantMarkerScene=null;this.enchantMarkerObserver=null;this.enchantCandidates=[];
     this.lastProjectionWarningRevision=null;
+    this.reactionStage='overview';this.reactionGuard=null;this.reactionMethod=null;this.reactionAttackKey=null;
     // Await authoritative MATCH_STATE before treating a WebSocket card send
     // as committed. Retain the original card selection on a rejected command.
     this.pendingCardCommit=null;
@@ -68,6 +71,12 @@ export class PvpTacticalUI {
     if(this.match&&match.revision<this.match.revision)return false;
     const previous=this.match?.view?.phase;
     this.match=match;
+    const pendingAttack=match.view?.pendingAttack;
+    const reactionKey=pendingAttack?`${match.revision}:${pendingAttack.attackerId}:${pendingAttack.targetId}:${pendingAttack.skillId}`:null;
+    if(reactionKey!==this.reactionAttackKey){
+      this.reactionStage='overview';this.reactionGuard=null;this.reactionMethod=null;
+      this.reactionAttackKey=reactionKey;
+    }
     const pending=this.pendingCardCommit;
     if(pending&&match.revision>pending.revision){
       const remaining=(match.view.own?.hand||[]).filter(card=>card.id===pending.cardId).length;
@@ -84,7 +93,7 @@ export class PvpTacticalUI {
     if(!this.myTurn()||!this.isTacticalPhase())return true;
     const view=this.match.view;
     const own=(view.units||[]).filter(unit=>unit.team===UNIT_TEAM[this.seat]);
-    const missing=['reachableTiles','skillCatalog','enchantmentOptions'].filter(key=>
+    const missing=['reachableTiles','skillCatalog','enchantmentOptions','aimOptions'].filter(key=>
       own.some(unit=>!Array.isArray(unit[key])));
     if(view.tacticalProjectionContract!==PVP_TACTICAL_PROJECTION_CONTRACT)
       missing.unshift('tacticalProjectionContract');
@@ -103,6 +112,8 @@ export class PvpTacticalUI {
   }
   cancelTarget({clearSelection=false}={}){
     this.mode='SELECT';this.menu='command';this.target=null;
+    // Cancelling target mode must clear native attack markers on the next publish.
+    if(this.presented&&this.serverSnapshot)this.refreshNativePresentation();
     this.pendingCardCommit=null;
     if(clearSelection)this.selectedUnitId=null;
   }
@@ -218,6 +229,13 @@ export class PvpTacticalUI {
     const unit=this.isTacticalPhase()&&this.myTurn()?this.selectedUnit():null;
     const reachable=new Set(unit&&!unit.moved&&!unit.acted&&!unit.waited
       ?(unit.reachableTiles||[]).map(t=>`${t.x},${t.y}`):[]);
+    const aim=unit&&this.mode!=='SELECT'&&this.target?.skillId
+      ?(unit.aimOptions||[]).find(entry=>entry.type===this.mode&&
+        entry.skillId===this.target.skillId):null;
+    // Both sets are certified by the same Worker that accepts the command.
+    // targetRange is the original native preview; attackable is legal contact.
+    const range=new Set((aim?.tiles||[]).map(t=>`${t.x},${t.y}`));
+    const attackable=new Set((aim?.actionableTiles||[]).map(t=>`${t.x},${t.y}`));
     const deploying=this.isCardPhase()&&this.myTurn()&&
       this.mode==='DEPLOY'&&!!this.target?.cardId;
     const deployable=new Set(deploying
@@ -236,6 +254,7 @@ export class PvpTacticalUI {
     const tiles=source.map.tiles.map(tile=>{
       const key=`${tile.x},${tile.y}`;
       return {...tile,reachable:reachable.has(key),
+        targetRange:range.has(key),attackable:attackable.has(key),
         deploymentAreaOwner:areaOwner.get(key)??tile.deploymentAreaOwner??null,
         // The canonical server owns legality. Not every colored home area is
         // selectable (some cells are blocked, occupied or enemy-owned).
@@ -362,6 +381,7 @@ export class PvpTacticalUI {
   }
   targetAction(type,payload){
     this.target={type,...payload};this.mode=type;this.update();
+    this.refreshNativePresentation();
   }
   add(label,callback,{disabled=false,skill=null}={}){
     const button=this.menuUI.button(label,callback,{disabled,inspectable:!!skill});
@@ -373,40 +393,79 @@ export class PvpTacticalUI {
     return button;
   }
   menuBack(to='command'){
-    this.add('返回',()=>{this.cancelTarget();this.menu=to;this.update();});
+    this.add('返回',()=>{this.cancelTarget();this.menu=to;this.update();this.refreshNativePresentation();});
   }
   // CardHandUI already owns its original targeting bar. For tactical
   // aim the ORIGINAL battle menu only needs the cancel action: no extra
   // online-only heading, status column or disabled prompt.
   renderTargetPrompt(){
-    this.add('取消施放',()=>{this.cancelTarget();this.update();});
+    this.add('取消施放',()=>{this.cancelTarget();this.update();this.refreshNativePresentation();});
   }
   renderReaction(options){
-    const {choices=[],defenses=[],counters=[],guardians=[]}=options||{};
+    if(!options)return;
+    const {choices=[],defenses=[],counters=[],guardians=[]}=options;
     const view=this.match?.view||{},pending=view.pendingAttack||{};
-    const actor=view.units?.find(unit=>unit.id===options?.attackerId);
-    const defender=view.units?.find(unit=>unit.id===options?.targetId);
-    const model={mode:'enemy-reaction',
-      attackerName:actor?nameOf(actor):'未知敵方',
+    const actor=view.units?.find(unit=>unit.id===options.attackerId);
+    const defender=view.units?.find(unit=>unit.id===options.targetId);
+    const guard=guardians.find(entry=>entry.guardianId===this.reactionGuard);
+    const model={mode:'enemy-reaction',attackerName:actor?nameOf(actor):'未知敵方',
       defenderName:defender?nameOf(defender):'我方角色',
-      skillName:knownSkill(options?.skillId||pending.skillId)?.name||'交戰',
-      actions:[]};
-    const actions=model.actions;
-    if(choices.includes('ACCEPT'))actions.push({id:'ACCEPT',label:'承受攻擊'});
-    if(choices.includes('EVADE'))actions.push({id:'EVADE',label:'迴避'});
-    for(const skill of defenses)
-      actions.push({id:'DEFENSE',label:`防禦｜${skill.name}`,payload:{methodId:skill.id}});
-    for(const skill of counters)
-      actions.push({id:'COUNTER',label:`反擊｜${skill.name}`,payload:{skillId:skill.id}});
-    for(const guard of guardians)
-      for(const method of guard.methods||[])
-        actions.push({id:'GUARD',label:`援護｜${guard.guardianId}｜${method.name}`,
-          payload:{guardianId:guard.guardianId,methodId:method.id}});
-    // The shared UI never fabricates a combat prediction: only the original
-    // server-provided options may become clickable actions.
-    this.menuUI.renderEngagementModel(model,{
-      onAction:(reaction,payload)=>this.request({type:'REACT_ATTACK',reaction,...payload})
-    });
+      skillName:knownSkill(options.skillId||pending.skillId)?.name||'交戰',
+      forecast:options.forecast||null,actions:[]};
+    const add=(id,label,disabled=false,payload=null)=>model.actions.push({id,label,disabled,payload});
+    if(this.reactionStage==='counter'){
+      for(const skill of counters)add('COUNTER_SKILL',`${skill.name}`,false,{skillId:skill.id});
+      add('BACK_REACTION','返回');
+    }else if(this.reactionStage==='defense'){
+      for(const method of defenses)add('DEFENSE_METHOD',`${method.name}`,false,{methodId:method.id});
+      add('BACK_REACTION','返回');
+    }else if(this.reactionStage==='guardian'){
+      for(const entry of guardians){
+        const unit=view.units?.find(u=>u.id===entry.guardianId);
+        add('GUARDIAN',`${unit?nameOf(unit):entry.guardianId}｜${entry.methods.map(m=>m.name).join('／')}`,
+          false,{guardianId:entry.guardianId});
+      }
+      add('BACK_REACTION','返回');
+    }else if(this.reactionStage==='guard-method'&&guard){
+      for(const method of guard.methods)add('GUARD_METHOD',method.name,false,{methodId:method.id});
+      add('BACK_GUARD','返回');
+    }else if(this.reactionStage==='guard-result'&&guard&&this.reactionMethod){
+      add('GUARD_ACCEPT','援護承受｜原目標不反擊');
+      for(const skill of counters)add('GUARD_COUNTER',`原目標反擊｜${skill.name}`,false,{skillId:skill.id});
+      add('BACK_GUARD_METHOD','返回防禦方式');
+    }else{
+      add('REACTION_COUNTER','反擊',!choices.includes('COUNTER')||counters.length===0);
+      add('REACTION_DEFENSE','防禦',!choices.includes('DEFENSE')||defenses.length===0);
+      add('REACTION_EVADE','迴避',!choices.includes('EVADE'));
+      add('REACTION_GUARD','援護防禦',!choices.includes('GUARD')||guardians.length===0);
+      if(choices.includes('ACCEPT'))add('ACCEPT','直接承受攻擊');
+    }
+    const onAction=(id,payload={})=>{
+      const change=(stage)=>{this.reactionStage=stage;this.update();};
+      if(id==='REACTION_COUNTER')return change('counter');
+      if(id==='REACTION_DEFENSE')return change('defense');
+      if(id==='REACTION_GUARD')return change('guardian');
+      if(id==='BACK_REACTION')return change('overview');
+      if(id==='BACK_GUARD')return change('guardian');
+      if(id==='BACK_GUARD_METHOD')return change('guard-method');
+      if(id==='GUARDIAN'){this.reactionGuard=payload.guardianId;return change('guard-method');}
+      if(id==='GUARD_METHOD'){this.reactionMethod=payload.methodId;return change('guard-result');}
+      const command={type:'REACT_ATTACK'};
+      if(id==='REACTION_EVADE')command.reaction='EVADE';
+      else if(id==='ACCEPT')command.reaction='ACCEPT';
+      else if(id==='DEFENSE_METHOD'){command.reaction='DEFENSE';command.methodId=payload.methodId;}
+      else if(id==='COUNTER_SKILL'){command.reaction='COUNTER';command.skillId=payload.skillId;}
+      else if(id==='GUARD_ACCEPT'||id==='GUARD_COUNTER'){
+        command.reaction='GUARD';command.guardianId=this.reactionGuard;
+        command.methodId=this.reactionMethod;
+        if(id==='GUARD_COUNTER')command.counterSkillId=payload.skillId;
+      }else return false;
+      return this.request(command);
+    };
+    // BattleUI.renderEngagementModel is the exact single-player presenter.
+    // It adds the ORIGINAL forecast card above the same BattleCommandMenuUI.
+    if(this.renderOfficialEngagement)this.renderOfficialEngagement(model,onAction);
+    else this.menuUI.renderEngagementModel(model,{onAction});
   }
   renderSpecial(unit){
     const u=unit.id;
@@ -798,7 +857,14 @@ export class PvpTacticalUI {
         canvas:this.canvas,seat:this.seat,onTilePicked:point=>this.tilePicked(point)
       });
       if(this.closed||token!==this.renderToken)return false;
-      const updated=this.bridge.accept(packet);
+      const previous=this.serverSnapshot;
+      const previousIds=new Set((previous?.map?.id&&previous?.map?.id===packet.snapshot?.map?.id&&
+        previous.revision<packet.revision?previous.units:[]).map(unit=>String(unit.id)));
+      const currentIds=new Set((packet.snapshot?.units||[]).map(unit=>String(unit.id)));
+      const events=(packet.snapshot?.presentation?.battleEvents||[])
+        .filter(event=>previousIds.has(String(event.unitId))&&
+          (currentIds.has(String(event.unitId))||event.afterDeath||event.state==='DEATH'));
+      const updated=this.bridge.accept({...packet,presentationEvents:events});
       if(updated){
         this.serverSnapshot=packet.snapshot;
         this.refreshNativePresentation();

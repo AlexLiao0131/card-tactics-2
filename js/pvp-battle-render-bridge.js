@@ -21,9 +21,10 @@ export class PvpBattleRenderBridge {
     this.revision=-1;
     this.matchId=null;
     this.closed=false;
+    this.seenPresentationEvents=new Set();
   }
   /** A frame is a WebSocket-authorized envelope, not untrusted local state. */
-  accept({matchId,seat,revision,snapshot}={}){
+  accept({matchId,seat,revision,snapshot,presentationEvents=[]}={}){
     if(this.closed)throw Error('PVP_RENDER_BRIDGE_CLOSED');
     if(seat!==this.seat||typeof matchId!=='string'||!matchId||
        !Number.isSafeInteger(revision)||revision<0)
@@ -50,13 +51,32 @@ export class PvpBattleRenderBridge {
         throw Error('OFFICIAL_BABYLON_RENDERER_REQUIRED');
       this.renderer=renderer;
     }
-    this.renderer.sync(snapshot);
+    // Feed events through the ORIGINAL native BabylonRenderer.sync(), BEFORE
+    // its UnitRenderer commits death/removal. A later UI-only enqueue loses
+    // the deceased figure and cannot show the official death animation.
+    if(!Array.isArray(presentationEvents))throw Error('PVP_PRESENTATION_EVENTS_INVALID');
+    const fresh=[];
+    for(const [index,event] of presentationEvents.entries()){
+      if(!event||!['UNIT_ANIMATION','UNIT_FLOAT_TEXT'].includes(event.type))continue;
+      const key=`${revision}:${event.sequence??index}`;
+      if(this.seenPresentationEvents.has(key))continue;
+      this.seenPresentationEvents.add(key);
+      fresh.push(event);
+    }
+    // A render retry must not replay an already-enqueued hit/attack animation.
+    // The bounded set covers only recent revisions of this one match.
+    if(this.seenPresentationEvents.size>1024){
+      const old=[...this.seenPresentationEvents].slice(0,this.seenPresentationEvents.size-512);
+      for(const key of old)this.seenPresentationEvents.delete(key);
+    }
+    this.renderer.sync(snapshot,fresh);
     // The original renderer reports complete/incomplete subsystem commits.
     // An incomplete terrain, water or unit pass may not acknowledge a remote
     // revision: keep the same frame eligible for a real retry.
     const committed=this.renderer.presentationCommitHistory?.at(-1);
     if(committed?.revision===revision&&committed.complete===false)
       throw Error(`PVP_RENDER_INCOMPLETE:${(committed.failedStages||[]).join(',')}`);
+    this.renderer.unitHud?.presentEvents?.(fresh);
     this.matchId=matchId;
     this.revision=revision;
     return true;
@@ -73,6 +93,7 @@ export class PvpBattleRenderBridge {
       }
     }
     this.renderer=null;
+    this.seenPresentationEvents.clear();
     // Screen active classes are never changed here; ShellUI alone owns them.
   }
 }
