@@ -26,7 +26,8 @@ import { PvpCommandError } from '../../shared/pvp-command-contract.mjs';
 import { deployCanonicalCard,projectLegalDeploymentTiles } from './pvp-headless-deployment.mjs';
 import { withCanonicalEngines } from './pvp-engine-context.mjs';
 import { createCanonicalEnvironmentController } from './pvp-environment-controller.mjs';
-import {declareCanonicalAttack,reactCanonicalAttack,pendingReactionOptions,canonicalDirectAttackSkillOptions} from './pvp-headless-engagement.mjs';
+import {declareCanonicalAttack,reactCanonicalAttack,pendingReactionOptions,canonicalDirectAttackSkillOptions,commitCanonicalTargetApproach} from './pvp-headless-engagement.mjs';
+import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
 import {advanceCanonicalRound} from './pvp-headless-turns.mjs';
 import {castCanonicalDirectEffectSkill,canonicalDirectEffectSkillOptions} from './pvp-headless-effect-skills.mjs';
 import {castCanonicalSelfUtility,canonicalSelfUtilityOptions} from './pvp-headless-self-utility.mjs';
@@ -43,6 +44,8 @@ import {castCanonicalCharge,canonicalChargeOptions} from './pvp-headless-charge.
 import {castCanonicalPickpocket,canonicalPickpocketOptions} from './pvp-headless-pickpocket.mjs';
 import {createCanonicalPerception,castCanonicalPerception,canonicalPerceptionOptions,canonicalWorldForViewer} from './pvp-perception-controller.mjs';
 import './pvp-canonical-setup.mjs';
+import '../../js/unit-animation-engine.js';
+import {projectCanonicalAimOptions} from './pvp-headless-aim-projection.mjs';
 import '../../js/tactical-action-controller.js';
 
 const OWNER=['PLAYER','ENEMY'];
@@ -395,9 +398,16 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       // variant/ambush/enchantment follow-ups are not yet permitted here.
       const skill=globalThis.SkillDatabase.list(unit.character.skills).find(x=>x.id===action.skillId);
       if(!isCanonicalCoreAttackSkill(unit,skill))fail('FULL_CORE_SKILL_ORCHESTRATION_REQUIRED');
-      if(!TacticalEngine.canTarget(game.battlefield.map,unit,target,skill,game.environmentState))
-        fail('ILLEGAL_CORE_ATTACK_TARGET');
       if(!engine.unitRuntime.canUseSkill(unit,skill))fail('ATTACK_RESOURCES_UNAVAILABLE');
+      const plan=canonicalTargetPlan(game,unit,target,skill,engine,{extraTargets:[target]});
+      if(!plan)fail('ILLEGAL_CORE_ATTACK_TARGET');
+      const approach=commitCanonicalTargetApproach(game,unit,plan,skill,engine,hooks,checkMatchEnd);
+      if(!approach.ready)return {accepted:true,state:game,movement:approach.movement,attackInterrupted:true};
+      if(!TacticalEngine.canTarget(game.battlefield.map,unit,target,skill,game.environmentState)||
+          !engine.unitRuntime.canUseSkill(unit,skill)){
+        hooks.pushLog(`${unit.character.name} 移動後無法完成對 Core 的「${skill.name}」攻擊。`,'SYSTEM');
+        return {accepted:true,state:game,movement:approach.movement,attackInterrupted:true};
+      }
       const ctx={TEAM:{PLAYER:'P',ENEMY:'E'},
         actionState:()=>({map:game.battlefield.map,units:game.units,environmentState:game.environmentState}),
         canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
@@ -503,6 +513,11 @@ export function tacticalDebugProjection(game,seat){
            // only authority for actionable commands and target legality.
            // Never silently make an owned skill disappear merely because
            // a conditional command has no targets this frame.
+           aimOptions:projectCanonicalAimOptions(game,seat,unit,engine,{
+             coreAttackSkillIds:SkillDatabase.list(unit.character.skills)
+               .filter(skill=>isCanonicalCoreAttackSkill(unit,skill)&&engine.unitRuntime.canUseSkill(unit,skill))
+               .map(skill=>skill.id)
+           }),
            skillCatalog:SkillDatabase.list(engine.effect.skillIds(unit)).map(skill=>({
              ...officialSkillView(unit,skill,engine),category:skill.category,
              usable:engine.unitRuntime.canUseSkill(unit,skill)
@@ -586,14 +601,38 @@ export const experimentalTacticalCore=Object.freeze({
     if(game.phase==='BATTLEFIELD_READY')return 0;
     return game.activeSeat===0||game.activeSeat===1?game.activeSeat:null;
   },
-  reduce(game,action,{seat}) {
+  reduce(game,action,{seat,revision}) {
     if(game.phase==='BATTLEFIELD_READY'){
       if(seat!==0||!sameKeys(action,['type'])||action.type!=='BEGIN_BATTLE')
         fail('BATTLE_NOT_STARTED');
       beginCanonicalPlayerCardPhase(game);
       return {accepted:true,state:game};
     }
-    const result=resolveCanonicalPlayerCommand(game,action,seat);
+    // The same UnitAnimationEngine observes both snapshots and receives the
+    // true on-hit callbacks from BattleResolution. Clear its process-wide
+    // singleton inside this synchronous, isolated transaction; it never owns
+    // persistent match state or any authority. Rollback discards the draft.
+    const visuals=globalThis.UnitAnimationEngine;
+    const toVisual=()=>game.units.map(u=>({id:u.id,team:u.team,x:u.x,y:u.y,z:u.z,
+      renderZ:u.renderZ??u.z,hp:u.hp,alive:u.alive,facing:u.facing,
+      visualId:u.character?.visualId,characterId:u.character?.id,
+      effects:u.effects||[],waterInteractionState:u.waterInteraction?.state||null}));
+    const initialVisibility=[0,1].map(viewer=>{
+      const world=canonicalWorldForViewer(game,viewer),viewTeam=UNIT_TEAM[viewer];
+      return world.units.filter(u=>u.alive&&
+        (u.team===viewTeam||TacticalEngine.teamCanIdentifyUnit({map:world.battlefield.map,
+          units:world.units,environmentState:world.environmentState},viewTeam,u,world.environmentState)))
+        .map(u=>u.id);
+    });
+    visuals?.clear?.();
+    visuals?.observe?.({units:toVisual()});
+    let result;
+    try{
+      result=resolveCanonicalPlayerCommand(game,action,seat);
+      visuals?.observe?.({units:toVisual()});
+      game.lastPresentation={revision:Number.isSafeInteger(revision)?revision+1:null,
+        events:visuals?.drain?.()||[],visibleBefore:initialVisibility};
+    }finally{visuals?.clear?.();}
     // Any canonical action (knockback, teleport, storm, card, movement) may
     // change a unit's location. Update smoke coverage once from the official
     // persisted fields, never from what the client says it sees.

@@ -10,6 +10,8 @@ import {EffectEngine} from '../../js/effect-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import '../../js/tactical-action-controller.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
+import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
+import {commitCanonicalTargetApproach} from './pvp-headless-engagement.mjs';
 
 const fail=code=>{throw new PvpCommandError(code)};
 const TEAM=['P','E'];
@@ -89,9 +91,16 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
   if(!skill)fail('FULL_SKILL_ORCHESTRATION_REQUIRED');
   // Target relationship, height, line of sight, range and special visibility
   // are evaluated by the same TacticalEngine as the browser game.
-  if(!TacticalEngine.canTarget(game.battlefield.map,caster,target,skill,game.environmentState))
-    fail('ILLEGAL_EFFECT_TARGET');
   if(!engine.unitRuntime.canUseSkill(caster,skill))fail('SKILL_RESOURCES_UNAVAILABLE');
+  const plan=canonicalTargetPlan(game,caster,target,skill,engine);
+  if(!plan)fail('ILLEGAL_EFFECT_TARGET');
+  const approach=commitCanonicalTargetApproach(game,caster,plan,skill,engine,hooks,checkMatchEnd);
+  if(!approach.ready)return {accepted:true,state:game,movement:approach.movement,castInterrupted:true};
+  if(!TacticalEngine.canTarget(game.battlefield.map,caster,target,skill,game.environmentState)||
+      !engine.unitRuntime.canUseSkill(caster,skill)){
+    hooks.pushLog(`${caster.character.name} 移動後無法完成「${skill.name}」施放。`,'SYSTEM');
+    return {accepted:true,state:game,movement:approach.movement,castInterrupted:true};
+  }
   const hpBefore=target.hp,manaBefore=caster.mana;
   const actionController=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:'P',ENEMY:'E'},

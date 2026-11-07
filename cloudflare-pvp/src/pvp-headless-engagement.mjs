@@ -8,10 +8,14 @@ import {SkillDatabase} from '../../js/skill-database.js';
 import {resolveCanonicalChargeVariant} from './pvp-headless-charge.mjs';
 import {chooseAutonomousBattleReaction} from '../../js/battle-reaction-decision-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
+import {officialEngagementForecast} from '../../js/battle-engagement-forecast.js';
 import '../../js/post-engagement-engine.js';
 import '../../js/trajectory-engine.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 import {createCanonicalEnvironmentController} from './pvp-environment-controller.mjs';
+import {createCanonicalAreaFields} from './pvp-field-controller.mjs';
+import '../../js/tactical-action-controller.js';
+import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
 import {createOfficialEnchantmentController} from './pvp-headless-enchantment.mjs';
 
 const TEAM=['P','E'];
@@ -62,6 +66,26 @@ function basicAttackSkill(actor,skillId){
   return skill;
 }
 
+/** Commit the exact original planned path through the same environment
+ * controller used for MOVE_UNIT. An interrupted traversal is a real move,
+ * never a remote reaction, and does not charge an uncast skill. */
+export function commitCanonicalTargetApproach(game,actor,plan,skill,engine,callbacks,checkMatchEnd){
+  if(!plan||!Array.isArray(plan.path))fail('CANONICAL_ATTACK_PLAN_REQUIRED');
+  if(!plan.path.length)return {ready:true,movement:null};
+  const start={x:actor.x,y:actor.y};
+  const environment=createCanonicalEnvironmentController(game,callbacks);
+  const movement=environment.traverseUnitPath(actor,plan.path,{kind:'UNIT'});
+  createCanonicalAreaFields(game,engine,callbacks).syncSmokeCover(actor);
+  if(actor.x!==start.x||actor.y!==start.y)engine.effect.interruptChannel(actor,'MOVE');
+  actor.moved=true;
+  if(movement?.completed!==true||!actor.alive){
+    checkMatchEnd?.();
+    return {ready:false,movement};
+  }
+  callbacks.pushLog(`${actor.character.name} 自動移動至可使用「${skill.name}」的位置。`,'DETAIL');
+  return {ready:true,movement};
+}
+
 export function declareCanonicalAttack(game,action,seat,engine,callbacks,checkMatchEnd){
   if(game.phase!==PHASE[seat]||game.activeSeat!==seat)fail('NOT_TACTICAL_TURN');
   if(!exact(action,['type','attackerId','targetId','skillId'])||
@@ -79,8 +103,18 @@ export function declareCanonicalAttack(game,action,seat,engine,callbacks,checkMa
   if(!attacker||!defender||attacker.acted||attacker.waited)fail('ATTACKER_NOT_AVAILABLE');
   const skill=basicAttackSkill(attacker,action.skillId);
   if(!engine.unitRuntime.canUseSkill(attacker,skill))fail('ATTACK_RESOURCES_UNAVAILABLE');
-  if(!TacticalEngine.canTarget(game.battlefield.map,attacker,defender,skill,game.environmentState))
-    fail('ILLEGAL_ATTACK_TARGET');
+  const plan=canonicalTargetPlan(game,attacker,defender,skill,engine);
+  if(!plan)fail('ILLEGAL_ATTACK_TARGET');
+  const approach=commitCanonicalTargetApproach(game,attacker,plan,skill,engine,callbacks,checkMatchEnd);
+  if(!approach.ready)return {accepted:true,state:game,movement:approach.movement,attackInterrupted:true};
+  // An environmental entry hazard may change the living unit, visibility,
+  // LOS or a skill requirement during the planned walk. Do NOT roll damage or
+  // prompt the opponent for an attack which never legally took place.
+  if(!TacticalEngine.canTarget(game.battlefield.map,attacker,defender,skill,game.environmentState)||
+      !engine.unitRuntime.canUseSkill(attacker,skill)){
+    callbacks.pushLog(`${attacker.character.name} 移動後無法完成「${skill.name}」攻擊。`,'SYSTEM');
+    return {accepted:true,state:game,movement:approach.movement,attackInterrupted:true};
+  }
   if(mirror?.active){
     // In the official single-player battle, attacking an enemy not controlled
     // by a human uses BattleResolution's default (no deliberate reaction).
@@ -120,7 +154,13 @@ export function pendingReactionOptions(game,seat,engine){
   const counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(
     game.battlefield.map,defender,attacker,s,game.environmentState));
   const guardians=resolution.guardCandidates({map:game.battlefield.map,units:game.units,target:defender});
-  return {attackerId:attacker.id,targetId:defender.id,skillId:p.skillId,
+  const attackSkill=basicAttackSkill(attacker,p.skillId);
+  // Do not leak an unseen attacker's stats through a read-only forecast.
+  const canIdentify=TacticalEngine.teamCanIdentifyUnit({map:game.battlefield.map,
+    units:game.units,environmentState:game.environmentState},TEAM[seat],attacker,game.environmentState);
+  const forecast=canIdentify?officialEngagementForecast({map:game.battlefield.map,attacker,defender,
+    skill:attackSkill,unitRuntime:engine.unitRuntime,resolution}):null;
+  return {attackerId:attacker.id,targetId:defender.id,skillId:p.skillId,forecast,
     choices:['ACCEPT','EVADE','DEFENSE','COUNTER','GUARD'],
     defenses:prep.defenseMethods.map(m=>({id:m.id,name:m.name})),
     counters:counterSkills.map(s=>({id:s.id,name:s.name})),
