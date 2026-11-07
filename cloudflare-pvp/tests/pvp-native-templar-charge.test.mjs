@@ -67,6 +67,15 @@ test('assault relocates through the canonical movement path then lets defender r
  assert.equal(pending.accepted,true);assert.equal(pending.reactionPending,true);
  assert.equal(g.phase,'PVP_REACTION_PENDING');assert.equal(g.activeSeat,1);
  assert.equal(g.pendingAttack.kind,'CHARGE');
+ // The defending player's official projected reaction menu must understand
+ // the committed CHARGE variant; it is not a normal direct-attack skill.
+ const defendingView=tacticalDebugProjection(g,1);
+ assert.ok(defendingView.reactionOptions,'defending seat gets native reaction choices');
+ assert.equal(defendingView.reactionOptions.attackerId,actor.id);
+ assert.equal(defendingView.reactionOptions.skillId,base.id);
+ assert.ok(defendingView.reactionOptions.choices.includes('EVADE'));
+ assert.equal(tacticalDebugProjection(g,0).reactionOptions,null,
+   'attacking seat must not receive opponent-only reaction controls');
  assert.equal(actor.mana,before.mana);
  assert.equal(Math.abs(actor.x-target.x)+Math.abs(actor.y-target.y),1);
  assert.ok(actor.x!==before.x||actor.y!==before.y);
