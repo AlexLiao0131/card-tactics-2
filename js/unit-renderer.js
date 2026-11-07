@@ -447,7 +447,7 @@ export class UnitRenderer{
         figureParts[part].metadata.figureBase.scaling.copyFrom(figureParts[part].scaling);
       }
     }
-    if(figure.armingSword||figure.blessedGreatsword||figure.fieldWarHammer){
+    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldWarHammer){
       // The hilt is centered inside the RIGHT glove. Rotating that arm carries
       // the entire arming sword; it cannot drift when walking or slashing.
       const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
@@ -2138,6 +2138,10 @@ export class UnitRenderer{
     const type=this.attackTypeFor(event);
     // Combat resolves INHERIT from equipment. Reuse the visible weapon's
     // generic FIGURE capability rather than branching on unit/skill IDs.
+    // Verdict remains pure HOLY magic for gameplay. Its visible choreography,
+    // however, is a physical two-handed sword swing originating at the wielder.
+    // Only this presentation mapping changes; BattleResolution never reads it.
+    if(event?.skillId==="templar_verdict"&&type==="MAGIC")return "VERDICT_SLASH";
     if(type!=="INHERIT")return type;
     const figure=entry?.definition?.figure||{};
     if(figure.fieldSpear)return"PIERCE";
@@ -2151,6 +2155,29 @@ export class UnitRenderer{
     const parts=entry.figureParts;if(entry.kind!=="FIGURE"||!parts)return false;
     const type=this.figureAttackType(entry,event),facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     const ease=value=>{const t=clamp01(value);return t*t*(3-2*t);};
+
+    if(type==="VERDICT_SLASH"&&parts.weapon){
+      // Draw holy energy into the real sword while it rises, then drive a
+      // deliberate two-handed sweep forward. The VFX attaches to this weapon
+      // pivot, so sword and light cannot diverge as the figure animates.
+      const raise=ease(progress/.39),release=ease((progress-.39)/.34),
+        recover=ease((progress-.78)/.22);
+      const ready=raise*(1-recover),strike=release*(1-recover);
+      const drive=Math.sin(Math.PI*clamp01((progress-.39)/.38));
+      if(parts.rightArm){parts.rightArm.rotation.x-=ready*.98-strike*.51;
+        parts.rightArm.rotation.z-=ready*.37+strike*1.10;}
+      if(parts.leftArm){parts.leftArm.rotation.x-=ready*.74-strike*.34;
+        parts.leftArm.rotation.z+=ready*.42-strike*.88;}
+      parts.weapon.rotation.x-=ready*.58-strike*.35;
+      parts.weapon.rotation.z-=ready*.55+strike*1.46;
+      if(parts.body){parts.body.rotation.y-=ready*.20+drive*.44;
+        parts.body.rotation.x+=drive*.11;}
+      if(parts.cape){parts.cape.rotation.z+=drive*.19;parts.cape.rotation.x+=ready*.10;}
+      if(parts.hairBack)parts.hairBack.rotation.z+=drive*.10;
+      entry.root.position.x+=vector.x*drive*.32;
+      entry.root.position.z+=vector.z*drive*.32;
+      return true;
+    }
 
     if(type==="SHOT"&&parts.bow){
       const raise=ease(progress/.22),draw=progress<.66?ease((progress-.12)/.42):Math.max(0,1-ease((progress-.66)/.13)),recover=ease((progress-.72)/.28);
@@ -2379,7 +2406,7 @@ export class UnitRenderer{
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
     const weaponAction=this.figureAttackType(entry,event);
-    if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH","STRIKE"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
+    if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH","STRIKE","VERDICT_SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
     if(entry.kind==="BIRD"&&(state==="IDLE"||procedural==="FLAP")){
       this.applyBirdPose(entry,state,progress,now);return;

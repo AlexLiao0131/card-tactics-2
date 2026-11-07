@@ -156,7 +156,7 @@ export class BabylonRenderer{
     this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment,terrain:this.terrain});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
-    this.verdictVfx=new TemplarVerdictVfx(this.scene);
+    this.verdictVfx=new TemplarVerdictVfx(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
