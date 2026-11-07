@@ -1,7 +1,15 @@
 /* Dedicated diagnostic page only; never loaded by index.html or the PvP room. */
 body.battletest-page #versusCoreHud{display:none!important}
-body.battletest-page #battleBack{background:#23384b}
-.bt-lab{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:75;width:min(310px,calc(100vw - 20px));max-height:min(82vh,720px);display:flex;flex-direction:column;border:1px solid #5a8095;border-radius:12px;background:rgba(12,23,35,.96);color:#e8f6ff;font:13px/1.42 system-ui,sans-serif;box-shadow:0 8px 28px #050c17aa;backdrop-filter:blur(8px)}
+/* The lab is the dedicated navigation/reset owner. Hide the duplicate
+   in-battle menu and reset controls (they sit behind the mobile test panel). */
+body.battletest-page #battleBack,
+body.battletest-page #resetMap,
+body.battletest-page #battleTestToggle,
+body.battletest-page #battleTestConsole{display:none!important;pointer-events:none!important}
+/* The original camera bar has z-index 80. On a phone it overlaps the open
+   lab, so disable it while the panel is shown, but restore it when collapsed. */
+body.battletest-page.bt-lab-open #battleViewControls{visibility:hidden!important;pointer-events:none!important}
+.bt-lab{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:210;width:min(310px,calc(100vw - 20px));max-height:min(82vh,720px);display:flex;flex-direction:column;border:1px solid #5a8095;border-radius:12px;background:rgba(12,23,35,.96);color:#e8f6ff;font:13px/1.42 system-ui,sans-serif;box-shadow:0 8px 28px #050c17aa;backdrop-filter:blur(8px)}
 .bt-lab[hidden]{display:none!important}
 .bt-lab *{box-sizing:border-box}
 .bt-lab>header{display:flex;align-items:center;gap:6px;padding:10px 12px;background:#193248;border-radius:11px 11px 0 0}
@@ -25,6 +33,16 @@ body.battletest-page #battleBack{background:#23384b}
 .bt-lab .bt-lab-status.error{border-color:#a76e71;color:#ffc0bd}
 .bt-lab .bt-lab-hint{color:#b7cbd1;font-size:11px;margin:4px 0}
 .bt-lab-collapsed .bt-lab-body{display:none}
-.bt-lab-toggle{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:74;min-height:36px;border:1px solid #5a8095;border-radius:8px;background:#164563;color:#e7faff;padding:7px 12px;font-weight:700}
+.bt-lab-toggle{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top,0px));z-index:210;min-height:36px;border:1px solid #5a8095;border-radius:8px;background:#164563;color:#e7faff;padding:7px 12px;font-weight:700}
 .bt-lab-toggle[hidden]{display:none}
 @media(max-width:700px){.bt-lab{max-height:65dvh;top:calc(45px + env(safe-area-inset-top,0px));width:min(286px,calc(100vw - 20px))}.bt-lab-toggle{top:calc(45px + env(safe-area-inset-top,0px))}}
+
+/* Only during a one-shot 3D map coordinate pick. The official Babylon picker
+   resolves the tile; no second picking grid or physics system is created. */
+.bt-pick-banner{position:fixed;z-index:230;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:min(440px,calc(100vw - 24px));padding:10px 12px;display:flex;align-items:center;gap:9px;border:2px solid #54c9e8;border-radius:10px;background:rgba(8,29,44,.97);color:#eefbff;box-shadow:0 8px 28px #000b;font:600 13px/1.5 system-ui,sans-serif}
+.bt-pick-banner[hidden]{display:none!important}
+.bt-pick-banner span{flex:1}
+.bt-pick-banner button{flex:0 0 auto;padding:7px 11px;border:1px solid #80cfe8;border-radius:7px;background:#215672;color:#fff;min-height:35px}
+.bt-lab .bt-lab-grid button.selected{outline:2px solid #fff8b2;outline-offset:-1px}
+.bt-lab .bt-pick-map{background:#155e75;border-color:#54c9e8;min-height:36px;font-weight:700}
+body.battletest-page.bt-lab-is-picking #battleViewControls{visibility:hidden!important;pointer-events:none!important}
