@@ -155,7 +155,16 @@ export function pendingReactionOptions(game,seat,engine){
   const counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(
     game.battlefield.map,defender,attacker,s,game.environmentState));
   const guardians=resolution.guardCandidates({map:game.battlefield.map,units:game.units,target:defender});
-  const attackSkill=basicAttackSkill(attacker,p.skillId);
+  // A CHARGE declaration has already completed its canonical approach.
+  // Its parent skill is not a direct-attack menu entry (it carries the
+  // CHARGE approach), so it cannot be loaded via basicAttackSkill().  Use
+  // the same validated variant + committed impact that settlement uses.
+  const charged=p.kind==='CHARGE';
+  const charge=charged?resolveCanonicalChargeVariant(attacker,p.skillId,p.variantId,engine):null;
+  if(charged&&(!charge||charge.target!=='ENEMY'))fail('CANONICAL_CHARGE_SKILL_REQUIRED');
+  const attackSkill=charged
+    ?{...charge,range:{min:1,max:1},approach:null,approachCommitted:true}
+    :basicAttackSkill(attacker,p.skillId);
   // Do not leak an unseen attacker's stats through a read-only forecast.
   const canIdentify=TacticalEngine.teamCanIdentifyUnit({map:game.battlefield.map,
     units:game.units,environmentState:game.environmentState},TEAM[seat],attacker,game.environmentState);
