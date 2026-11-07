@@ -1085,8 +1085,12 @@
         for(const center of centers){
           for(const victim of units){
             if(!victim.alive||victim.team===attacker.team||Math.abs(victim.x-center.x)+Math.abs(victim.y-center.y)>radius)continue;
-            const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y),random:ctx.random});
-            if(!roll.hit)continue;
+            // Blood burst detonates an existing bleeding mark. It is not a new
+            // weapon hit roll: the enemy was already found by the official
+            // bloodBurstCenters query at cast time. Keep the shared damage,
+            // critical, defense and shield formulas, but never turn a valid
+            // detonation into a MISS because of ordinary attack accuracy.
+            const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y),random:ctx.random,forceHit:true});
             const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker});
             total+=outcome.hpLoss;hits++;
             if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true,components:{physical:outcome.hpLoss,magic:0},criticalComponents:{physical:roll.crit===true,magic:false},element:skill.element,skillId:skill.id});
