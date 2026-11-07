@@ -36,7 +36,7 @@ const soldier={id:'unit1',team:'P',characterId:'imperial_swordsman',x:2,y:3,
 const game=(seat,phase,revision,units=[soldier])=>({revision,view:{seat,phase,round:2,
   activeSeat:phase==='BATTLEFIELD_READY'?null:seat,
   own:{hand:[{id:'imperial_swordsman_card',name:'帝國劍士',cost:1}],crystals:4},
-  opponent:{handCount:5},tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V2',units,deployableTiles:phase==='PLAYER_CARD_PHASE'||phase==='ENEMY_CARD_PHASE'?[{x:1,y:2}]:[],
+  opponent:{handCount:5},tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V3',units,deployableTiles:phase==='PLAYER_CARD_PHASE'||phase==='ENEMY_CARD_PHASE'?[{x:1,y:2}]:[],
   battlefield:{map:{id:'map',width:10,height:10},cores:[{owner:'E',x:8,y:7}]}}});
 const clickActor=(f,unit=soldier)=>f.ui.tilePicked({seat:f.ui.seat,x:unit.x,y:unit.y});
 
