@@ -37,12 +37,12 @@ export const AngelWingBarrierEngine=(()=>{
   function isCanonicalSkill(skill){
     return !!skill&&skill.category==='MAGIC'&&skill.target==='TILE'&&
       skill.targetType==='AOE'&&Number(skill.radius)===0&&
-      skill.utilityAction?.type===ACTION&&skill.requirements?.flying===true&&
+      skill.utilityAction?.type===ACTION&&!skill.requirements&&
       Number(skill.power||0)===0&&!skill.effects&&!skill.variants?.length;
   }
   function candidate(map,units,actor,landing,{cores=[]}={}){
     if(!map?.tiles||!actor?.alive||actor.acted||actor.waited||
-       actor.verticalState?.mode!=='FLYING'||!landing)return null;
+       !['GROUND','FLYING'].includes(actor.verticalState?.mode)||!landing)return null;
     const tactical=globalThis.TacticalEngine,vertical=globalThis.VerticalMobilityEngine;
     if(!tactical||!vertical?.capabilities?.(actor)?.canFly)return null;
     const tile=tactical.tile(map,landing.x,landing.y);
@@ -50,7 +50,7 @@ export const AngelWingBarrierEngine=(()=>{
        tactical.isBlockedByObject(map,tile.x,tile.y,actor)||
        units.some(u=>u.alive&&u.occupiesTile!==false&&u.id!==actor.id&&u.x===tile.x&&u.y===tile.y)||
        cores.some(c=>c.hp>0&&c.x===tile.x&&c.y===tile.y))return null;
-    // The angel must actually land on ground, not stand at the surface of water.
+    // The final anchor must be ground. A grounded caster needs no takeoff or descent.
     const grounded=vertical.describe(actor,tile,{mode:'GROUND'});
     if(grounded.mode!=='GROUND')return null;
     let path=[];
@@ -75,7 +75,8 @@ export const AngelWingBarrierEngine=(()=>{
   }
   function legalTiles(map,units,actor,options={}){
     reconcile(map,units);
-    if(!actor?.alive||actor.acted||actor.waited||actor.verticalState?.mode!=='FLYING')return[];
+    if(!actor?.alive||actor.acted||actor.waited||
+       !['GROUND','FLYING'].includes(actor.verticalState?.mode))return[];
     const range=actor.moved?[]:[...globalThis.TacticalEngine.reachable(map,units,actor)].map(([position])=>{
       const [x,y]=position.split(',').map(Number);return{x,y};
     });
@@ -98,7 +99,7 @@ export const AngelWingBarrierEngine=(()=>{
          actor.x!==plan.landing.x||actor.y!==plan.landing.y)
         return{ok:false,interrupted:true,reason:'LANDING_INTERRUPTED',movement:traveled};
     }
-    // The movement may have changed the actor's physical ground state.
+    // Grounded casting stays in place; airborne casting descends after official traversal.
     const tile=globalThis.TacticalEngine.tile(map,actor.x,actor.y);
     if(!tile||globalThis.VerticalMobilityEngine.describe(actor,tile,{mode:'GROUND'}).mode!=='GROUND')
       return {ok:false,reason:'GROUND_UNAVAILABLE'};

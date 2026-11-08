@@ -68,9 +68,9 @@ export const SKILLS={
     element:"HOLY",requirements:{flying:true},areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY"},
     support:false,affixes:[]},
   angel_holy_wing_barrier:{id:"angel_holy_wing_barrier",name:"聖翼壁障",
-    description:"消耗 28 MP。艾蕾希雅在飛行中選擇可到達的地格降落、展開羽翼，在面向正前方生成一排四格神聖盾牆。敵軍只能繞路，弓箭與魔法不能從牆前攻擊後方友軍；友軍的移動、近戰、遠射、魔法與反擊不受妨礙。艾蕾希雅離開落點、起飛或被擊倒時，盾牆消散。",
+    description:"消耗 28 MP。艾蕾希雅在地面可直接選擇合法地格展翼施放；若在空中，則先降落至合法落點再展開羽翼。在面向正前方生成一排四格神聖盾牆。敵軍只能繞路，弓箭與魔法不能從牆前攻擊後方友軍；友軍的移動、近戰、遠射、魔法與反擊不受妨礙。艾蕾希雅離開落點、起飛或被擊倒時，盾牆消散。",
     category:"MAGIC",power:0,manaCost:28,range:{min:0,max:5},target:"TILE",targetType:"AOE",radius:0,
-    requirements:{flying:true},utilityAction:{type:"LAND_WING_BARRIER"},support:false},
+    utilityAction:{type:"LAND_WING_BARRIER"},support:false},
 
   ophi_forest_thrust:{id:"ophi_forest_thrust",name:"森靈突刺",description:"以森靈之矛對近距離敵人發動穿刺攻擊。\n傷害：穿刺物理傷害＋武器常駐的自然魔法附傷，兩部分分別計算、同一次攻擊結算；不需額外附魔。\n射程：1～2 格。攻擊後結束本次行動。",category:"ATTACK",weapon:"forest_spear",power:1,range:{min:1,max:2},attackType:"PIERCE",attackClass:"MELEE",element:"NONE",speed:0,target:"ENEMY",support:false},
   ophi_forest_throw:{id:"ophi_forest_throw",name:"森靈投矛",description:"向中距離敵人投出森靈之矛。\n傷害：穿刺物理傷害＋武器常駐的自然魔法附傷，兩部分分別計算、同一次攻擊結算；不需拾回長矛，也不消耗彈藥。\n射程：2～4 格。敵人仍可依合法的射程及反擊條件反擊。",category:"ATTACK",weapon:"forest_spear",power:.8,range:{min:2,max:4},attackType:"PIERCE",attackClass:"RANGED",element:"NONE",speed:0,target:"ENEMY",support:false},

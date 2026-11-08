@@ -446,6 +446,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function castWingBarrier(unit,tile,skill){
     if(!wingTargetTiles(unit,skill).includes(tile))return false;
     commitPendingMove(unit);
+    const fromAir=unit.verticalState?.mode==="FLYING";
     const result=AngelWingBarrierEngine.cast({map,units,actor:unit,landing:tile,skill,cores,
       traverse:traverseUnitPath,consumeSkill});
     if(result.interrupted){
@@ -454,7 +455,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }
     if(!result.ok){pushLog(`聖翼壁障無法施放（${result.reason}）。`,"SYSTEM");render();return false;}
     globalThis.UnitAnimationEngine?.emitAction?.(unit,tile,skill,{targetKind:"MAP"});
-    finishUnit(unit,`施展「${skill.name}」，降落並展開四格盾牆。`);
+    finishUnit(unit,`施展「${skill.name}」，${fromAir?"降落並":""}展開四格盾牆。`);
     render();return true;
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
