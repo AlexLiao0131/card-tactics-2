@@ -48,6 +48,7 @@ export function isCanonicalSpatialTransitSkill(skill){
     return skill.moveToTarget===true&&skill.ignorePath===true&&!skill.utilityAction;
   if(skill.shape||skill.moveToTarget||!skill.utilityAction)return false;
   const u=skill.utilityAction;
+  if(u.type==='RANGER_FORMATION_MARCH')return Object.keys(u).length===1;
   if(u.type==='TELEPORT_TO_TILE')return Object.keys(u).length===1;
   if(u.type==='WORMHOLE_TRANSIT')return (
     u.entry==='CASTER_TILE'&&u.exit==='TARGET_TILE'&&
@@ -80,9 +81,23 @@ export function isCanonicalLineTransitSkill(skill){
     !skill.areaDamage&&!skill.aoeDamage&&!skill.stance&&!skill.verdictCross&&
     !skill.affixes?.length;
 }
+/** Formation fire is an authoritative map AOE, not a collection of
+ * client-initiated SUPPORT attacks. TacticalActionController owns every roll,
+ * bow contribution, enchantment charge, damage and environment event. */
+export function isCanonicalRangerVolleySkill(skill){
+  return skill?.rangerVolley===true&&skill?.category==='SPECIAL'&&
+    skill.target==='TILE'&&skill.targetType==='AOE'&&
+    skill.attackType==='SHOT'&&typeof skill.weapon==='string'&&!!skill.weapon&&
+    Number(skill.power)>0&&Number.isSafeInteger(skill.radius)&&skill.radius>0&&
+    Number.isSafeInteger(skill.range?.min)&&Number.isSafeInteger(skill.range?.max)&&
+    skill.range.min>=1&&skill.range.max>=skill.range.min&&
+    !skill.utilityAction&&!skill.effects&&!skill.relationEffects&&
+    !skill.sanctuary&&!skill.smokeField&&!skill.terrainTargeting&&!skill.areaDamage;
+}
 export function isCanonicalImmediateMapSkill(skill){
   if(AngelWingBarrierEngine.isCanonicalSkill(skill))return true;
-  if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill))return true;
+  if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill)||
+     isCanonicalRangerVolleySkill(skill))return true;
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
      skill.target!=='TILE'||skill.targetType!=='AOE'||
      !Number.isFinite(Number(skill.radius))||Number(skill.radius)<0||
