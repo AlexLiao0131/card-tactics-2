@@ -138,7 +138,7 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
     if(!target||!AngelWingBarrierEngine.legalTiles(game.battlefield.map,game.units,caster,
         {cores:game.battlefield.cores}).some(tile=>tile.x===target.x&&tile.y===target.y))
       fail('ILLEGAL_WING_BARRIER_TARGET');
-    const manaBefore=caster.mana;
+    const manaBefore=caster.mana,fromAir=caster.verticalState?.mode==='FLYING';
     const result=AngelWingBarrierEngine.cast({map:game.battlefield.map,units:game.units,
       actor:caster,landing:target,skill,cores:game.battlefield.cores,
       traverse:environment.traverseUnitPath,
@@ -148,7 +148,7 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
     if(!result.ok)fail('OFFICIAL_WING_BARRIER_REJECTED');
     caster.moved=true;caster.acted=true;caster.waited=true;
     globalThis.UnitAnimationEngine?.emitAction?.(caster,target,skill,{targetKind:'MAP'});
-    hooks.pushLog(`${caster.character.name} 降落並展開四格聖翼壁障。`,'BATTLE');
+    hooks.pushLog(`${caster.character.name} ${fromAir?'降落並':''}展開四格聖翼壁障。`,'BATTLE');
     return{accepted:true,state:game,unitId:caster.id,skillId:skill.id,
       x:target.x,y:target.y,manaBefore,manaAfter:caster.mana};
   }
