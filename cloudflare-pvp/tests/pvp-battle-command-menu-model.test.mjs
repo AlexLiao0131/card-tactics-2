@@ -21,6 +21,11 @@ test('skill classification and variants are strictly original database data',()=
     ['magic_bolt','shadow_step','elemental_enchant']);
   assert.equal(battleSkillCategory(SkillDatabase.get('slash')),'attack');
   assert.equal(battleSkillCategory(SkillDatabase.get('nether_slash')),'special');
+  assert.equal(battleSkillCategory(SkillDatabase.get('angel_lift_drop')),'attack');
+  assert.equal(battleSkillCategory(SkillDatabase.get('nereia_deep_drag')),'attack');
+  assert.equal(battleSkillCategory(SkillDatabase.get('angel_carry_ally')),'special');
+  assert.throws(()=>SkillDatabase.get('angel_wing_control'),/Unknown skill:/);
+  assert.throws(()=>SkillDatabase.get('aquatic_depth_control'),/Unknown skill:/);
   assert.equal(battleSkillCategory({id:'unknown',category:'PASSIVE'}),null);
 });
 
