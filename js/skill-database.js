@@ -65,10 +65,10 @@ export const SKILLS={
   // This skill owns landing + a temporary, directional four-cell obstruction.
   // The wall is maintained by the grounded angel rather than an invented timer.
   angel_holy_arrow_rain:{id:"angel_holy_arrow_rain",name:"神聖箭雨",
-    description:"艾蕾希雅於飛行中以弓為施法媒介凝聚聖光，射出金白色光箭群，在指定中心格周圍形成十三格菱形箭雨。命中範圍內每名敵軍各結算一次純神聖魔法傷害，使用 MATK 與敵方 MDEF；不計算弓箭物理傷害、不消耗武器附魔，也不傷害友軍。射程 2～5 格，消耗 32 MP，施放後結束行動。",
+    description:"艾蕾希雅於飛行中以弓為施法媒介凝聚聖光，射出金白色光箭群，在指定中心格周圍形成十三格菱形箭雨。範圍內敵軍由聖光箭雨直接接觸、各結算一次純神聖魔法傷害，使用 MATK 與敵方 MDEF（護盾及免疫依正式規則）；不計算弓箭物理傷害、不消耗武器附魔，也不傷害友軍。射程 2～5 格，消耗 32 MP，施放後結束行動。",
     category:"MAGIC",power:.95,manaCost:32,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,
     attackType:"MAGIC",attackClass:"RANGED",offenseStat:"MATK",defenseStat:"MDEF",animationState:"ATTACK",visualAttackType:"SHOT",
-    element:"HOLY",requirements:{flying:true},areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY"},
+    element:"HOLY",requirements:{flying:true},areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},
     support:false,affixes:[]},
   angel_holy_wing_barrier:{id:"angel_holy_wing_barrier",name:"聖翼壁障",
     description:"消耗 28 MP。艾蕾希雅在地面可直接選擇合法地格展翼施放；若在空中，則先降落至合法落點再展開羽翼。在面向正前方生成一排四格神聖盾牆。敵軍只能繞路，弓箭與魔法不能從牆前攻擊後方友軍；友軍的移動、近戰、遠射、魔法與反擊不受妨礙。艾蕾希雅離開落點、起飛或被擊倒時，盾牆消散。",

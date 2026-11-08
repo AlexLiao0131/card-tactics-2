@@ -1152,23 +1152,66 @@
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
       if(skill.areaDamage?.mode==="MAGIC_POWER"){
+        // One actual outcome for each unit in the canonical footprint. The
+        // Babylon arrow count is presentation-only and never implies damage.
+        const summary={inArea:0,hit:0,miss:0,blocked:0,damaged:0,hpLoss:0};
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
-          const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();if(relation==="ENEMY"&&occupant.team===attacker.team)return;if(relation==="ALLY"&&occupant.team!==attacker.team)return;
-          // Area magic, too, cannot bypass the defender's one-way Holy Wing Wall.
-          // Friendly outgoing spells and counters remain entirely unaffected.
-          if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,attacker,occupant,skill))return;
-          const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
-          const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
-          const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance,random:ctx.random});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();
+          if(relation==="ENEMY"&&occupant.team===attacker.team)return;
+          if(relation==="ALLY"&&occupant.team!==attacker.team)return;
+          summary.inArea++;
+          // Area magic cannot bypass the ally-facing Holy Wing Wall. Friendlies
+          // can still shoot/counter outward through it using the same rule.
+          if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,attacker,occupant,skill)){
+            summary.blocked++;
+            globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"BLOCK");
+            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 被聖翼壁障阻擋。`,"BATTLE");
+            return;
+          }
+          const atCenter=tile.x===center.x&&tile.y===center.y;
+          const mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
+          const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"};
+          const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
+          // AREA_CONTACT is authored in SkillDatabase: an actual ground-covered
+          // enemy cannot 'dodge' the entire raining spell as a single arrow.
+          // This does not bypass MDEF, damage reductions, shields or barriers.
+          const contact=skill.areaDamage.hitRule==="AREA_CONTACT";
+          const result=BattleEngine.calculate(attacker.character,occupant.character,
+            attackSkill,{distance,random:ctx.random,forceHit:contact});
+          if(!result.hit){
+            summary.miss++;
+            globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"MISS");
+            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");
+            return;
+          }
+          summary.hit++;
           result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,{source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
-          const hpLoss=hpBefore-occupant.hp;
-          if(hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{damage:hpLoss,critical:result.crit===true,components:BattleResolution.splitActualHpLoss(result,hpLoss),element:skill.element,skillId:skill.id});
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${shield.damage} 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
-          if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}else if(Number(shield.damage||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:Number(shield.damage||0)});
+          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,
+            {source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
+          const hpLoss=Math.max(0,hpBefore-occupant.hp);
+          summary.hpLoss+=hpLoss;
+          if(hpLoss>0){
+            summary.damaged++;
+            globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{
+              damage:hpLoss,critical:result.crit===true,
+              components:BattleResolution.splitActualHpLoss(result,hpLoss),
+              element:skill.element,skillId:skill.id});
+          }else{
+            // All the magic can be absorbed by shields, immunity or defenses.
+            // This is a BLOCK result, never an invented zero-damage hit.
+            summary.blocked++;
+            globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"BLOCK");
+          }
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${hpLoss} HP 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
+          if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
+          else if(hpLoss>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,
+            {sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
         });
+        ctx.pushLog(`${attacker.character.name}｜${skill.name}：範圍內 ${summary.inArea} 名目標，`+
+          `命中 ${summary.hit}、MISS ${summary.miss}、阻擋／吸收 ${summary.blocked}、`+
+          `實際 HP 傷害 ${summary.hpLoss}。`,"BATTLE");
       }
       if(skill.aoeDamage){
         affected.forEach(tile=>{

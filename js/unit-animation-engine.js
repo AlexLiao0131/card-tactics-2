@@ -169,8 +169,10 @@ export const UnitAnimationEngine=(()=>{
     const actual=Math.max(0,Math.round(Number(damage)||0));
     if(!actual)return null;
     const id=String(target.id);
-    const previouslyVisible=previousUnits.get(id);
-    if(!previouslyVisible)return null;
+    // The initial published snapshot can be missing when a battle-test unit
+    // is spawned and hit in one update. Use only the authoritative target of
+    // this actual resolved damage; no guessed HP or duplicate damage floats.
+    const previouslyVisible=previousUnits.get(id)||target;
     resolvedDamage.set(id,(resolvedDamage.get(id)||0)+actual);
     if(!components)return emitFloat(previouslyVisible,critical?"CRITICAL":"DAMAGE",actual,{afterDeath:true,element,skillId});
     const physical=Math.max(0,Math.round(Number(components.physical||0)));
@@ -184,7 +186,7 @@ export const UnitAnimationEngine=(()=>{
   // Combat outcomes are reported by BattleResolution, never guessed from HP.
   // Only visible, previously-published units can receive a floating result.
   function emitOutcome(unit,kind){
-    const previous=previousUnits.get(String(unit?.id||""));
+    const previous=previousUnits.get(String(unit?.id||""))||unit;
     if(!previous||!["MISS","DODGE","BLOCK","PARRY","GRAZE"].includes(kind))return null;
     return emitPresentation("UNIT_FLOAT_TEXT",{...floatPosition(previous),kind,value:kind});
   }
