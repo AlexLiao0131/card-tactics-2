@@ -596,12 +596,13 @@
       }
       const fire=contributors.find(row=>row.enchant?.element==="FIRE"&&row.enchant?.bowImpact);
       const impacts=[...thunderImpacts];
-      if(fire&&hits.length){
-        // The original fire-arrow authored 45 splash and FIRE/EXPLOSION are
-        // still resolved by the official EnchantmentImpact function, once.
-        impacts.push({actor:fire.unit,skill:{weapon:fire.slot,attackType:"SHOT"},
+      if(fire){
+        // A legal AREA volley physically strikes its selected tile even when
+        // every unit evades. The one enchanted arrow still hits the ground.
+        // This is one impact per FIRE-enchanted volley, never one per enemy.
+        impacts.push({actor:fire.unit,skill:{id:skill.id,weapon:fire.slot,attackType:"SHOT"},
           enchantment:{...fire.enchant,bowImpact:{...fire.enchant.bowImpact,radius:skill.radius}},
-          target:center,result:{hit:true},terrainImpact:true});
+          target:center,result:{hit:true},terrainImpact:true,volley:true});
       }
       if(impacts.length)resolveEnchantmentImpacts(impacts);
       for(const {unit} of contributors){unit.moved=true;unit.acted=true;unit.waited=true;}
@@ -742,7 +743,8 @@
           // target. The resulting blast is not another weapon attack, so it
           // cannot roll a second hit or consume a second enchantment.
           const area=ctx.aoeTiles(origin,Number(explosion.radius));
-          explosions.push({center:origin,area,rule:explosion,source:entry.actor});
+          explosions.push({center:origin,area,rule:explosion,source:entry.actor,
+            skillId:entry.skill?.id||enchant.sourceSkillId||null,volley:entry.volley===true});
           continue;
         }
         const force=enchant.element==="FIRE"?"FIRE":enchant.element==="THUNDER"?"THUNDER":null;
@@ -780,7 +782,14 @@
           const unit=ctx.unitAt(tile.x,tile.y);
           if(unit)ctx.damageUnitFlat(unit,explosion.rule.aoeDamage,"火附魔箭・爆裂");
         }
-        ctx.pushLog(`${explosion.source?.character?.name||"附魔弓手"}｜火附魔箭爆裂 (${explosion.center.x},${explosion.center.y})。`,"BATTLE");
+        // One canonical impact event drives both the combat log and Babylon
+        // presentation. Neither the renderer nor PvP recalculates damage.
+        const description=explosion.volley?"集團齊射・火附魔爆裂":"火附魔箭・爆裂";
+        ctx.pushLog(`${explosion.source?.character?.name||"附魔弓手"}｜${description} (${explosion.center.x},${explosion.center.y})｜半徑 ${Number(explosion.rule.radius)} 格、波及 ${explosion.area.length} 格。`,"BATTLE");
+        globalThis.UnitAnimationEngine?.emitPresentation?.("FIRE_BOW_EXPLOSION",{
+          x:explosion.center.x,y:explosion.center.y,radius:Number(explosion.rule.radius),
+          affectedTileCount:explosion.area.length,sourceId:explosion.source?.id||null,
+          skillId:explosion.skillId,volley:explosion.volley});
       }
       // One pulse registry for all electric propagation cells of a single
       // attack. It must not leak into subsequent independent lightning events.

@@ -87,10 +87,20 @@ export class ArrowProjectileVfx{
         const from=this.bowOrigin(unit),to=this.impact(snapshot,x,y);
         const distance=BABYLON.Vector3.Distance(from,to);
         const duration=Math.max(290,Math.min(710,300+distance*32));
-        this.active.push({root:this.createArrow(token),from,to,started:now+index*24,duration});
+        this.active.push({root:this.createArrow(token),from,to,started:now+index*24,duration,
+          sourceId:String(id),targetX:x,targetY:y});
       }
     }
     while(this.active.length>32){const old=this.active.shift();old.root.dispose?.(false,false);}
+  }
+  // The explosion VFX shares the arrow's landing time; no extra timer or
+  // scene clock. When multiple arrows strike the same cell, match the
+  // actual FIRE-enchanted contributor instead of using a guessed delay.
+  impactTime({x,y,sourceId}={}){
+    const source=sourceId==null?null:String(sourceId);
+    const entries=this.active.filter(a=>a.targetX===x&&a.targetY===y&&
+      (source===null||a.sourceId===source));
+    return entries.length?Math.min(...entries.map(a=>a.started+a.duration)):null;
   }
   updateFrame(now=performance.now()){
     for(let i=this.active.length-1;i>=0;i--){

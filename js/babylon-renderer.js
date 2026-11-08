@@ -5,6 +5,7 @@ import { UnitRenderer } from "./unit-renderer.js";
 import { TemplarVerdictVfx } from "./templar-verdict-vfx.js";
 import { HolyArrowRainVfx } from "./holy-arrow-rain-vfx.js";
 import { ArrowProjectileVfx } from "./arrow-projectile-vfx.js";
+import { FireBowExplosionVfx } from "./fire-bow-explosion-vfx.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -161,6 +162,7 @@ export class BabylonRenderer{
     this.verdictVfx=new TemplarVerdictVfx(this.scene,{units:this.units});
     this.holyArrowRainVfx=new HolyArrowRainVfx(this.scene,{units:this.units});
     this.arrowProjectileVfx=new ArrowProjectileVfx(this.scene,{units:this.units});
+    this.fireBowExplosionVfx=new FireBowExplosionVfx(this.scene,{projectiles:this.arrowProjectileVfx});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -190,6 +192,7 @@ export class BabylonRenderer{
       this.verdictVfx.updateFrame();
       this.holyArrowRainVfx.updateFrame();
       this.arrowProjectileVfx.updateFrame();
+      this.fireBowExplosionVfx.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -631,6 +634,7 @@ export class BabylonRenderer{
     publish("verdictVfx",()=>this.verdictVfx.sync(state,presentationEvents));
     publish("holyArrowRainVfx",()=>this.holyArrowRainVfx.sync(state,presentationEvents));
     publish("arrowProjectileVfx",()=>this.arrowProjectileVfx.sync(state,presentationEvents));
+    publish("fireBowExplosionVfx",()=>this.fireBowExplosionVfx.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -800,6 +804,7 @@ export class BabylonRenderer{
       verdictVfx:this.verdictVfx.diagnostics(),
       holyArrowRainVfx:this.holyArrowRainVfx.diagnostics(),
       arrowProjectileVfx:this.arrowProjectileVfx.diagnostics(),
+      fireBowExplosionVfx:this.fireBowExplosionVfx.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };
