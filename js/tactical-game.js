@@ -419,7 +419,6 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       ?{...skill,terrainTargeting:true}:skill;
   }
   function skillVariants(skill){return Array.isArray(skill?.variants)?skill.variants:[];}
-  function directVerticalActions(unit){if(!unit?.alive||unit.acted||!globalThis.VerticalMobilityEngine)return[];const tile=TacticalEngine.tile(map,unit.x,unit.y);if(!tile)return[];const current=VerticalMobilityEngine.describe(unit,tile)?.mode||unit.verticalState?.mode||null;const ids=window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills,out=[];for(const parent of SkillDatabase.list(ids||[])){for(const variant of skillVariants(parent)){const skill=resolvedSkill(parent,variant),action=skill?.utilityAction;if(skill.target!=="SELF"||action?.type!=="SET_VERTICAL_MODE"||!canUseSkill(unit,skill))continue;const preview=VerticalMobilityEngine.describe(unit,tile,{mode:action.mode,...(action.options||{})});if(!preview||preview.mode===current)continue;out.push({parent,variant,skill,mode:preview.mode});}}return out;}
   function executeSelfUtilityVariant(unit,parent,variant){const skill=resolvedSkill(parent,variant);if(skill.target!=="SELF"||!skill.utilityAction)return false;selectedSkillVariant=variant;selectedSkill=skill;commitPendingMove(unit);prepareAttack(unit,unit,skill);return true;}
   function effectiveSkill(attacker,skill){let out=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(attacker,skill)||skill;const passives=SkillDatabase.passiveList(attacker?.character?.passives);const tile=TacticalEngine.tile(map,attacker.x,attacker.y);const weapon=attacker?.character?.weapons?.[skill?.weapon];const ambush=passives.find(p=>p.id==="AMBUSH");if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){out={...out,power:Number(out.power||0)*Number(ambush.powerMultiplier||1),speed:Number(out.speed||0)+Number(ambush.speedBonus||0),modifiers:{...(out.modifiers||{})}};out.ambushActive=true;}return out;}
   function lineTiles(attacker,end){return TacticalEngine.lineTiles(map,attacker,end);}
@@ -722,16 +721,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
         SPECIAL:()=>{selectedSkill=null;mode="special-menu";render();},
         WAIT:()=>{commitPendingMove(selected);finishUnit(selected,"待機，行動結束。",{waited:true});render();}
       };
-      let verticalRendered=false;
-      for(const entry of battleCommandEntries({capture,canAttack:selected.canAttack!==false})){
-        // Same official order: capture, direct vertical variants, commands.
-        if(!verticalRendered&&entry.id!=='CAPTURE'){
-          directVerticalActions(selected).forEach(({parent,variant})=>
-            addActionButton(variant.name||variant.id,()=>executeSelfUtilityVariant(selected,parent,variant),false,resolvedSkill(parent,variant)));
-          verticalRendered=true;
-        }
+      for(const entry of battleCommandEntries({capture,canAttack:selected.canAttack!==false}))
         addActionButton(entry.label,commands[entry.id]);
-      }
       return;
     }
     if(mode==="item-menu"||mode==="item-manage"){

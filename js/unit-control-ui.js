@@ -84,6 +84,7 @@ export class UnitControlUI{
 
     this.altitudeRow=document.createElement("div");this.altitudeRow.className="unit-control-row unit-altitude-row";this.altitudeRow.hidden=true;
     this.down=button("↓","降低飛行高度");
+    this.onlineUnit=null;
     this.altitudeLabel=document.createElement("span");this.altitudeLabel.className="unit-control-label";
     this.up=button("↑","提高飛行高度");
     this.altitudeRow.append(this.down,this.altitudeLabel,this.up);
@@ -118,11 +119,37 @@ export class UnitControlUI{
   }
 
   changeAltitude(steps){
-    if(document.body.dataset.battleMode==='PVP')
-      return globalThis.CardTacticsPvpInput?.adjustAltitude?.(steps)??false;
+    if(document.body.dataset.battleMode==='PVP'){
+      const input=globalThis.CardTacticsPvpInput;
+      return this.onlineUnit?.flightControl
+        ?input?.adjustAltitude?.(steps)??false
+        :this.onlineUnit?.diveControl?input?.adjustDiveMode?.(steps)??false:false;
+    }
     const unit=this.selected();if(!unit)return false;
-    const state=globalThis.UnitRuntimeEngine?.adjustFlightAltitude?.(unit.id,steps);if(!state)return false;
+    const runtime=globalThis.UnitRuntimeEngine;
+    const state=runtime?.flightControl?.(unit.id)
+      ?runtime.adjustFlightAltitude(unit.id,steps)
+      :runtime?.adjustDiveMode?.(unit.id,steps);
+    if(!state)return false;
     this.runtime?.refresh?.();return true;
+  }
+  showVerticalControls(flight,dive){
+    this.altitudeRow.hidden=!flight&&!dive;
+    if(!flight&&!dive)return;
+    if(flight){
+      const altitude=Number(flight.altitude||0),min=Number(flight.min||0),max=Number(flight.max||0);
+      this.altitudeLabel.innerHTML=`飛行高度<strong>H${altitude}</strong>`;
+      this.down.setAttribute("aria-label","降低飛行高度");
+      this.up.setAttribute("aria-label","提高飛行高度");
+      this.down.disabled=altitude<=min+1e-9;
+      this.up.disabled=altitude>=max-1e-9;
+      return;
+    }
+    this.altitudeLabel.innerHTML=`潛水狀態<strong>${dive.mode==="DIVING"?"水下":"水面"}</strong>`;
+    this.down.setAttribute("aria-label","下潛");
+    this.up.setAttribute("aria-label","浮上海面");
+    this.down.disabled=!dive.canDive;
+    this.up.disabled=!dive.canSurface;
   }
 
   render(publishedSnapshot=null){
@@ -134,26 +161,17 @@ export class UnitControlUI{
     this.facingLabel.innerHTML=`角色朝向<strong>${FACING_LABEL[facing]||facing}</strong>`;
 
     const flight=globalThis.UnitRuntimeEngine?.flightControl?.(unit.id)||null;
-    this.altitudeRow.hidden=!flight;
-    if(!flight)return;
-    const altitude=Number(flight.altitude||0),min=Number(flight.min||0),max=Number(flight.max||0);
-    this.altitudeLabel.innerHTML=`飛行高度<strong>H${altitude}</strong>`;
-    this.down.disabled=altitude<=min+1e-9;
-    this.up.disabled=altitude>=max-1e-9;
+    const dive=globalThis.UnitRuntimeEngine?.diveControl?.(unit.id)||null;
+    this.showVerticalControls(flight,dive);
   }
   // The same screen-space native control, driven by the seat-filtered
   // official server view. Do not look up the local runtime's live units.
   renderOnline(unit,{canAct=false}={}){
+    this.onlineUnit=unit||null;
     this.host.hidden=!unit||!canAct;
     if(this.host.hidden)return;
     const facing=String(unit.facing||'N').toUpperCase();
     this.facingLabel.innerHTML=`角色朝向<strong>${FACING_LABEL[facing]||facing}</strong>`;
-    const flight=unit.flightControl||null;
-    this.altitudeRow.hidden=!flight;
-    if(!flight)return;
-    const altitude=Number(flight.altitude||0),min=Number(flight.min||0),max=Number(flight.max||0);
-    this.altitudeLabel.innerHTML=`飛行高度<strong>H${altitude}</strong>`;
-    this.down.disabled=altitude<=min+1e-9;
-    this.up.disabled=altitude>=max-1e-9;
+    this.showVerticalControls(unit.flightControl||null,unit.diveControl||null);
   }
 }

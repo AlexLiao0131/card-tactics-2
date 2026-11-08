@@ -392,6 +392,12 @@ export class PvpTacticalUI {
     if(!unit||!flight||!this.isTacticalPhase()||unit.acted||unit.waited||![-1,1].includes(steps))return false;
     return this.request({type:'ADJUST_FLIGHT_ALTITUDE',unitId:unit.id,steps});
   }
+  adjustDiveMode(steps){
+    const unit=this.selectedUnit(),dive=unit?.diveControl;
+    if(!unit||!dive||!this.isTacticalPhase()||unit.acted||unit.waited||
+       ![-1,1].includes(steps)||(steps<0?!dive.canDive:!dive.canSurface))return false;
+    return this.request({type:'ADJUST_DIVE_MODE',unitId:unit.id,steps});
+  }
   targetAction(type,payload){
     this.target={type,...payload};this.mode=type;this.update();
     this.refreshNativePresentation();
@@ -491,7 +497,7 @@ export class PvpTacticalUI {
     for(const skill of supportedSkillsForSection(unit,'special'))
       this.add(battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
         tile('DECLARE_ATTACK',{skillId:skill.id}),{skill,disabled:skill.usable===false});
-    for(const skill of unit.effectSkills||[])this.add(
+    for(const skill of (unit.effectSkills||[]).filter(s=>battleSkillCategory(knownSkill(s.id))==='special'))this.add(
       battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
       skill.target==='SELF'
         ?direct('CAST_EFFECT_SKILL',{skillId:skill.id,targetId:u})
@@ -529,7 +535,7 @@ export class PvpTacticalUI {
       this.add(choice.name,tile('CAST_CHARGE',{skillId:choice.skillId,
         variantId:choice.variantId,chargeTarget:'ALLY'}));
     }
-    for(const entry of unit.transportOptions||[])
+    for(const entry of (unit.transportOptions||[]).filter(s=>battleSkillCategory(knownSkill(s.skillId))==='special'))
       this.add(`${entry.skillName} → ${entry.targetName}`,
         tile('CAST_TRANSPORT',{skillId:entry.skillId,targetId:entry.targetId}));
     for(const skill of unit.perceptionSkills||[])
@@ -652,7 +658,9 @@ export class PvpTacticalUI {
     };
     for(const entry of battleCommandEntries({capture:unit.capturePoint,
       canAttack:unit.canAttack!==false&&(supportedSkillsForSection(unit,'attack').length>0||
-        unit.mapSkills?.some(s=>s.category==='ATTACK'))}))
+        unit.mapSkills?.some(s=>s.category==='ATTACK')||
+        unit.effectSkills?.some(s=>battleSkillCategory(knownSkill(s.id))==='attack')||
+        unit.transportOptions?.some(s=>battleSkillCategory(knownSkill(s.skillId))==='attack'))}))
       this.add(entry.label,commands[entry.id],{disabled:entry.id==='DIALOGUE'});
   }
   update(){
@@ -712,6 +720,14 @@ export class PvpTacticalUI {
       for(const skill of supportedSkillsForSection(actor,'attack'))
         this.add(battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
           ()=>this.targetAction('DECLARE_ATTACK',{unitId:actor.id,skillId:skill.id}),{skill,disabled:skill.usable===false});
+      for(const skill of (actor.effectSkills||[]).filter(s=>battleSkillCategory(knownSkill(s.id))==='attack'))
+        this.add(battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
+          ()=>this.targetAction('CAST_EFFECT_SKILL',{unitId:actor.id,skillId:skill.id,effectTarget:skill.target}),
+          {skill,disabled:skill.usable===false});
+      for(const entry of (actor.transportOptions||[]).filter(s=>battleSkillCategory(knownSkill(s.skillId))==='attack'))
+        this.add(`${entry.skillName} → ${entry.targetName}`,
+          ()=>this.targetAction('CAST_TRANSPORT',
+            {unitId:actor.id,skillId:entry.skillId,targetId:entry.targetId}));
       for(const choice of actor.chargeOptions||[]){
         if(choice.target!=='ENEMY')continue;
         this.add(choice.name,()=>this.targetAction('CAST_CHARGE',
@@ -724,6 +740,8 @@ export class PvpTacticalUI {
       }
       const surfaced=new Set([
         ...supportedSkillsForSection(actor,'attack').map(entry=>entry.id),
+        ...(actor.effectSkills||[]).filter(s=>battleSkillCategory(knownSkill(s.id))==='attack').map(s=>s.id),
+        ...(actor.transportOptions||[]).filter(s=>battleSkillCategory(knownSkill(s.skillId))==='attack').map(s=>s.skillId),
         ...(actor.chargeOptions||[]).filter(entry=>entry.target==='ENEMY').map(entry=>entry.skillId),
         ...(actor.mapSkills||[]).filter(entry=>entry.category==='ATTACK').map(entry=>entry.id)
       ]);

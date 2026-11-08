@@ -270,6 +270,25 @@ export function createUnitRuntimeEngine(){
     const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;if(!tile)return null;
     const result=VerticalMobilityEngine.adjustFlightAltitude(unit,tile,steps);return result?.ok?result.state:null;
   }
+  function diveControl(id){
+    const unit=getLiveUnit(id),vertical=globalThis.VerticalMobilityEngine;
+    if(!unit?.alive||!vertical?.capabilities?.(unit)?.canDive)return null;
+    const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;
+    if(!tile||vertical.waterDepth(tile)<=0)return null;
+    const state=vertical.describe(unit,tile);
+    return {mode:state.mode,depth:state.depth,maxDepth:state.waterDepth,
+      canDive:state.mode!=="DIVING"&&state.waterDepth>=vertical.bodyHeight(unit),
+      canSurface:state.mode==="DIVING"};
+  }
+  function adjustDiveMode(id,steps){
+    if(![-1,1].includes(steps))return null;
+    const unit=getLiveUnit(id),control=diveControl(id),vertical=globalThis.VerticalMobilityEngine;
+    if(!unit||!control||(steps<0?!control.canDive:!control.canSurface))return null;
+    const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y)||null;
+    const desired=steps<0?"DIVING":"SWIMMING";
+    const result=vertical.setMode(unit,tile,desired);
+    return result?.ok&&result.state?.mode===desired?result.state:null;
+  }
   function cargoProfile(unit){return unit?.character?.cargo||null}
   function cargoList(unit){return[...(unit?.cargo||[])]}
   function canLoadCargo(unit,payload){
@@ -285,7 +304,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;
