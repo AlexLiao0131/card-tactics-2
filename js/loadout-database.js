@@ -15,7 +15,7 @@ export const LOADOUTS={
   water_guard_test_default:{id:"water_guard_test_default",characterId:"water_guard_test",armorId:"water_medium_armor",weaponIds:{sword:"standard_sword"},skillIds:["slash"]},
   elf_guard_test_default:{id:"elf_guard_test_default",characterId:"elf_guard_test",armorId:"elf_light_armor",guardId:"elf_blessed_guard",weaponIds:{blessed_sword:"blessed_sword"},skillIds:["blessed_slash"]},
 
-  reina_default:{id:"reina_default",characterId:"reina",armorId:"chainmail",guardId:"elf_blessed_guard",weaponIds:{blessed_sword:"blessed_sword",bow:"imperial_bow"},skillIds:["reina_blessed_slash","reina_command_shot","reina_rally"]},
+  reina_default:{id:"reina_default",characterId:"reina",armorId:"chainmail",guardId:"reina_nature_guard",weaponIds:{blessed_sword:"reina_nature_sword",bow:"reina_nature_bow"},skillIds:["reina_blessed_slash","reina_blessed_bow","reina_command_shot","reina_rally","reina_supply","reina_sentries"]},
   elf_shapeshifter_default:{id:"elf_shapeshifter_default",characterId:"elf_shapeshifter",armorId:"elf_light_armor",weaponIds:{claw:"forest_claw"},skillIds:["claw"]},
   elf_ranger_default:{id:"elf_ranger_default",characterId:"elf_ranger",armorId:"chainmail",weaponIds:{bow:"imperial_bow",blessed_sword:"blessed_sword"},skillIds:["imperial_bow_shot","blessed_slash"]},
   elf_guard_default:{id:"elf_guard_default",characterId:"elf_guard",armorId:"imperial_heavy_armor",weaponIds:{blessed_sword:"blessed_sword"},equipmentIds:["imperial_large_shield"],skillIds:["blessed_slash"]},

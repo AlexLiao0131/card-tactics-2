@@ -63,8 +63,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const owner=candidates.find(u=>u.alive&&u.team!==attacker.team&&vengeanceRule(u));
     if(!owner)return false;
     const rule=vengeanceRule(owner),id=`${rule.id}:${owner.id}`;
-    addEffect(attacker,{type:"VENGEANCE_SEAL",id,name:"復仇聖印",classification:"NEGATIVE",duration:rule.duration,ownerId:owner.id},owner);
-    return true;
+    const result=apply({source:owner,target:attacker,effect:{type:"VENGEANCE_SEAL",id,name:"復仇聖印",classification:"NEGATIVE",duration:rule.duration,ownerId:owner.id}});
+    return result?.applied===true;
   }
   function vengeanceMultiplier(attacker,target){
     if(!attacker?.alive||!target?.alive)return 1;
@@ -276,9 +276,32 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const grant={skillId,sourceUnitId:source?.id||null,remaining:null,bloodMemory:true};
     (unit.grantedSkills||(unit.grantedSkills=[])).push(grant);return grant;
   }
+  function commandStatusResistance(target,effect){
+    if(!target?.alive||effect?.classification!=="NEGATIVE"||
+       ["DAMAGE","MAGIC_DAMAGE","DRAIN"].includes(effect.type))return 0;
+    const roster=globalThis.UnitRuntimeEngine?.knownUnits?.()||[];
+    let best=0;
+    for(const commander of roster){
+      if(!commander?.alive||commander.team!==target.team)continue;
+      const passives=SkillDatabase.passiveList(commander.character?.passives||[]);
+      const radius=Math.max(0,...passives.map(passive=>Number(passive.commandRadius||0)));
+      const distance=Math.abs(commander.x-target.x)+Math.abs(commander.y-target.y);
+      if(distance>radius)continue;
+      for(const passive of passives){
+        const chance=Number(passive.commandStatusResistance||0);
+        if(Number.isFinite(chance))best=Math.max(best,chance);
+      }
+    }
+    return Math.min(100,Math.max(0,best));
+  }
   function apply({source,target,effect,chooseSkill}={}){
     if(!target||!effect)return{applied:false,reason:"INVALID_TARGET"};
     if(effect.targetFilter&&!targetMatches(source,target,effect.targetFilter))return{applied:false,reason:"TARGET_FILTER"};
+    // One roll per incoming effect, never once per damage component or tick.
+    // Resistance is checked before consumable status wards so a successful
+    // commander save does not waste a Saint's GRACE charge.
+    const resistance=commandStatusResistance(target,effect);
+    if(resistance>0&&random()*100<resistance)return{applied:false,reason:"STATUS_RESISTED",chance:resistance};
     const guardedBy=consumeNegativeEffectGuard(target,effect);
     if(guardedBy)return{applied:false,reason:"NEGATIVE_EFFECT_GUARD",blockedBy:guardedBy.id||guardedBy.name||"GUARD"};
     if(effect.type==="WEAPON_ENCHANT"){
@@ -306,6 +329,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
     if(effect.type==="HP_LINK")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
+    if(effect.type==="VENGEANCE_SEAL")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER"){
       if(effect.cleanseNegative)removeNegative(target);
       return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
@@ -437,7 +461,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 }
 export const EffectEngine=createEffectEngine();
 globalThis.EffectEngine=EffectEngine;

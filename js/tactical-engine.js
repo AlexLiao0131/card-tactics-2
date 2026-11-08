@@ -43,6 +43,9 @@ export const TacticalEngine=(()=>{
   function terrainTraits(u){
     const set=new Set(u?.character?.terrainTraits||[]);
     for(const passive of globalThis.SkillDatabase?.passiveList?.(u?.character?.passives)||[])for(const trait of passive?.terrainTraits||[])set.add(trait);
+    // Temporary movement traits from canonical effects belong to the same
+    // terrain evaluator as permanent character and passive traits.
+    for(const effect of globalThis.EffectEngine?.state?.(u)||[])for(const trait of effect?.terrainTraits||[])set.add(trait);
     return [...set];
   }
   function terrainPassiveModifiers(character,t){

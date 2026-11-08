@@ -204,7 +204,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const sealMultiplier=a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,a.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
-        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
+        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null});
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         let absorbed=0,physLoss=0,magicLoss=0;

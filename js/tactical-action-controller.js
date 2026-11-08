@@ -344,7 +344,7 @@
       if(!ctx.consumeSkill(unit,skill)){UnitRuntimeEngine.endBloodTransaction(unit);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(unit,skill);
       TacticalEngine.faceToward(unit,target);
-      globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE"});
+      globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE",projectileKind:unit.character?.weapons?.[skill.weapon]?.weaponKind||null});
       const stat=String(skill.offenseStat||"").toUpperCase()==="ATK"?Number(unit.character.combat.atk||0):skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
       const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-(skill.pureHoly?0:Number(target.core.defense||30))));
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(unit,skill.weapon)||null;
@@ -411,15 +411,207 @@
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"TERRAIN_ATTACK");
       TacticalEngine.faceToward(attacker,center);
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP"});
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[attack.weapon]?.weaponKind||null});
       const consumed=EffectEngine.consumeWeaponEnchantment(attacker,skill.weapon);
       resolveEnchantmentImpact({actor:attacker,skill:attack,enchantment:consumed,
         target:center,terrainImpact:true,result:{hit:true}});
       ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}，以附魔武器擊向地格 (${center.x},${center.y})。`,"BATTLE");
       return finishActiveSkill(attacker);
     }
+    function rangerCommandRadius(commander){
+      return Math.max(0,...SkillDatabase.passiveList(commander?.character?.passives||[])
+        .map(p=>Number(p.commandRadius||0)).filter(Number.isFinite));
+    }
+    function rangerDistance(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y);}
+    function rangerFormationMembers(commander){
+      const {units}=state(),radius=rangerCommandRadius(commander);
+      if(!commander?.alive||radius<1)return[];
+      return units.filter(u=>u.alive&&u.team===commander.team&&u.participatesInTurn!==false&&
+        !u.moved&&!u.acted&&!u.waited&&rangerDistance(u,commander)<=radius);
+    }
+    function rangerMarchTraits(commander){
+      // Only natural ground mobility is shared. Flight, diving and arbitrary
+      // physical traits cannot be transferred by a forest-march command.
+      return TacticalEngine.terrainTraits(commander).filter(t=>
+        t==="FOREST_WALK"||t==="MOUNTAIN_WALK");
+    }
+    function rangerMarchProxy(member,commander){
+      const move=Math.max(Number(member.character.combat.move||0),
+        Number(commander.character.combat.move||0));
+      const traits=[...new Set([...(member.character.terrainTraits||[]),...rangerMarchTraits(commander)])];
+      return {...member,character:{...member.character,
+        combat:{...member.character.combat,move},terrainTraits:traits}};
+    }
+    function rangerFormationReach(commander){
+      const {map,units}=state(),members=rangerFormationMembers(commander);
+      if(!members.some(u=>u.id===commander.id))return null;
+      const moving=new Set(members.map(u=>u.id)),blockers=units.filter(u=>!moving.has(u.id));
+      const reach=new Map();
+      for(const member of members)
+        reach.set(member.id,TacticalEngine.reachable(map,blockers,rangerMarchProxy(member,commander)));
+      return {members,blockers,reach};
+    }
+    function rangerFormationLegalTiles(commander,skill){
+      const {map,units,environmentState}=state(),formation=rangerFormationReach(commander);
+      if(!formation)return[];
+      const own=formation.reach.get(commander.id),min=Number(skill.range?.min||0),
+        max=Number(skill.range?.max||0);
+      const result=[];
+      for(const [key] of own){
+        const [x,y]=key.split(',').map(Number),destination=TacticalEngine.tile(map,x,y);
+        if(!destination)continue;
+        const delta={x:x-commander.x,y:y-commander.y};
+        const distance=Math.abs(delta.x)+Math.abs(delta.y);
+        if(distance<min||distance>max)continue;
+        let valid=true;
+        for(const member of formation.members){
+          const tx=member.x+delta.x,ty=member.y+delta.y;
+          if(!formation.reach.get(member.id).has(`${tx},${ty}`)){valid=false;break;}
+        }
+        if(valid)result.push(destination);
+      }
+      return result;
+    }
+    function rangerFormationPlan(commander,center,skill){
+      const {map,units}=state(),formation=rangerFormationReach(commander);
+      if(!formation||!TacticalEngine.tile(map,center.x,center.y))return null;
+      const delta={x:center.x-commander.x,y:center.y-commander.y},
+        distance=Math.abs(delta.x)+Math.abs(delta.y);
+      if(distance<Number(skill.range?.min||0)||distance>Number(skill.range?.max||0))return null;
+      const plans=[];
+      for(const member of formation.members){
+        const x=member.x+delta.x,y=member.y+delta.y;
+        if(!formation.reach.get(member.id).has(`${x},${y}`))return null;
+        const path=TacticalEngine.pathTo(map,formation.blockers,rangerMarchProxy(member,commander),x,y);
+        if(!path.length)return null;
+        plans.push({member,path});
+      }
+      // Forward-most units travel first so their original tiles are vacated
+      // when the next squad member enters them; all animations are published
+      // to the renderer from the same committed state revision.
+      plans.sort((a,b)=>((b.member.x*delta.x+b.member.y*delta.y)-
+        (a.member.x*delta.x+a.member.y*delta.y)));
+      return {plans,delta};
+    }
+    function executeRangerMarch(commander,center,skill){
+      if(!ctx.canUseSkill(commander,skill)||commander.moved||commander.acted)return false;
+      const planned=rangerFormationPlan(commander,center,skill);
+      if(!planned){ctx.pushLog(`${skill.name}：有人無法合法跟上，整支部隊未移動。`,"SYSTEM");ctx.render();return false;}
+      if(!ctx.consumeSkill(commander,skill))return skillFailure(commander,skill,"RESOURCE_OR_REQUIREMENT",center);
+      EffectEngine.breakStealth(commander,"ACTION");EffectEngine.interruptChannel(commander,"ACTION");
+      globalThis.UnitAnimationEngine?.emitAction?.(commander,center,skill,{targetKind:"MAP"});
+      const temporaryId=`RANGER_FORMATION_MOVE:${commander.id}`,traits=rangerMarchTraits(commander);
+      for(const {member} of planned.plans){
+        const delta=Math.max(0,Number(commander.character.combat.move||0)-Number(member.character.combat.move||0));
+        EffectEngine.addEffect(member,{type:"BUFF",id:temporaryId,name:"急行軍・移動適性",classification:"POSITIVE",
+          terrainTraits:traits,modifiers:{move:delta}},commander);
+      }
+      try{
+        for(const {member,path} of planned.plans){
+          if(!member.alive)continue;
+          const travel=ctx.traverseUnitPath(member,path,{kind:"UNIT"});
+          member.moved=true;
+          if(!travel?.completed)ctx.pushLog(`${member.character.name} 急行軍途中受到環境事件中斷。`,"BATTLE");
+        }
+      }finally{
+        for(const {member} of planned.plans)EffectEngine.removeEffectById(member,temporaryId);
+      }
+      // This consumes the whole squad's MOVE, not its ATTACK. Reina remains
+      // selectable for a subsequent normal attack; a second march is illegal.
+      commander.moved=true;commander.acted=false;commander.waited=false;
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("command");
+      ctx.pushLog(`${commander.character.name} 發動急行軍，${planned.plans.length} 名隊員移動並保留未使用的攻擊。`,"BATTLE");
+      ctx.render();return true;
+    }
+    function rangerBowParticipants(commander){
+      const {units}=state(),radius=rangerCommandRadius(commander);
+      return (units||[]).filter(u=>u.alive&&u.team===commander.team&&u.participatesInTurn!==false&&
+        !u.acted&&!u.waited&&rangerDistance(u,commander)<=radius)
+        .map(u=>({unit:u,bow:Object.entries(u.character?.weapons||[]).find(([,weapon])=>
+          String(weapon?.weaponKind||"").toUpperCase()==="BOW")}))
+        .filter(entry=>!!entry.bow).map(entry=>({unit:entry.unit,slot:entry.bow[0],weapon:entry.bow[1]}));
+    }
+    function executeRangerVolley(commander,center,skill){
+      const {map,units,environmentState}=state();
+      if(!ctx.canUseSkill(commander,skill)||!mapTargetTiles(commander,skill)
+        .some(tile=>tile.x===center.x&&tile.y===center.y))return false;
+      const archers=rangerBowParticipants(commander);
+      if(!archers.some(item=>item.unit.id===commander.id))return false;
+      if(!ctx.consumeSkill(commander,skill))return skillFailure(commander,skill,"RESOURCE_OR_REQUIREMENT",center);
+      EffectEngine.breakStealth(commander,"ACTION");EffectEngine.interruptChannel(commander,"ACTION");
+      TacticalEngine.faceToward(commander,center);
+      globalThis.UnitAnimationEngine?.emitAction?.(commander,center,skill,{
+        targetKind:"MAP",projectileKind:commander.character?.weapons?.[skill.weapon]?.weaponKind||null,
+        projectileSources:archers.map(item=>item.unit.id)});
+      // All participants spend exactly one arrow attack and one enchantment.
+      const contributors=archers.map(({unit,slot,weapon})=>({unit,slot,weapon,
+        enchant:EffectEngine.consumeWeaponEnchantment(unit,slot)}));
+      const count=contributors.length;
+      // Every archer adds its own effective ATK. Square-root normalization
+      // keeps one AOE from scaling linearly to the entire squad's damage.
+      const pooledAtk=contributors.reduce((sum,{unit})=>sum+Number(unit.character.combat.atk||0),0)/Math.sqrt(count);
+      const virtual={...commander,character:{...commander.character,
+        combat:{...commander.character.combat,atk:pooledAtk}}};
+      const impacted=ctx.aoeTiles(center,Number(skill.radius||0));
+      const hits=[],thunderImpacts=[];
+      for(const tile of impacted){
+        const target=ctx.unitAt(tile.x,tile.y);
+        if(!target?.alive||target.team===commander.team)continue;
+        if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,commander,target,skill))continue;
+        const resolved=TacticalEngine.resolve(map,virtual,target,skill,{random:ctx.random,disableCrit:true});
+        const physicalRoll=resolved.result;
+        if(!physicalRoll.hit){ctx.pushLog(`${commander.character.name} → ${target.character.name}｜集團齊射 MISS。`,"BATTLE");continue;}
+        const physical=EffectEngine.applyDamage(target,Number(physicalRoll.damage||0),
+          {source:commander,damageType:"PHYSICAL"});
+        const physicalLoss=Number(physical.hpLoss||0);
+        if(physicalLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{
+          damage:physicalLoss,components:{physical:physicalLoss,magic:0},
+          componentElements:{physical:"NONE"},skillId:skill.id});
+        const enchantments=new Map();
+        for(const {unit,slot,weapon,enchant} of contributors){
+          const shot={...skill,weapon:slot,attackType:"SHOT"};
+          const innate=BattleResolution.previewInherentBonus(unit,target,shot,{critical:false});
+          if(innate>0){const el=weapon.inherentMagic.element;
+            enchantments.set(el,(enchantments.get(el)||0)+innate);}
+          if(enchant){
+            const bonus=BattleResolution.enchantmentMagicDamage(unit,target,enchant,false,shot);
+            if(bonus>0)enchantments.set(enchant.element,(enchantments.get(enchant.element)||0)+bonus);
+          }
+        }
+        let magicalLoss=0;
+        for(const [element,amount] of enchantments){
+          const magic=EffectEngine.applyDamage(target,amount,{source:commander,damageType:"MAGIC"});
+          const loss=Number(magic.hpLoss||0);magicalLoss+=loss;
+          if(loss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{
+            damage:loss,components:{physical:0,magic:loss},
+            componentElements:{magic:element},skillId:skill.id});
+        }
+        hits.push(target);
+        const thunder=contributors.find(row=>row.enchant?.element==="THUNDER");
+        if(thunder)thunderImpacts.push({actor:thunder.unit,
+          skill:{weapon:thunder.slot,attackType:"SHOT"},enchantment:thunder.enchant,
+          target,result:{hit:true}});
+        ctx.pushLog(`${commander.character.name}｜集團齊射 → ${target.character.name}｜物理 ${physicalLoss}＋魔法 ${magicalLoss}｜HP ${target.hp}。`,"BATTLE");
+        if(target.hp<=0&&target.alive){target.alive=false;ctx.handleDefeated(target,commander,skill);}
+      }
+      const fire=contributors.find(row=>row.enchant?.element==="FIRE"&&row.enchant?.bowImpact);
+      const impacts=[...thunderImpacts];
+      if(fire&&hits.length){
+        // The original fire-arrow authored 45 splash and FIRE/EXPLOSION are
+        // still resolved by the official EnchantmentImpact function, once.
+        impacts.push({actor:fire.unit,skill:{weapon:fire.slot,attackType:"SHOT"},
+          enchantment:{...fire.enchant,bowImpact:{...fire.enchant.bowImpact,radius:skill.radius}},
+          target:center,result:{hit:true},terrainImpact:true});
+      }
+      if(impacts.length)resolveEnchantmentImpacts(impacts);
+      for(const {unit} of contributors){unit.moved=true;unit.acted=true;unit.waited=true;}
+      ctx.pushLog(`${commander.character.name}｜集團齊射 ${contributors.length} 名弓手、範圍 ${impacted.length} 格、命中 ${hits.length} 名目標。`,"BATTLE");
+      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
+      if(!ctx.checkMatchEnd?.())ctx.maybeAutoEndPlayerTurn?.();ctx.render();return true;
+    }
     function mapTargetTiles(attacker,skill){
       if(skill?.terrainTargeting)return enchantedTerrainTargetTiles(attacker,skill);
+      if(skill?.utilityAction?.type==="RANGER_FORMATION_MARCH")return rangerFormationLegalTiles(attacker,skill);
       const {map,units,environmentState}=state();
       const range=TacticalEngine.range(skill);
       const known=tile=>skill?.ignoreFogOfWar===true||skill?.requiresVision===false||
@@ -720,6 +912,7 @@
 
     function executeMapUtility(attacker,center,skill){
       const action=skill?.utilityAction,{map}=state();if(!action)return skillFailure(attacker,skill,"NO_MAP_UTILITY",center);
+      if(action.type==="RANGER_FORMATION_MARCH")return executeRangerMarch(attacker,center,skill);
       if(action.type!=="RELEASE_CARRIED"&&!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       if(MAP_TRANSIT_ACTIONS.has(action.type)){
         const destination=TacticalEngine.tile(map,center.x,center.y);
@@ -825,6 +1018,7 @@
 
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
+      if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
       if(skill?.terrainTargeting)return executeEnchantedTerrainAttack(attacker,center,skill);
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
       if(skill?.sanctuary){
@@ -836,7 +1030,7 @@
         if(!spent)return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
         EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
         TacticalEngine.faceToward(attacker,center);
-        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null});
         ctx.activateSanctuary(attacker,center,skill,mode);
         if(mode==="HEALING")UnitRuntimeEngine.changeFaith(attacker,max/2-UnitRuntimeEngine.faithValue(attacker));
         return finishActiveSkill(attacker);
@@ -866,7 +1060,7 @@
       if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null});
       if(skill.tsunamiWave){
         // Stage 1: contact and knockback, before adding water. This keeps
         // wave impact independent of the hydro's steady water depths.
@@ -1112,7 +1306,16 @@
       TacticalEngine.faceToward(attacker,target);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
       const results=[];let healedCrit=false;
-      if(Array.isArray(skill.relationEffects)){
+      if(skill.commandAura===true){
+        const radius=rangerCommandRadius(attacker);
+        for(const member of state().units.filter(unit=>unit.alive&&unit.team===attacker.team&&
+          rangerDistance(unit,attacker)<=radius)){
+          for(const effect of skill.effects||[]){
+            const r=EffectEngine.apply({source:attacker,target:member,effect});
+            results.push(r);logAppliedEffect(skill,member,effect,r);
+          }
+        }
+      }else if(Array.isArray(skill.relationEffects)){
         const rel=EffectEngine.relation(attacker,target);
         for(const effect of skill.relationEffects.filter(e=>e.relation===rel)){
           if(effect.type==="MAGIC_DAMAGE"){
