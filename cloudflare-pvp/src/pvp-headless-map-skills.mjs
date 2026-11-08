@@ -7,6 +7,7 @@
  * The filter is a capability contract, never a per-character/skill ID list.
  */
 import {SkillDatabase} from '../../js/skill-database.js';
+import {AngelWingBarrierEngine} from '../../js/angel-wing-barrier-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import {EnvironmentEngine} from '../../js/environment-engine.js';
 import '../../js/tactical-action-controller.js';
@@ -80,6 +81,7 @@ export function isCanonicalLineTransitSkill(skill){
     !skill.affixes?.length;
 }
 export function isCanonicalImmediateMapSkill(skill){
+  if(AngelWingBarrierEngine.isCanonicalSkill(skill))return true;
   if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill))return true;
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
      skill.target!=='TILE'||skill.targetType!=='AOE'||
@@ -131,6 +133,25 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
   if(!skill)fail('FULL_SKILL_ORCHESTRATION_REQUIRED');
   if(!engine.unitRuntime.canUseSkill(caster,skill))fail('SKILL_RESOURCES_UNAVAILABLE');
   const environment=createCanonicalEnvironmentController(game,hooks);
+  if(AngelWingBarrierEngine.isCanonicalSkill(skill)){
+    const target=TacticalEngine.tile(game.battlefield.map,action.x,action.y);
+    if(!target||!AngelWingBarrierEngine.legalTiles(game.battlefield.map,game.units,caster,
+        {cores:game.battlefield.cores}).some(tile=>tile.x===target.x&&tile.y===target.y))
+      fail('ILLEGAL_WING_BARRIER_TARGET');
+    const manaBefore=caster.mana;
+    const result=AngelWingBarrierEngine.cast({map:game.battlefield.map,units:game.units,
+      actor:caster,landing:target,skill,cores:game.battlefield.cores,
+      traverse:environment.traverseUnitPath,
+      consumeSkill:(unit,used)=>engine.unitRuntime.consumeSkill(unit,used)});
+    if(result.interrupted)return{accepted:true,state:game,unitId:caster.id,
+      skillId:skill.id,movement:result.movement,castInterrupted:true};
+    if(!result.ok)fail('OFFICIAL_WING_BARRIER_REJECTED');
+    caster.moved=true;caster.acted=true;caster.waited=true;
+    globalThis.UnitAnimationEngine?.emitAction?.(caster,target,skill,{targetKind:'MAP'});
+    hooks.pushLog(`${caster.character.name} 降落並展開四格聖翼壁障。`,'BATTLE');
+    return{accepted:true,state:game,unitId:caster.id,skillId:skill.id,
+      x:target.x,y:target.y,manaBefore,manaAfter:caster.mana};
+  }
   const controller=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:TEAM[seat],ENEMY:TEAM[1-seat]},
     actionState:()=>({map:game.battlefield.map,units:game.units,

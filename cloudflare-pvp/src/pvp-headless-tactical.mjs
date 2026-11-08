@@ -375,9 +375,9 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         if(!changed?.ok||changed.state?.mode!==desired)fail('DIVE_MODE_UNAVAILABLE');
         return {accepted:true,state:game,verticalMode:changed.state.mode,depth:changed.state.depth};
       }
-      const before=VerticalMobilityEngine.describe(unit,tile).flightAltitude;
+      const before=VerticalMobilityEngine.describe(unit,tile);
       const next=VerticalMobilityEngine.adjustFlightAltitude(unit,tile,action.steps);
-      if(!next?.ok||next.state?.flightAltitude===before)
+      if(!next?.ok||(next.state?.flightAltitude===before.flightAltitude&&next.state?.mode===before.mode))
         fail('FLIGHT_ALTITUDE_UNAVAILABLE');
       return {accepted:true,state:game,flightAltitude:next.state.flightAltitude};
     }
@@ -502,6 +502,7 @@ export function tacticalDebugProjection(game,seat){
     const stage=StageDatabase.get(game.stageId);
     stage.cores=game.battlefield.cores;
     stage.deploymentPoints=game.battlefield.deploymentPoints;
+    globalThis.AngelWingBarrierEngine?.reconcile?.(game.battlefield.map,game.units);
     const world={map:game.battlefield.map,units:game.units,
       cores:game.battlefield.cores,stage,environmentState:game.environmentState};
     const visible=game.units.filter(u=>u.team===UNIT_TEAM[seat]||
@@ -548,11 +549,21 @@ export function tacticalDebugProjection(game,seat){
            // only authority for actionable commands and target legality.
            // Never silently make an owned skill disappear merely because
            // a conditional command has no targets this frame.
-           aimOptions:projectCanonicalAimOptions(game,seat,unit,engine,{
-             coreAttackSkillIds:SkillDatabase.list(unit.character.skills)
-               .filter(skill=>isCanonicalCoreAttackSkill(unit,skill)&&engine.unitRuntime.canUseSkill(unit,skill))
-               .map(skill=>skill.id)
-           }),
+           aimOptions:(()=>{
+             const aims=projectCanonicalAimOptions(game,seat,unit,engine,{
+               coreAttackSkillIds:SkillDatabase.list(unit.character.skills)
+                 .filter(skill=>isCanonicalCoreAttackSkill(unit,skill)&&engine.unitRuntime.canUseSkill(unit,skill))
+                 .map(skill=>skill.id)
+             });
+             return aims.map(aim=>{
+               const skill=SkillDatabase.get(aim.skillId);
+               if(!globalThis.AngelWingBarrierEngine?.isCanonicalSkill?.(skill))return aim;
+               const tiles=globalThis.AngelWingBarrierEngine.legalTiles(
+                 game.battlefield.map,game.units,unit,{cores:game.battlefield.cores})
+                 .map(tile=>({x:tile.x,y:tile.y}));
+               return{...aim,tiles,actionableTiles:tiles};
+             });
+           })(),
            skillCatalog:SkillDatabase.list(engine.effect.skillIds(unit)).map(skill=>({
              ...officialSkillView(unit,skill,engine),category:skill.category,
              usable:engine.unitRuntime.canUseSkill(unit,skill)
