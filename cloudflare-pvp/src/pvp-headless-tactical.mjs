@@ -180,7 +180,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
     // Viewing/rotating the moved actor is NOT a tactical commitment.
     // Preserve the official pending-move origin until an actual action
     // commits it, or until CANCEL_MOVE explicitly restores it.
-    if(game.pendingMove&& !['CANCEL_MOVE','ROTATE_UNIT','ADJUST_FLIGHT_ALTITUDE'].includes(action?.type))
+    if(game.pendingMove&& !['CANCEL_MOVE','ROTATE_UNIT','ADJUST_FLIGHT_ALTITUDE','ADJUST_DIVE_MODE'].includes(action?.type))
       game.pendingMove=null;
     if(action?.type==='CANCEL_MOVE'){
       if(game.phase!==TACTICAL_PHASE[seat]||
@@ -348,7 +348,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
     }
     // Native UnitControlUI input, with no duplicate facing/flight formulas.
     // Official TacticalEngine and VerticalMobilityEngine are the only owners.
-    if(action?.type==='ROTATE_UNIT'||action?.type==='ADJUST_FLIGHT_ALTITUDE'){
+    if(['ROTATE_UNIT','ADJUST_FLIGHT_ALTITUDE','ADJUST_DIVE_MODE'].includes(action?.type)){
       if(game.phase!==TACTICAL_PHASE[seat]||
          !sameKeys(action,['type','unitId','steps'])||
          typeof action.unitId!=='string'||!Number.isInteger(action.steps)||
@@ -362,6 +362,19 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       }
       const tile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
       if(!tile)fail('INVALID_UNIT_POSITION');
+      if(action.type==='ADJUST_DIVE_MODE'){
+        const vertical=VerticalMobilityEngine;
+        const before=vertical.describe(unit,tile),waterDepth=vertical.waterDepth(tile);
+        if(!vertical.capabilities(unit).canDive||waterDepth<=0)
+          fail('DIVE_CONTROL_UNAVAILABLE');
+        if(action.steps<0
+          ?before.mode==='DIVING'||waterDepth<vertical.bodyHeight(unit)
+          :before.mode!=='DIVING')fail('DIVE_MODE_UNAVAILABLE');
+        const desired=action.steps<0?'DIVING':'SWIMMING';
+        const changed=vertical.setMode(unit,tile,desired);
+        if(!changed?.ok||changed.state?.mode!==desired)fail('DIVE_MODE_UNAVAILABLE');
+        return {accepted:true,state:game,verticalMode:changed.state.mode,depth:changed.state.depth};
+      }
       const before=VerticalMobilityEngine.describe(unit,tile).flightAltitude;
       const next=VerticalMobilityEngine.adjustFlightAltitude(unit,tile,action.steps);
       if(!next?.ok||next.state?.flightAltitude===before)
@@ -576,6 +589,15 @@ export function tacticalDebugProjection(game,seat){
             if(!range||!tile)return null;
             const info=VerticalMobilityEngine.describe(unit,tile);
             return {...range,altitude:info.flightAltitude,mode:info.mode};
+          })(),
+          diveControl:(()=>{
+            const tile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
+            const vertical=VerticalMobilityEngine;
+            if(!tile||!vertical.capabilities(unit).canDive||vertical.waterDepth(tile)<=0)return null;
+            const info=vertical.describe(unit,tile);
+            return {mode:info.mode,depth:info.depth,maxDepth:info.waterDepth,
+              canDive:info.mode!=='DIVING'&&info.waterDepth>=vertical.bodyHeight(unit),
+              canSurface:info.mode==='DIVING'};
           })(),
           // Exactly the same official skill metadata as the offline menu,
           // intersected with actual server-implemented command contracts.

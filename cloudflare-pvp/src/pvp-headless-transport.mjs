@@ -28,7 +28,8 @@ const validId=value=>typeof value==='string'&&value.length>0;
 export function isCanonicalTransportSkill(skill){
   const pickup=skill?.utilityAction;
   if(!pickup||!['CARRY_ALLY','CARRY_ENEMY'].includes(pickup.type)||
-     skill.category!=='SPECIAL'||skill.target!==(pickup.type==='CARRY_ALLY'?'ALLY':'ENEMY')||
+     skill.category!==(pickup.type==='CARRY_ALLY'?'SPECIAL':'ATTACK')||
+     skill.target!==(pickup.type==='CARRY_ALLY'?'ALLY':'ENEMY')||
      (skill.targetType&&skill.targetType!=='SINGLE')||!validId(pickup.releaseSkillId)||
      skill.moveToTarget||skill.approach||skill.weapon||skill.attackType||
      skill.effects||skill.relationEffects||skill.statusEffects||skill.postEffects||

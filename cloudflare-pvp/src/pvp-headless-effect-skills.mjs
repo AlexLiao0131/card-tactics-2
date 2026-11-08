@@ -73,7 +73,7 @@ export function isCanonicalSelfChannelSkill(skill){
 }
 
 export function isCanonicalSubmergeSkill(skill){
-  return !!skill&&skill.category==='SPECIAL'&&skill.target==='ENEMY'&&
+  return !!skill&&skill.category==='ATTACK'&&skill.target==='ENEMY'&&
     (!skill.targetType||skill.targetType==='SINGLE')&&skill.power===0&&
     skill.requirements?.diving===true&&skill.utilityAction?.type==='SUBMERGE_ENEMY'&&
     skill.utilityAction.consumeTurn===true&&
