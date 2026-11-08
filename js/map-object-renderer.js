@@ -50,6 +50,13 @@ export class MapObjectRenderer{
       generic:this.mat("prop-generic",new BABYLON.Color3(.38,.34,.28))
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
+    // One shared emissive material for all four pieces, not one light per tile.
+    this.holyWingWallMaterial=new BABYLON.StandardMaterial('holy-wing-wall',this.scene);
+    this.holyWingWallMaterial.diffuseColor=new BABYLON.Color3(1,.88,.50);
+    this.holyWingWallMaterial.emissiveColor=new BABYLON.Color3(.78,.65,.26);
+    this.holyWingWallMaterial.alpha=.64;
+    this.holyWingWallMaterial.backFaceCulling=false;
+    this.holyWingWallMaterial.disableLighting=true;
     this.surfaceMaterial.specularColor=new BABYLON.Color3(.025,.025,.025);
     this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
     this.windBatchMetrics={positionUploads:0,boundsResolves:0,animatedGroups:0,
@@ -325,6 +332,28 @@ export class MapObjectRenderer{
     return root;
   }
 
+  createHolyWingWall(object){
+    const root=this.root(object);
+    const width=TILE_SIZE*.94,height=TILE_SIZE*1.65;
+    const panel=this.mesh(root,BABYLON.MeshBuilder.CreateBox(`holy-wing-wall-${object.id}`,
+      {width,height,depth:TILE_SIZE*.08},this.scene),this.holyWingWallMaterial);
+    panel.position.y=height/2;
+    panel.rotation.y=['E','W'].includes(object.facing)?Math.PI/2:0;
+    panel.metadata={kind:'holy-wing-wall',castShadow:false};
+    const growth=new BABYLON.Animation(`holy-wing-rise-${object.id}`,'scaling.y',30,
+      BABYLON.Animation.ANIMATIONTYPE_FLOAT,BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+    const stagger=Number(object.barrierIndex||0)*2;
+    growth.setKeys([{frame:0,value:.02},{frame:stagger+1,value:.02},
+      {frame:stagger+10,value:1}]);
+    this.scene.beginDirectAnimation(panel,[growth],0,stagger+10,false);
+    const crest=this.mesh(root,BABYLON.MeshBuilder.CreateTorus(`holy-wing-crest-${object.id}`,
+      {diameter:TILE_SIZE*.62,thickness:TILE_SIZE*.035,tessellation:16},this.scene),this.holyWingWallMaterial);
+    crest.position.y=height*.58;crest.rotation.x=Math.PI/2;
+    if(['E','W'].includes(object.facing))crest.rotation.y=Math.PI/2;
+    crest.metadata={kind:'holy-wing-wall',castShadow:false};
+    return root;
+  }
+
   createGeneric(object){
     const root=this.root(object),mesh=this.markMaterial(this.mesh(root,BABYLON.MeshBuilder.CreateBox(`prop-${object.id}`,{width:.8,height:.8,depth:.8},this.scene),this.materials.generic),"generic");mesh.position.y=.4;return root;
   }
@@ -368,8 +397,11 @@ export class MapObjectRenderer{
   }
 
   createEntry(object){
-    const type=canonicalType(object),node=this.root(object),model=type==="RUBBLE"?this.createRubble(object):this.createObject(object);
+    const type=canonicalType(object),node=this.root(object),model=type==="HOLY_WING_BARRIER"
+      ?this.createHolyWingWall(object):type==="RUBBLE"?this.createRubble(object):this.createObject(object);
     model.parent=node;
+    if(type==="HOLY_WING_BARRIER")return{node,model,signature:this.signature(object),detail:null,swayMeshes:[],
+      placementSignature:null,tintSignature:null,detailSignature:null,visibility:null,groundGeometry:null};
     // One shared StandardMaterial remains the only draw material. Per-prop material
     // character is encoded into deterministic vertex colours, so Stage 12I does
     // not create texture requests or one material instance per object.
@@ -491,7 +523,7 @@ export class MapObjectRenderer{
   }
 
   updateGroundDetail(entry,object,tile,byKey,profile,floating){
-    if(floating||!tile||canonicalType(object)==="RUBBLE"){
+    if(floating||!tile||canonicalType(object)==="RUBBLE"||canonicalType(object)==="HOLY_WING_BARRIER"){
       entry.detail?.dispose();entry.detail=null;return;
     }
     // One low-poly, opaque mesh per prop: soft-coloured irregular contact region
@@ -532,6 +564,11 @@ export class MapObjectRenderer{
 
   place(entry,object,tile,profile){
     const type=canonicalType(object);
+    if(type==='HOLY_WING_BARRIER'){
+      entry.node.position.set(object.x*TILE_SIZE,profile.height,object.y*TILE_SIZE);
+      entry.model.position.set(0,0,0);entry.model.rotation.set(0,0,0);
+      entry.model.scaling.setAll(1);return;
+    }
     const floating=type!=="SPRING"&&object.floatOnWater===true&&Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;
     const model=entry.model,seed=hash01(`${object.id}:pose`);
     entry.node.position.set(Number(object.x||0)*TILE_SIZE,floating?objectY(tile,object):profile.height,Number(object.y||0)*TILE_SIZE);
@@ -545,7 +582,7 @@ export class MapObjectRenderer{
   }
 
   // Geometry only: movement, weather and durability do not rebuild the body.
-  signature(object){return canonicalType(object);}
+  signature(object){const type=canonicalType(object);return type==="HOLY_WING_BARRIER"?`${type}:${object.facing}`:type;}
 
   placementSignature(object,tile){
     // World transform needs the actual published ground, a float-on-water
@@ -793,7 +830,7 @@ export class MapObjectRenderer{
           entry.groundGeometry={height:profile.height,dx:profile.dx,dz:profile.dz};
           updates.placed++;
         }
-        if(tintChanged){this.tintModel(entry,profile);updates.tinted++;}
+        if(tintChanged&&canonicalType(object)!=='HOLY_WING_BARRIER'){this.tintModel(entry,profile);updates.tinted++;}
         if(detailChanged){
           const floating=signature!=="SPRING"&&object.floatOnWater===true&&
             Number(tile?.waterDepth||0)>0&&tile?.waterSurfaceZ!=null;

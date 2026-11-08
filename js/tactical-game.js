@@ -1,4 +1,5 @@
 import {beginPlayerRoundSequence} from './battle-round-sequence.js';
+import {AngelWingBarrierEngine} from './angel-wing-barrier-engine.js';
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 import { BattleCommandMenuUI, battleCommandEntries, battleSkillsForMenu, battleSkillButtonLabel, battleItemMenuEntries, enchantmentRecipientGroups as groupEnchantRecipients, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from "./battle-command-menu-ui.js";
 import { createBattleAreaFieldEngine,createBattleAreaFieldState } from "./battle-area-field-engine.js";
@@ -437,8 +438,27 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     clearSelection();
     return clickBattleTile(next.x,next.y);
   }
+  function wingTargetTiles(unit,skill){
+    if(skill?.utilityAction?.type!==AngelWingBarrierEngine.ACTION)return mapTargetTiles(unit,skill);
+    if(!canUseSkill(unit,skill))return[];
+    return AngelWingBarrierEngine.legalTiles(map,units,unit,{cores});
+  }
+  function castWingBarrier(unit,tile,skill){
+    if(!wingTargetTiles(unit,skill).includes(tile))return false;
+    commitPendingMove(unit);
+    const result=AngelWingBarrierEngine.cast({map,units,actor:unit,landing:tile,skill,cores,
+      traverse:traverseUnitPath,consumeSkill});
+    if(result.interrupted){
+      pushLog(`${unit.character.name} 的降落移動受到環境影響而中斷。`,"SYSTEM");
+      selectedSkill=null;mode="command";render();return false;
+    }
+    if(!result.ok){pushLog(`聖翼壁障無法施放（${result.reason}）。`,"SYSTEM");render();return false;}
+    globalThis.UnitAnimationEngine?.emitAction?.(unit,tile,skill,{targetKind:"MAP"});
+    finishUnit(unit,`施展「${skill.name}」，降落並展開四格盾牆。`);
+    render();return true;
+  }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
-  function render(){renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
+  function render(){AngelWingBarrierEngine.reconcile(map,units);renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
   function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;
     if(mode==="enchant-weapon-select"){
       const pending=actionController?.enchantmentSelection?.();
@@ -449,7 +469,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       // read-only enchantment choice is open.
       return;
     }
-    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill,{confirmOrdinaryAttack:true});return;}
+    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill,{confirmOrdinaryAttack:true});return;}
       // A weapon's enchanted hit selects either a legal enemy (above) or a
       // legal terrain collision (here) inside the SAME attack aim mode.
       // No separate "single target / conduction" or map attack menu exists.
@@ -820,7 +840,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   resetMap.onclick=()=>{if(geminiSession?.enabled)geminiPreparationScreen().then(()=>resetBattle());else resetBattle();};
   battleContext=createBattleContext();if(!window.TacticalActionController?.create)throw new Error("TacticalActionController is not loaded.");const actionController=window.TacticalActionController.create(battleContext);
   const {attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,backFromTargeting,finishActiveSkill,executeEffectSkill,approachForSkill,prepareAttack,confirmEngagement,executeEngagement}=actionController;
-  if(!window.BattlePresentationController?.create)throw new Error("BattlePresentationController is not loaded.");presentationController=window.BattlePresentationController.create({TEAM,PHASE,state:presentationState,targetType,targetableEntities,targetRangeTiles,mapTargetTiles,environmentTargetTiles,unitAt:presentationUnitAt,coreAt:presentationCoreAt,effectiveSkill});
+  if(!window.BattlePresentationController?.create)throw new Error("BattlePresentationController is not loaded.");presentationController=window.BattlePresentationController.create({TEAM,PHASE,state:presentationState,targetType,targetableEntities,targetRangeTiles,mapTargetTiles:wingTargetTiles,environmentTargetTiles,unitAt:presentationUnitAt,coreAt:presentationCoreAt,effectiveSkill});
   if(!window.BattleObjectiveController?.create)throw new Error("BattleObjectiveController is not loaded.");objectiveController=window.BattleObjectiveController.create({state:()=>({stage,stageState,round,units,cores,cardState,enemyCardState,matchResult}),setMatchResult:value=>{matchResult=value;phase=PHASE.ENDED;},onMatchEnd:value=>{clearSelection();clearEnemyReaction();pushLog(`Round ${round}｜${value}｜關卡目標已${value==="VICTORY"?"達成":"失敗"}。`,"SYSTEM");}});
   if(!window.EncounterRewardEngine?.create)throw new Error("EncounterRewardEngine is not loaded.");encounterRewards=window.EncounterRewardEngine.create({playerCardState:()=>cardState,pushLog});
   if(!window.DeathLifecycleEngine?.create)throw new Error("DeathLifecycleEngine is not loaded.");deathLifecycle=window.DeathLifecycleEngine.create({stageEvent,cardStateFor:unit=>unit.team===TEAM.PLAYER?(perceptionState.session?.defeatCards?.[0]||cardState):unit.team===TEAM.ENEMY?(perceptionState.session?.defeatCards?.[1]||enemyCardState):null,deathScope:()=>perceptionState.session,allowRewards:()=>!perceptionState.session?.active,pushLog,onDefeated:unit=>{if(unit.team===TEAM.ENEMY)encounterRewards.onDefeated(unit);},onFinalized:()=>checkMatchEnd()});

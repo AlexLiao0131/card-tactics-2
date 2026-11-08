@@ -37,7 +37,7 @@ export const TacticalEngine=(()=>{
     }
     return true;
   }
-  function objectAt(m,x,y){return (m?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null}
+  function objectAt(m,x,y){return (m?.objects||[]).find(o=>!o.destroyed&&o.type!=="HOLY_WING_BARRIER"&&o.x===x&&o.y===y)||null}
   function occupied(us,x,y,id){return us.some(u=>u.alive&&u.id!==id&&u.occupiesTile!==false&&u.x===x&&u.y===y)}
   function elevation(t){return Number(t?.elevation||0)}
   function terrainTraits(u){
@@ -76,6 +76,7 @@ export const TacticalEngine=(()=>{
   function elevationDelta(fromTile,toTile){return elevation(toTile)-elevation(fromTile)}
   function isMountainTile(t){return t?.terrain==="HIGH_GROUND"||Number(t?.elevation||0)>0}
   function isBlockedByObject(m,x,y,u=null){
+    if(globalThis.AngelWingBarrierEngine?.blocksMovement?.(m,x,y,u))return true;
     const object=objectAt(m,x,y);
     if(!object?.blocksMovement)return false;
     if(u&&globalThis.VerticalMobilityEngine?.objectBlocks)return VerticalMobilityEngine.objectBlocks(u,tile(m,x,y),object);
@@ -355,6 +356,8 @@ export const TacticalEngine=(()=>{
     const observers=[...(units||[]).filter(unit=>unit?.alive&&unit.team===team),...teamVisionSources(world,team)];
     return observers.some(observer=>{
       if(Math.abs(observer.x-target.x)+Math.abs(observer.y-target.y)>maxDistance)return false;
+      if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(m,observer,target,
+          {category:"MAGIC",attackType:"MAGIC"}))return false;
       return canSee(m,observer,target,environmentState);
     });
   }
@@ -372,6 +375,7 @@ export const TacticalEngine=(()=>{
   }
   function hasLineOfSight(m,u,target,s,environmentState=null){
     if(!m||!u||!target)return false;
+    if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(m,u,target,s))return false;
     // W-axis spatial cuts do not travel through intervening terrain.
     // Encounter discovery remains with the team visibility/stealth systems.
     if(s?.affixes?.includes("SPACE_RIFT"))return true;

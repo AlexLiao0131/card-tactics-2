@@ -246,8 +246,17 @@ export const VerticalMobilityEngine=(()=>{
   function adjustFlightAltitude(unit,tile,steps=1){
     const range=flightAltitudeRange(unit);
     if(!range)return{ok:false,reason:"MODE_NOT_AVAILABLE"};
-    const current=describe(unit,tile).flightAltitude;
-    return setFlightAltitude(unit,tile,current+Number(steps||0)*range.step);
+    if(![-1,1].includes(steps))return{ok:false,reason:"INVALID_STEP"};
+    const current=describe(unit,tile);
+    // Ground-to-air and air-to-ground are native vertical transitions, not
+    // auxiliary hero skills. Keep the same height controls at every altitude.
+    if(current.mode!==MODE.FLYING){
+      if(steps<0)return{ok:false,reason:"ALREADY_GROUNDED"};
+      return setMode(unit,tile,MODE.FLYING,{altitude:Math.max(range.min,range.step)});
+    }
+    if(steps<0&&current.flightAltitude<=range.min+1e-9)
+      return setMode(unit,tile,MODE.GROUND);
+    return setFlightAltitude(unit,tile,current.flightAltitude+steps*range.step);
   }
 
   function isMode(unit,...modes){return modes.includes(String(unit?.verticalState?.mode||""));}

@@ -2142,6 +2142,9 @@ export class UnitRenderer{
     // however, is a physical two-handed sword swing originating at the wielder.
     // Only this presentation mapping changes; BattleResolution never reads it.
     if(event?.skillId==="templar_verdict"&&type==="MAGIC")return "VERDICT_SLASH";
+    // A holy magical rain starts with a real bow draw; the canonical damage
+    // classification remains MAGIC, only the visible hand motion is SHOT.
+    if(event?.skillId==="angel_holy_arrow_rain"&&type==="MAGIC")return "SHOT";
     if(type!=="INHERIT")return type;
     const figure=entry?.definition?.figure||{};
     if(figure.fieldSpear)return"PIERCE";

@@ -3,6 +3,7 @@ import { TerrainRenderer } from "./terrain-renderer.js";
 import { WaterRenderer } from "./water-renderer.js";
 import { UnitRenderer } from "./unit-renderer.js";
 import { TemplarVerdictVfx } from "./templar-verdict-vfx.js";
+import { HolyArrowRainVfx } from "./holy-arrow-rain-vfx.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -157,6 +158,7 @@ export class BabylonRenderer{
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
     this.verdictVfx=new TemplarVerdictVfx(this.scene,{units:this.units});
+    this.holyArrowRainVfx=new HolyArrowRainVfx(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -184,6 +186,7 @@ export class BabylonRenderer{
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
       this.verdictVfx.updateFrame();
+      this.holyArrowRainVfx.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -623,6 +626,7 @@ export class BabylonRenderer{
     publish("mapObjects",()=>this.mapObjects.sync(state));
     publish("units",()=>this.units.sync(state,presentationEvents));
     publish("verdictVfx",()=>this.verdictVfx.sync(state,presentationEvents));
+    publish("holyArrowRainVfx",()=>this.holyArrowRainVfx.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -790,6 +794,7 @@ export class BabylonRenderer{
       environment:this.environment.diagnostics(),
       units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},
       verdictVfx:this.verdictVfx.diagnostics(),
+      holyArrowRainVfx:this.holyArrowRainVfx.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };

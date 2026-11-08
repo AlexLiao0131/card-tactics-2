@@ -59,6 +59,18 @@ export const SKILLS={
   angel_drop_enemy:{id:"angel_drop_enemy",name:"摔落敵人",category:"SPECIAL",power:0,range:{min:0,max:0},displayRangeLabel:"依天使實際飛行範圍",target:"TILE",targetType:"AOE",radius:0,support:false,utilityAction:{type:"RELEASE_CARRIED",mode:"DROP",consumeTurn:true}},
   angel_carry_ally:{id:"angel_carry_ally",name:"空運友軍",category:"SPECIAL",power:0,range:{min:1,max:1},displayRangeLabel:"可移動接近／空運依天使移動範圍",target:"ALLY",support:false,requirements:{notCarrying:true},utilityAction:{type:"CARRY_ALLY",releaseSkillId:"angel_release_ally",consumeTurn:false}},
   angel_release_ally:{id:"angel_release_ally",name:"放下友軍",category:"SPECIAL",power:0,range:{min:0,max:0},displayRangeLabel:"依天使當前可移動範圍",target:"TILE",targetType:"AOE",radius:0,support:false,requirements:{carrying:true},utilityAction:{type:"RELEASE_CARRIED",consumeTurn:true}},
+  // This skill owns landing + a temporary, directional four-cell obstruction.
+  // The wall is maintained by the grounded angel rather than an invented timer.
+  angel_holy_arrow_rain:{id:"angel_holy_arrow_rain",name:"神聖箭雨",
+    description:"艾蕾希雅於飛行中以弓為施法媒介凝聚聖光，射出金白色光箭群，在指定中心格周圍形成十三格菱形箭雨。命中範圍內每名敵軍各結算一次純神聖魔法傷害，使用 MATK 與敵方 MDEF；不計算弓箭物理傷害、不消耗武器附魔，也不傷害友軍。射程 2～5 格，消耗 32 MP，施放後結束行動。",
+    category:"MAGIC",power:.95,manaCost:32,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,
+    attackType:"MAGIC",attackClass:"RANGED",offenseStat:"MATK",defenseStat:"MDEF",animationState:"ATTACK",visualAttackType:"SHOT",
+    element:"HOLY",requirements:{flying:true},areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY"},
+    support:false,affixes:[]},
+  angel_holy_wing_barrier:{id:"angel_holy_wing_barrier",name:"聖翼壁障",
+    description:"消耗 28 MP。艾蕾希雅在飛行中選擇可到達的地格降落、展開羽翼，在面向正前方生成一排四格神聖盾牆。敵軍只能繞路，弓箭與魔法不能從牆前攻擊後方友軍；友軍的移動、近戰、遠射、魔法與反擊不受妨礙。艾蕾希雅離開落點、起飛或被擊倒時，盾牆消散。",
+    category:"MAGIC",power:0,manaCost:28,range:{min:0,max:5},target:"TILE",targetType:"AOE",radius:0,
+    requirements:{flying:true},utilityAction:{type:"LAND_WING_BARRIER"},support:false},
 
   ophi_forest_thrust:{id:"ophi_forest_thrust",name:"森靈突刺",description:"以森靈之矛對近距離敵人發動穿刺攻擊。\n傷害：穿刺物理傷害＋武器常駐的自然魔法附傷，兩部分分別計算、同一次攻擊結算；不需額外附魔。\n射程：1～2 格。攻擊後結束本次行動。",category:"ATTACK",weapon:"forest_spear",power:1,range:{min:1,max:2},attackType:"PIERCE",attackClass:"MELEE",element:"NONE",speed:0,target:"ENEMY",support:false},
   ophi_forest_throw:{id:"ophi_forest_throw",name:"森靈投矛",description:"向中距離敵人投出森靈之矛。\n傷害：穿刺物理傷害＋武器常駐的自然魔法附傷，兩部分分別計算、同一次攻擊結算；不需拾回長矛，也不消耗彈藥。\n射程：2～4 格。敵人仍可依合法的射程及反擊條件反擊。",category:"ATTACK",weapon:"forest_spear",power:.8,range:{min:2,max:4},attackType:"PIERCE",attackClass:"RANGED",element:"NONE",speed:0,target:"ENEMY",support:false},

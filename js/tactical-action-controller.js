@@ -952,6 +952,9 @@
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
           const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();if(relation==="ENEMY"&&occupant.team===attacker.team)return;if(relation==="ALLY"&&occupant.team!==attacker.team)return;
+          // Area magic, too, cannot bypass the defender's one-way Holy Wing Wall.
+          // Friendly outgoing spells and counters remain entirely unaffected.
+          if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,attacker,occupant,skill))return;
           const atCenter=tile.x===center.x&&tile.y===center.y,mult=atCenter?Math.max(0,Number(skill.areaDamage.centerMultiplier||1)):1;
           const attackSkill={...skill,power:Number(skill.power||0)*mult,target:"ENEMY",targetType:"SINGLE"},distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,attackSkill,{distance,random:ctx.random});if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}

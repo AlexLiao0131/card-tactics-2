@@ -138,11 +138,12 @@ export class UnitControlUI{
     if(!flight&&!dive)return;
     if(flight){
       const altitude=Number(flight.altitude||0),min=Number(flight.min||0),max=Number(flight.max||0);
-      this.altitudeLabel.innerHTML=`飛行高度<strong>H${altitude}</strong>`;
-      this.down.setAttribute("aria-label","降低飛行高度");
-      this.up.setAttribute("aria-label","提高飛行高度");
-      this.down.disabled=altitude<=min+1e-9;
-      this.up.disabled=altitude>=max-1e-9;
+      const grounded=flight.mode!=="FLYING";
+      this.altitudeLabel.innerHTML=grounded?'飛行狀態<strong>地面</strong>':`飛行高度<strong>H${altitude}</strong>`;
+      this.down.setAttribute("aria-label",grounded?"已降落":altitude<=min+1e-9?"降落":"降低飛行高度");
+      this.up.setAttribute("aria-label",grounded?"起飛":"提高飛行高度");
+      this.down.disabled=grounded;
+      this.up.disabled=!grounded&&altitude>=max-1e-9;
       return;
     }
     this.altitudeLabel.innerHTML=`潛水狀態<strong>${dive.mode==="DIVING"?"水下":"水面"}</strong>`;

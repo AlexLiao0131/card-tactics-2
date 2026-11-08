@@ -220,6 +220,7 @@ export function createUnitRuntimeEngine(){
     if(req.notCarrying===true&&!!unit?.carryingUnitId)return false;
     if(req.notMoved===true&&!!unit?.moved)return false;
     if(req.diving===true&&String(unit?.verticalState?.mode||"")!=="DIVING")return false;
+    if(req.flying===true&&String(unit?.verticalState?.mode||"")!=="FLYING")return false;
     if(req.water===true){const runtimeMap=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.(),tile=runtimeMap?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
     syncMana(unit);syncResources(unit);
     if(unit.mana<skillManaCost(unit,skill))return false;
