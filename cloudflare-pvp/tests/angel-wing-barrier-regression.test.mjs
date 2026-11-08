@@ -55,6 +55,48 @@ test('grounded angel wall blocks enemy route & incoming arrows/magic, never frie
  assert.equal(W.reconcile(m,units),true);
  assert.equal(m.objects.filter(o=>o.type===W.TYPE).length,0);
 });
+test('already grounded angel casts four-tile wing wall immediately without a flight transition',()=>{
+ const m=map(),angel=actor(),anchor=TacticalEngine.tile(m,5,5),units=[angel];
+ const grounded=VerticalMobilityEngine.setMode(angel,anchor,'GROUND');
+ assert.equal(grounded.ok,true);
+ assert.equal(angel.verticalState.mode,'GROUND');
+ assert.equal(skill.requirements?.flying,undefined);
+ assert.equal(W.isCanonicalSkill(skill),true);
+ assert.ok(W.legalTiles(m,units,angel).some(t=>t.x===5&&t.y===5));
+ let consumed=0,traversals=0;
+ const result=W.cast({map:m,units,actor:angel,landing:anchor,skill,
+   traverse:()=>{traversals++;throw Error('Grounded same-tile cast must not traverse');},
+   consumeSkill:()=>{consumed++;return true;}});
+ assert.equal(result.ok,true);
+ assert.equal(consumed,1);
+ assert.equal(traversals,0);
+ assert.equal(angel.verticalState.mode,'GROUND');
+ assert.equal(m.objects.filter(o=>o.type===W.TYPE).length,4);
+ assert.equal(W.reconcile(m,units),false);
+});
+test('grounded actor who already moved may cast from current square but not relocate again',()=>{
+ const m=map(),angel=actor(),units=[angel];
+ VerticalMobilityEngine.setMode(angel,TacticalEngine.tile(m,5,5),'GROUND');
+ angel.moved=true;
+ const choices=W.legalTiles(m,units,angel);
+ assert.deepEqual(choices.map(t=>[t.x,t.y]),[[5,5]]);
+ const attempt=W.candidate(m,units,angel,TacticalEngine.tile(m,6,5));
+ assert.equal(attempt,null);
+ const cast=W.cast({map:m,units,actor:angel,landing:TacticalEngine.tile(m,5,5),skill,consumeSkill:()=>true});
+ assert.equal(cast.ok,true);
+});
+test('grounded cast preserves the one-way line-of-fire and allied movement rules',()=>{
+ const m=map(),angel=actor();
+ VerticalMobilityEngine.setMode(angel,TacticalEngine.tile(m,5,5),'GROUND');
+ assert.equal(W.cast({map:m,units:[angel],actor:angel,landing:TacticalEngine.tile(m,5,5),skill,consumeSkill:()=>true}).ok,true);
+ const foe={x:5,y:1,team:'E',alive:true,character:{combat:{move:5}}};
+ const friend={x:5,y:8,team:'P',alive:true};
+ const arrow={category:'ATTACK',attackClass:'RANGED',attackType:'SHOT'};
+ assert.equal(TacticalEngine.isBlockedByObject(m,5,4,foe),true);
+ assert.equal(TacticalEngine.isBlockedByObject(m,5,4,friend),false);
+ assert.equal(W.blocksIncoming(m,foe,friend,arrow),true);
+ assert.equal(W.blocksIncoming(m,friend,foe,arrow),false);
+});
 test('real flight engine still allows rising, landing and taking off with altitude controls',()=>{
  const m=map(),angel=actor(),tile=TacticalEngine.tile(m,5,5);
  assert.equal(VerticalMobilityEngine.adjustFlightAltitude(angel,tile,-1).ok,true);
