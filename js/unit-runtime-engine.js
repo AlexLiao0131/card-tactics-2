@@ -40,6 +40,39 @@ export function createUnitRuntimeEngine(){
     }
     return unit.resources;
   }
+  // Official generalized extra-resource change: only authored character resources can change.
+  function changeResource(unit,key,delta){
+    if(!unit||typeof key!=="string"||!Number.isFinite(Number(delta))||!extraResourceRules(unit)[key])return 0;
+    syncResources(unit);
+    const entry=unit.resources[key],before=Number(entry.value||0);
+    entry.value=Math.max(0,Math.min(entry.max,before+Number(delta)));
+    if(entry.value!==before)globalThis.EffectEngine?.syncModifiers?.(unit);
+    return entry.value-before;
+  }
+  // All battle modes read these same passive balance values and the same real Sanity resource.
+  function sanityMisfireChance(unit,skill){
+    if(!unit?.alive||!(Number(skill?.power||0)>0)||
+       !(skill.attackType==="MAGIC"||skill.areaDamage?.mode==="MAGIC_POWER"))return 0;
+    const rule=globalThis.SkillDatabase?.passiveList?.(unit.character?.passives||[])
+      .find(passive=>passive.sanityMisfire)?.sanityMisfire;
+    if(!rule||!extraResourceRules(unit).sanity)return 0;
+    syncResources(unit);
+    const state=unit.resources.sanity,max=Math.max(1,Number(state.max||0));
+    const depleted=1-Math.max(0,Math.min(1,Number(state.value||0)/max));
+    return Math.max(0,Math.min(1,depleted*Number(rule.maxChance||0)));
+  }
+  function rollSanityMisfire(unit,skill,random=Math.random){
+    const chance=sanityMisfireChance(unit,skill);
+    return chance>0&&random()<chance;
+  }
+  function sanityBacklashRefund(unit,spent,friendlyHpLoss){
+    const rule=globalThis.SkillDatabase?.passiveList?.(unit?.character?.passives||[])
+      .find(passive=>passive.friendlyFireManaReturn)?.friendlyFireManaReturn;
+    if(!rule||!(friendlyHpLoss>0)||!spent)return 0;
+    const amount=Math.min(Math.max(0,Number(spent.cost||0)),
+      Math.floor(Math.max(0,Number(friendlyHpLoss))*Math.max(0,Number(rule.hpLossRatio||0))));
+    return amount>0?restoreMana(unit,amount):0;
+  }
   function humidityValue(unit){
     if(!unit?.character?.resourceRules?.humidity)return null;
     syncResources(unit);
@@ -305,7 +338,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

@@ -29,7 +29,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   function createCounterAction(defender,attacker,skill){return{id:`counter-${defender.id}`,role:"COUNTER",actor:defender,target:attacker,skill}}
   function createReaction(type,options={}){if(!["COUNTER","DEFENSE","EVADE"].includes(type))throw new Error(`Unknown reaction type: ${type}`);return{type,...options}}
   function prepareSingleTargetReaction({defender,attacker,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE","EVADE"]}}
-  function createContext({map,units=[],initiator,target,skill,actions=[],reaction=null,interception=null}){
+  function createContext({map,units=[],environmentState=null,initiator,target,skill,actions=[],reaction=null,interception=null}){
     [initiator,target,...actions.map(a=>a.actor)].forEach(u=>TacticalEngine.ensureFacing(u));
     const linked=globalThis.EffectEngine?.linkedGuardian?.(target,units);
     const linkMethod=linked?guardProfiles(linked)[0]:null;
@@ -39,7 +39,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(guardian)TacticalEngine.faceToward(guardian,initiator);
     const primary={id:"primary",role:"INITIATOR",actor:initiator,target:effectiveTarget,skill},participants=[],seen=new Set();
     [initiator,originalTarget,effectiveTarget,...actions.map(a=>a.actor)].forEach(u=>{if(u&&!seen.has(u.id)){seen.add(u.id);participants.push(u)}});
-    return{map,units,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?resolvedInterception:null,skill,reaction,participants,actions:[primary,...actions]}
+    return{map,units,environmentState,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?resolvedInterception:null,skill,reaction,participants,actions:[primary,...actions]}
   }
   const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill,a.target?.character||null);
   function buildQueue(c){return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill).map((a,index)=>({...a,index,spd:actionSpeed(a)})).sort((a,b)=>b.spd-a.spd||a.index-b.index)}
@@ -178,7 +178,21 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     return{physical:Math.max(0,Math.round(weapon*damageMultiplier)),magic:Math.max(0,Math.round((magicBase+magicBonus)*damageMultiplier))};
   }
   function execute(c,hooks={}){
-    const queue=buildQueue(c),results=[];
+    // Settle the primary attack's loss-of-control decision BEFORE speed-ordering
+    // counterattacks. An enemy whose attack never reaches them cannot react to it.
+    // This shares the official per-action random sequence and never alters UI target IDs.
+    const primary=c.actions[0],runtime=globalThis.UnitRuntimeEngine;
+    const eligiblePrimary=primary?.actor?.alive&&primary?.target?.alive&&
+      (!hooks.canUseSkill||hooks.canUseSkill(primary.actor,primary.skill));
+    const primarySkill=eligiblePrimary?(runtime?.applyResourceScaling?.(primary.actor,primary.skill)||primary.skill):null;
+    const primaryLostControl=eligiblePrimary&&runtime?.rollSanityMisfire?.(primary.actor,primarySkill,random);
+    const primaryFriends=primaryLostControl?(c.units||[]).filter(unit=>
+      unit?.alive&&unit.id!==primary.actor.id&&unit.team===primary.actor.team&&
+      unit.occupiesTile!==false&&!unit.carriedByUnitId&&
+      TacticalEngine.canTarget(c.map,primary.actor,unit,{...primarySkill,target:"ALLY"},c.environmentState||null)):[];
+    const primaryRedirect=primaryFriends.length?
+      primaryFriends[Math.min(primaryFriends.length-1,Math.floor(random()*primaryFriends.length))]:null;
+    const queue=buildQueue(c).filter(a=>!primaryRedirect||a.role!=="COUNTER"),results=[];
     for(let index=0;index<queue.length;index++){
       const a=queue[index];
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
@@ -186,11 +200,22 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(!followup&&hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
       const bloodRuntime=globalThis.UnitRuntimeEngine;
+      // Before resource consumption: use the SAME Sanity snapshot for damage scaling
+      // and misfire chance. Target candidates must pass official range, height and LOS.
+      const isPrimary=a.role==="INITIATOR"&&a.actor.id===c.initiator.id;
+      const lostControl=!isPrimary&&!followup&&bloodRuntime?.rollSanityMisfire?.(a.actor,skill,random);
+      const potentialFriends=lostControl?(c.units||[]).filter(unit=>
+        unit?.alive&&unit.id!==a.actor.id&&unit.team===a.actor.team&&
+        unit.occupiesTile!==false&&!unit.carriedByUnitId&&
+        TacticalEngine.canTarget(c.map,a.actor,unit,{...skill,target:"ALLY"},c.environmentState||null)):[];
+      const redirected=isPrimary?primaryRedirect:potentialFriends.length?
+        potentialFriends[Math.min(potentialFriends.length-1,Math.floor(random()*potentialFriends.length))]:null;
       bloodRuntime?.beginBloodTransaction?.(a.actor);
       const spent=followup?{cost:0,resources:{}}:hooks.consumeSkill?.(a.actor,skill);
       if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
       const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
-      const action={...a,skill};
+      const action={...a,skill,target:redirected||a.target,misfire:!!redirected};
+      let friendlyHpLoss=0;
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
@@ -201,10 +226,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       for(let hitIndex=0;hitIndex<hitCount&&action.target.alive;hitIndex++){
         const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,hitIndex===0?enchantment:null,skill),action.actor,action.target,skill);
         const original=resolved.result;
-        const sealMultiplier=a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,a.target)||1;
+        const sealMultiplier=action.misfire?1:
+          a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
-        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null});
+        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null});
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         let absorbed=0,physLoss=0,magicLoss=0;
@@ -226,16 +252,17 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           element:original.el||skill.element,componentElements:{
             physical:original.type==="MAGIC"?null:original.el||skill.element,
             magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id});
-        if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
+        if(action.misfire)friendlyHpLoss+=result.damage;
+        if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,!action.misfire&&c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
         else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1)
           globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
         else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
-        const markTarget=(c.interception&&a.role==="INITIATOR"?c.originalTarget:a.target);
+        const markTarget=(c.interception&&!action.misfire&&a.role==="INITIATOR"?c.originalTarget:action.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
         if(result.hit){
           if(!followup&&Number(skill.holyPowerOnHit||0)>0)
             bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
-          if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,a.target);
+          if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,action.target);
         }
         if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
         else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
@@ -247,6 +274,15 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
           queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
         }
+      }
+      // A multi-contact spell grants one backlash refund for its total actual
+      // friendly HP loss, capped by this action's real mana cost.
+      if(action.misfire&&friendlyHpLoss>0){
+        const manaRestored=bloodRuntime?.sanityBacklashRefund?.(action.actor,spent,friendlyHpLoss)||0;
+        if(manaRestored>0)globalThis.UnitAnimationEngine?.emitPresentation?.("VELSA_BACKLASH",{
+          unitId:action.actor.id,targetId:action.target.id,
+          x:action.actor.x,y:action.actor.y,targetX:action.target.x,targetY:action.target.y,
+          manaRestored,friendlyHpLoss,skillId:skill.id});
       }
       // Once per committed action even if the first contact defeated the target.
       if(action.actor.alive&&globalThis.EffectEngine&&!followup)

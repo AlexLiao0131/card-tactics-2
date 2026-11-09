@@ -899,7 +899,9 @@
         const scheduled=ctx.scheduleTurnSimulation?.({source:attacker,targetTeam:target.team,skill:effective,action});
         if(!scheduled){ctx.pushLog(`${skill.name} 無法建立回合模擬。`,"SYSTEM");ctx.render();return false;}
         globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
-        ctx.consumeSkill(attacker,skill);
+        if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+        TacticalEngine.faceToward(attacker,target);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
         ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
@@ -926,7 +928,9 @@
       if(MAP_TRANSIT_ACTIONS.has(action.type)){
         const destination=TacticalEngine.tile(map,center.x,center.y);
         if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(attacker,destination)||TacticalEngine.isBlockedByObject(map,center.x,center.y,attacker)){ctx.pushLog(`${skill.name}：終點不是合法站立位置。`,"SYSTEM");ctx.render();return false;}
-        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+        if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,destination,skill,{targetKind:"MAP"});
         attacker.x=destination.x;attacker.y=destination.y;attacker.z=Number(globalThis.VerticalMobilityEngine?.surfaceZ?.(destination)??TacticalEngine.elevation(destination)??0);
         globalThis.VerticalMobilityEngine?.syncUnit?.(attacker,destination);ctx.enterTile(attacker);
         ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜折疊空間至 (${destination.x},${destination.y})，中間地形與障礙不參與碰撞。`,"BATTLE");
@@ -1065,8 +1069,12 @@
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);
+      // One official probabilistic roll per AREA magic cast, before its Sanity cost.
+      const sanityMisfire=skill.areaDamage?.mode==="MAGIC_POWER"&&
+        UnitRuntimeEngine.rollSanityMisfire(attacker,skill,ctx.random);
       UnitRuntimeEngine.beginBloodTransaction(attacker);
-      if(!ctx.consumeSkill(attacker,skill)){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+      const spent=ctx.consumeSkill(attacker,skill);
+      if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null});
@@ -1152,13 +1160,17 @@
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
       if(skill.areaDamage?.mode==="MAGIC_POWER"){
+        let friendlyHpLoss=0;
         // One actual outcome for each unit in the canonical footprint. The
         // Babylon arrow count is presentation-only and never implies damage.
         const summary={inArea:0,hit:0,miss:0,blocked:0,damaged:0,hpLoss:0};
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
           const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();
-          if(relation==="ENEMY"&&occupant.team===attacker.team)return;
+          // A misfired ENEMY area spell still hits real enemies and may also
+          // strike friendlies in its *actual* footprint; never hit the caster.
+          if(relation==="ENEMY"&&occupant.id===attacker.id)return;
+          if(relation==="ENEMY"&&occupant.team===attacker.team&&!sanityMisfire)return;
           if(relation==="ALLY"&&occupant.team!==attacker.team)return;
           summary.inArea++;
           // Area magic cannot bypass the ally-facing Holy Wing Wall. Friendlies
@@ -1192,6 +1204,7 @@
             {source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
           const hpLoss=Math.max(0,hpBefore-occupant.hp);
           summary.hpLoss+=hpLoss;
+          if(sanityMisfire&&occupant.team===attacker.team)friendlyHpLoss+=hpLoss;
           if(hpLoss>0){
             summary.damaged++;
             globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{
@@ -1209,6 +1222,13 @@
           else if(hpLoss>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,
             {sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
         });
+        if(sanityMisfire&&friendlyHpLoss>0){
+          const manaRestored=UnitRuntimeEngine.sanityBacklashRefund(attacker,{cost:spent?.cost||0},friendlyHpLoss);
+          ctx.pushLog(`${attacker.character.name}｜認知失控誤傷友軍 ${friendlyHpLoss} HP；認知反噬回復 ${manaRestored} MP。`,"BATTLE");
+          if(manaRestored>0)globalThis.UnitAnimationEngine?.emitPresentation?.("VELSA_BACKLASH",{
+            unitId:attacker.id,x:attacker.x,y:attacker.y,
+            targetX:center.x,targetY:center.y,manaRestored,friendlyHpLoss,skillId:skill.id});
+        }
         ctx.pushLog(`${attacker.character.name}｜${skill.name}：範圍內 ${summary.inArea} 名目標，`+
           `命中 ${summary.hit}、MISS ${summary.miss}、阻擋／吸收 ${summary.blocked}、`+
           `實際 HP 傷害 ${summary.hpLoss}。`,"BATTLE");
@@ -1313,6 +1333,8 @@
       if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");return;}
       if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜${result.critical?"治療暴擊｜":""}回復 ${result.amount||0} HP${result.shieldGranted?`｜獲得聖護 ${result.shieldGranted}`:""}｜HP ${target.hp}。`,"BATTLE");
       else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
+      else if(effect.type==="DISPEL"&&result.restoredResource?.amount>0)
+        ctx.pushLog(`${skill.name} → ${target.character.name}｜解除 ${result.removed||0} 項負面異常，恢復 ${result.restoredResource.amount} Sanity。`,"BATTLE");
       else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
       else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
     }
@@ -1495,7 +1517,7 @@
     function executeEngagement(attacker,defender,skill,actions,reaction=null){
       const {map,units}=state();
       const engagement=BattleResolution.resolve(
-        {map,units,initiator:attacker,target:defender,skill,actions,reaction},
+        {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
       );

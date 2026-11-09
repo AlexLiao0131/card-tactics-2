@@ -300,9 +300,12 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     // One roll per incoming effect, never once per damage component or tick.
     // Resistance is checked before consumable status wards so a successful
     // commander save does not waste a Saint's GRACE charge.
-    const resistance=commandStatusResistance(target,effect);
+    // A purification is a beneficial cast even when it carries a NEGATIVE
+    // classification for the kind of statuses it removes. Ally resistance and
+    // one-use debuff wards must never reject or consume a friendly DISPEL.
+    const resistance=effect.type==="DISPEL"?0:commandStatusResistance(target,effect);
     if(resistance>0&&random()*100<resistance)return{applied:false,reason:"STATUS_RESISTED",chance:resistance};
-    const guardedBy=consumeNegativeEffectGuard(target,effect);
+    const guardedBy=effect.type==="DISPEL"?null:consumeNegativeEffectGuard(target,effect);
     if(guardedBy)return{applied:false,reason:"NEGATIVE_EFFECT_GUARD",blockedBy:guardedBy.id||guardedBy.name||"GUARD"};
     if(effect.type==="WEAPON_ENCHANT"){
       if(!effect.weaponSlot||!["FIRE","THUNDER"].includes(effect.element)||!Number.isFinite(effect.matkSnapshot)||!Number.isFinite(effect.bonusPower))return{applied:false,reason:"INVALID_WEAPON_ENCHANT"};
@@ -327,7 +330,15 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     }
     if(effect.type==="RESTORE_MANA"){const amount=globalThis.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
-    if(effect.type==="DISPEL")return{applied:true,type:effect.type,removed:removeNegative(target)};
+    if(effect.type==="DISPEL"){
+      const removed=removeNegative(target);
+      if(removed)syncModifiers(target);
+      const recovery=effect.restoreResource;
+      const restoredResource=recovery?.key?
+        {key:recovery.key,amount:globalThis.UnitRuntimeEngine?.changeResource?.(
+          target,recovery.key,Number(recovery.amount||0))||0}:null;
+      return{applied:true,type:effect.type,removed,restoredResource};
+    }
     if(effect.type==="HP_LINK")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="VENGEANCE_SEAL")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER"){
