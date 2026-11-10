@@ -4,7 +4,7 @@ import {SKILLS,SkillDatabase} from '../../js/skill-database.js';
 import {LoadoutDatabase} from '../../js/loadout-database.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import {UnitRuntimeEngine} from '../../js/unit-runtime-engine.js';
-import {holyArrowRainTiles} from '../../js/holy-arrow-rain-vfx.js';
+import {holyArrowRainTiles} from '../../js/holy-volley-vfx.js';
 import '../../js/hydrology-engine.js';
 import '../../js/environment-engine.js';
 import {isCanonicalImmediateMapSkill} from '../src/pvp-headless-map-skills.mjs';

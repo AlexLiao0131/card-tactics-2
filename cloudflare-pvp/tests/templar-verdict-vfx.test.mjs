@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TemplarVerdictVfx} from '../../js/templar-verdict-vfx.js';
+import {HolyBladeVfx as TemplarVerdictVfx} from '../../js/holy-blade-vfx.js';
 import {UnitRenderer} from '../../js/unit-renderer.js';
 import {PvpBattleRenderBridge} from '../../js/pvp-battle-render-bridge.js';
 globalThis.FallEngine={FALL_THRESHOLD:1,FALL_DAMAGE_PER_LEVEL:1};
