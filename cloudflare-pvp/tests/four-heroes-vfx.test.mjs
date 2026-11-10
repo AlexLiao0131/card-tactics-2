@@ -97,7 +97,7 @@ test('saint sanctuary anchors persist for exactly official duration rounds, dist
 });
 test('holy wards, blessings, grace and HP link follow actual projected effect IDs',()=>{
  const fx=new HolyRitualVfx(scene());const world=snapshot();
- world.units[0].effects=['HOLY_SHIELD','GRACE','ROYAL_BLESSING','TEMPLAR_HP_LINK','SAINT_OVERHEAL_SHIELD'].map(id=>({id,type:'BUFF'}));
+ world.units[0].effects=['HOLY_SHIELD','GRACE','ROYAL_BLESSING','TEMPLAR_HP_LINK','SAINT_OVERHEAL_SHIELD'].map(id=>({id,type:id==='SAINT_OVERHEAL_SHIELD'?'SHIELD':'BUFF'}));
  fx.sync(world,[]);assert.equal(fx.auras.size,5);
  world.units[0].effects=[];fx.sync(world,[]);assert.equal(fx.auras.size,0);
  fx.dispose();
