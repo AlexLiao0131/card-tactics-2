@@ -88,7 +88,8 @@ export function canonicalDirectEffectSkillOptions(unit,engine){
 
 export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,checkMatchEnd){
   if(game.phase!==PHASE[seat]||game.activeSeat!==seat)fail('NOT_TACTICAL_TURN');
-  if(!exact(action,['type','unitId','targetId','skillId'])||
+  if(!(exact(action,['type','unitId','targetId','skillId'])||
+       exact(action,['type','unitId','targetId','skillId','buffId']))||
       action.type!=='CAST_EFFECT_SKILL'||
       ![action.unitId,action.targetId,action.skillId].every(s=>typeof s==='string'&&s.length>0))
     fail('INVALID_EFFECT_SKILL_COMMAND');
@@ -98,6 +99,12 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
   if(!target)fail('EFFECT_TARGET_NOT_AVAILABLE');
   const skill=canonicalDirectEffectSkillOptions(caster,engine).find(s=>s.id===action.skillId);
   if(!skill)fail('FULL_SKILL_ORCHESTRATION_REQUIRED');
+  if(skill.dispelChoice==='POSITIVE'){
+    if(!exact(action,['type','unitId','targetId','skillId','buffId'])||
+       typeof action.buffId!=='string'||!action.buffId||
+       !engine.effect.positiveBuffChoices(target).some(buff=>buff.id===action.buffId))
+      fail('INVALID_POSITIVE_BUFF_CHOICE');
+  }else if(!exact(action,['type','unitId','targetId','skillId']))fail('EXTRA_EFFECT_SKILL_FIELDS');
   // Target relationship, height, line of sight, range and special visibility
   // are evaluated by the same TacticalEngine as the browser game.
   if(!engine.unitRuntime.canUseSkill(caster,skill))fail('SKILL_RESOURCES_UNAVAILABLE');
@@ -130,7 +137,8 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
         ?actionController.executeUtilitySkill(caster,target,skill)
         :isCanonicalSelfChannelSkill(skill)
           ?(caster.id===target.id&&actionController.executeChannelSkill(caster,skill))
-          :actionController.executeEffectSkill(caster,target,skill))!==true)
+          :actionController.executeEffectSkill(caster,target,skill,
+              skill.dispelChoice==='POSITIVE'?{buffId:action.buffId}:{}))!==true)
     fail('OFFICIAL_EFFECT_SKILL_REJECTED');
   return {accepted:true,state:game,casterId:caster.id,targetId:target.id,
     skillId:skill.id,targetHpBefore:hpBefore,targetHpAfter:target.hp,

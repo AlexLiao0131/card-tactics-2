@@ -519,7 +519,7 @@ export function tacticalDebugProjection(game,seat){
       .slice(-160).map(e=>({type:e.type,text:e.text}));
     // Authenticated MATCH_STATE contract marker: lets mobile clients detect
     // that a deployed Worker is older than the canonical tactical projection.
-    return {tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V3',
+    return {tacticalProjectionContract:'CT2_NATIVE_TACTICAL_V4',
       phase:game.phase,activeSeat:game.activeSeat,round:game.round,battleLog,
        // Authenticated seat's official current deployable tiles.
        deployableTiles:game.phase===CARD_PHASE[seat]&&game.activeSeat===seat
@@ -529,6 +529,9 @@ export function tacticalDebugProjection(game,seat){
       // not the raw CharacterDatabase template.
       units:visible.map(unit=>({
         ...snapshotUnit(unit),
+        // Only already-visible unit effects are exposed; hidden enemies and
+        // their buffs never enter this seat-private tactical projection.
+        positiveBuffs:engine.effect.positiveBuffChoices(unit),
         ...(unit.team===UNIT_TEAM[seat]?{
           bloodShadowOptions:canonicalBloodShadowTargets(game,unit,engine),
           areaFieldSkills:canonicalAreaFieldSkillOptions(unit,engine)

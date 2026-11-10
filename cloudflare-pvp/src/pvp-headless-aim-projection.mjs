@@ -52,7 +52,8 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
     if(includeCore&&coreTarget&&inside.has(`${coreTarget.x},${coreTarget.y}`)&&
         canonicalTargetPlan(game,unit,coreTarget,skill,engine,{extraTargets:[coreTarget]}))
       legal.push({x:coreTarget.x,y:coreTarget.y});
-    options.push({type,skillId:skill.id,tiles:ranged,actionableTiles:legal});
+    const aim={type,skillId:skill.id,tiles:ranged,actionableTiles:legal};
+    options.push(aim);return aim;
   };
   // Same candidate origins as solo; the Worker performs the actual planned
   // movement before creating any defender reaction. A future origin is never
@@ -63,7 +64,23 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
       {targetUnits:true,planned:true,includeCore:coreSkills.has(skill.id)});
   for(const skill of canonicalDirectEffectSkillOptions(unit,engine)){
     if(skill.target==='SELF')continue;
-    push('CAST_EFFECT_SKILL',skill,controller.targetRangeTiles(unit,skill),{targetUnits:true,planned:true});
+    const aim=push('CAST_EFFECT_SKILL',skill,controller.targetRangeTiles(unit,skill),
+      {targetUnits:true,planned:true});
+    if(!aim)continue;
+    // The same counterspell can target a visible enemy Buff or an existing
+    // Holy Wing Wall without manufacturing a parallel damage rule.
+    if(skill.dispelChoice==='POSITIVE'){
+      aim.actionableTiles=aim.actionableTiles.filter(tile=>{
+        const target=visible.find(other=>other.x===tile.x&&other.y===tile.y);
+        return target&&engine.effect.positiveBuffChoices(target).length>0;
+      });
+    }
+    if(skill.dispelConstruct){
+      const walls=coordinates(controller.mapTargetTiles(unit,skill));
+      const key=t=>`${t.x},${t.y}`;
+      aim.tiles=[...new Map([...aim.tiles,...walls].map(t=>[key(t),t])).values()];
+      aim.actionableTiles=[...new Map([...aim.actionableTiles,...walls].map(t=>[key(t),t])).values()];
+    }
   }
   for(const skill of canonicalImmediateMapSkillOptions(unit,engine))
     push('CAST_MAP_SKILL',skill,controller.mapTargetTiles(unit,skill),{tileAction:true});

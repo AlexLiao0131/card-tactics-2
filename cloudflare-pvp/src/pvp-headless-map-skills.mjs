@@ -95,6 +95,11 @@ export function isCanonicalRangerVolleySkill(skill){
     !skill.sanctuary&&!skill.smokeField&&!skill.terrainTargeting&&!skill.areaDamage;
 }
 export function isCanonicalImmediateMapSkill(skill){
+  if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE)
+    return skill.category==='MAGIC'&&skill.target==='ENEMY'&&
+      skill.dispelChoice==='POSITIVE'&&Number(skill.power||0)===0&&
+      Array.isArray(skill.effects)&&skill.effects.length===1&&
+      skill.effects[0].type==='DISPEL_POSITIVE'&&!skill.weapon&&!skill.attackType;
   if(AngelWingBarrierEngine.isCanonicalSkill(skill))return true;
   if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill)||
      isCanonicalRangerVolleySkill(skill))return true;
