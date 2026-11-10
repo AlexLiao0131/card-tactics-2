@@ -60,6 +60,14 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
         if(copy.targetId&&!previous.has(copy.targetId)){
           delete copy.targetId;delete copy.targetX;delete copy.targetY;
         }
+        // BloodBurst carries several independent blast coordinates. A plain
+        // copy of this nested field would leak fog-hidden enemy positions.
+        // Reuse the authoritative BEFORE-action identification set, as above.
+        if(Array.isArray(copy.burstCenters))
+          copy.burstCenters=copy.burstCenters
+            .filter(center=>center&&previous.has(center.unitId)&&
+              Number.isSafeInteger(center.x)&&Number.isSafeInteger(center.y))
+            .map(center=>({x:center.x,y:center.y,serverVisibleBefore:true}));
         if(copy.path&&copy.team!==(seat===0?'P':'E')){
           // All waypoints must be in the public scene. Otherwise, do not
           // expose an enemy's intervening route behind fog and terrain.
