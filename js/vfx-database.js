@@ -31,6 +31,26 @@ const defs={
       THROW:['ophi_forest_throw'],SONG:['ophi_healing_song'],
       ENTANGLE:['ophi_forest_entangle']},events:[],
     status:{SONG:'OPHI_HEALING_SONG',ENTANGLE:'FOREST_ENTANGLED'},legacy:'ophiNatureVfx'},
+  // Shared effect behaviors, not per-character JS files. Existing canonical
+  // tsunami, whirlpool and smoke meshes remain with Water/EnvironmentRenderer.
+  'holy-ritual':{
+    roles:{JUDGEMENT:['saint_judgement'],HEAL:['saint_hero_heal','templar_healing'],
+      PURIFY:['saint_hero_dispel'],BLESS:['saint_hero_blessing'],
+      SANCTUARY:['saint_sanctuary'],SLASH:['templar_holy_slash'],
+      CHARGE:['templar_charge'],SHIELD:['templar_holy_shield']},events:[],
+    status:{OVERHEAL:'SAINT_OVERHEAL_SHIELD',BLESSING:'ROYAL_BLESSING',
+      GRACE:'GRACE',HP_LINK:'TEMPLAR_HP_LINK',HOLY_SHIELD:'HOLY_SHIELD'},
+    legacy:'holyRitualVfx'},
+  'aquatic-magic':{
+    roles:{THRUST:['nereia_trident_thrust'],THROW:['nereia_trident_throw'],
+      BULLET:['nereia_water_bullet'],WHIRLPOOL:['nereia_whirlpool'],
+      TSUNAMI:['nereia_tsunami'],DRAG:['nereia_deep_drag']},events:[],
+    status:{WATER_SHIELD:'NEREIA_TSUNAMI_WATER_SHIELD'},legacy:'aquaticMagicVfx'},
+  'blade-stealth':{
+    roles:{DOUBLE:['cat_dual_slash'],BACKSTAB:['cat_backstab'],
+      POISON_KNIFE:['cat_poison_knife'],SMOKE:['cat_smoke_bomb'],
+      STEAL:['cat_pickpocket'],HIDE:['cat_hide']},events:[],
+    status:{POISON:'POISON',STEALTH:'STEALTH'},legacy:'bladeStealthVfx'},
   'blood-ritual':{
     roles:{RAZOR:['seraphina_rending_claw'],SHADOW:['seraphina_blood_drain'],
       BURST:['seraphina_blood_burst'],REGEN:['seraphina_regeneration']},events:[],

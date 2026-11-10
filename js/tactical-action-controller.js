@@ -890,6 +890,7 @@
       if(action.type==="ENTER_STEALTH"){
         ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
         globalThis.EffectEngine?.resolveProximityReveal?.(attacker,units);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
         ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，進入潛行。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
@@ -899,6 +900,8 @@
         const result=RewardEngine.stealLoot(attacker,target);
         if(!result.ok)return skillFailure(attacker,skill,result.reason,target);
         globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");ctx.consumeSkill(attacker,skill);
+        // Presentation only; NEVER send stolen item ID or gold value.
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
         const itemName=result.itemId?ItemDatabase.get(result.itemId)?.name||result.itemId:null;
         const detail=[result.gold?`${result.gold} 金幣`:null,itemName?`道具「${itemName}」`:null].filter(Boolean).join("及");
         ctx.pushLog(`${attacker.character.name} 從 ${target.character.name} 偷得${detail}｜同一目標不可再次偷竊。`,"BATTLE");
@@ -1068,7 +1071,9 @@
         if(!spent)return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
         EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
         TacticalEngine.faceToward(attacker,center);
-        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null});
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",
+          projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
+          sanctuaryMode:mode});
         ctx.activateSanctuary(attacker,center,skill,mode);
         if(mode==="HEALING")UnitRuntimeEngine.changeFaith(attacker,max/2-UnitRuntimeEngine.faithValue(attacker));
         return finishActiveSkill(attacker);

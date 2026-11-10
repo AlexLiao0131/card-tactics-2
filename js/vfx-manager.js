@@ -17,6 +17,9 @@ import {ArcaneSigilVfx} from './arcane-sigil-vfx.js';
 import {ShadowElementalVfx} from './shadow-elemental-vfx.js';
 import {NatureGrowthVfx} from './nature-growth-vfx.js';
 import {BloodRitualVfx} from './blood-ritual-vfx.js';
+import {HolyRitualVfx} from './holy-ritual-vfx.js';
+import {AquaticMagicVfx} from './aquatic-magic-vfx.js';
+import {BladeStealthVfx} from './blade-stealth-vfx.js';
 
 const factories=Object.freeze({
   'holy-blade':(scene,ctx)=>new HolyBladeVfx(scene,{units:ctx.units}),
@@ -27,7 +30,10 @@ const factories=Object.freeze({
   'arcane':scene=>new ArcaneSigilVfx(scene),
   'shadow-elemental':scene=>new ShadowElementalVfx(scene),
   'nature-growth':scene=>new NatureGrowthVfx(scene),
-  'blood-ritual':scene=>new BloodRitualVfx(scene)
+  'blood-ritual':scene=>new BloodRitualVfx(scene),
+  'holy-ritual':scene=>new HolyRitualVfx(scene),
+  'aquatic-magic':scene=>new AquaticMagicVfx(scene),
+  'blade-stealth':scene=>new BladeStealthVfx(scene)
 });
 
 export function vfxRoutesForEvent(event){
