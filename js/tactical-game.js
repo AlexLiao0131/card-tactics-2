@@ -722,7 +722,12 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   // TacticalActionController.prepareAttack. Do not classify skill mechanics here.
   function engagementOdds(attacker,defender,skill){if(!attacker?.character||!defender?.character||!skill)return null;const resolved=effectiveSkill(attacker,skill);const hit=Math.max(0,Math.min(100,Math.round(BattleEngine.hitChance(attacker.character,defender.character,resolved))));return{hit,evade:100-hit};}
   function engagementUnitPresentation(unit,attacker,defender,odds){const max=Math.max(1,Number(unit?.hallucination?unit.perceivedMaxHp??unit?.character?.combat?.hp??1:unit?.character?.combat?.hp||unit?.hp||1)),hp=Math.max(0,Number(unit?.hallucination?unit.perceivedHp??max:unit?.hp||0));return{id:unit.id,x:unit.x,y:unit.y,name:unit.character.name,shortName:shortName(unit.character.name),team:unit.team,hp,maxHp:max,hpPct:Math.max(0,Math.min(100,hp/max*100)),oddsLabel:!odds?"":unit===attacker?`命中率 ${odds.hit}%`:unit===defender?`迴避率 ${odds.evade}%`:""};}
-  function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack,odds=engagementOdds(attacker,defender,skill),forecast=engagementForecast(attacker,defender,skill);const player=attacker.team===TEAM.PLAYER?attacker:defender.team===TEAM.PLAYER?defender:null;const enemy=player===attacker?defender:attacker;const model={mode,focusId:engagementFocusSerial,skillName:skill?.name||"交戰",
+  function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack;
+    // Charge previews use the *planned* destination for hit/damage forecasts;
+    // no live unit coordinate, moved flag, HP or MP is changed before confirm.
+    const preview=attack.approachLanding?{...attacker,...attack.approachLanding}:attacker;
+    const previewSkill=attack.approachLanding?{...skill,range:{min:1,max:1},approach:null,approachCommitted:true}:skill;
+    const odds=engagementOdds(preview,defender,previewSkill),forecast=engagementForecast(preview,defender,previewSkill);const player=attacker.team===TEAM.PLAYER?attacker:defender.team===TEAM.PLAYER?defender:null;const enemy=player===attacker?defender:attacker;const model={mode,focusId:engagementFocusSerial,skillName:skill?.name||"交戰",
     attackerName:attacker?.character?.name||"敵方",defenderName:defender?.character?.name||"我方",
     attackType:skill?.attackType||null,element:skill?.element||null,forecast,
     attackerId:attacker?.id,defenderId:defender?.id,

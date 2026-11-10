@@ -249,6 +249,11 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function addEffect(target,effect,source){
     const entry={...clone(effect),sourceUnitId:source?.id||null,remaining:Number(effect.duration||0)||null};
+    // Most effects count the casting round as their first turn. Skills that
+    // explicitly promise full *future* rounds instead begin expiring AFTER the
+    // first subsequent round boundary. No global duration/balance adjustment.
+    if(entry.remaining!=null&&entry.durationClock==="FULL_FUTURE_ROUNDS")
+      entry.pendingFirstRoundTick=true;
     if(effect.stack!==true&&effect.id)target.effects=state(target).filter(e=>e.id!==effect.id);
     state(target).push(entry);syncModifiers(target);return entry;
   }
@@ -406,7 +411,10 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       }
       if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
       if(effect.type==="DAMAGE_OVER_TIME"){const source=units.find(u=>u.id===effect.sourceUnitId)||null;const internal=effect.id==="BLEEDING"||/POISON|TOXIN|SUFFOCAT|DROWN/.test(String(effect.id||""));const amount=damage(unit,effect.amount,{source,kind:internal?"INTERNAL":"EXTERNAL",charge:effect.id==="BLEEDING"?"BLEED":"NONE"});globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
-      if(effect.remaining!=null)effect.remaining--;
+      if(effect.remaining!=null){
+        if(effect.pendingFirstRoundTick===true)effect.pendingFirstRoundTick=false;
+        else effect.remaining--;
+      }
     }
     unit.effects=unit.effects.filter(e=>e.remaining==null||e.remaining>0);
     syncModifiers(unit);

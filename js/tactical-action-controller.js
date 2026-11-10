@@ -200,7 +200,8 @@
       if(!unit?.alive||unit.acted||!target?.alive||!skill)return null;
       if(skill.bloodShadow)return bloodShadowLanding(unit,target)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
       if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill.utilityAction?.type))return pickupPlan(unit,target,skill);
-      if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
+      if(skill.approach)return TacticalEngine.canTarget(map,unit,target,skill,environmentState)&&
+        planApproachForSkill(unit,target,skill)?{x:unit.x,y:unit.y,cost:0,path:[]}:null;
 
       const legal=attackOrigins(unit).filter(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       if(!legal.length)return null;
@@ -228,6 +229,7 @@
         if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
         
         if(skill?.bloodShadow)return !!bloodShadowLanding(unit,target);
+        if(skill?.approach&&!planApproachForSkill(unit,target,skill))return false;
         return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
       });
     }
@@ -1450,15 +1452,28 @@
       UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
     }
 
-    function approachForSkill(attacker,defender,skill){
-      const {map,units}=state();
-      if(!skill?.approach)return true;
-      if(attacker.moved)return false;
+    // Resolve a legal landing without changing any gameplay state. The charge
+    // confirmation/ally-support screen is a preview, never an executed move.
+    // This is also shared with the canonical PvP charge commit path below.
+    function planApproachForSkill(attacker,defender,skill){
+      if(!skill?.approach||!attacker?.alive||!defender?.alive||attacker.acted||attacker.moved)return null;
+      const {map,units,environmentState}=state();
+      if(!TacticalEngine.canTarget(map,attacker,defender,skill,environmentState))return null;
       const stop=Math.max(1,Number(skill.approach.stopDistance||1));
-      const candidates=map.tiles.filter(t=>Math.abs(t.x-defender.x)+Math.abs(t.y-defender.y)===stop&&!ctx.unitAt(t.x,t.y));
-      const paths=candidates.map(t=>TacticalEngine.pathTo(map,units,attacker,t.x,t.y)).filter(path=>path.length).sort((a,b)=>a.length-b.length);
-      if(!paths.length)return false;
-      const result=ctx.traverseUnitPath(attacker,paths[0],{kind:"UNIT"});
+      const candidates=map.tiles.filter(t=>Math.abs(t.x-defender.x)+Math.abs(t.y-defender.y)===stop&&
+        !ctx.unitAt(t.x,t.y));
+      const paths=candidates.map(t=>TacticalEngine.pathTo(map,units,attacker,t.x,t.y))
+        .filter(path=>path.length).sort((a,b)=>a.length-b.length);
+      return paths[0]||null;
+    }
+    function committedApproachSkill(skill){
+      return {...skill,range:{min:1,max:1},approach:null,approachCommitted:true};
+    }
+    function approachForSkill(attacker,defender,skill){
+      if(!skill?.approach)return true;
+      const path=planApproachForSkill(attacker,defender,skill);
+      if(!path)return false;
+      const result=ctx.traverseUnitPath(attacker,path,{kind:"UNIT"});
       if(!result.completed)return false;
       attacker.moved=true;
       ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 衝至 ${defender.character.name} 身前。`,"BATTLE");
@@ -1479,13 +1494,19 @@
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
       if((skill.sanctuary||skill.smokeField)&&skill.target==="SELF")return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
-      if(skill.approach&&!approachForSkill(attacker,defender,skill)){
+      const approachPath=skill.approach?planApproachForSkill(attacker,defender,skill):null;
+      if(skill.approach&&!approachPath){
         skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.pushLog(`${skill.name} 無合法衝鋒路徑。`,"SYSTEM");ctx.render();return;
       }
-      // The approach and impact are one committed transaction. The target is
-      // selected from the original 2–4 cell range, but the sword or guard
-      // resolves after relocation at the official adjacency distance.
-      if(skill.approach)skill={...skill,range:{min:1,max:1},approach:null,approachCommitted:true};
+      // A rescue charge has no combat/support confirmation and commits on target
+      // selection. An assault does NOT: hold this original skill and preview
+      // landing until the existing CONFIRM_ENGAGEMENT action is clicked.
+      if(skill.approach&&(skill.effects||skill.relationEffects||skill.bloodBurst||skill.utilityAction||skill.channel)){
+        if(!approachForSkill(attacker,defender,skill)){
+          skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);ctx.render();return;
+        }
+        skill=committedApproachSkill(skill);
+      }
       if(skill.bloodShadow){
         const landing=bloodShadowLanding(attacker,defender);
         if(!landing)return skillFailure(attacker,skill,"NO_LEGAL_REAR_CELL",defender);
@@ -1521,13 +1542,18 @@
       skill=ctx.effectiveSkill(attacker,skill);
       if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
-      const candidates=BattleResolution.supportCandidates({units,initiator:attacker,target:defender,canUseSkill:ctx.canUseSkill}).map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))})).filter(candidate=>candidate.skills.length);
+      // Support reach is calculated at the projected charge destination. The
+      // authoritative actor stays at the original tile until confirmation.
+      const previewLanding=skill.approach?approachPath[approachPath.length-1]:null;
+      const supportAnchor=previewLanding?{...attacker,x:previewLanding.x,y:previewLanding.y}:attacker;
+      const candidates=BattleResolution.supportCandidates({units,initiator:supportAnchor,target:defender,canUseSkill:ctx.canUseSkill}).map(candidate=>({...candidate,skills:candidate.skills.filter(supportSkill=>TacticalEngine.canTarget(map,candidate.ally,defender,supportSkill,state().environmentState))})).filter(candidate=>candidate.skills.length);
       // Player selection confirms every ordinary unit attack (even without
       // support). Other callers keep the existing immediate-no-support path.
       // A skill requiring pre-engagement mutation has already been handled
       // above, before this confirmation branch: no UI-level skill exceptions.
       if(!confirmOrdinaryAttack&&!candidates.length){executeEngagement(attacker,defender,skill,[]);return;}
-      ctx.setPendingEngagement({attacker,defender,skill,candidates});
+      ctx.setPendingEngagement({attacker,defender,skill,candidates,
+        ...(previewLanding?{approachLanding:{x:previewLanding.x,y:previewLanding.y}}:{})});
       ctx.setSupportSelection(new Map());
       ctx.setMode("support-select");
       if(candidates.length)ctx.pushLog(`可選支援：${candidates.map(x=>x.ally.character.name).join("、")}`);
@@ -1552,6 +1578,15 @@
 
     function executeEngagement(attacker,defender,skill,actions,reaction=null){
       const {map,units}=state();
+      // A charge is a single committed action. Never move on the target preview
+      // or while the player is still selecting support/confirming the attack.
+      if(skill.approach){
+        if(!approachForSkill(attacker,defender,skill)){
+          skillFailure(attacker,skill,"NO_APPROACH_PATH",defender);
+          ctx.clearEngagement();ctx.setMode("attack");ctx.render();return false;
+        }
+        skill=committedApproachSkill(skill);
+      }
       const engagement=BattleResolution.resolve(
         {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
