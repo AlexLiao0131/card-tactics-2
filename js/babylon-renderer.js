@@ -8,6 +8,9 @@ import { ArrowProjectileVfx } from "./arrow-projectile-vfx.js";
 import { FireBowExplosionVfx } from "./fire-bow-explosion-vfx.js";
 import { VelsaDimensionalVfx } from "./velsa-dimensional-vfx.js";
 import { CassandraArcaneVfx } from "./cassandra-arcane-vfx.js";
+import { LiviaCombatVfx } from "./livia-combat-vfx.js";
+import { OphiNatureVfx } from "./ophi-nature-vfx.js";
+import { SeraphinaBloodVfx } from "./seraphina-blood-vfx.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -167,6 +170,9 @@ export class BabylonRenderer{
     this.fireBowExplosionVfx=new FireBowExplosionVfx(this.scene,{projectiles:this.arrowProjectileVfx});
     this.velsaDimensionalVfx=new VelsaDimensionalVfx(this.scene);
     this.cassandraArcaneVfx=new CassandraArcaneVfx(this.scene);
+    this.liviaCombatVfx=new LiviaCombatVfx(this.scene);
+    this.ophiNatureVfx=new OphiNatureVfx(this.scene);
+    this.seraphinaBloodVfx=new SeraphinaBloodVfx(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -199,6 +205,9 @@ export class BabylonRenderer{
       this.fireBowExplosionVfx.updateFrame();
       this.velsaDimensionalVfx.updateFrame();
       this.cassandraArcaneVfx.updateFrame();
+      this.liviaCombatVfx.updateFrame();
+      this.ophiNatureVfx.updateFrame();
+      this.seraphinaBloodVfx.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -643,6 +652,9 @@ export class BabylonRenderer{
     publish("fireBowExplosionVfx",()=>this.fireBowExplosionVfx.sync(state,presentationEvents));
     publish("velsaDimensionalVfx",()=>this.velsaDimensionalVfx.sync(state,presentationEvents));
     publish("cassandraArcaneVfx",()=>this.cassandraArcaneVfx.sync(state,presentationEvents));
+    publish("liviaCombatVfx",()=>this.liviaCombatVfx.sync(state,presentationEvents));
+    publish("ophiNatureVfx",()=>this.ophiNatureVfx.sync(state,presentationEvents));
+    publish("seraphinaBloodVfx",()=>this.seraphinaBloodVfx.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -815,6 +827,9 @@ export class BabylonRenderer{
       fireBowExplosionVfx:this.fireBowExplosionVfx.diagnostics(),
       velsaDimensionalVfx:this.velsaDimensionalVfx.diagnostics(),
       cassandraArcaneVfx:this.cassandraArcaneVfx.diagnostics(),
+      liviaCombatVfx:this.liviaCombatVfx.diagnostics(),
+      ophiNatureVfx:this.ophiNatureVfx.diagnostics(),
+      seraphinaBloodVfx:this.seraphinaBloodVfx.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };

@@ -712,6 +712,7 @@
         bowImpact:skill.enchantment?.onBowImpact?.[skill.element]||null,sourceSkillId:skill.id};
       const applied=EffectEngine.apply({source:attacker,target,effect});
       if(!applied?.applied)throw new Error("Weapon enchantment state could not be applied after skill resource commit.");
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT",enchantmentElement:effect.element,enchantmentSlot:weaponSlot});
       ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${target.character.name}【${p.slots.find(w=>w.slot===weaponSlot).name}】 ${effect.element}｜下次攻擊生效。`,"BATTLE");
       pendingEnchantment=null;
       if(attacker.id!==target.id)return finishActiveSkill(attacker);
@@ -1397,7 +1398,8 @@
           }
         }
         UnitRuntimeEngine.endBloodTransaction(attacker);
-        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"AOE"});
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"AOE",
+          burstCenters:centers.map(center=>({unitId:center.id,x:center.x,y:center.y}))});
         ctx.pushLog(`${attacker.character.name} 血爆｜${centers.length} 個流血爆點｜命中 ${hits} 次｜實際HP傷害 ${total}。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
@@ -1505,7 +1507,8 @@
         ctx.pushLog(relocated
           ?`${attacker.character.name} 血影瞬襲至 ${defender.character.name} 背後 (${origin.x},${origin.y}) → (${attacker.x},${attacker.y})。`
           :`${attacker.character.name} 已位於 ${defender.character.name} 背後，原地施展血影瞬襲。`,"BATTLE");
-        return executeEngagement(attacker,defender,ctx.effectiveSkill(attacker,skill),[]);
+        return executeEngagement(attacker,defender,
+          {...ctx.effectiveSkill(attacker,skill),visualOrigin:origin},[]);
       }
       if(skill.utilityAction){executeUtilitySkill(attacker,defender,skill);return;}
       if(skill.channel){executeChannelSkill(attacker,skill);return;}

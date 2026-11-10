@@ -238,7 +238,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
-        if(hitIndex===0)globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null});
+        const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
+          enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         let absorbed=0,physLoss=0,magicLoss=0;
@@ -271,6 +272,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           if(!followup&&Number(skill.holyPowerOnHit||0)>0)
             bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
           if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,action.target);
+        }
+        if(visualEvent){
+          visualEvent.enchantmentContact=!!(enchantment&&result.hit&&
+            (result.damage>0||result.shieldAbsorbed>0));
+          visualEvent.targetDefeated=action.target.hp===0;
         }
         if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
         else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});

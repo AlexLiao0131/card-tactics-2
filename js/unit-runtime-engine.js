@@ -114,7 +114,8 @@ export function createUnitRuntimeEngine(){
   }
   function resourceSnapshot(unit){
     syncResources(unit);
-    return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:state.label||key.toUpperCase()}]));
+    return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:state.label||key.toUpperCase(),
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
