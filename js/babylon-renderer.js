@@ -2,15 +2,16 @@ import { BattleCamera } from "./battle-camera.js";
 import { TerrainRenderer } from "./terrain-renderer.js";
 import { WaterRenderer } from "./water-renderer.js";
 import { UnitRenderer } from "./unit-renderer.js";
-import { TemplarVerdictVfx } from "./templar-verdict-vfx.js";
-import { HolyArrowRainVfx } from "./holy-arrow-rain-vfx.js";
-import { ArrowProjectileVfx } from "./arrow-projectile-vfx.js";
-import { FireBowExplosionVfx } from "./fire-bow-explosion-vfx.js";
-import { VelsaDimensionalVfx } from "./velsa-dimensional-vfx.js";
-import { CassandraArcaneVfx } from "./cassandra-arcane-vfx.js";
-import { LiviaCombatVfx } from "./livia-combat-vfx.js";
-import { OphiNatureVfx } from "./ophi-nature-vfx.js";
-import { SeraphinaBloodVfx } from "./seraphina-blood-vfx.js";
+import { VfxManager } from "./vfx-manager.js";
+
+
+
+
+
+
+
+
+
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -164,15 +165,7 @@ export class BabylonRenderer{
     this.objectives=new ObjectiveRenderer(this.scene,{environment:this.environment,terrain:this.terrain});
     this.highlights=new HighlightRenderer(this.scene,{terrain:this.terrain,environment:this.environment});
     this.units=new UnitRenderer(this.scene);
-    this.verdictVfx=new TemplarVerdictVfx(this.scene,{units:this.units});
-    this.holyArrowRainVfx=new HolyArrowRainVfx(this.scene,{units:this.units});
-    this.arrowProjectileVfx=new ArrowProjectileVfx(this.scene,{units:this.units});
-    this.fireBowExplosionVfx=new FireBowExplosionVfx(this.scene,{projectiles:this.arrowProjectileVfx});
-    this.velsaDimensionalVfx=new VelsaDimensionalVfx(this.scene);
-    this.cassandraArcaneVfx=new CassandraArcaneVfx(this.scene);
-    this.liviaCombatVfx=new LiviaCombatVfx(this.scene);
-    this.ophiNatureVfx=new OphiNatureVfx(this.scene);
-    this.seraphinaBloodVfx=new SeraphinaBloodVfx(this.scene);
+    this.vfxManager=new VfxManager(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -199,15 +192,7 @@ export class BabylonRenderer{
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
-      this.verdictVfx.updateFrame();
-      this.holyArrowRainVfx.updateFrame();
-      this.arrowProjectileVfx.updateFrame();
-      this.fireBowExplosionVfx.updateFrame();
-      this.velsaDimensionalVfx.updateFrame();
-      this.cassandraArcaneVfx.updateFrame();
-      this.liviaCombatVfx.updateFrame();
-      this.ophiNatureVfx.updateFrame();
-      this.seraphinaBloodVfx.updateFrame();
+      this.vfxManager.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -646,15 +631,7 @@ export class BabylonRenderer{
     publish("water",()=>this.water.sync(state,presentationEvents));
     publish("mapObjects",()=>this.mapObjects.sync(state));
     publish("units",()=>this.units.sync(state,presentationEvents));
-    publish("verdictVfx",()=>this.verdictVfx.sync(state,presentationEvents));
-    publish("holyArrowRainVfx",()=>this.holyArrowRainVfx.sync(state,presentationEvents));
-    publish("arrowProjectileVfx",()=>this.arrowProjectileVfx.sync(state,presentationEvents));
-    publish("fireBowExplosionVfx",()=>this.fireBowExplosionVfx.sync(state,presentationEvents));
-    publish("velsaDimensionalVfx",()=>this.velsaDimensionalVfx.sync(state,presentationEvents));
-    publish("cassandraArcaneVfx",()=>this.cassandraArcaneVfx.sync(state,presentationEvents));
-    publish("liviaCombatVfx",()=>this.liviaCombatVfx.sync(state,presentationEvents));
-    publish("ophiNatureVfx",()=>this.ophiNatureVfx.sync(state,presentationEvents));
-    publish("seraphinaBloodVfx",()=>this.seraphinaBloodVfx.sync(state,presentationEvents));
+    publish("vfxManager",()=>this.vfxManager.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -821,15 +798,8 @@ export class BabylonRenderer{
       mapObjects:this.mapObjects.diagnostics(),
       environment:this.environment.diagnostics(),
       units:this.units.diagnostics?.()||{units:this.units.meshes?.size??null},
-      verdictVfx:this.verdictVfx.diagnostics(),
-      holyArrowRainVfx:this.holyArrowRainVfx.diagnostics(),
-      arrowProjectileVfx:this.arrowProjectileVfx.diagnostics(),
-      fireBowExplosionVfx:this.fireBowExplosionVfx.diagnostics(),
-      velsaDimensionalVfx:this.velsaDimensionalVfx.diagnostics(),
-      cassandraArcaneVfx:this.cassandraArcaneVfx.diagnostics(),
-      liviaCombatVfx:this.liviaCombatVfx.diagnostics(),
-      ophiNatureVfx:this.ophiNatureVfx.diagnostics(),
-      seraphinaBloodVfx:this.seraphinaBloodVfx.diagnostics(),
+      ...this.vfxManager.legacyDiagnostics(),
+      vfxManager:this.vfxManager.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };

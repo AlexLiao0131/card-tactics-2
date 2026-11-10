@@ -1,3 +1,4 @@
+import {VfxDatabase} from './vfx-database.js';
 /**
  * Shared Babylon bow projectile presentation. Every equipped BOW/SHOT attack
  * uses the same flight mesh. It consumes the official UNIT_ANIMATION stream;
@@ -8,7 +9,7 @@
 import {SkillDatabase} from './skill-database.js';
 import {TILE_SIZE,ELEVATION_HEIGHT} from './coordinate-system.js';
 
-const SPECIALIZED=new Set(['angel_holy_arrow_rain']);
+const SPECIALIZED=new Set(VfxDatabase.specializedProjectileIds());
 const clamp=t=>Math.max(0,Math.min(1,t));
 export function isBowProjectileEvent(event){
   if(event?.type!=='UNIT_ANIMATION'||!event.skillId||SPECIALIZED.has(event.skillId))return false;
