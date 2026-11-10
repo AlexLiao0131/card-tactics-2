@@ -2,7 +2,7 @@
 // in the PVP adapter. This subset is safe for single-target synchronous casts;
 // new effect types must first have a real EffectEngine.apply handler.
 const STANDALONE_DIRECT_EFFECT_TYPES=new Set([
-  'HEAL','SHIELD','RESTORE_MANA','HEAL_OVER_TIME','DISPEL',
+  'HEAL','SHIELD','RESTORE_MANA','HEAL_OVER_TIME','DISPEL','DISPEL_POSITIVE',
   'BUFF','ATTRIBUTE_OVERRIDE','ATTRIBUTE_MODIFIER',
   'DAMAGE_OVER_TIME' // EffectEngine.apply and tick both own this status lifecycle.
 ]);
@@ -142,6 +142,34 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(filter.trait&&!hasTrait(target,filter.trait))return false;
     if(filter.notTrait&&hasTrait(target,filter.notTrait))return false;
     return true;
+  }
+  // Positive buffs are real EffectEngine instances. Enumerate only identities
+  // which can be selected exactly and revalidated on the authoritative state.
+  function positiveBuffChoices(target){
+    const seen=new Set(),out=[];
+    for(const entry of state(target)){
+      if(entry.classification!=="POSITIVE"||typeof entry.id!=="string"||!entry.id||seen.has(entry.id))continue;
+      seen.add(entry.id);out.push({id:entry.id,name:entry.name||entry.id,type:entry.type});
+    }
+    return out;
+  }
+  function rewardDispel(source){
+    if(!source?.character)return 0;
+    const refund=SkillDatabase.passiveList(source.character.passives||[])
+      .reduce((sum,passive)=>Math.max(sum,Math.max(0,Number(passive.dispelManaRefund||0))),0);
+    return refund>0?(globalThis.UnitRuntimeEngine?.restoreMana?.(source,refund)||0):0;
+  }
+  function dispelPositive(source,target,id){
+    if(!source||!target?.alive||source.team===target.team||typeof id!=="string"||!id)
+      return{applied:false,reason:"INVALID_POSITIVE_DISPEL_TARGET"};
+    const candidates=state(target).filter(e=>e.classification==="POSITIVE"&&e.id===id);
+    // An explicit instance key is required. Never guess the first buff.
+    if(candidates.length!==1)return{applied:false,reason:"POSITIVE_BUFF_NOT_FOUND"};
+    const entry=candidates[0];
+    target.effects=state(target).filter(e=>e!==entry);
+    syncModifiers(target);
+    return{applied:true,type:"DISPEL_POSITIVE",removed:1,removedId:entry.id,
+      removedName:entry.name||entry.id,refundedMana:rewardDispel(source)};
   }
   // Exact status removal: water cannot dispel unrelated negative effects.
   function removeEffectById(target,id,{type=null}={}){
@@ -330,6 +358,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     }
     if(effect.type==="RESTORE_MANA"){const amount=globalThis.UnitRuntimeEngine?.restoreMana?.(target,effect.amount)||0;return{applied:true,type:effect.type,amount,mana:target.mana,maxMana:target.maxMana};}
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
+    if(effect.type==="DISPEL_POSITIVE")return dispelPositive(source,target,effect.buffId);
     if(effect.type==="DISPEL"){
       const removed=removeNegative(target);
       if(removed)syncModifiers(target);
@@ -472,7 +501,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,positiveBuffChoices,dispelPositive,rewardDispel,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 }
 export const EffectEngine=createEffectEngine();
 globalThis.EffectEngine=EffectEngine;

@@ -614,6 +614,16 @@
       if(skill?.terrainTargeting)return enchantedTerrainTargetTiles(attacker,skill);
       if(skill?.utilityAction?.type==="RANGER_FORMATION_MARCH")return rangerFormationLegalTiles(attacker,skill);
       const {map,units,environmentState}=state();
+      if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
+        const range=TacticalEngine.range(skill);
+        return map.tiles.filter(tile=>{
+          const distance=Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
+          return distance>=range.min&&distance<=range.max&&
+            AngelWingBarrierEngine.segments(map).some(w=>w.x===tile.x&&w.y===tile.y&&w.ownerTeam!==attacker.team)&&
+            TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState)&&
+            TacticalEngine.canSee(map,attacker,tile,environmentState);
+        });
+      }
       const range=TacticalEngine.range(skill);
       const known=tile=>skill?.ignoreFogOfWar===true||skill?.requiresVision===false||
         TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState);
@@ -1032,6 +1042,20 @@
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
+      if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
+        if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
+          return skillFailure(attacker,skill,"INVALID_CONSTRUCT_TARGET",center);
+        if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+        const consumed=ctx.consumeSkill(attacker,skill);
+        if(!consumed)return false;
+        EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+        const result=AngelWingBarrierEngine.dispel(map,attacker,center.x,center.y);
+        if(!result.ok)throw new Error("Validated holy wing wall disappeared during authoritative cast.");
+        const recovered=EffectEngine.rewardDispel(attacker);
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
+        ctx.pushLog(`${attacker.character.name}｜${skill.name}解除聖翼壁障${recovered?`｜回收 ${recovered} MP`:""}。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
       if(skill?.terrainTargeting)return executeEnchantedTerrainAttack(attacker,center,skill);
       if(skill?.utilityAction)return executeMapUtility(attacker,center,skill);
       if(skill?.sanctuary){
@@ -1333,14 +1357,18 @@
       if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");return;}
       if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜${result.critical?"治療暴擊｜":""}回復 ${result.amount||0} HP${result.shieldGranted?`｜獲得聖護 ${result.shieldGranted}`:""}｜HP ${target.hp}。`,"BATTLE");
       else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
+      else if(effect.type==="DISPEL_POSITIVE")ctx.pushLog(`${skill.name} → ${target.character.name}｜解除「${result.removedName}」${result.refundedMana?`｜回收 ${result.refundedMana} MP`:""}。`,"BATTLE");
       else if(effect.type==="DISPEL"&&result.restoredResource?.amount>0)
         ctx.pushLog(`${skill.name} → ${target.character.name}｜解除 ${result.removed||0} 項負面異常，恢復 ${result.restoredResource.amount} Sanity。`,"BATTLE");
       else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
       else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
     }
 
-    function executeEffectSkill(attacker,target,skill){
+    function executeEffectSkill(attacker,target,skill,{buffId=null}={}){
       if(!globalThis.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
+      if(skill?.dispelChoice==="POSITIVE"&&
+        !EffectEngine.positiveBuffChoices(target).some(buff=>buff.id===buffId))
+        return skillFailure(attacker,skill,"POSITIVE_BUFF_NOT_AVAILABLE",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
@@ -1407,7 +1435,7 @@
           }
         }
       }else if(Array.isArray(skill.effects)){
-        for(const effect of skill.effects){const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,effect,r);}
+        for(const effect of skill.effects){const selected=effect.type==="DISPEL_POSITIVE"?{...effect,buffId}:effect;const r=EffectEngine.apply({source:attacker,target,effect:selected});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,selected,r);}
       }
       applyPassiveSkillTriggers(attacker,target,skill);
       const refunded=UnitRuntimeEngine.criticalManaRefund(attacker,skill,spent,healedCrit);

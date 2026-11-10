@@ -20,7 +20,7 @@ const TACTICAL_PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
 // MATCH_STATE proves that the deployed Worker implements the same private
 // tactical projection contract as this client; an old Worker cannot silently
 // turn missing move/skill options into empty arrays.
-const PVP_TACTICAL_PROJECTION_CONTRACT='CT2_NATIVE_TACTICAL_V3';
+const PVP_TACTICAL_PROJECTION_CONTRACT='CT2_NATIVE_TACTICAL_V4';
 const nameOf=unit=>unit?.name||unit?.character?.name||unit?.characterId||unit?.id||'角色';
 const skillChoices=(unit,followup)=>{
   const skills=unit?.attackSkills||[];
@@ -527,7 +527,8 @@ export class PvpTacticalUI {
     for(const skill of unit.areaFieldSkills||[])
       this.add(skill.name,direct('CAST_AREA_FIELD',{skillId:skill.id}),{skill});
     for(const skill of unit.mapSkills||[]){
-      if(skill.category==='ATTACK')continue;
+      if(skill.category==='ATTACK'||(knownSkill(skill.id)?.dispelConstruct&&
+        (unit.effectSkills||[]).some(other=>other.id===skill.id)))continue;
       this.add(skill.name,tile('CAST_MAP_SKILL',{skillId:skill.id}),{skill});
     }
     for(const choice of unit.chargeOptions||[]){
@@ -715,6 +716,17 @@ export class PvpTacticalUI {
       return;
     }
     if(this.menu==='closed')return;
+    if(this.menu==='positive-dispel-select'){
+      const choice=this.target,target=this.match?.view?.units?.find(u=>u.id===choice?.targetId);
+      this.menuUI.heading('破術・選擇解除增益');
+      for(const buff of target?.positiveBuffs||[])this.add(`解除｜${buff.name}`,()=>{
+        if(this.request({type:'CAST_EFFECT_SKILL',unitId:choice.unitId,
+          targetId:choice.targetId,skillId:choice.skillId,buffId:buff.id})){
+          this.cancelTarget();this.update();this.refreshNativePresentation();
+        }
+      });
+      this.menuBack('special');return;
+    }
     if(this.menu==='attack'){
       this.menuUI.close(()=>{this.menuUI.clear();this.menu='closed';});
       for(const skill of supportedSkillsForSection(actor,'attack'))
@@ -823,8 +835,24 @@ export class PvpTacticalUI {
       }else if(type==='CAST_EFFECT_SKILL'&&unit&&(
         choice.effectTarget==='ENEMY'?unit.team!==UNIT_TEAM[this.seat]:
         choice.effectTarget==='SELF'?unit.id===choice.unitId:
-        choice.effectTarget==='ALLY'&&unit.team===UNIT_TEAM[this.seat]))
-        action={type,unitId:choice.unitId,skillId:choice.skillId,targetId:unit.id};
+        choice.effectTarget==='ALLY'&&unit.team===UNIT_TEAM[this.seat])){
+        if(knownSkill(choice.skillId)?.dispelChoice==='POSITIVE'){
+          const buffs=unit.positiveBuffs||[];
+          if(!buffs.length)return false;
+          if(buffs.length===1)
+            action={type,unitId:choice.unitId,skillId:choice.skillId,targetId:unit.id,buffId:buffs[0].id};
+          else {
+            this.mode='SELECT';this.menu='positive-dispel-select';
+            this.target={...choice,targetId:unit.id};
+            this.update();this.refreshNativePresentation();return true;
+          }
+        }else action={type,unitId:choice.unitId,skillId:choice.skillId,targetId:unit.id};
+      }else if(type==='CAST_EFFECT_SKILL'&&!unit&&
+        knownSkill(choice.skillId)?.dispelConstruct&&
+        this.selectedUnit()?.mapSkills?.some(s=>s.id===choice.skillId)&&
+        (this.selectedUnit()?.aimOptions||[]).some(aim=>aim.type==='CAST_EFFECT_SKILL'&&
+          aim.skillId===choice.skillId&&aim.actionableTiles?.some(t=>t.x===x&&t.y===y)))
+        action={type:'CAST_MAP_SKILL',unitId:choice.unitId,skillId:choice.skillId,x,y};
       else if(type==='CAST_MAP_SKILL'||type==='ATTACK_ENCHANTED_TERRAIN')
         action={type,unitId:choice.unitId,skillId:choice.skillId,x,y};
       else if(type==='CAST_CHARGE'&&unit&&unit.id!==choice.unitId&&(

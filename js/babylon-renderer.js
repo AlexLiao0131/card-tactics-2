@@ -7,6 +7,7 @@ import { HolyArrowRainVfx } from "./holy-arrow-rain-vfx.js";
 import { ArrowProjectileVfx } from "./arrow-projectile-vfx.js";
 import { FireBowExplosionVfx } from "./fire-bow-explosion-vfx.js";
 import { VelsaDimensionalVfx } from "./velsa-dimensional-vfx.js";
+import { CassandraArcaneVfx } from "./cassandra-arcane-vfx.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
@@ -165,6 +166,7 @@ export class BabylonRenderer{
     this.arrowProjectileVfx=new ArrowProjectileVfx(this.scene,{units:this.units});
     this.fireBowExplosionVfx=new FireBowExplosionVfx(this.scene,{projectiles:this.arrowProjectileVfx});
     this.velsaDimensionalVfx=new VelsaDimensionalVfx(this.scene);
+    this.cassandraArcaneVfx=new CassandraArcaneVfx(this.scene);
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
     this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
@@ -196,6 +198,7 @@ export class BabylonRenderer{
       this.arrowProjectileVfx.updateFrame();
       this.fireBowExplosionVfx.updateFrame();
       this.velsaDimensionalVfx.updateFrame();
+      this.cassandraArcaneVfx.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
       this.scene.render();
@@ -639,6 +642,7 @@ export class BabylonRenderer{
     publish("arrowProjectileVfx",()=>this.arrowProjectileVfx.sync(state,presentationEvents));
     publish("fireBowExplosionVfx",()=>this.fireBowExplosionVfx.sync(state,presentationEvents));
     publish("velsaDimensionalVfx",()=>this.velsaDimensionalVfx.sync(state,presentationEvents));
+    publish("cassandraArcaneVfx",()=>this.cassandraArcaneVfx.sync(state,presentationEvents));
     publish("environment",()=>this.environment.sync(state,presentationEvents));
     publish("mapObjectBatches",()=>{
       // Physical light selection happens once on original prop geometry,
@@ -810,6 +814,7 @@ export class BabylonRenderer{
       arrowProjectileVfx:this.arrowProjectileVfx.diagnostics(),
       fireBowExplosionVfx:this.fireBowExplosionVfx.diagnostics(),
       velsaDimensionalVfx:this.velsaDimensionalVfx.diagnostics(),
+      cassandraArcaneVfx:this.cassandraArcaneVfx.diagnostics(),
       unitHud:this.unitHud.diagnostics(),
       tiles:this.terrain.meshes?.size??null
     };

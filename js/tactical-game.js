@@ -12,6 +12,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   const PHASE={CARD:"CARD_PHASE",PLAYER:"PLAYER_TURN",ENEMY:"ENEMY_TURN",ENDED:"MATCH_ENDED"};
 
   let map,units,selected,mode,selectedSkill,selectedSkillVariant,logs,round,phase,matchResult,stage,stageState,environmentState,inspectedTile,cores=[];
+  let pendingPositiveDispel=null;
   let logState=BattleLog.create(),cardState=null,enemyCardState=null,pendingCard=null,unitSerial=0;
   let enemyView={active:false,kind:null,message:"",cardId:null,unitId:null};
   let pendingEngagement=null;
@@ -378,7 +379,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
-  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;clearEngagement();mode="idle";}
+  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
   function resolveWeatherEvents(...args){return environmentController.resolveWeatherEvents(...args);}
   function beginPlayerTurn(){
     const completed=beginPlayerRoundSequence({
@@ -470,7 +471,30 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       // read-only enchantment choice is open.
       return;
     }
-    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){if(!approachTargetForAttack(selected,target,selectedSkill)){pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;}if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);else prepareAttack(selected,target,selectedSkill,{confirmOrdinaryAttack:true});return;}
+    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){
+        // A choice-only counterspell must not move or spend the actor's resources
+        // until the player has selected the concrete positive effect.
+        if(target.kind!=="CORE"&&selectedSkill?.dispelChoice==="POSITIVE"){
+          const options=EffectEngine.positiveBuffChoices(target);
+          if(options.length===1){
+            if(!approachTargetForAttack(selected,target,selectedSkill)){
+              pushLog(`${selectedSkill.name} 無可到達的合法施法位置。`,"SYSTEM");render();return;
+            }
+            actionController.executeEffectSkill(selected,target,selectedSkill,{buffId:options[0].id});
+          }else if(options.length>1){pendingPositiveDispel={actor:selected,target,skill:selectedSkill};mode="positive-dispel-select";render();}
+          else{pushLog(`${selectedSkill.name}：目標沒有可解除的 Buff。`,"SYSTEM");render();}
+          return;
+        }
+        if(!approachTargetForAttack(selected,target,selectedSkill)){
+          pushLog(`${selectedSkill.name} 無可到達的合法攻擊位置。`,"SYSTEM");render();return;
+        }
+        if(target.kind==="CORE")resolveDirectTargetAttack(selected,target,selectedSkill);
+        else prepareAttack(selected,target,selectedSkill,{confirmOrdinaryAttack:true});
+        return;
+      }
+      if(selectedSkill?.dispelConstruct&&mapTargetTiles(selected,selectedSkill).some(t=>t.x===tile.x&&t.y===tile.y)){
+        executeMapSkill(selected,tile,selectedSkill);return;
+      }
       // A weapon's enchanted hit selects either a legal enemy (above) or a
       // legal terrain collision (here) inside the SAME attack aim mode.
       // No separate "single target / conduction" or map attack menu exists.
@@ -729,6 +753,21 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     if(phase!==PHASE.PLAYER||!selected)return;
     if(mode==="support-select"&&pendingEngagement){window.TacticalUIController?.renderEngagement?.();return;}
     if(selected.acted)return;
+    if(mode==="positive-dispel-select"&&pendingPositiveDispel){
+      addCommandPanelClose();
+      const {actor,target,skill}=pendingPositiveDispel;
+      for(const buff of EffectEngine.positiveBuffChoices(target))addActionButton(`解除｜${buff.name}`,()=>{
+        if(!EffectEngine.positiveBuffChoices(target).some(entry=>entry.id===buff.id)){
+          pushLog(`${skill.name}：原定解除的 Buff 已失效。`,"SYSTEM");render();return;
+        }
+        pendingPositiveDispel=null;
+        if(!approachTargetForAttack(actor,target,skill)){
+          pushLog(`${skill.name}：沒有合法施法位置。`,"SYSTEM");mode="attack";render();return;
+        }
+        actionController.executeEffectSkill(actor,target,skill,{buffId:buff.id});
+      },false,skill);
+      addActionButton("取消施放",()=>{pendingPositiveDispel=null;mode="attack";render();});return;
+    }
     if(mode==="command"){
       if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();if(selected.moved&&actionController.pendingMove()?.unitId===selected.id)addActionButton("取消移動",cancelPendingMove);
       const capture=stage?.ruleset==="CORE_CAPTURE"&&canUnitCapture(selected)

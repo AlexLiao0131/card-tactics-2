@@ -198,7 +198,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
       const followup=a.role==="FERVOR_FOLLOWUP";
       if(!followup&&hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
-      const skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
+      let skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
       const bloodRuntime=globalThis.UnitRuntimeEngine;
       // Before resource consumption: use the SAME Sanity snapshot for damage scaling
       // and misfire chance. Target candidates must pass official range, height and LOS.
@@ -213,6 +213,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       bloodRuntime?.beginBloodTransaction?.(a.actor);
       const spent=followup?{cost:0,resources:{}}:hooks.consumeSkill?.(a.actor,skill);
       if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
+      // Consume analysis once at formal attack commitment, before accuracy,
+      // defense, shield and critical calculations (also on a MISS).
+      if(skill.analysisStatusId&&Number.isFinite(Number(skill.analysisPower))&&
+        globalThis.EffectEngine?.state?.(a.target).some(effect=>
+          effect.id===skill.analysisStatusId&&effect.sourceUnitId===a.actor.id)){
+        EffectEngine.removeEffectById(a.target,skill.analysisStatusId);
+        skill={...skill,power:Number(skill.analysisPower),analysisConsumed:true};
+      }
       const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
       const action={...a,skill,target:redirected||a.target,misfire:!!redirected};
       let friendlyHpLoss=0;
@@ -270,7 +278,16 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
         const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
           vengeanceMultiplier:sealMultiplier};
-        e.statusEffects=applyStatuses(e);results.push(e);hooks.onAction?.(e);
+        e.statusEffects=applyStatuses(e);
+        // Mana drain reads the target's real remaining MP and only follows
+        // actual HP loss. A fully blocking shield never loses mana.
+        if(result.hit&&result.damage>0&&skill.manaBurn){
+          const mark=skill.manaBurn.analysisId&&globalThis.EffectEngine?.state?.(action.target).some(effect=>
+            effect.id===skill.manaBurn.analysisId&&effect.sourceUnitId===action.actor.id);
+          const amount=mark?skill.manaBurn.analyzed:skill.manaBurn.normal;
+          e.manaBurned=globalThis.UnitRuntimeEngine?.drainMana?.(action.target,amount)||0;
+        }
+        results.push(e);hooks.onAction?.(e);
         if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
           queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
         }

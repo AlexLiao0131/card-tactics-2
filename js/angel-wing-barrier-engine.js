@@ -120,6 +120,16 @@ export const AngelWingBarrierEngine=(()=>{
     })));
     return{ok:true,landing:tile,facing:plan.facing,cells:plan.cells};
   }
+  // A counterspell removes the whole official wall cast, never individual
+  // visual meshes. No change to the ordinary wall's invulnerability rules.
+  function dispel(map,actor,x,y){
+    if(!actor?.alive||!Array.isArray(map?.objects))return{ok:false,reason:'INVALID_DISPEL'};
+    const selected=segments(map).find(w=>w.x===x&&w.y===y&&side(w.ownerTeam)!==side(actor.team));
+    if(!selected)return{ok:false,reason:'NO_ENEMY_WING_BARRIER'};
+    const count=segments(map).filter(w=>w.ownerUnitId===selected.ownerUnitId).length;
+    map.objects=map.objects.filter(w=>!isSegment(w)||w.ownerUnitId!==selected.ownerUnitId);
+    return{ok:true,count,ownerUnitId:selected.ownerUnitId};
+  }
   function blocksMovement(map,x,y,unit){
     return segments(map).some(segment=>segment.x===x&&segment.y===y&&
       (!unit?.team||side(unit.team)!==side(segment.ownerTeam)));
@@ -147,6 +157,6 @@ export const AngelWingBarrierEngine=(()=>{
     return false;
   }
   return Object.freeze({TYPE,ACTION,isCanonicalSkill,wallTiles,candidate,legalTiles,cast,
-    blocksMovement,blocksIncoming,reconcile,segments});
+    blocksMovement,blocksIncoming,reconcile,segments,dispel});
 })();
 globalThis.AngelWingBarrierEngine=AngelWingBarrierEngine;
