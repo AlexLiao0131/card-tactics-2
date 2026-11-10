@@ -11,8 +11,15 @@ export class AquaticMagicVfx extends HeroCombatVfxBase{
   constructor(scene){
     super(scene,{name:'aquatic-magic',maxActive:7,colors:{
       ocean:[[.13,.64,.92],.90],water:[[.42,.92,1],.88],foam:[[.85,.99,1],.82],
-      shaft:[[.17,.39,.56],.87],trident:[[.86,.94,1],.94]
+      shaft:[[.17,.39,.56],.87],trident:[[.86,.94,1],.94],
+      waveShell:[[.16,.66,.97],.30],waveRim:[[.70,.98,1],.99]
     }});
+    // A sphere rendered with additive blending is almost invisible against
+    // water or a bright sky; combine a translucent fill with emissive edges.
+    if(BABYLON.Engine?.ALPHA_COMBINE!==undefined)
+      this.materials.waveShell.alphaMode=BABYLON.Engine.ALPHA_COMBINE;
+    this.materials.waveShell.fogEnabled=false;
+    this.materials.waveRim.fogEnabled=false;
   }
   sync(snapshot,events=[]){
     this.prepare(snapshot);
@@ -25,7 +32,8 @@ export class AquaticMagicVfx extends HeroCombatVfxBase{
     for(const unit of snapshot?.units||[]){
       // Only actual applied shield effects. Water contact itself does not
       // grant a shield; it is published by the official effect engine.
-      if((unit.effects||[]).some(e=>e.id===WATER_SHIELD_ID&&e.type==='SHIELD')){
+      if((unit.effects||[]).some(e=>e.id===WATER_SHIELD_ID&&e.type==='SHIELD'&&
+        (e.shieldHp==null||Number(e.shieldHp)>0))){
         const id=`WATER_SHIELD:${unit.id}`;wanted.add(id);
         this.status(id,unit,()=>this.makeShield(id));
       }
@@ -47,11 +55,20 @@ export class AquaticMagicVfx extends HeroCombatVfxBase{
   }
   makeShield(id){
     const root=this.node(`water-ward-${id}`);
-    const outer=this.ring(root,'water-ward-ring',1.57,'water',18);
-    outer.rotation.y=Math.PI/2;
-    const inner=this.ring(root,'water-ward-crest',1.27,'foam',18);
+    // The previous effect drew only two thin rings (no actual water shield).
+    // 3D translucent ocean bubble is unmistakable beside golden holy wards.
+    const shell=this.mesh(root,'water-ward-ocean-shell','CreateSphere',
+      {diameter:2.02,segments:20},'waveShell');
+    shell.scaling.y=1.07;
+    const outer=this.ring(root,'water-ward-wave-equator',2.08,'waveRim',24);
+    const inner=this.ring(root,'water-ward-surf-meridian',2.08,'waveRim',24);
     inner.rotation.x=Math.PI/2;
-    return {root,above:.83,outer,inner};
+    const cross=this.ring(root,'water-ward-second-meridian',2.08,'water',24);
+    cross.rotation.z=Math.PI/2;
+    const crest=this.ring(root,'water-ward-crest',1.12,'foam',20);
+    crest.position.y=.72;
+    const bubbles=Array.from({length:7},(_,i)=>this.orb(root,`water-ward-bubble-${i}`,.12,'foam'));
+    return {root,above:1.04,shell,outer,inner,cross,crest,bubbles};
   }
   cast(kind,e,s,now){
     const fx=this.createEffect(kind,e,s,now,DURATION[kind]);
@@ -112,8 +129,17 @@ export class AquaticMagicVfx extends HeroCombatVfxBase{
     }
   }
   updateAuras(now){for(const fx of this.auras.values()){
-    const p=(now%5800)/5800*VFX_TAU;
-    fx.outer.rotation.y=p;fx.inner.rotation.z=p*.5;
-    fx.outer.visibility=.56+.22*Math.sin(p*2);
+    const p=(now%6800)/6800*VFX_TAU;
+    fx.shell.visibility=.85+.13*Math.sin(p*2);
+    fx.outer.visibility=.92;fx.inner.visibility=.92;
+    fx.outer.rotation.y=p*.42;fx.inner.rotation.y=p*.61;
+    fx.cross.rotation.x=-p*.49;fx.cross.visibility=.80+.16*Math.cos(p*2);
+    fx.crest.rotation.y=p*.7;
+    fx.crest.visibility=.92;
+    fx.bubbles.forEach((bubble,i)=>{
+      const a=p+i*VFX_TAU/fx.bubbles.length;
+      bubble.position.set(.82*Math.cos(a),.66*Math.sin(a*.9),.82*Math.sin(a));
+      bubble.visibility=.72+.23*Math.sin(a*2);
+    });
   }}
 }
