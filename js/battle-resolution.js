@@ -42,7 +42,42 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     return{map,units,environmentState,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?resolvedInterception:null,skill,reaction,participants,actions:[primary,...actions]}
   }
   const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill,a.target?.character||null);
-  function buildQueue(c){return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill).map((a,index)=>({...a,index,spd:actionSpeed(a)})).sort((a,b)=>b.spd-a.spd||a.index-b.index)}
+  // Duel eligibility is a read-only predicate on the SAME authoritative roster
+  // for browser and Worker. Neither mode assigns a synthetic speed value.
+  function duelRules(actor,skill){
+    const weapon=actor?.character?.weapons?.[skill?.weapon];
+    if(!weapon)return null;
+    return SkillDatabase.passiveList(actor.character?.passives||[]).map(p=>p.duelRules)
+      .find(rule=>rule&&rule.weaponKind===weapon.weaponKind&&
+        (skill?.targetType||"SINGLE")===rule.targetType&&skill?.target==="ENEMY")||null;
+  }
+  function hasDuel(c,actor,target,skill){
+    if(!actor?.alive||!target?.alive||actor.team===target.team||distance(actor,target)!==1||!duelRules(actor,skill))return false;
+    return !(c.units||[]).some(unit=>unit?.alive&&unit.id!==actor.id&&unit.id!==target.id&&
+      unit.occupiesTile!==false&&!unit.carriedByUnitId&&
+      (unit.team===target.team&&distance(unit,actor)===1||
+       unit.team===actor.team&&distance(unit,target)===1));
+  }
+  function buildQueue(c){
+    return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill)
+      .map((a,index)=>({...a,index,spd:actionSpeed(a),duelFirst:hasDuel(c,a.actor,a.target,a.skill)&&duelRules(a.actor,a.skill)?.initiative==="FIRST"}))
+      .sort((a,b)=>Number(b.duelFirst)-Number(a.duelFirst)||b.spd-a.spd||a.index-b.index);
+  }
+  function automaticDefenseCounter(c,defender,attacker,hooks){
+    const passive=SkillDatabase.passiveList(defender.character?.passives||[])
+      .find(p=>p.counterOnDefense?.selection==="BEST_ARMOR_MATCH");
+    if(!passive||!defender.alive||!attacker.alive)return null;
+    const legal=counterSkills({defender,attacker,canUseSkill:hooks.canUseSkill})
+      .filter(skill=>TacticalEngine.canTarget(c.map,defender,attacker,skill,c.environmentState||null));
+    // No new numeric coefficient: choose by the existing armor matchup, then
+    // official skill power; stable loadout order breaks an exact tie.
+    const scored=legal.map((skill,index)=>({skill,index,
+      match:BattleEngine.physicalMatch(skill.attackType==="INHERIT"?
+        defender.character.weapons?.[skill.weapon]?.attackType:skill.attackType,attacker.character),
+      power:Number(skill.power||0)}));
+    scored.sort((a,b)=>b.match-a.match||b.power-a.power||a.index-b.index);
+    return scored[0]?.skill||null;
+  }
   function attackType(a,s){const w=a?.character?.weapons?.[s?.weapon];return s?.attackType==="INHERIT"?w?.attackType:s?.attackType}
   const attackWeapon=(a,s)=>a?.character?.weapons?.[s?.weapon]||null,hasAffix=(i,id)=>i?.affixes?.includes(id)===true;
   function defenseProfileById(d,id){return id?defenseMethods(d).find(p=>p.id===id)||null:null}
@@ -223,7 +258,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       }
       const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
       const action={...a,skill,target:redirected||a.target,misfire:!!redirected};
-      let friendlyHpLoss=0;
+      let friendlyHpLoss=0,successfulDefenseForCounter=false;
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
@@ -234,12 +269,22 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       for(let hitIndex=0;hitIndex<hitCount&&action.target.alive;hitIndex++){
         const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,hitIndex===0?enchantment:null,skill),action.actor,action.target,skill);
         const original=resolved.result;
+        if(isPrimary&&!action.misfire&&!c.interception&&c.reaction&&
+          SkillDatabase.passiveList(action.target.character?.passives||[])
+            .some(p=>p.counterOnDefense?.methods?.includes(
+              c.reaction.type==="EVADE"?"EVADE":resolved.defense?.method?.method))){
+          if(c.reaction.type==="EVADE"&&original.evadeOutcome==="MISS"||
+             c.reaction.type==="DEFENSE"&&resolved.defense?.method?.method==="PARRY"&&
+             resolved.defense?.triggered&&resolved.defense?.success===true)
+            successfulDefenseForCounter=true;
+        }
         const sealMultiplier=action.misfire?1:
           a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
-          enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null}):null;
+          enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
+          duelActive:hasDuel(c,action.actor,action.target,skill)}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         let absorbed=0,physLoss=0,magicLoss=0;
@@ -263,8 +308,12 @@ export function createBattleResolution({random=()=>Math.random()}={}){
             magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id});
         if(action.misfire)friendlyHpLoss+=result.damage;
         if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,!action.misfire&&c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
-        else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1)
-          globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"BLOCK");
+        else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1){
+          const swordCounterParry=resolved.defense.method?.method==="PARRY"&&
+            SkillDatabase.passiveList(action.target.character?.passives||[])
+              .some(p=>p.counterOnDefense?.methods?.includes("PARRY"));
+          globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,swordCounterParry?"PARRY":"BLOCK");
+        }
         else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
         const markTarget=(c.interception&&!action.misfire&&a.role==="INITIATOR"?c.originalTarget:action.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
@@ -297,6 +346,13 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
           queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
         }
+      }
+      // A successful parry or full dodge schedules ONE legal counter after
+      // the entire incoming attack. The reaction engine has no Leon branch.
+      // Newly queued counters are not a primary defense: no infinite chain.
+      if(isPrimary&&successfulDefenseForCounter&&action.target.alive&&action.actor.alive){
+        const counter=automaticDefenseCounter(c,action.target,action.actor,hooks);
+        if(counter)queue.splice(index+1,0,createCounterAction(action.target,action.actor,counter));
       }
       // A multi-contact spell grants one backlash refund for its total actual
       // friendly HP loss, capped by this action's real mana cost.

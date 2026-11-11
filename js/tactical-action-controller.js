@@ -1109,7 +1109,11 @@
       if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,center);
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null});
+      // Present the validated landing without changing the authored hit center.
+      // Browser and headless PVP use the SAME canonical LINE transit plan.
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",
+        projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
+        landingX:transit?.landing?.x??null,landingY:transit?.landing?.y??null});
       if(skill.tsunamiWave){
         // Stage 1: contact and knockback, before adding water. This keeps
         // wave impact independent of the hydro's steady water depths.

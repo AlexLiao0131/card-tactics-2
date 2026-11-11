@@ -5,6 +5,9 @@
  * A new skill can reuse a role without changing BabylonRenderer.
  */
 const defs={
+  'swordsmanship':{
+    roles:{CUT:['leon_slash'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
+    events:['UNIT_FLOAT_TEXT'],legacy:'swordsmanshipVfx'},
   'holy-blade':{
     roles:{VERDICT:['templar_verdict']},events:['TEMPLAR_VERDICT_IMPACT'],
     legacy:'verdictVfx'},
