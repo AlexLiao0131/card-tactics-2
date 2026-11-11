@@ -11,12 +11,15 @@ const SPELLS=VfxDatabase.skillIds(MODULE);
 const LIFE=Object.freeze({STEP:860,SLASH:830,ENCHANT:720,ELEMENT_HIT:690});
 
 export class ShadowElementalVfx extends HeroCombatVfxBase{
-  constructor(scene){
+  constructor(scene,{units=null}={}){
     super(scene,{name:'shadow-elemental-vfx',maxActive:7,colors:{
       shadow:[[.13,.035,.25],.85],rift:[[.49,.13,.82],.92],spark:[[.82,.61,1],.94],
       fire:[[1,.32,.08],.91],ember:[[1,.68,.23],.94],
       thunder:[[.30,.67,1],.94],lightning:[[.76,.93,1],.96]
     }});
+    // The UnitRenderer owns the actual animated pose; never infer a moving
+    // weapon position from the already-committed gameplay destination.
+    this.units=units;
   }
   sync(snapshot,events=[]){
     this.prepare(snapshot);
@@ -47,7 +50,7 @@ export class ShadowElementalVfx extends HeroCombatVfxBase{
         if(e.type!==VfxDatabase.statusId(MODULE,'WEAPON_ENCHANT')||!slot||!['FIRE','THUNDER'].includes(element))continue;
         const key=`${unit.id}:ENCHANT:${slot}:${element}`;
         wanted.add(key);
-        this.status(key,unit,()=>this.enchantAura(key,{weaponSlot:slot,element}));
+        this.status(key,unit,()=>this.enchantAura(key,{unitId:unit.id,weaponSlot:slot,element}));
       }
     }
     this.pruneStatuses(wanted);
@@ -63,7 +66,8 @@ export class ShadowElementalVfx extends HeroCombatVfxBase{
       const m=this.orb(root,`weapon-spark-${i}`,.10,glint);
       m.position.set(bow?.45:.34,.21,-.2);return m;
     });
-    return{root,near,motes,element:e.element,above:.93};
+    return{root,near,motes,unitId:String(e.unitId),weaponSlot:e.weaponSlot,
+      isBow:bow,element:e.element,above:.93};
   }
   startStep(e,s,now){
     const fx=this.createEffect('STEP',e,s,now,LIFE.STEP);
@@ -141,6 +145,40 @@ export class ShadowElementalVfx extends HeroCombatVfxBase{
   }
   updateAuras(now){
     for(const fx of this.auras.values()){
+      // UnitRenderer updates its actual interpolated pose earlier in the same
+      // Babylon frame. Follow its live weapon pivot rather than the final
+      // x/y in the authoritative snapshot (which moves immediately).
+      const entry=this.units?.entries?.get(fx.unitId);
+      if(!entry?.root||entry.root.isDisposed?.()){
+        // A drawable pose is required: never show a detached enchantment at a
+        // future destination, or reveal a figure not in the visible roster.
+        fx.root.setEnabled?.(false);
+        continue;
+      }
+      fx.root.setEnabled?.(true);
+      const pivot=entry.kind==='FIGURE'
+        ?(fx.isBow?entry.figureParts?.bow:
+          entry.figureParts?.weapon||entry.figureParts?.sword):null;
+      if(pivot&&!pivot.isDisposed?.()){
+        pivot.computeWorldMatrix?.(true);
+        fx.root.position.copyFrom(pivot.getAbsolutePosition());
+        const worldRotation=pivot.absoluteRotationQuaternion;
+        if(worldRotation){
+          if(fx.root.rotationQuaternion)fx.root.rotationQuaternion.copyFrom(worldRotation);
+          else fx.root.rotationQuaternion=worldRotation.clone();
+        }else{
+          fx.root.rotationQuaternion=null;
+          fx.root.rotation.copyFrom(pivot.rotation);
+        }
+      }else{
+        // Sprite/capsule compatibility: follow the LIVE rendered root rather
+        // than falling back to the gameplay end tile during interpolation.
+        entry.root.computeWorldMatrix?.(true);
+        fx.root.position.copyFrom(entry.root.getAbsolutePosition());
+        fx.root.position.y+=(fx.above??.93)-(entry.kind==='CAPSULE'?Number(entry.height||0)/2:0);
+        fx.root.rotationQuaternion=null;
+        fx.root.rotation.copyFrom(entry.root.rotation);
+      }
       fx.near.rotation.y=now*.0024;
       fx.near.visibility=.57+.23*Math.sin(now*.008);
       fx.motes.forEach((m,i)=>{
