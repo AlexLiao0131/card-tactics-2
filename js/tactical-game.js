@@ -1,4 +1,5 @@
 import {beginPlayerRoundSequence} from './battle-round-sequence.js';
+import {createBattleEngagementPlayback} from './battle-engagement-playback.js';
 import {AngelWingBarrierEngine} from './angel-wing-barrier-engine.js';
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
 import { BattleCommandMenuUI, battleCommandEntries, battleSkillsForMenu, battleSkillButtonLabel, battleItemMenuEntries, enchantmentRecipientGroups as groupEnchantRecipients, enchantRecipientMark, enchantWeaponIcon, createEnchantmentRecipientMarker } from "./battle-command-menu-ui.js";
@@ -16,6 +17,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   let logState=BattleLog.create(),cardState=null,enemyCardState=null,pendingCard=null,unitSerial=0;
   let enemyView={active:false,kind:null,message:"",cardId:null,unitId:null};
   let pendingEngagement=null;
+  let engagementPlayback=null;
   let engagementFocusSerial=0;
   let supportSelection=new Map();
   let pendingCopySkill=null;
@@ -335,6 +337,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function createUnit(id,team,characterId,x,y){return UnitRuntimeEngine.create({id,team,characterId,x,y,map});}
 
   function resetBattle(){
+    engagementPlayback?.cancel();
+    skillBar.style.removeProperty("display");
     debugEnvironmentSteps=0;
     areaFields.reset();
     enemyController?.reset?.();actionController?.reset?.();perceptionState.session=null;perception.reset();
@@ -377,6 +381,67 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     });}
     return result;
   }function resourceLabel(unit,skill){return UnitRuntimeEngine.resourceLabel(unit,skill);}function targetType(skill){return UnitRuntimeEngine.targetType(skill);}
+  // Only the one existing Babylon scene clock can acknowledge a fully drawn
+  // frame. A browser-frame fallback is for offline startup without a renderer;
+  // neither path uses a speculative fixed animation delay.
+  function afterBattlefieldFrame(callback){
+    const renderer=globalThis.CardTacticsRenderer;
+    const observer=renderer?.scene?.onAfterRenderObservable;
+    if(observer?.addOnce&&renderer?.canvas?.parentElement?.classList?.contains("active")){
+      // Register AFTER the current render observer batch: Babylon may traverse
+      // observers added during notification in the SAME frame otherwise.
+      queueMicrotask(()=>observer.addOnce(callback));return;
+    }
+    if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>requestAnimationFrame(callback));
+    else callback();
+  }
+  function engagementVisualsPending(participants){
+    const renderer=globalThis.CardTacticsRenderer;
+    if(!renderer?.units)return false;
+    for(const [id] of renderer.units.activeAnimations||[])
+      if(participants.has(String(id)))return true;
+    for(const [id,events] of renderer.units.animationQueues||[])
+      if(participants.has(String(id))&&events.length)return true;
+    // Include nonpersistent impact flashes. Buff/status auras have their own
+    // authoritative lifetime, and must NOT keep the command phase locked.
+    for(const handler of renderer.vfxManager?.instances?.values?.()||[])
+      for(const effect of handler.active||[])
+        if(effect?.event?.unitId!=null&&participants.has(String(effect.event.unitId)))return true;
+    return false;
+  }
+  engagementPlayback=createBattleEngagementPlayback({
+    afterFrame:afterBattlefieldFrame,hasPendingVisuals:engagementVisualsPending
+  });
+  function beginConfirmedEngagement(){
+    if(!pendingEngagement||engagementPlayback.isActive())return false;
+    const {attacker,defender}=pendingEngagement;
+    const participants=[attacker.id,defender.id,
+      ...actionController.selectedSupportActions().map(action=>action.actor.id)];
+    return engagementPlayback.begin({participants,
+      close:()=>{
+        // Do not resolve damage or move a charging actor while the support
+        // confirmation modal is still on screen. Paint a clean battle frame.
+        mode="engagement-playback";render();
+      },
+      commit:()=>{
+        // This calls the unchanged official BattleResolution ONCE, after the
+        // unobstructed scene has already rendered its first frame.
+        actionController.confirmEngagement();return true;
+      },
+      complete:()=>{
+        // Only after all relevant unit/impact animations have played may
+        // the existing automatic end-turn/next-round path run.
+        if(!matchResult)checkMatchEnd();
+        if(!matchResult)maybeAutoEndPlayerTurn();
+        render();
+      },
+      failed:error=>{
+        mode="attack";
+        pushLog(`交戰演出未完成：${String(error?.message||error)}`,'SYSTEM');
+        render();
+      }
+    });
+  }
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
   function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
@@ -402,10 +467,10 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     });
     if(!completed)render();
   }
-  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd,beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn,clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
   function runEnemyPhase(){tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
-  function endPlayerTurn({automatic=false}={}){if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
+  function endPlayerTurn({automatic=false}={}){if(engagementPlayback?.isActive())return false;if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
   function finishUnit(unit,reason,{waited=false}={}){unit.moved=true;unit.acted=true;unit.waited=waited;selectedSkill=null;clearEngagement();mode="inspect";pushLog(`${unit.character.name} ${reason}`);maybeAutoEndPlayerTurn();}
   function logBattleAction(entry){const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":entry.role==="FERVOR_FOLLOWUP"?"狂熱追擊｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}if(entry.refundedMana>0)pushLog(`${actor.character.name}｜聖痕・暴擊返還 ${entry.refundedMana} MP。`,"BATTLE");environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
   function executeEnemyAttack(reaction=null,interception=null){if(!pendingEnemyAttack)return;const {attacker,defender,skill}=pendingEnemyAttack;const guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:EffectEngine.linkedGuardian(defender,units);if(guardian)pushLog(`${guardian.character.name} 援護 ${defender.character.name}，承接 ${attacker.character.name} 的攻擊。`,"BATTLE");BattleResolution.resolve({map,units,initiator:attacker,target:defender,skill,actions:[],reaction,interception},{canUseSkill,consumeSkill,onDefeated:handleDefeated,onAction:logBattleAction,onPostEffect:logPostEffect});attacker.moved=true;attacker.acted=true;attacker.waited=true;clearEnemyReaction();mode="idle";if(checkMatchEnd()){render();return;}render();enemyController?.continuePhase();}
@@ -428,6 +493,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function aoeTiles(center,radius){return TacticalEngine.aoeTiles(map,center,radius);}
   function logEnvironmentEvent(...args){return environmentController.logEnvironmentEvent(...args);}
   function selectNextAvailableUnit(){
+    if(engagementPlayback?.isActive())return false;
     if(phase!==PHASE.PLAYER||matchResult||pendingEngagement||pendingEnemyAttack)return false;
     const actors=(units||[]).filter(unit=>unit.alive&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false&&!unit.acted&&!unit.waited);
     if(!actors.length)return false;
@@ -461,7 +527,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
   function render(){AngelWingBarrierEngine.reconcile(map,units);renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
-  function handleTileClick(tile,unit,core,reachable,targets){inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;
+  function handleTileClick(tile,unit,core,reachable,targets){if(engagementPlayback?.isActive())return;inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;
     if(mode==="enchant-weapon-select"){
       const pending=actionController?.enchantmentSelection?.();
       if(pending&&unit&&pending.candidates.some(entry=>entry.target.id===unit.id)){
@@ -737,7 +803,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       action("GUARD_ACCEPT","生命連結自動援護｜確認承受");return model;
     }
     const prep=BattleResolution.prepareSingleTargetReaction({defender,attacker,canUseSkill});prep.counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(map,defender,attacker,s,environmentState));if(mode==="enemy-counter-select"){prep.counterSkills.forEach(s=>action("COUNTER_SKILL",`${s.name}｜射程 ${s.range.min}-${s.range.max}｜${resourceLabel(defender,s)}`,false,{skillId:s.id}));action("BACK_REACTION","返回");}else if(mode==="enemy-defense-select"){prep.defenseMethods.forEach(m=>action("DEFENSE_METHOD",`${m.name}｜${m.sourceName||m.method}`,false,{methodId:m.id}));action("BACK_REACTION","返回");}else if(mode==="enemy-guard-select"){guardCandidates().forEach(({guardian,profiles})=>action("GUARDIAN",`${guardian.character.name}｜${profiles.map(p=>p.name).join("／")}`,false,{guardianId:guardian.id}));action("BACK_GUARD","返回");}else if(mode==="enemy-guard-reaction"){const guardian=selectedGuardian;if(!guardian?.alive)return{...model,invalidGuardian:true};const guardianMethods=BattleResolution.guardProfiles(guardian);const counterSkills=BattleResolution.counterSkills({defender,attacker,canUseSkill}).filter(s=>TacticalEngine.canTarget(map,defender,attacker,s,environmentState));if(!selectedGuardInterception){guardianMethods.forEach(m=>action("GUARD_METHOD",`${m.name}｜${m.sourceName||m.method}`,false,{methodId:m.id}));action("BACK_GUARD_METHOD","返回");}else{action("GUARD_ACCEPT","援護承受｜原目標不反擊");counterSkills.forEach(s=>action("GUARD_COUNTER",`原目標反擊｜${s.name}｜${resourceLabel(defender,s)}`,false,{skillId:s.id}));action("BACK_GUARD_INTERCEPTION","返回防禦方式");}}else{const guards=guardCandidates();action("REACTION_COUNTER","反擊",prep.counterSkills.length===0);action("REACTION_DEFENSE","防禦",prep.defenseMethods.length===0);action("REACTION_EVADE","迴避");action("REACTION_GUARD","援護防禦",guards.length===0);}return model;}
-  function handleEngagementUIAction(id,payload={}){if(id==="SUPPORT_NONE"){supportSelection.delete(payload.allyId);render();return;}if(id==="SUPPORT_SKILL"){const entry=pendingEngagement?.candidates?.find(c=>c.ally.id===payload.allyId);const skill=entry?.skills?.find(s=>s.id===payload.skillId);if(skill)supportSelection.set(payload.allyId,skill);render();return;}if(id==="CONFIRM_ENGAGEMENT"){confirmEngagement();return;}if(id==="BACK_SUPPORT"){clearEngagement();mode="attack";render();return;}if(id==="REACTION_COUNTER"){chooseEnemyReaction("COUNTER");return;}if(id==="REACTION_DEFENSE"){chooseEnemyReaction("DEFENSE");return;}if(id==="REACTION_EVADE"){chooseEnemyReaction("EVADE");return;}if(id==="REACTION_GUARD"){mode="enemy-guard-select";render();return;}if(id==="BACK_REACTION"){pendingReactionType=null;mode="enemy-reaction";render();return;}if(id==="COUNTER_SKILL"){const skill=BattleResolution.counterSkills({defender:pendingEnemyAttack?.defender,attacker:pendingEnemyAttack?.attacker,canUseSkill}).find(s=>s.id===payload.skillId);if(skill)executeEnemyAttack(BattleResolution.createReaction("COUNTER",{skill}));return;}if(id==="DEFENSE_METHOD"){executeEnemyAttack(BattleResolution.createReaction("DEFENSE",{methodId:payload.methodId}));return;}if(id==="GUARDIAN"){const guardian=units.find(u=>u.id===payload.guardianId&&u.alive);if(guardian)chooseGuardian(guardian);return;}if(id==="BACK_GUARD"){selectedGuardian=null;selectedGuardInterception=null;mode="enemy-reaction";render();return;}if(id==="GUARD_METHOD"){if(selectedGuardian){selectedGuardInterception=BattleResolution.createGuardInterception(selectedGuardian,payload.methodId);render();}return;}if(id==="BACK_GUARD_METHOD"){selectedGuardian=null;selectedGuardInterception=null;mode="enemy-guard-select";render();return;}if(id==="GUARD_ACCEPT"){executeEnemyAttack(null,selectedGuardInterception);return;}if(id==="GUARD_COUNTER"){const {attacker,defender}=pendingEnemyAttack||{};const skill=BattleResolution.counterSkills({defender,attacker,canUseSkill}).find(s=>s.id===payload.skillId);if(skill)executeEnemyAttack(BattleResolution.createReaction("COUNTER",{skill}),selectedGuardInterception);return;}if(id==="BACK_GUARD_INTERCEPTION"){selectedGuardInterception=null;render();}}
+  function handleEngagementUIAction(id,payload={}){if(engagementPlayback?.isActive())return;if(id==="SUPPORT_NONE"){supportSelection.delete(payload.allyId);render();return;}if(id==="SUPPORT_SKILL"){const entry=pendingEngagement?.candidates?.find(c=>c.ally.id===payload.allyId);const skill=entry?.skills?.find(s=>s.id===payload.skillId);if(skill)supportSelection.set(payload.allyId,skill);render();return;}if(id==="CONFIRM_ENGAGEMENT"){beginConfirmedEngagement();return;}if(id==="BACK_SUPPORT"){clearEngagement();mode="attack";render();return;}if(id==="REACTION_COUNTER"){chooseEnemyReaction("COUNTER");return;}if(id==="REACTION_DEFENSE"){chooseEnemyReaction("DEFENSE");return;}if(id==="REACTION_EVADE"){chooseEnemyReaction("EVADE");return;}if(id==="REACTION_GUARD"){mode="enemy-guard-select";render();return;}if(id==="BACK_REACTION"){pendingReactionType=null;mode="enemy-reaction";render();return;}if(id==="COUNTER_SKILL"){const skill=BattleResolution.counterSkills({defender:pendingEnemyAttack?.defender,attacker:pendingEnemyAttack?.attacker,canUseSkill}).find(s=>s.id===payload.skillId);if(skill)executeEnemyAttack(BattleResolution.createReaction("COUNTER",{skill}));return;}if(id==="DEFENSE_METHOD"){executeEnemyAttack(BattleResolution.createReaction("DEFENSE",{methodId:payload.methodId}));return;}if(id==="GUARDIAN"){const guardian=units.find(u=>u.id===payload.guardianId&&u.alive);if(guardian)chooseGuardian(guardian);return;}if(id==="BACK_GUARD"){selectedGuardian=null;selectedGuardInterception=null;mode="enemy-reaction";render();return;}if(id==="GUARD_METHOD"){if(selectedGuardian){selectedGuardInterception=BattleResolution.createGuardInterception(selectedGuardian,payload.methodId);render();}return;}if(id==="BACK_GUARD_METHOD"){selectedGuardian=null;selectedGuardInterception=null;mode="enemy-guard-select";render();return;}if(id==="GUARD_ACCEPT"){executeEnemyAttack(null,selectedGuardInterception);return;}if(id==="GUARD_COUNTER"){const {attacker,defender}=pendingEnemyAttack||{};const skill=BattleResolution.counterSkills({defender,attacker,canUseSkill}).find(s=>s.id===payload.skillId);if(skill)executeEnemyAttack(BattleResolution.createReaction("COUNTER",{skill}),selectedGuardInterception);return;}if(id==="BACK_GUARD_INTERCEPTION"){selectedGuardInterception=null;render();}}
 
   function itemEntries(unit){return globalThis.ItemRuntimeEngine?.list?.(unit)||[];}
   function groundItemEntries(unit){return globalThis.ItemInventoryEngine?.groundAt?.(unit.x,unit.y)||[];}
@@ -751,6 +817,14 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     // PvP owns this SAME #skillBar while a server-authoritative match is
     // displayed; an offline render event may never replace online commands.
     if(document.body.dataset.battleMode==='PVP')return;
+    if(engagementPlayback?.isActive()){
+      dismissSkillInspection();
+      skillBar.innerHTML="";
+      skillBar.classList.remove("enemy-reaction-panel","command-panel-collapsed","engagement-overlay");
+      skillBar.style.display="none";
+      return;
+    }
+    skillBar.style.removeProperty("display");
     if(mode!=="enchant-weapon-select"&&enchantMenuCandidates.length)releaseEnchantmentMarkers();
     dismissSkillInspection();skillBar.innerHTML="";skillBar.classList.remove("enemy-reaction-panel","command-panel-collapsed","engagement-overlay");
     if(matchResult||phase===PHASE.CARD)return;
