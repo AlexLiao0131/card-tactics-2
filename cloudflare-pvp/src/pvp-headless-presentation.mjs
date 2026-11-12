@@ -37,6 +37,15 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
       coreAt:(x,y)=>cores.find(c=>c.hp>0&&c.x===x&&c.y===y)||null
     };
     const snapshot=globalThis.BattlePresentationController.create(context).battleSnapshot();
+    const viewer=seat===0?'P':'E';
+    // Forest-soul availability is a dynamic gameplay fact. Never expose a
+    // hidden opposing Ophi's harvest by revealing resource depletion on a
+    // source plant outside this seat's current battlefield vision.
+    for(const object of snapshot.map.objects||[]){
+      if(!object.ophiForestSoul)continue;
+      if(!TacticalEngine.teamCanSee(map,game.units,viewer,
+          {x:object.x,y:object.y},game.environmentState))delete object.ophiForestSoul;
+    }
     // Never allow presentation to publish an enemy secret card zone. The
     // official snapshot includes only enemy hand/deck COUNTS.
     if(snapshot?.presentation?.enemyHandCount!==game.cards[1-seat].zones.hand.length)
@@ -54,6 +63,9 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
       const safe=[];
       for(const event of record.events){
         if(!event||!previous.has(event.unitId))continue;
+        if(event.type==='OPHI_FOREST_SOUL_COLLECT'&&
+           !TacticalEngine.teamCanSee(map,game.units,viewer,
+             {x:event.x,y:event.y},game.environmentState))continue;
         // Never reproduce actions first discovered after they happened.
         if(event.type==='UNIT_ANIMATION'&&event.state!=='DEATH'&&!visible.has(event.unitId))continue;
         const copy={...event};

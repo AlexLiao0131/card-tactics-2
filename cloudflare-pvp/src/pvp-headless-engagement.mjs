@@ -155,16 +155,7 @@ export function pendingReactionOptions(game,seat,engine){
   const counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(
     game.battlefield.map,defender,attacker,s,game.environmentState));
   const guardians=resolution.guardCandidates({map:game.battlefield.map,units:game.units,target:defender});
-  // A CHARGE declaration has already completed its canonical approach.
-  // Its parent skill is not a direct-attack menu entry (it carries the
-  // CHARGE approach), so it cannot be loaded via basicAttackSkill().  Use
-  // the same validated variant + committed impact that settlement uses.
-  const charged=p.kind==='CHARGE';
-  const charge=charged?resolveCanonicalChargeVariant(attacker,p.skillId,p.variantId,engine):null;
-  if(charged&&(!charge||charge.target!=='ENEMY'))fail('CANONICAL_CHARGE_SKILL_REQUIRED');
-  const attackSkill=charged
-    ?{...charge,range:{min:1,max:1},approach:null,approachCommitted:true}
-    :basicAttackSkill(attacker,p.skillId);
+  const attackSkill=basicAttackSkill(attacker,p.skillId);
   // Do not leak an unseen attacker's stats through a read-only forecast.
   const canIdentify=TacticalEngine.teamCanIdentifyUnit({map:game.battlefield.map,
     units:game.units,environmentState:game.environmentState},TEAM[seat],attacker,game.environmentState);
@@ -212,7 +203,11 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
       // Never recompute this as PvP-only elemental damage.
       if(entry.enchantment)enchantedImpact.resolveEnchantmentImpact(entry);
     },
-    onPostEffect:entry=>applyCanonicalPostEngagementEffect(entry,environment,callbacks)
+    onPostEffect:entry=>applyCanonicalPostEngagementEffect(entry,environment,callbacks),
+    // Backstep is committed by the same shared BattleResolution after one
+    // combat transaction; the official environment owns landing hazards,
+    // plant soul pickup and shield-passenger synchronization.
+    onBackstep:(unit,tile)=>environment.enterTile(unit)
   });
   if(!outcome.results.length)fail('OFFICIAL_COMBAT_RESOLUTION_EMPTY');
   // Authored verdict's second hit is never a second action or a made-up PvP

@@ -98,6 +98,8 @@ function serverCallbacks(game,engine){
     if(logs.length>160)logs.splice(0,logs.length-160);
   };
   const stageEvent=event=>{
+    if(event?.type==='ROUND_START'||event?.type==='ENTER_TILE')
+      engine.unitRuntime.syncForestSouls(game.battlefield.map,game.units,event?.round??game.round);
     if(event?.type==='ENTER_TILE'&&event.unitId){
       const carrier=game.units.find(u=>u.id===event.unitId);
       if(carrier?.shieldPassengerId)ColinShieldMobilityEngine.syncPassenger(game.units,carrier,{movement:true});
@@ -126,6 +128,7 @@ function serverCallbacks(game,engine){
       const {_runtimeMap,...unit}=created;
       game.units.push(unit);
       engine.unitRuntime.syncLiveRoster(game.units);
+      engine.unitRuntime.syncForestSouls(game.battlefield.map,game.units,game.round);
       engine.effect.syncConditionalPassives([unit],game.environmentState);
       if(game.fieldState?.smokeFields?.length)
         createCanonicalAreaFields(game,engine,{pushLog,handleDefeated}).syncSmokeCover(unit);
@@ -290,6 +293,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       // hazards immediately after deployment. Do not omit this on the server.
       const deployed=game.units.find(u=>u.id===result.unitId);
       if(!deployed)fail('CANONICAL_DEPLOYED_UNIT_MISSING');
+      engine.unitRuntime.syncForestSouls(game.battlefield.map,game.units,game.round);
       createCanonicalEnvironmentController(game,hooks).applyEnvironmentHazardToUnit(
         deployed,{reason:'部署進入環境',waterTrigger:'ENTER'});
       createCanonicalAreaFields(game,engine,hooks).syncSmokeCover(deployed);
