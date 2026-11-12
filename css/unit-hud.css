@@ -190,6 +190,8 @@
 .unit-hud-resource[data-resource="faith"] .unit-hud-fill{background:#e4b448}
 .unit-hud-resource[data-resource="blood"] .unit-hud-fill{background:#c32d48}
 .unit-hud-resource[data-resource="humidity"] .unit-hud-fill{background:#14b8e6}
+/* Forest soul is Ophi's bright leaf-green; it never inherits Sanity purple. */
+.unit-hud-resource[data-resource="forestSoul"] .unit-hud-fill{background:#38ad78}
 
 /* A three-charge Holy Power resource is distinct from Sanity and Faith bars. */
 .unit-hud-holy-orbs{display:flex;align-items:center;justify-content:center;gap:8px;padding:3px 0 2px}
