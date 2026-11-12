@@ -80,10 +80,21 @@ export function isCanonicalSubmergeSkill(skill){
     !skill.effects&&!skill.relationEffects&&!skill.approach&&!skill.bloodShadow&&
     !skill.channel&&!skill.postEffects?.length&&!skill.afterUseEffects?.length;
 }
+export function isCanonicalAllySwapSkill(skill){
+  return !!skill&&skill.category==='SPECIAL'&&skill.target==='ALLY'&&
+    (!skill.targetType||skill.targetType==='SINGLE')&&
+    Number(skill.power)===0&&skill.utilityAction?.type==='SWAP_ALLIES'&&
+    skill.utilityAction.consumeTurn===true&&
+    Number(skill.range?.min)===1&&Number(skill.range?.max)===1&&
+    !skill.effects&&!skill.relationEffects&&!skill.weapon&&!skill.attackType&&
+    !skill.channel&&!skill.approach&&!skill.stance&&!skill.bloodBurst&&
+    !skill.bloodShadow&&!skill.postEffects?.length&&!skill.statusEffects?.length&&
+    !skill.variants?.length;
+}
 export function canonicalDirectEffectSkillOptions(unit,engine){
   if(!unit?.alive)return[];
   const ids=engine.effect.skillIds?.(unit)||unit.character?.skills||[];
-  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill)||isCanonicalSubmergeSkill(skill));
+  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill)||isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill));
 }
 
 export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,checkMatchEnd){
@@ -118,7 +129,7 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     return {accepted:true,state:game,movement:approach.movement,castInterrupted:true};
   }
   const hpBefore=target.hp,manaBefore=caster.mana;
-  const environment=isCanonicalSubmergeSkill(skill)?createCanonicalEnvironmentController(game,hooks):null;
+  const environment=(isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill))?createCanonicalEnvironmentController(game,hooks):null;
   const actionController=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:'P',ENEMY:'E'},
     actionState:()=>({map:game.battlefield.map,units:game.units,
@@ -129,11 +140,12 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     checkMatchEnd:checkMatchEnd||(()=>false),
     maybeAutoEndPlayerTurn:()=>false,
     applyForcedMovement:environment?.applyForcedMovement,
+    enterTile:environment?.enterTile,
     clearEngagement:()=>{},setSelectedSkill:()=>{},
     setSelectedSkillVariant:()=>{},setMode:()=>{},render:()=>{},
     pushLog:hooks.pushLog
   });
-  if((isCanonicalSubmergeSkill(skill)
+  if((isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill)
         ?actionController.executeUtilitySkill(caster,target,skill)
         :isCanonicalSelfChannelSkill(skill)
           ?(caster.id===target.id&&actionController.executeChannelSkill(caster,skill))

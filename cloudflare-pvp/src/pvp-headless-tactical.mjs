@@ -1,3 +1,4 @@
+import {ColinShieldMobilityEngine} from "../../js/colin-shield-mobility-engine.js";
 /**
  * Headless battle command integration under development. NOT DEPLOYED.
  *
@@ -85,6 +86,8 @@ function officialSkillView(unit,skill,engine){
 }
 function snapshotUnit(u){return {
   id:u.id,team:u.team,characterId:u.character?.id,x:u.x,y:u.y,z:u.z,
+  shieldPassengerId:u.shieldPassengerId||null,shieldRidingOn:u.shieldRidingOn||null,
+  shieldMobilityMode:u.shieldMobilityMode||null,
   hp:u.hp,mana:u.mana,alive:u.alive,moved:u.moved,acted:u.acted,waited:u.waited,
   facing:u.facing,resources:u.resources
 };}
@@ -95,6 +98,11 @@ function serverCallbacks(game,engine){
     if(logs.length>160)logs.splice(0,logs.length-160);
   };
   const stageEvent=event=>{
+    if(event?.type==='ENTER_TILE'&&event.unitId){
+      const carrier=game.units.find(u=>u.id===event.unitId);
+      if(carrier?.shieldPassengerId)ColinShieldMobilityEngine.syncPassenger(game.units,carrier,{movement:true});
+      if(ColinShieldMobilityEngine.shieldOccupied(carrier))engine.effect.removeEffectById(carrier,"FULL_SHIELD_DEFENSE");
+    }
     if(!eventTypes.has(event?.type))fail('CANONICAL_STAGE_EVENT_UNSUPPORTED');
     // Script spawns follow tactical-game.spawnFromScript one-to-one, but the
     // resulting unit is persisted in the authoritative room rather than a
@@ -192,7 +200,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         fail('NO_CANCELABLE_MOVE');
       if(game.units.some(u=>u.alive&&u.id!==unit.id&&u.x===origin.x&&u.y===origin.y))
         fail('MOVE_ORIGIN_OCCUPIED');
-      if(globalThis.TacticalActionController?.restorePendingMove(unit,origin)!==true)
+      if(globalThis.TacticalActionController?.restorePendingMove(unit,origin,{units:game.units,map:game.battlefield.map})!==true)
         fail('CANONICAL_MOVE_RESTORE_FAILED');
       game.pendingMove=null;
       return {accepted:true,state:game,unitId:unit.id};
@@ -381,6 +389,22 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         fail('FLIGHT_ALTITUDE_UNAVAILABLE');
       return {accepted:true,state:game,flightAltitude:next.state.flightAltitude};
     }
+    if(action?.type==='BOARD_SHIELD_PASSENGER'||action?.type==='DISEMBARK_SHIELD_PASSENGER'){
+      if(game.phase!==TACTICAL_PHASE[seat]||game.activeSeat!==seat)fail('NOT_TACTICAL_TURN');
+      const boarding=action.type==='BOARD_SHIELD_PASSENGER';
+      if(!sameKeys(action,boarding?['type','unitId','passengerId']:['type','unitId','x','y']))
+        fail('INVALID_SHIELD_PASSENGER_COMMAND');
+      const carrier=game.units.find(u=>u.alive&&u.id===action.unitId&&u.team===UNIT_TEAM[seat]);
+      if(!carrier||carrier.acted||carrier.waited)fail('SHIELD_CARRIER_UNAVAILABLE');
+      const passenger=boarding?game.units.find(u=>u.id===action.passengerId):null;
+      const accepted=boarding
+        ?ColinShieldMobilityEngine.board(game.battlefield.map,game.units,carrier,passenger)
+        :ColinShieldMobilityEngine.dismount(game.battlefield.map,game.units,carrier,action.x,action.y);
+      if(!accepted)fail('SHIELD_PASSENGER_NOT_LEGAL');
+      ColinShieldMobilityEngine.syncPassenger(game.units,carrier);
+      hooks.pushLog(`${carrier.character.name} 完成大盾搭乘操作。`,'SYSTEM');
+      return {accepted:true,state:game};
+    }
     if(action?.type==='MOVE_UNIT'){
       if(game.phase!==TACTICAL_PHASE[seat]||!sameKeys(action,['type','unitId','x','y'])||
          typeof action.unitId!=='string'||!Number.isSafeInteger(action.x)||!Number.isSafeInteger(action.y))
@@ -391,8 +415,44 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       if(!path.length||path.at(-1)?.x!==action.x||path.at(-1)?.y!==action.y)
         fail('ILLEGAL_MOVE_PATH');
       const environment=createCanonicalEnvironmentController(game,hooks);
-      const initial={unitId:unit.id,seat,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};
-      const movement=environment.traverseUnitPath(unit,path);
+      const passenger=game.units.find(u=>u.id===unit.shieldPassengerId);
+      const initial={unitId:unit.id,seat,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing,
+        passengerId:passenger?.id||null,passengerMoved:!!passenger?.moved,
+        passengerRideMoved:!!passenger?.shieldRideMoved};
+      let movement={completed:true};
+      let previousTile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
+      for(const step of path){
+        if(ColinShieldMobilityEngine.hasShield(unit))
+          unit.shieldMobilityMode=ColinShieldMobilityEngine.modeAt(unit,step,previousTile);
+        movement=environment.traverseUnitPath(unit,[step]);
+        if(!movement.completed)break;
+        previousTile=step;
+      }
+      if(ColinShieldMobilityEngine.hasShield(unit)){
+        let previous=TacticalEngine.tile(game.battlefield.map,initial.x,initial.y);
+        let sliding=false;
+        for(const step of path){
+          if(ColinShieldMobilityEngine.isSnowDescent(unit,previous,step))sliding=true;
+          previous=step;
+        }
+        unit.shieldMobilityMode=ColinShieldMobilityEngine.modeAt(unit,TacticalEngine.tile(game.battlefield.map,unit.x,unit.y));
+        unit._shieldMoveKind=sliding?"SNOW_SLED":null;
+      }
+      ColinShieldMobilityEngine.syncPassenger(game.units,unit,{movement:true});
+      if(movement?.completed&&path.some(step=>step.shieldTransit)||
+         movement?.completed&&["SNOW_SLED","ICE_SLED","BOAT"].includes(unit._shieldMoveKind||unit.shieldMobilityMode)){
+        const start=TacticalEngine.tile(game.battlefield.map,initial.x,initial.y),points=[];
+        let support=null;
+        for(const step of path){
+          if(step.shieldTransit){support=step.shieldTransit.guardianId;points.push({...step.shieldTransit.via});}
+          const tile=TacticalEngine.tile(game.battlefield.map,step.x,step.y);
+          points.push({x:step.x,y:step.y,z:VerticalMobilityEngine.describe(unit,tile).renderZ});
+        }
+        const kind=support?"SHIELD_STEP":unit._shieldMoveKind==="SNOW_SLED"?"SHIELD_SNOW_SLED":unit.shieldMobilityMode==="ICE_SLED"?"SHIELD_ICE_SLED":"SHIELD_BOAT";
+        globalThis.UnitAnimationEngine?.emitMove?.(unit,{from:{...initial,z:VerticalMobilityEngine.describe(unit,start)?.renderZ??initial.z},path:points,kind,shieldSupportId:support,
+          shieldSupportFacing:support?TacticalEngine.facingToward(initial,path.find(step=>step.shieldTransit)||path.at(-1),unit.facing):null});
+      }
+      delete unit._shieldMoveKind;
       createCanonicalAreaFields(game,engine,hooks).syncSmokeCover(unit);
       if(unit.alive && (unit.x!==initial.x||unit.y!==initial.y))engine.effect.interruptChannel(unit,'MOVE');
       unit.moved=true;
@@ -573,6 +633,11 @@ export function tacticalDebugProjection(game,seat){
            })),
           // The same DeploymentEngine legality drives the offline and online
           // command menu. A capture option is absent until a real point is legal.
+          shieldBoardOptions:ColinShieldMobilityEngine.hasShield(unit)&&!unit.shieldPassengerId
+            ?game.units.filter(passenger=>ColinShieldMobilityEngine.canBoard(world.map,game.units,unit,passenger))
+              .map(passenger=>({passengerId:passenger.id,name:passenger.character.name})):[],
+          shieldDismountOptions:ColinShieldMobilityEngine.hasShield(unit)&&unit.shieldPassengerId
+            ?ColinShieldMobilityEngine.dismountOptions(world.map,game.units,unit):[],
           itemInteractionAvailable:ItemRuntimeEngine.interactionAvailable(unit),
           groundItemChoices:(game.battleGroundItems||[])
             .filter(entry=>entry.x===unit.x&&entry.y===unit.y)
