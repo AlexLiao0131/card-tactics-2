@@ -2560,6 +2560,75 @@ export class UnitRenderer{
     }
   }
 
+  applyColinShieldPose(entry,unit,active,now){
+    if(entry.kind!=="FIGURE"||!entry.definition?.figure?.fieldTowerShield)return;
+    const parts=entry.figureParts||{};
+    if(!parts.shield||!parts.leftArm)return;
+    const route=active?.event,travel=String(route?.kind||"");
+    let mode=String(unit.shieldMobilityMode||"");
+    if(travel==="SHIELD_BOAT")mode="BOAT";
+    else if(travel==="SHIELD_SNOW_SLED")mode="SNOW_SLED";
+    else if(travel==="SHIELD_ICE_SLED")mode="ICE_SLED";
+    let supporting=false,supportDirection=null;
+    for(const animation of this.activeAnimations.values()){
+      if(animation.event?.kind!=="SHIELD_STEP"||animation.event?.shieldSupportId!==unit.id)continue;
+      supporting=true;supportDirection=animation.event.shieldSupportFacing;
+      break;
+    }
+    if(supporting){
+      // An animation-facing change does NOT change the canonical unit facing.
+      if(supportDirection&&Object.hasOwn(FACING_ANGLE,supportDirection))
+        entry.root.rotation.y=FACING_ANGLE[supportDirection];
+    }
+    if(!supporting&&!['BOAT','SNOW_SLED','ICE_SLED','BOARD_READY'].includes(mode))return;
+    const scale=Number(entry.definition?.height||UNIT_VISUAL_HEIGHT)/1.74;
+    // The real left-hand-attached shield rotates around its existing grip.
+    // Painted front normal points UP after -90 deg X; the elongated shield
+    // axis points fore/aft in Colin's facing direction, never crossways.
+    parts.shield.rotation.x-=Math.PI/2;
+    parts.shield.position.x+=.31*scale;
+    parts.shield.position.z+=.22*scale;
+    if(supporting){
+      parts.shield.position.y+=.18*scale; // raised at the one-H step plane
+      parts.leftArm.rotation.x-=.25;
+      parts.leftArm.rotation.z+=.20;
+    }else{
+      parts.shield.position.y-=.56*scale;
+      parts.leftArm.rotation.x+=.24;
+      parts.leftArm.rotation.z-=.27;
+      if(parts.body)parts.body.rotation.x+=mode==='BOAT'?.25:.19;
+      if(parts.leftLeg)parts.leftLeg.rotation.x-=.68;
+      if(parts.rightLeg)parts.rightLeg.rotation.x-=.70;
+      if(mode==='BOAT'&&parts.rightArm)
+        parts.rightArm.rotation.x+=.46+Math.sin(now/180)*.29;
+      if(mode==='SNOW_SLED'&&parts.body)parts.body.rotation.x+=.12;
+    }
+  }
+
+  syncShieldPassengers(){
+    for(const entry of this.entries.values()){
+      const rider=entry.lastUnit;
+      if(!rider?.shieldRidingOn)continue;
+      const carrier=this.entries.get(rider.shieldRidingOn);
+      if(!carrier||!carrier.lastUnit)continue;
+      // Bind the passenger to Colin's PRESENTATION transform, including
+      // interpolation, heading and shield motion; never teleport ahead.
+      const frame=carrier.root.computeWorldMatrix(true);
+      const local=new BABYLON.Vector3(0,.26,-.22);
+      const position=BABYLON.Vector3.TransformCoordinates(local,frame);
+      entry.root.position.copyFrom(position);
+      entry.root.rotation.y=carrier.root.rotation.y;
+      if(entry.kind==='FIGURE'){
+        const parts=entry.figureParts||{};
+        if(parts.leftLeg)parts.leftLeg.rotation.x-=.95;
+        if(parts.rightLeg)parts.rightLeg.rotation.x-=.95;
+        if(parts.body)parts.body.rotation.x+=.09;
+      }
+      entry.facingMarker.root.position.copyFrom(carrier.facingMarker.root.position);
+      for(const marker of entry.facingMarker.meshes||[])marker.visibility=0;
+    }
+  }
+
   updateFrame(now=performance.now()){
     // Deleting a finished DEATH entry during Map iteration is safe and avoids
     // allocating a fresh array of all visible units every rendered frame.
@@ -2582,8 +2651,10 @@ export class UnitRenderer{
       this.applyFacing(entry,unit,entry.definition,facing,state,definition);
       this.setBillboardAsset(entry,unit,state,facing,progress,definition);
       this.applyProcedural(entry,unit,state,progress,now,event,definition);
+      this.applyColinShieldPose(entry,unit,active,now);
       this.updateAnimationBadge(entry,unit,state);
     }
+    this.syncShieldPassengers();
   }
 
   // Rim/reflective readability only: no individual PointLight, so unit count

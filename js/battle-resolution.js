@@ -1,3 +1,4 @@
+import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
@@ -5,7 +6,12 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
   function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
-  function defenseMethods(d){return[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character),...effectDefenseProfiles(d)]}
+  function defenseMethods(d){
+    const profiles=[...EquipmentDatabase.defenseProfiles(d?.character),...passiveDefenseProfiles(d?.character),...effectDefenseProfiles(d)];
+    return ColinShieldMobilityEngine.shieldOccupied(d)
+      ?profiles.filter(profile=>profile.id!=="colin_full_body_guard"&&profile.sourceId!=="FULL_SHIELD_DEFENSE")
+      :profiles;
+  }
   function passiveGuardRules(u){return SkillDatabase.passiveList(u?.character?.passives).map(p=>p?.guardRules).filter(Boolean)}
   function guardProfiles(u){return defenseMethods(u).filter(p=>p.canGuardAlly===true)}
   function guardCandidates({map,units,target}){
@@ -294,6 +300,20 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC"})||{hpLoss:0,absorbed:0};
           absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
           physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
+        }
+        // Colin's last line belongs to ONE successful ally interception, not
+        // ordinary self-defense, AOE, environment damage or recurring DOT.
+        // Both damage components are settled before checking fatality, so the
+        // lifesaving HP is not consumed between physical and magical halves.
+        if(isPrimary&&c.interception?.type==="GUARD_ALLY"&&c.guardian===action.target&&
+           hpBefore>0&&action.target.hp===0&&!action.target._colinLastLineSpent&&
+           action.target.character?.passives?.includes("COLIN_LAST_LINE")){
+          action.target._colinLastLineSpent=true;action.target.hp=1;
+          if(magicLoss>0)magicLoss=Math.max(0,magicLoss-1);
+          else physLoss=Math.max(0,physLoss-1);
+          globalThis.UnitAnimationEngine?.emitPresentation?.("COLIN_LAST_LINE",{
+            unitId:action.target.id,x:action.target.x,y:action.target.y,renderZ:action.target.z,
+            sourceId:action.actor.id});
         }
         const physicalCrit=original.type!=="MAGIC"&&(original.physicalCrit??original.crit)===true;
         const magicCrit=original.type==="MAGIC"&&original.crit===true||original.magicCrit===true;

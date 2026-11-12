@@ -663,6 +663,15 @@ export class PvpTacticalUI {
         unit.effectSkills?.some(s=>battleSkillCategory(knownSkill(s.id))==='attack')||
         unit.transportOptions?.some(s=>battleSkillCategory(knownSkill(s.skillId))==='attack'))}))
       this.add(entry.label,commands[entry.id],{disabled:entry.id==='DIALOGUE'});
+    for(const choice of unit.shieldBoardOptions||[])
+      this.add(`搭載｜${choice.name}`,
+        ()=>this.request({type:'BOARD_SHIELD_PASSENGER',unitId:unit.id,passengerId:choice.passengerId}));
+    for(const tile of unit.shieldDismountOptions||[]){
+      const dx=tile.x-unit.x,dy=tile.y-unit.y;
+      const direction=dy<0?'北':dx>0?'東':dy>0?'南':'西';
+      this.add(`乘客下艇｜${direction}`,
+        ()=>this.request({type:'DISEMBARK_SHIELD_PASSENGER',unitId:unit.id,x:tile.x,y:tile.y}));
+    }
   }
   update(){
     if(this.closed||!this.presented||!this.isActive())return;

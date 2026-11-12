@@ -21,8 +21,10 @@ import {HolyRitualVfx} from './holy-ritual-vfx.js';
 import {AquaticMagicVfx} from './aquatic-magic-vfx.js';
 import {BladeStealthVfx} from './blade-stealth-vfx.js';
 import {SwordsmanshipVfx} from './swordsmanship-vfx.js';
+import {ShieldGuardVfx} from './shield-guard-vfx.js';
 
 const factories=Object.freeze({
+  'shield-guard':scene=>new ShieldGuardVfx(scene),
   'swordsmanship':scene=>new SwordsmanshipVfx(scene),
   'holy-blade':(scene,ctx)=>new HolyBladeVfx(scene,{units:ctx.units}),
   'holy-volley':(scene,ctx)=>new HolyVolleyVfx(scene,{units:ctx.units}),

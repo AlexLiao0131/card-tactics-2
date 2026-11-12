@@ -1,3 +1,4 @@
+import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 export const VerticalMobilityEngine=(()=>{
   const MODE=Object.freeze({
     GROUND:"GROUND",
@@ -8,7 +9,8 @@ export const VerticalMobilityEngine=(()=>{
     BURROWED:"BURROWED",
     WATER_WALK:"WATER_WALK",
     ICE:"ICE",
-    SINKING:"SINKING"
+    SINKING:"SINKING",
+    SHIELD_BOAT:"SHIELD_BOAT"
   });
 
   const LAYER=Object.freeze({
@@ -83,6 +85,8 @@ export const VerticalMobilityEngine=(()=>{
   }
 
   function effectiveMode(unit,tile,{mode=null}={}){
+    if(ColinShieldMobilityEngine.modeAt(unit,tile)==="BOAT"||
+      unit?.shieldRidingOn&&unit.shieldRideSurfaceMode==="BOAT")return MODE.SHIELD_BOAT;
     const caps=capabilities(unit),requested=String(mode||requestedMode(unit,tile)).toUpperCase();
     if(requested===MODE.FLYING&&caps.canFly)return MODE.FLYING;
     if(requested===MODE.BURROWED&&caps.canBurrow)return MODE.BURROWED;
@@ -95,7 +99,7 @@ export const VerticalMobilityEngine=(()=>{
     if(mode===MODE.FLYING)return LAYER.AIR;
     if(mode===MODE.BURROWED)return LAYER.UNDERGROUND;
     if(mode===MODE.DIVING||mode===MODE.SINKING)return LAYER.UNDERWATER;
-    if(mode===MODE.WADING||mode===MODE.SWIMMING)return LAYER.WATER_SURFACE;
+    if(mode===MODE.WADING||mode===MODE.SWIMMING||mode===MODE.SHIELD_BOAT)return LAYER.WATER_SURFACE;
     return LAYER.SURFACE;
   }
 
@@ -145,7 +149,7 @@ export const VerticalMobilityEngine=(()=>{
     const burrowDepth=Math.max(0,rememberedBurrowDepth(unit));
 
     let physicalZ=ground;
-    if(effective===MODE.WATER_WALK||effective===MODE.ICE)physicalZ=surface;
+    if(effective===MODE.WATER_WALK||effective===MODE.ICE||effective===MODE.SHIELD_BOAT)physicalZ=surface;
     else if(effective===MODE.SWIMMING)physicalZ=Math.max(ground,(waterSurface??ground)-Math.min(waterDepthValue,surfaceImmersion));
     else if(effective===MODE.DIVING)physicalZ=Math.max(ground,(waterSurface??ground)-diveDepth);
     else if(effective===MODE.SINKING)physicalZ=ground;
@@ -263,7 +267,13 @@ export const VerticalMobilityEngine=(()=>{
   function isAirborne(unit){return isMode(unit,MODE.FLYING);}
   function isBurrowed(unit){return isMode(unit,MODE.BURROWED);}
   function isSubmerged(unit){return isMode(unit,MODE.DIVING,MODE.SINKING)||Number(unit?.verticalState?.immersionDepth||0)>0;}
-  function ignoresWaterInteraction(unit){return isAirborne(unit)||isBurrowed(unit);}
+  function ignoresWaterInteraction(unit){
+    if(isAirborne(unit)||isBurrowed(unit)||unit?.shieldRidingOn&&unit.shieldRideSurfaceMode==="BOAT")return true;
+    const m=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.();
+    const t=m?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y);
+    return ColinShieldMobilityEngine.modeAt(unit,t)==="BOAT"||
+      unit?.shieldMobilityMode==="BOAT"||unit?.verticalState?.mode===MODE.SHIELD_BOAT;
+  }
   function ignoresCurrent(unit){return isAirborne(unit)||isBurrowed(unit)||isMode(unit,MODE.WATER_WALK,MODE.ICE);}
   function contactsWater(unit){return isMode(unit,MODE.WADING,MODE.SWIMMING,MODE.DIVING,MODE.SINKING)||String(unit?.waterInteraction?.state||"")==="AQUATIC";}
   function contactsGround(unit){return !isAirborne(unit)&&!isBurrowed(unit)&&!isMode(unit,MODE.SWIMMING,MODE.DIVING)&&!isMode(unit,MODE.WATER_WALK);}

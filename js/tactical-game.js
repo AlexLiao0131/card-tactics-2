@@ -327,8 +327,38 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function applyForcedMovement(...args){return environmentController.applyForcedMovement(...args);}
   function traverseUnitPath(...args){
     const unit=args[0],before=unit?{x:unit.x,y:unit.y}:null;
+    const path=args[1]||[],beforeTile=before&&TacticalEngine.tile(map,before.x,before.y);
     const result=environmentController.traverseUnitPath(...args);
-    if(unit&&before&&(unit.x!==before.x||unit.y!==before.y)){EffectEngine.interruptChannel(unit,"MOVE");syncSmokeCover(unit);}
+    if(unit&&before&&(unit.x!==before.x||unit.y!==before.y)){
+      EffectEngine.interruptChannel(unit,"MOVE");syncSmokeCover(unit);
+      const shield=globalThis.ColinShieldMobilityEngine;
+      if(shield?.hasShield(unit)){
+        let previous=beforeTile;
+        const modes=path.map(step=>{
+          const m=shield.modeAt(unit,step,previous);previous=step;return m;
+        });
+        const mode=shield.modeAt(unit,TacticalEngine.tile(map,unit.x,unit.y),
+          path.length>1?path.at(-2):beforeTile);
+        unit.shieldMobilityMode=mode;
+        unit._shieldMoveKind=modes.some(m=>m==="SNOW_SLED")?"SNOW_SLED":null;
+      }
+      shield?.syncPassenger(units,unit,{movement:true});
+      if(result?.completed){
+        let support=null;
+        const points=[];
+        for(const step of path){
+          if(step.shieldTransit){support=step.shieldTransit.guardianId;
+            points.push({x:step.shieldTransit.via.x,y:step.shieldTransit.via.y,z:step.shieldTransit.via.z});}
+          const tile=TacticalEngine.tile(map,step.x,step.y);
+          const z=globalThis.VerticalMobilityEngine?.describe?.(unit,tile)?.renderZ??Number(tile.elevation||0);
+          points.push({x:step.x,y:step.y,z});
+        }
+        const mode=unit.shieldMobilityMode,kind=support?"SHIELD_STEP":unit._shieldMoveKind==="SNOW_SLED"?"SHIELD_SNOW_SLED":mode==="ICE_SLED"?"SHIELD_ICE_SLED":mode==="BOAT"?"SHIELD_BOAT":"UNIT";
+        if(kind!=="UNIT")globalThis.UnitAnimationEngine?.emitMove?.(unit,{from:{...before,z:globalThis.VerticalMobilityEngine?.describe?.(unit,beforeTile)?.renderZ??beforeTile?.elevation??0},path:points,kind,shieldSupportId:support,
+          shieldSupportFacing:support?TacticalEngine.facingToward(before,path.find(step=>step.shieldTransit)||path.at(-1),unit.facing):null});
+        delete unit._shieldMoveKind;
+      }
+    }
     return result;
   }
   function damageUnitFlat(unit,damage,sourceName){if(!unit?.alive)return;const dealt=EffectEngine.applyDamage(unit,Math.max(0,Number(damage||0)),{kind:"EXTERNAL"}).hpLoss;pushLog(`${sourceName} → ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;handleDefeated(unit,null,{type:"CARD_SPELL",name:sourceName});}}
@@ -350,10 +380,30 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     EffectEngine.syncConditionalPassives(units,environmentState);
     logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
-  function unitAt(x,y){return units.find(u=>u.alive&&u.x===x&&u.y===y);}
+  function unitAt(x,y){return units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y);}
+  function shieldBoardOrDismount(unit,{passenger=null,tile=null}={}){
+    const shield=globalThis.ColinShieldMobilityEngine;
+    if(!shield||!unit?.alive||unit.acted||unit.waited||unit.team!==TEAM.PLAYER)return false;
+    const accepted=passenger?shield.board(map,units,unit,passenger):
+      tile?shield.dismount(map,units,unit,tile.x,tile.y):false;
+    if(!accepted)return false;
+    const occupant=passenger||units.find(u=>u.id!==unit.id&&u.shieldRidingOn===unit.id);
+    shield.syncPassenger(units,unit);
+    pushLog(`${unit.character.name} ${passenger?"讓 "+passenger.character.name+" 搭乘大盾":"將乘客送至安全落點"}。`,"SYSTEM");
+    render();return true;
+  }
   function spawnFromScript(action){const requested=String(action.team||"ENEMY").toUpperCase();const team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;if(unitAt(action.x,action.y))return null;const character=CHARACTERS[action.characterId];if(!character)return null;const prefix=team===TEAM.PLAYER?"p":team===TEAM.NEUTRAL?"n":"e";let n=0,id;do{id=`${prefix}s${n++}`;}while(units.some(u=>u.id===id));const unit=createUnit(id,team,action.characterId,action.x,action.y);units.push(unit);onUnitCreated(unit);pushLog(`${character.name} 出現在 (${action.x},${action.y})。`);return unit;}
   function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){const result=environmentController.enterTile(...args);if(args[0])syncSmokeCover(args[0]);return result;}
-  function stageEvent(event){if(!stageState)return;StageEngine.run(stageState,event,{units,log:text=>pushLog(text),spawn:spawnFromScript,onObjectiveChanged:(active,action)=>{const target=String(action.target||"").toUpperCase();const label=action.objectives?"勝敗條件":target==="VICTORY"?"勝利條件":target==="DEFEAT"?"失敗條件":"勝敗條件";pushLog(`${label}已更新。`,"SYSTEM");}});}
+  function stageEvent(event){
+    // Every canonical tile entry (normal movement, current, knockback, collision)
+    // must relocate the visible rider in the SAME authoritative event chain.
+    if(event?.type==="ENTER_TILE"&&event.unitId){
+      const carrier=units.find(u=>u.id===event.unitId);
+      if(carrier?.shieldPassengerId)globalThis.ColinShieldMobilityEngine?.syncPassenger?.(units,carrier,{movement:true});
+      if(globalThis.ColinShieldMobilityEngine?.shieldOccupied?.(carrier))
+        globalThis.EffectEngine?.removeEffectById?.(carrier,"FULL_SHIELD_DEFENSE");
+    }
+    if(!stageState)return;StageEngine.run(stageState,event,{units,log:text=>pushLog(text),spawn:spawnFromScript,onObjectiveChanged:(active,action)=>{const target=String(action.target||"").toUpperCase();const label=action.objectives?"勝敗條件":target==="VICTORY"?"勝利條件":target==="DEFEAT"?"失敗條件":"勝敗條件";pushLog(`${label}已更新。`,"SYSTEM");}});}
   function shortName(name){return name.replace(/（.*?）/g,"").slice(0,4);}
   // Stable per-battle identity: a unit retains its ordinal even if it moves,
   // finishes its turn, is defeated or leaves the current enchantment range.
@@ -862,6 +912,20 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       };
       for(const entry of battleCommandEntries({capture,canAttack:selected.canAttack!==false}))
         addActionButton(entry.label,commands[entry.id]);
+      const shield=globalThis.ColinShieldMobilityEngine;
+      if(shield?.hasShield(selected)){
+        if(selected.shieldPassengerId){
+          const rider=units.find(u=>u.id===selected.shieldPassengerId);
+          for(const tile of shield.dismountOptions(map,units,selected)){
+            const direction=TacticalEngine.facingToward(selected,tile,selected.facing);
+            addActionButton(`讓 ${rider?.character?.name||"友軍"} 下艇｜${({N:"北",E:"東",S:"南",W:"西"})[direction]}`,
+              ()=>shieldBoardOrDismount(selected,{tile}));
+          }
+        }else{
+          for(const ally of units.filter(u=>shield.canBoard(map,units,selected,u)))
+            addActionButton(`搭載｜${ally.character.name}`,()=>shieldBoardOrDismount(selected,{passenger:ally}));
+        }
+      }
       return;
     }
     if(mode==="item-menu"||mode==="item-manage"){

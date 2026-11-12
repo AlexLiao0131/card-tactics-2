@@ -1,3 +1,4 @@
+import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 export function createUnitRuntimeEngine(){
   const MANA_BASE=40,MANA_INT_FACTOR=2,MANA_WIL_FACTOR=2;
   const liveUnits=new Map();
@@ -237,7 +238,15 @@ export function createUnitRuntimeEngine(){
   function despawnCompanionsForOwner(owner){if(!owner?.id||!globalThis.CompanionDatabase?.despawnForOwner)return[];return CompanionDatabase.despawnForOwner(owner,[...liveUnits.values()])}
   function living(units,team){reconcileCompanions(units);return (units||[]).filter(u=>u.alive&&u.team===team)}
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
-  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;syncMana(u);syncResources(u,{applyRecovery:true});reconcileBlood(u);})}
+  function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{
+    u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;
+    syncMana(u);syncResources(u,{applyRecovery:true});reconcileBlood(u);
+    // Applied after this unit's previous action forfeits exactly ONE new
+    // action opportunity, regardless of which team's round applied the stun.
+    if(globalThis.EffectEngine?.consumeActionSkip?.(u)){
+      u.moved=true;u.acted=true;u.waited=true;
+    }
+  })}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
   function resourceFor(unit,skill){
     skill=skillForUnit(unit,skill);
@@ -247,6 +256,8 @@ export function createUnitRuntimeEngine(){
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill,world=null){
+    if(unit?.shieldRidingOn&&skill?.utilityAction?.type==="SWAP_ALLIES")return false;
+    if(ColinShieldMobilityEngine.shieldOccupied(unit)&&skill?.requiresEquipment==="colin_full_body_shield")return false;
     if(skill?.sanctuary){
       const value=faithValue(unit),maximum=unit?.resources?.faith?.max;
       if(value===null||(value!==0&&value!==maximum))return false;

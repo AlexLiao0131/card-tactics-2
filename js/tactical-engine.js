@@ -1,3 +1,4 @@
+import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 export const TacticalEngine=(()=>{
   const K=(x,y)=>x+","+y,D=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
   const MAX_NORMAL_CLIMB=1,MAX_NORMAL_DROP=1;
@@ -59,7 +60,9 @@ export const TacticalEngine=(()=>{
   }
   function effectMovementRules(u){
     const out={};
-    for(const effect of globalThis.EffectEngine?.state?.(u)||[]){const rules=effect?.movementRules;if(!rules)continue;for(const[k,v]of Object.entries(rules))if(v!=null)out[k]=v;}
+    for(const effect of globalThis.EffectEngine?.state?.(u)||[]){
+      if(effect?.id==="FULL_SHIELD_DEFENSE"&&ColinShieldMobilityEngine.shieldOccupied(u))continue;
+      const rules=effect?.movementRules;if(!rules)continue;for(const[k,v]of Object.entries(rules))if(v!=null)out[k]=v;}
     return out;
   }
   function effectVisionBonus(u){return(globalThis.EffectEngine?.state?.(u)||[]).reduce((sum,effect)=>sum+Number(effect?.visionBonus||0),0)}
@@ -118,12 +121,47 @@ export const TacticalEngine=(()=>{
     if(u&&globalThis.VerticalMobilityEngine?.ignoresElevation?.(u))return true;
     const traits=terrainTraits(u);
     if(hasConnectedSwimColumn(fromTile,toTile,traits))return true;
+    if(ColinShieldMobilityEngine.hasShield(u)&&
+       ColinShieldMobilityEngine.modeAt(u,fromTile)==="BOAT"&&
+       ColinShieldMobilityEngine.modeAt(u,toTile)==="BOAT"&&
+       hasConnectedSwimColumn(fromTile,toTile,["AQUATIC"]))return true;
     const mountainWalk=traits.includes("MOUNTAIN_WALK")&&(isMountainTile(fromTile)||isMountainTile(toTile));
-    const delta=traversalElevation(toTile,u)-traversalElevation(fromTile,u),baseClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),baseDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP),maxClimb=baseClimb+(mountainWalk?1:0),maxDrop=baseDrop+(mountainWalk?1:0);
+    // Boarding / leaving deep water is a shoreline transition, not climbing
+    // a column of water as if it were a cliff. Use whichever legal support
+    // route (bank elevation or adjacent free surface) is closer vertically.
+    const fromBoat=ColinShieldMobilityEngine.modeAt(u,fromTile)==="BOAT";
+    const toBoat=ColinShieldMobilityEngine.modeAt(u,toTile)==="BOAT";
+    const freeSurfaceDelta=traversalElevation(toTile,u)-traversalElevation(fromTile,u);
+    const terrainDelta=elevation(toTile)-elevation(fromTile);
+    const delta=ColinShieldMobilityEngine.hasShield(u)&&fromBoat!==toBoat&&
+      !globalThis.ClimateEngine?.isSolidIce?.(fromTile)&&!globalThis.ClimateEngine?.isSolidIce?.(toTile)&&
+      Math.abs(terrainDelta)<Math.abs(freeSurfaceDelta)?terrainDelta:freeSurfaceDelta;
+    const baseClimb=movementLimit(u,"maxClimb",MAX_NORMAL_CLIMB),baseDrop=movementLimit(u,"maxDrop",MAX_NORMAL_DROP),maxClimb=baseClimb+(mountainWalk?1:0),maxDrop=baseDrop+(mountainWalk?1:0);
     const mayJumpDown=traits.includes("UNRESTRICTED_DESCENT");
     return delta<=maxClimb&&(delta>=-maxDrop||delta<0&&mayJumpDown);
   }
-  function canActiveMove(m,us,u,x,y,{ignoreElevation=false}={}){if(globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(u))return false;if(effectMovementRules(u).immobilized===true)return false;const from=tile(m,u.x,u.y),to=tile(m,x,y);if(!to||!canOccupyTerrain(u,to)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id))return false;return ignoreElevation||canTraverseElevation(from,to,u);}
+  function canActiveMove(m,us,u,x,y,{ignoreElevation=false}={}){if(u?.shieldRidingOn)return false;if(globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(u))return false;if(effectMovementRules(u).immobilized===true)return false;const from=tile(m,u.x,u.y),to=tile(m,x,y);if(!to||!canOccupyTerrain(u,to)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id))return false;return ignoreElevation||canTraverseElevation(from,to,u);}
+  // One atomic adjacency/terrain predicate for ally exchanges. Each participant
+  // independently inherits their own real terrain and elevation restrictions.
+  function canSwapAllies(m,units,actor,ally){
+    if(actor?.shieldRidingOn||ally?.shieldRidingOn)return false;
+    if(!actor?.alive||!ally?.alive||actor.id===ally.id||actor.team!==ally.team||
+       actor.occupiesTile===false||ally.occupiesTile===false||
+       actor.carriedByUnitId||ally.carriedByUnitId||actor.carryingUnitId||ally.carryingUnitId||
+       Math.abs(actor.x-ally.x)+Math.abs(actor.y-ally.y)!==1)return false;
+    if(effectMovementRules(actor).immobilized===true||effectMovementRules(ally).immobilized===true||
+       globalThis.BurialEngine?.canMove?.(actor)===false||
+       globalThis.BurialEngine?.canMove?.(ally)===false)return false;
+    const from=tile(m,actor.x,actor.y),to=tile(m,ally.x,ally.y);
+    if(!from||!to||!canOccupyTerrain(actor,to)||!canOccupyTerrain(ally,from)||
+       isBlockedByObject(m,to.x,to.y,actor)||isBlockedByObject(m,from.x,from.y,ally)||
+       !canTraverseElevation(from,to,actor)||!canTraverseElevation(to,from,ally))return false;
+    // No third party may share either destination; the paired occupants are
+    // exempt only from one another, never from real terrain or collisions.
+    return !(units||[]).some(u=>u?.alive&&u.occupiesTile!==false&&
+      u.id!==actor.id&&u.id!==ally.id&&
+      (u.x===from.x&&u.y===from.y||u.x===to.x&&u.y===to.y));
+  }
   function cost(u,t){
     const tr=terrainTraits(u),profile=u?.character?.movementProfile||{},effectRules=effectMovementRules(u);
     if(globalThis.ClimateEngine?.isSolidIce?.(t))return 1;
@@ -133,8 +171,75 @@ export const TacticalEngine=(()=>{
     if(isAquatic(u)&&isLiveWater(t)||tr.includes("IGNORE_GROUND_TERRAIN")||t.terrain==="FOREST"&&tr.includes("FOREST_WALK")||t.terrain==="WATER"&&tr.includes("WATER_WALK")||isMountainTile(t)&&tr.includes("MOUNTAIN_WALK"))return 1;
     const base=Number(TERRAINS[t.terrain].moveCost||1),snow=Number(t?.snowDepth||0);return base+(snow>=1.5?2:snow>=.5?1:0);
   }
-  function reachable(m,us,u){ensureFacing(u);if(effectMovementRules(u).immobilized===true)return new Map();let max=globalThis.BurialEngine?.movementAllowance?BurialEngine.movementAllowance(u,u.character.combat.move):u.character.combat.move,b=new Map([[K(u.x,u.y),0]]),q=[{x:u.x,y:u.y,c:0}];if(max<=0)return new Map();while(q.length){q.sort((a,b)=>a.c-b.c);let n=q.shift(),from=tile(m,n.x,n.y);for(let [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){let x=n.x+dx,y=n.y+dy,t=tile(m,x,y);if(!t||!canOccupyTerrain(u,t)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id)||!canTraverseElevation(from,t,u))continue;let c=n.c+cost(u,t),k=K(x,y);if(c<=max+1e-9&&(!b.has(k)||c<b.get(k))){b.set(k,c);q.push({x,y,c})}}}b.delete(K(u.x,u.y));return b}
-  function pathTo(m,us,u,endX,endY){ensureFacing(u);if(effectMovementRules(u).immobilized===true)return[];const start=K(u.x,u.y),goal=K(endX,endY),max=globalThis.BurialEngine?.movementAllowance?BurialEngine.movementAllowance(u,u.character.combat.move):u.character.combat.move;if(max<=0)return[];const best=new Map([[start,0]]),prev=new Map(),q=[{x:u.x,y:u.y,c:0}];while(q.length){q.sort((a,b)=>a.c-b.c);const n=q.shift(),nk=K(n.x,n.y);if(n.c!==best.get(nk))continue;if(nk===goal)break;const from=tile(m,n.x,n.y);for(const [dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){const x=n.x+dx,y=n.y+dy,t=tile(m,x,y),k=K(x,y);if(!t||!canOccupyTerrain(u,t)||isBlockedByObject(m,x,y,u)||occupied(us,x,y,u.id)||!canTraverseElevation(from,t,u))continue;const c=n.c+cost(u,t);if(c<=max+1e-9&&(!best.has(k)||c<best.get(k))){best.set(k,c);prev.set(k,nk);q.push({x,y,c})}}}if(!best.has(goal))return[];const path=[];let k=goal;while(k!==start){const[x,y]=k.split(",").map(Number);path.push(tile(m,x,y));k=prev.get(k);if(!k)return[]}path.reverse();if(path.length){const from=path.length>1?path[path.length-2]:{x:u.x,y:u.y};u.facing=facingToward(from,path[path.length-1],ensureFacing(u));}return path}
+  // Both the preview and the actual execution use this exact same set of
+  // canonical edges. A shield transit is TWO paid steps with no stop on the
+  // occupied intermediary; the actual movement event retains its real waypoint.
+  function movementEdges(map,units,unit,from){
+    const edges=[];
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const x=from.x+dx,y=from.y+dy,to=tile(map,x,y);
+      if(!to||!canOccupyTerrain(unit,to)||isBlockedByObject(map,x,y,unit)||
+        occupied(units,x,y,unit.id)||!canTraverseElevation(from,to,unit))continue;
+      const regular=cost(unit,to);
+      edges.push({to,spent:ColinShieldMobilityEngine.moveCost(unit,from,to,regular),shieldTransit:null});
+    }
+    for(const edge of ColinShieldMobilityEngine.transitions(map,units,unit,from)){
+      const middle=tile(map,edge.shieldTransit.via.x,edge.shieldTransit.via.y);
+      const spent=cost(unit,middle)+cost(unit,edge.tile);
+      edges.push({to:edge.tile,spent,shieldTransit:edge.shieldTransit});
+    }
+    return edges;
+  }
+  function reachable(m,us,u){
+    if(!u?.alive||u.shieldRidingOn||effectMovementRules(u).immobilized===true)return new Map();
+    const max=globalThis.BurialEngine?.movementAllowance
+      ?BurialEngine.movementAllowance(u,u.character.combat.move):u.character.combat.move;
+    const best=new Map([[K(u.x,u.y),0]]),queue=[{x:u.x,y:u.y,spent:0}];
+    while(queue.length){
+      queue.sort((a,b)=>a.spent-b.spent);
+      const step=queue.shift(),key=K(step.x,step.y);
+      if(step.spent!==best.get(key))continue;
+      const from=tile(m,step.x,step.y);
+      for(const edge of movementEdges(m,us,u,from)){
+        const next=step.spent+edge.spent,k=K(edge.to.x,edge.to.y);
+        if(next<=max+1e-9&&(!best.has(k)||next<best.get(k))){
+          best.set(k,next);queue.push({x:edge.to.x,y:edge.to.y,spent:next});
+        }
+      }
+    }
+    best.delete(K(u.x,u.y));return best;
+  }
+  function pathTo(m,us,u,endX,endY){
+    if(!u?.alive||u.shieldRidingOn||effectMovementRules(u).immobilized===true)return [];
+    const start=K(u.x,u.y),goal=K(endX,endY),max=globalThis.BurialEngine?.movementAllowance
+      ?BurialEngine.movementAllowance(u,u.character.combat.move):u.character.combat.move;
+    const best=new Map([[start,0]]),previous=new Map(),queue=[{x:u.x,y:u.y,spent:0}];
+    while(queue.length){
+      queue.sort((a,b)=>a.spent-b.spent);
+      const n=queue.shift(),nk=K(n.x,n.y);
+      if(n.spent!==best.get(nk))continue;
+      if(nk===goal)break;
+      for(const edge of movementEdges(m,us,u,tile(m,n.x,n.y))){
+        const next=n.spent+edge.spent,k=K(edge.to.x,edge.to.y);
+        if(next<=max+1e-9&&(!best.has(k)||next<best.get(k))){
+          best.set(k,next);previous.set(k,{prior:nk,shieldTransit:edge.shieldTransit});
+          queue.push({x:edge.to.x,y:edge.to.y,spent:next});
+        }
+      }
+    }
+    if(!best.has(goal)||goal===start)return[];
+    const result=[];let k=goal;
+    while(k!==start){
+      const transition=previous.get(k);if(!transition)return[];
+      const [x,y]=k.split(',').map(Number),ground=tile(m,x,y);
+      result.push(transition.shieldTransit?{...ground,shieldTransit:transition.shieldTransit}:ground);
+      k=transition.prior;
+    }
+    result.reverse();
+    if(result.length){const from=result.length>1?result.at(-2):u;
+      u.facing=facingToward(from,result.at(-1),ensureFacing(u));}
+    return result;
+  }
   // Shared targeting geometry. Previously owned by tactical-game.js alone;
   // the authoritative server and browser now use exactly the same footprint.
   function aoeTiles(map,center,radius){
@@ -409,6 +514,6 @@ export const TacticalEngine=(()=>{
   function canTarget(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(!underwaterTargetVisibleTo(u,target)&&(s?.targetType||"SINGLE")==="SINGLE")return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);let at=tile(m,a.x,a.y),dt=tile(m,d.x,d.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(a,d),arc=relativeArc(d,a);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,elevation,elevationDelta,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

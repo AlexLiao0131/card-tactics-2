@@ -23,7 +23,7 @@ export const LOADOUTS={
 
   ophi_default:{id:"ophi_default",characterId:"ophi",armorId:"elf_light_armor",weaponIds:{elven_bow:"ophi_elven_bow",forest_spear:"ophi_forest_spear"},equipmentIds:[],skillIds:["ophi_eagle_arc_shot","ophi_healing_song","ophi_forest_entangle"],companionIds:["ophi_eagle"],generatedCardsOnDeploy:["ophi_eagle_card"]},
   ophi_eagle_default:{id:"ophi_eagle_default",characterId:"ophi_eagle",armorId:"natural_hide",weaponIds:{},skillIds:[]},
-  colin_default:{id:"colin_default",characterId:"colin",armorId:"chainmail",weaponIds:{colin_hammer:"colin_war_hammer"},equipmentIds:["colin_full_body_shield"],skillIds:["colin_full_shield_defense","colin_armor_breaking_strike"]},
+  colin_default:{id:"colin_default",characterId:"colin",armorId:"chainmail",weaponIds:{colin_hammer:"colin_war_hammer"},equipmentIds:["colin_full_body_shield"],skillIds:["colin_ally_swap","colin_full_shield_defense","colin_armor_breaking_strike","colin_shield_bash"]},
 
   church_apprentice_default:{id:"church_apprentice_default",characterId:"church_apprentice",armorId:"imperial_medium_armor",weaponIds:{sword:"church_training_sword"},skillIds:["church_slash"]},
   church_heavy_knight_default:{id:"church_heavy_knight_default",characterId:"church_heavy_knight",armorId:"church_heavy_plate",weaponIds:{greatsword:"church_greatsword"},skillIds:["church_heavy_slash"]},

@@ -171,6 +171,14 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     return{applied:true,type:"DISPEL_POSITIVE",removed:1,removedId:entry.id,
       removedName:entry.name||entry.id,refundedMana:rewardDispel(source)};
   }
+  // Once-per-action crowd control. Do not decrement at global round ticks:
+  // a unit hit after acting must still forfeit its next legal action only.
+  function consumeActionSkip(unit){
+    const pending=state(unit).find(effect=>effect.type==="STUN"&&effect.classification==="NEGATIVE");
+    if(!pending)return false;
+    removeEffectById(unit,pending.id,{type:"STUN"});
+    return true;
+  }
   // Exact status removal: water cannot dispel unrelated negative effects.
   function removeEffectById(target,id,{type=null}={}){
     if(!target?.effects?.length)return 0;
@@ -230,6 +238,10 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     unit.character.modifiers=clone(unit._effectBaseModifiers);
     let damageTakenMultiplier=1,guardMultiplier=1;
     for(const e of state(unit)){
+      // Once the physical shield becomes a boat/sled/passenger platform it
+      // cannot simultaneously provide the full-shield defensive stance buff.
+      if(e.id==="FULL_SHIELD_DEFENSE"&&
+        globalThis.ColinShieldMobilityEngine?.shieldOccupied?.(unit))continue;
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(unit.character.attributes,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))unit.character.attributes[k]=Number(unit.character.attributes[k]||0)+Number(v||0);
       const m=e.modifiers||{};
@@ -260,6 +272,10 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   function attributeView(unit){
     const base={...(unit?.character?.attributes||{})};
     for(const e of state(unit)){
+      // Once the physical shield becomes a boat/sled/passenger platform it
+      // cannot simultaneously provide the full-shield defensive stance buff.
+      if(e.id==="FULL_SHIELD_DEFENSE"&&
+        globalThis.ColinShieldMobilityEngine?.shieldOccupied?.(unit))continue;
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(base,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))base[k]=Number(base[k]||0)+Number(v||0);
     }
@@ -351,6 +367,12 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
         return saintHealing({source,target,amount:effect.amount,overflowShield:effect.overflowShield,critical});
       }
       return{applied:true,type:effect.type,amount:heal(target,effect.amount)};
+    }
+    if(effect.type==="STUN"){
+      return {applied:true,type:"STUN",effect:addEffect(target,{
+        ...effect,id:effect.id||"STUN",name:effect.name||"暈眩",
+        classification:"NEGATIVE",duration:0
+      },source)};
     }
     if(effect.type==="HEALING_CHANNEL"){
       if(!isSupportedChannelRule(effect))return{applied:false,reason:"INVALID_CHANNEL"};
@@ -509,7 +531,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,positiveBuffChoices,dispelPositive,rewardDispel,resolveIncomingDamage,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,positiveBuffChoices,dispelPositive,rewardDispel,resolveIncomingDamage,consumeActionSkip,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 }
 export const EffectEngine=createEffectEngine();
 globalThis.EffectEngine=EffectEngine;

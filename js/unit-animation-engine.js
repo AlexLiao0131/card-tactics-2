@@ -224,7 +224,7 @@ export const UnitAnimationEngine=(()=>{
     return emit(unit,STATE.DEATH,{duration:durationFor(unit,STATE.DEATH,detail),...detail});
   }
 
-  function emitMove(unit,{from=null,path=[],kind="UNIT",duration=null}={}){
+  function emitMove(unit,{from=null,path=[],kind="UNIT",duration=null,shieldSupportId=null,shieldSupportFacing=null}={}){
     if(!unit?.id)return null;
     const points=[];
     const push=point=>{
@@ -236,11 +236,14 @@ export const UnitAnimationEngine=(()=>{
     };
     push(from);
     for(const point of path||[])push(point);
-    push(unit);
+    if(String(kind).startsWith("SHIELD_")&&points.length&&
+      Number(points.at(-1).x)===Number(unit.x)&&Number(points.at(-1).y)===Number(unit.y)){
+      // Preserve authoritative water-surface / shield-step endpoint elevation.
+    }else push(unit);
     if(points.length<2)return null;
     const steps=Math.max(1,points.length-1);
     return emit(unit,STATE.WALK,{
-      kind,
+      kind,shieldSupportId,shieldSupportFacing,
       path:points,
       duration:duration==null?Math.max(180,steps*160):duration
     });
@@ -259,7 +262,7 @@ export const UnitAnimationEngine=(()=>{
       const previous=previousUnits.get(String(unit.id));
       if(previous){
         const moved=Number(previous.x)!==Number(unit.x)||Number(previous.y)!==Number(unit.y)||Number(previous.z)!==Number(unit.z);
-        if(moved&&!queued(unit.id,STATE.WALK)){
+        if(moved&&!unit.shieldRidingOn&&!queued(unit.id,STATE.WALK)){
           const moveEvent=emitMove(unit,{from:previous,path:[unit],kind:"STATE_DELTA"});
           if(moveEvent){
             const tail=queue.pop(),before=queue.findIndex(event=>String(event.unitId)===String(unit.id)&&(event.state===STATE.ATTACK||event.state===STATE.CAST));

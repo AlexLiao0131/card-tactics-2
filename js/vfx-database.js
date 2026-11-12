@@ -5,6 +5,7 @@
  * A new skill can reuse a role without changing BabylonRenderer.
  */
 const defs={
+  'shield-guard':{roles:{SWAP:['colin_ally_swap'],GUARD:['colin_full_shield_defense'],BASH:['colin_shield_bash']},events:[],status:{GUARD:'FULL_SHIELD_DEFENSE',STUN:'STUN'},legacy:'shieldGuardVfx'},
   'swordsmanship':{
     roles:{CUT:['leon_slash'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
     events:['UNIT_FLOAT_TEXT'],legacy:'swordsmanshipVfx'},

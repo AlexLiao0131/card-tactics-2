@@ -3,11 +3,25 @@
 
   // Shared by the original local controller and the authenticated PvP command host.
   // This is the same movement-undo rule, not a second network movement engine.
-  function restorePendingMove(unit,origin){
+  function restorePendingMove(unit,origin,{units=null,map=null}={}){
     if(!unit||!origin||origin.unitId!==unit.id||unit.acted||!unit.moved)return false;
     unit.x=origin.x;unit.y=origin.y;unit.z=origin.z;
     if(origin.facing)unit.facing=origin.facing;
     unit.moved=false;
+    // Rewind the entire shield-borne party, not only the carrier's grid tile.
+    if(unit.shieldPassengerId&&Array.isArray(units)){
+      const rider=units.find(u=>u.id===unit.shieldPassengerId);
+      if(rider&&rider.shieldRidingOn===unit.id){
+        globalThis.ColinShieldMobilityEngine?.syncPassenger?.(units,unit);
+        if(origin.passengerId===rider.id){
+          rider.moved=!!origin.passengerMoved;
+          rider.shieldRideMoved=!!origin.passengerRideMoved;
+        }
+      }
+    }
+    if(globalThis.ColinShieldMobilityEngine?.hasShield?.(unit)&&map)
+      unit.shieldMobilityMode=ColinShieldMobilityEngine.modeAt(unit,
+        globalThis.TacticalEngine?.tile?.(map,unit.x,unit.y));
     return true;
   }
 
@@ -226,6 +240,7 @@
            !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
         if(skill?.utilityAction&&target?.kind==="CORE")return false;
         if(skill?.utilityAction?.type==="STEAL_LOOT"&&!globalThis.RewardEngine?.stealable?.(unit,target))return false;
+        if(skill?.utilityAction?.type==="SWAP_ALLIES")return TacticalEngine.canSwapAllies(map,state().units,unit,target);
         if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
         
         if(skill?.bloodShadow)return !!bloodShadowLanding(unit,target);
@@ -318,7 +333,12 @@
       return finishActiveSkill(unit);
     }
 
-    function beginPendingMove(unit){pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing};}
+    function beginPendingMove(unit){
+      const rider=state().units.find(u=>u.id===unit.shieldPassengerId);
+      pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing,
+        passengerId:rider?.id||null,passengerMoved:!!rider?.moved,
+        passengerRideMoved:!!rider?.shieldRideMoved};
+    }
     function commitPendingMove(unit){if(pendingMove?.unitId===unit?.id)pendingMove=null;}
 
     function approachTargetForAttack(unit,target,skill){
@@ -831,6 +851,41 @@
       const {map,units}=state(),action=skill?.utilityAction;if(!action)return skillFailure(attacker,skill,"NO_UTILITY_ACTION",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       if(action.type==="ENCHANT_WEAPON")return beginEnchantment(attacker,skill);
+      if(action.type==="SWAP_ALLIES"){
+        if(action.consumeTurn!==true||
+           !TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState)||
+           !TacticalEngine.canSwapAllies(map,units,attacker,target))
+          return skillFailure(attacker,skill,"ALLY_SWAP_ILLEGAL",target);
+        // Commit BOTH positions only after complete two-way validation. These
+        // are real game-state coordinates; renderer observes events afterwards.
+        if(!ctx.consumeSkill(attacker,skill))
+          return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+        const beforeA={x:attacker.x,y:attacker.y,z:attacker.z};
+        const beforeB={x:target.x,y:target.y,z:target.z};
+        globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
+        globalThis.EffectEngine?.interruptChannel?.(attacker,"ACTION");
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        commitPendingMove(attacker);
+        attacker.x=beforeB.x;attacker.y=beforeB.y;
+        target.x=beforeA.x;target.y=beforeA.y;
+        const tileA=TacticalEngine.tile(map,attacker.x,attacker.y);
+        const tileB=TacticalEngine.tile(map,target.x,target.y);
+        if(globalThis.VerticalMobilityEngine?.syncUnit){
+          VerticalMobilityEngine.syncUnit(attacker,tileA);
+          VerticalMobilityEngine.syncUnit(target,tileB);
+        }else{
+          attacker.z=Number(tileA.elevation||0);
+          target.z=Number(tileB.elevation||0);
+        }
+        globalThis.UnitAnimationEngine?.emitMove?.(attacker,{from:beforeA,kind:"SWAP"});
+        globalThis.UnitAnimationEngine?.emitMove?.(target,{from:beforeB,kind:"SWAP"});
+        // Each unit enters its actual new cell once, through the existing
+        // environmental entry/capture callback used by normal movement.
+        ctx.enterTile?.(attacker);
+        ctx.enterTile?.(target);
+        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 交換位置。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
       if(action.type==="SET_VERTICAL_MODE"){
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
@@ -1333,7 +1388,7 @@
     function cancelPendingMove(){
       const {selected}=state();
       if(!selected||pendingMove?.unitId!==selected.id||selected.acted)return false;
-      if(!restorePendingMove(selected,pendingMove))return false;
+      if(!restorePendingMove(selected,pendingMove,{units:state().units,map:state().map}))return false;
       pendingMove=null;ctx.setCommandPanelCollapsed(false);ctx.setMode("command");
       ctx.pushLog(`${selected.character.name} 取消移動，返回原位置。`,"SYSTEM");ctx.render();ctx.emitState();return true;
     }
