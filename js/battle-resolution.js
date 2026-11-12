@@ -362,6 +362,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       // positions before its shot, just as for an initiator attack.
       const plannedBackstep=skill?.backstep?
         backstepDestination(c,action.actor,action.target,skill):null;
+      // A legal backstep belongs to this COMMITTED attack action, not to its
+      // hit/crit/damage outcome. MISS, active EVADE and successful GUARD never
+      // revoke a planned landing; only actual movement legality/death can.
+      if(plannedBackstep&&!followup)
+        backsteps.push({unit:action.actor,tile:plannedBackstep});
       let friendlyHpLoss=0,successfulDefenseForCounter=false;
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
@@ -487,9 +492,6 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(action.actor.alive&&globalThis.EffectEngine&&!followup)
         for(const effect of skill?.afterUseEffects||[])
           EffectEngine.apply({source:action.actor,target:action.actor,effect});
-      if(plannedBackstep&&!followup&&results.some(r=>r.role===action.role&&
-         r.actor.id===action.actor.id&&r.skill.id===skill.id))
-        backsteps.push({unit:action.actor,tile:plannedBackstep});
       bloodRuntime?.endBloodTransaction?.(a.actor);
     }
     const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
