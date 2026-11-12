@@ -31,7 +31,27 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   function supportAnchorDistance(ally){let value=1;for(const passive of SkillDatabase.passiveList(ally?.character?.passives)){const n=Number(passive?.supportRules?.allyDistance);if(Number.isFinite(n))value=Math.max(value,n)}return value}
   function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;const anchor=Math.max(Math.abs(ally.x-initiator.x),Math.abs(ally.y-initiator.y));if(anchor>supportAnchorDistance(ally))continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
   function createSupportAction(ally,target,skill,index=0){return{id:`support-${ally.id}-${index}`,role:"SUPPORT",actor:ally,target,skill}}
-  function counterSkills({defender,attacker,canUseSkill}){if(!defender?.alive||!attacker?.alive)return[];return SkillDatabase.list(defender.character.skills).filter(s=>{if(s.utilityAction||s.target!=="ENEMY"||!isSingleTarget(s))return false;if(canUseSkill&&!canUseSkill(defender,s))return false;const r=s.range||{min:1,max:1},d=distance(defender,attacker);return d>=r.min&&d<=r.max&&reactionTargetable(defender,attacker,s)})}
+  function counterSkills({defender,attacker,canUseSkill}){
+    if(!defender?.alive||!attacker?.alive)return[];
+    return SkillDatabase.list(defender.character.skills).filter(s=>{
+      if(s.utilityAction||s.target!=="ENEMY"||!isSingleTarget(s))return false;
+      if(canUseSkill&&!canUseSkill(defender,s))return false;
+      const r=s.range||{min:1,max:1},d=distance(defender,attacker);
+      if(d<r.min||d>r.max||!reactionTargetable(defender,attacker,s))return false;
+      if(s.approach||s.bloodShadow){
+        const map=defender._runtimeMap||attacker._runtimeMap;
+        // Headless snapshots may omit the client-only _runtimeMap backlink;
+        // preserve the existing candidate in that case and let the real
+        // resolver validate the authoritative map before charging its cost.
+        if(!map)return true;
+        const living=(globalThis.UnitRuntimeEngine?.knownUnits?.()||[])
+          .filter(u=>u.alive&&u._runtimeMap===map);
+        const units=[...new Map([...living,defender,attacker].map(u=>[u.id,u])).values()];
+        return !!counterTransitPlan({map,units,environmentState:null},defender,attacker,s);
+      }
+      return true;
+    });
+  }
   function createCounterAction(defender,attacker,skill){return{id:`counter-${defender.id}`,role:"COUNTER",actor:defender,target:attacker,skill}}
   function createReaction(type,options={}){if(!["COUNTER","DEFENSE","EVADE"].includes(type))throw new Error(`Unknown reaction type: ${type}`);return{type,...options}}
   function prepareSingleTargetReaction({defender,attacker,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE","EVADE"]}}
@@ -235,13 +255,58 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     }
     return null;
   }
+  // A selected counter-attack is not exempt from authored movement.
+  // Resolve landing from canonical map and roster while keeping the selection
+  // screen read-only. The same executor runs in browser and PvP headless.
+  function counterTransitPlan(c,actor,target,skill){
+    if(!actor?.alive||!target?.alive||!c?.map)return null;
+    if(skill?.approach){
+      if(!TacticalEngine.canTarget(c.map,actor,target,skill,c.environmentState||null))return null;
+      const stop=Math.max(1,Number(skill.approach.stopDistance||1));
+      const candidates=(c.map.tiles||[]).filter(t=>
+        Math.abs(t.x-target.x)+Math.abs(t.y-target.y)===stop&&
+        !c.units.some(u=>u.alive&&u.occupiesTile!==false&&u.id!==actor.id&&u.x===t.x&&u.y===t.y));
+      const valid=candidates.map(tile=>({tile,path:TacticalEngine.pathTo(c.map,c.units,{...actor},tile.x,tile.y)}))
+        .filter(row=>row.path.length>0)
+        .sort((a,b)=>a.path.length-b.path.length||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+      return valid.length?{kind:"CHARGE",steps:valid[0].path}:null;
+    }
+    if(skill?.bloodShadow){
+      if(!TacticalEngine.canTarget(c.map,actor,target,skill,c.environmentState||null))return null;
+      const back={N:[0,1],S:[0,-1],E:[-1,0],W:[1,0]}[TacticalEngine.ensureFacing(target)];
+      if(!back)return null;
+      const landing=TacticalEngine.tile(c.map,target.x+back[0],target.y+back[1]);
+      if(!landing||!TacticalEngine.canOccupyTerrain(actor,landing)||
+         TacticalEngine.isBlockedByObject(c.map,landing.x,landing.y,actor))return null;
+      if(c.units.some(u=>u.alive&&u.occupiesTile!==false&&u.id!==actor.id&&u.x===landing.x&&u.y===landing.y))return null;
+      if(Math.abs(actor.x-landing.x)+Math.abs(actor.y-landing.y)>
+         Number(actor.character?.combat?.move||0))return null;
+      return{kind:"TELEPORT",steps:[landing]};
+    }
+    return null;
+  }
+  function commitCounterTransit(c,actor,plan,hooks){
+    if(!plan)return false;
+    for(const tile of plan.steps){
+      if(!actor.alive)return false;
+      const from={x:actor.x,y:actor.y,z:actor.z};
+      if(from.x===tile.x&&from.y===tile.y)continue;
+      // Path-to is authoritative for charge; teleport uses its destination
+      // legality, never an invented traversed path.
+      if(plan.kind==="CHARGE"&&!TacticalEngine.canActiveMove(c.map,c.units,actor,tile.x,tile.y))return false;
+      actor.x=tile.x;actor.y=tile.y;
+      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(actor,tile);
+      else actor.z=Number(tile.elevation||0);
+      globalThis.UnitAnimationEngine?.emitMove?.(actor,{from,kind:plan.kind});
+      hooks.onBackstep?.(actor,tile);
+    }
+    return actor.alive;
+  }
   function execute(c,hooks={}){
     // Settle the primary attack's loss-of-control decision BEFORE speed-ordering
     // counterattacks. An enemy whose attack never reaches them cannot react to it.
     // This shares the official per-action random sequence and never alters UI target IDs.
     const primary=c.actions[0],runtime=globalThis.UnitRuntimeEngine;
-    const plannedBackstep=primary?.skill?.backstep&&primary?.actor?.alive?
-      backstepDestination(c,primary.actor,primary.target,primary.skill):null;
     const eligiblePrimary=primary?.actor?.alive&&primary?.target?.alive&&
       (!hooks.canUseSkill||hooks.canUseSkill(primary.actor,primary.skill));
     const primarySkill=eligiblePrimary?(runtime?.applyResourceScaling?.(primary.actor,primary.skill)||primary.skill):null;
@@ -253,12 +318,22 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     const primaryRedirect=primaryFriends.length?
       primaryFriends[Math.min(primaryFriends.length-1,Math.floor(random()*primaryFriends.length))]:null;
     const queue=buildQueue(c).filter(a=>!primaryRedirect||a.role!=="COUNTER"),results=[];
+    // Backward shooting is an attack ability, not an initiator-only movement.
+    // Queue one authoritative landing for each actually executed action,
+    // including a chosen or automatically generated COUNTER.
+    const backsteps=[];
     for(let index=0;index<queue.length;index++){
       const a=queue[index];
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
       const followup=a.role==="FERVOR_FOLLOWUP";
       if(!followup&&hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       let skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
+      // Charge and Blood Shadow counterattacks must transit BEFORE the hit.
+      // Invalid or interrupted landings do not spend a skill or deal damage.
+      if(a.role==="COUNTER"&&(skill.approach||skill.bloodShadow)){
+        const transit=counterTransitPlan(c,a.actor,a.target,skill);
+        if(!transit||!commitCounterTransit(c,a.actor,transit,hooks))continue;
+      }
       const bloodRuntime=globalThis.UnitRuntimeEngine;
       // Before resource consumption: use the SAME Sanity snapshot for damage scaling
       // and misfire chance. Target candidates must pass official range, height and LOS.
@@ -283,6 +358,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       }
       const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
       const action={...a,skill,target:redirected||a.target,misfire:!!redirected};
+      // Resolve the counter's legal landing against the actual participant
+      // positions before its shot, just as for an initiator attack.
+      const plannedBackstep=skill?.backstep?
+        backstepDestination(c,action.actor,action.target,skill):null;
       let friendlyHpLoss=0,successfulDefenseForCounter=false;
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
@@ -310,7 +389,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
           duelActive:hasDuel(c,action.actor,action.target,skill),
-          backstepLanding:isPrimary&&plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
+          backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
             z:Number(plannedBackstep.elevation||0)}:null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
@@ -408,20 +487,24 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(action.actor.alive&&globalThis.EffectEngine&&!followup)
         for(const effect of skill?.afterUseEffects||[])
           EffectEngine.apply({source:action.actor,target:action.actor,effect});
+      if(plannedBackstep&&!followup&&results.some(r=>r.role===action.role&&
+         r.actor.id===action.actor.id&&r.skill.id===skill.id))
+        backsteps.push({unit:action.actor,tile:plannedBackstep});
       bloodRuntime?.endBloodTransaction?.(a.actor);
     }
     const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
-    // The unit's position commits after the one attack+reaction action;
-    // the same official ATTACK presentation event interpolates the airborne
-    // backward movement while the shot is fired. No extra movement action.
-    if(plannedBackstep&&c.initiator?.alive&&
-       results.some(r=>r.role==="INITIATOR"&&r.actor.id===c.initiator.id)&&
-       TacticalEngine.canActiveMove(c.map,c.units,c.initiator,plannedBackstep.x,plannedBackstep.y)){
-      const unit=c.initiator;
-      unit.x=plannedBackstep.x;unit.y=plannedBackstep.y;
-      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,plannedBackstep);
-      else unit.z=Number(plannedBackstep.elevation||0);
-      hooks.onBackstep?.(unit,plannedBackstep);
+    // Every executed backstep (including a defender's counterattack) commits
+    // once after engagement, never when the reaction picker is opened.
+    // Keep standard occupancy/elevation/terrain checks and the single official
+    // tile-entry callback for water, hazards, passengers and soul pickup.
+    for(const {unit,tile} of backsteps){
+      if(!unit.alive||!TacticalEngine.canActiveMove(c.map,c.units,unit,tile.x,tile.y))continue;
+      const from={x:unit.x,y:unit.y,z:unit.z};
+      unit.x=tile.x;unit.y=tile.y;
+      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,tile);
+      else unit.z=Number(tile.elevation||0);
+      globalThis.UnitAnimationEngine?.emitMove?.(unit,{from,kind:"BACKSTEP"});
+      hooks.onBackstep?.(unit,tile);
     }
     return{context:c,queue,results,postEngagement:post};
   }

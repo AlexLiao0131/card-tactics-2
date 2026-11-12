@@ -13,6 +13,9 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   const PHASE={CARD:"CARD_PHASE",PLAYER:"PLAYER_TURN",ENEMY:"ENEMY_TURN",ENDED:"MATCH_ENDED"};
 
   let map,units,selected,mode,selectedSkill,selectedSkillVariant,logs,round,phase,matchResult,stage,stageState,environmentState,inspectedTile,cores=[];
+  // Read-only player confirmation of the exact canonical fan-shot footprint.
+  // This is not a second combat rule and cannot spend resources on preview.
+  let pendingFanAim=null;
   let pendingPositiveDispel=null;
   let logState=BattleLog.create(),cardState=null,enemyCardState=null,pendingCard=null,unitSerial=0;
   let enemyView={active:false,kind:null,message:"",cardId:null,unitId:null};
@@ -378,7 +381,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     ({stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,unitSerial}=setup);
     enchantIdentityById.clear();enchantIdentityCounters.clear();releaseEnchantmentMarkers();
     EffectEngine.syncConditionalPassives(units,environmentState);
-    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
+    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
   function unitAt(x,y){return units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y);}
   function shieldBoardOrDismount(unit,{passenger=null,tile=null}={}){
@@ -497,7 +500,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
-  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
+  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
   function resolveWeatherEvents(...args){return environmentController.resolveWeatherEvents(...args);}
   function beginPlayerTurn(){
     const completed=beginPlayerRoundSequence({
@@ -559,6 +562,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     return clickBattleTile(next.x,next.y);
   }
   function wingTargetTiles(unit,skill){
+    if(skill?.fanShot&&pendingFanAim&&selected?.id===unit.id&&selectedSkill?.id===skill.id)
+      return TacticalEngine.fanTiles(map,unit,pendingFanAim,skill.fanShot);
     if(skill?.utilityAction?.type!==AngelWingBarrierEngine.ACTION)return mapTargetTiles(unit,skill);
     if(!canUseSkill(unit,skill))return[];
     return AngelWingBarrierEngine.legalTiles(map,units,unit,{cores});
@@ -590,7 +595,10 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       // read-only enchantment choice is open.
       return;
     }
-    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile))executeMapSkill(selected,tile,selectedSkill);return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){
+    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile)){
+        if(selectedSkill.fanShot){pendingFanAim=tile;render();}
+        else executeMapSkill(selected,tile,selectedSkill);
+      }return;}if(selected&&!selected.acted&&mode==="attack"){const target=unit&&targets.includes(unit)?unit:(core?targets.find(candidate=>candidate.kind==="CORE"&&candidate.core===core):null);if(!target&&environmentTargetTiles(selected,selectedSkill).includes(tile)){executeEnvironmentTargetSkill(selected,tile,selectedSkill);return;}if(target){
         // A choice-only counterspell must not move or spend the actor's resources
         // until the player has selected the concrete positive effect.
         if(target.kind!=="CORE"&&selectedSkill?.dispelChoice==="POSITIVE"){
@@ -620,7 +628,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       if(selectedSkill?.terrainTargeting===true&&mapTargetTiles(selected,selectedSkill).includes(tile)){
         executeMapSkill(selected,tile,selectedSkill);return;
       }
-    }if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
+    }if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;pendingFanAim=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
   function renderTurnStatus(){if(matchResult){turnStatus.textContent=matchResult==="VICTORY"?`戰鬥結束｜VICTORY｜Round ${round}`:`戰鬥結束｜DEFEAT｜Round ${round}`;return;}const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;}
   // The skill selector owns one reusable read-only inspector, rather than a tooltip per button.
   // Use the same hold threshold as BattleInputController's battlefield inspector.
@@ -1013,8 +1021,41 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }
     if(mode==="attack-menu"||mode==="special-menu"||mode==="blood-memory-menu"){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();if(mode==="special-menu"&&selected._bloodAwakened&&EffectEngine.bloodMemorySkills(selected).length)
       addActionButton(`血液記憶（${EffectEngine.bloodMemorySkills(selected).length}）`,()=>{mode="blood-memory-menu";render();});
-    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(battleSkillButtonLabel(skill,range,resourceLabel(selected,skill)),()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
+    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(battleSkillButtonLabel(skill,range,resourceLabel(selected,skill)),()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;pendingFanAim=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
     if((mode==="map-target"||mode==="attack")&&selectedSkill){
+      if(mode==="map-target"&&selectedSkill.fanShot){
+        const dirs=[
+          ["↑ 北",0,-1],["↗ 東北",1,-1],["→ 東",1,0],["↘ 東南",1,1],
+          ["↓ 南",0,1],["↙ 西南",-1,1],["← 西",-1,0],["↖ 西北",-1,-1]
+        ];
+        const legal=mapTargetTiles(selected,selectedSkill);
+        // Every button resolves an actual legal tile; the direction labels
+        // never create a fictitious target beyond the canonical map or fog.
+        addActionButton("選擇射擊方向（點地格或點方位）",()=>{},true);
+        for(const [label,dx,dy] of dirs){
+          const candidates=legal.filter(tile=>{
+            const rx=tile.x-selected.x,ry=tile.y-selected.y;
+            return dx===0?rx===0&&ry*dy>0:dy===0?ry===0&&rx*dx>0:
+              rx*dx>0&&ry*dy>0&&Math.abs(rx)===Math.abs(ry);
+          }).sort((a,b)=>(Math.abs(b.x-selected.x)+Math.abs(b.y-selected.y))-
+            (Math.abs(a.x-selected.x)+Math.abs(a.y-selected.y)));
+          const aim=candidates[0];
+          addActionButton(label,()=>{if(!aim)return;pendingFanAim=aim;render();},!aim);
+        }
+        if(pendingFanAim){
+          const fan=TacticalEngine.fanTiles(map,selected,pendingFanAim,selectedSkill.fanShot);
+          addActionButton(`確認多重箭｜扇形 ${fan.length} 格`,()=>{
+            if(!pendingFanAim||!selectedSkill||!selected)return;
+            const aim=pendingFanAim,skill=selectedSkill,actor=selected;
+            if(!mapTargetTiles(actor,skill).some(tile=>tile.x===aim.x&&tile.y===aim.y)){
+              pendingFanAim=null;render();return;
+            }
+            pendingFanAim=null;executeMapSkill(actor,aim,skill);
+          });
+        }
+        addActionButton("取消施放",()=>{pendingFanAim=null;backFromTargeting();});
+        return;
+      }
       if(actionController.enchantmentFollowup()?.unitId===selected.id){
         addActionButton("返回攻擊選擇",backFromTargeting);
         addActionButton("取消攻擊並待機（保留附魔）",()=>actionController.cancelEnchantmentFollowup());

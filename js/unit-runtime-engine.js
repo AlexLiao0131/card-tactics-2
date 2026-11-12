@@ -179,16 +179,16 @@ export function createUnitRuntimeEngine(){
   // Resource choice is resolved from the SAME live value for preview,
   // action validation and execution. This is a single cast, never a mixed
   // partial soul+MP transaction.
-  function forestSoulHealingChoice(unit,skill){
-    if(!skill?.forestSoulHealing||!forestSoulUser(unit))return null;
+  function forestSoulCastChoice(unit,skill){
+    if(!skill?.forestSoulCast||!forestSoulUser(unit))return null;
     syncResources(unit);
-    const cost=Math.max(1,Number(skill.forestSoulHealing.cost||0));
+    const cost=Math.max(1,Number(skill.forestSoulCast.cost||0));
     const available=Number(unit.resources.forestSoul.value||0);
     if(available>=cost)return{mode:"SOUL",cost};
-    return skill.forestSoulHealing.mpFallback===true?{mode:"MANA",cost:0}:null;
+    return skill.forestSoulCast.mpFallback===true?{mode:"MANA",cost:0}:null;
   }
   function skillManaCost(unit,skill){
-    if(forestSoulHealingChoice(unit,skill)?.mode==="SOUL")return 0;
+    if(forestSoulCastChoice(unit,skill)?.mode==="SOUL")return 0;
     const base=manaCost(skill),rule=unit?.character?.resourceRules?.humidity;
     if(!base||!skill?.waterMagic||!rule)return base;
     const humidity=humidityValue(unit);
@@ -334,8 +334,8 @@ export function createUnitRuntimeEngine(){
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);
     const extras={...resourceCosts(skill)};
-    const heal=forestSoulHealingChoice(unit,skill);
-    if(heal?.mode==="SOUL")extras.forestSoul=heal.cost;
+    const soulCast=forestSoulCastChoice(unit,skill);
+    if(soulCast?.mode==="SOUL")extras.forestSoul=soulCast.cost;
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill,world=null){
@@ -358,7 +358,7 @@ export function createUnitRuntimeEngine(){
     if(req.flying===true&&String(unit?.verticalState?.mode||"")!=="FLYING")return false;
     if(req.water===true){const runtimeMap=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.(),tile=runtimeMap?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
     syncMana(unit);syncResources(unit);
-    if(skill?.forestSoulHealing&&forestSoulUser(unit)&&!forestSoulHealingChoice(unit,skill))return false;
+    if(skill?.forestSoulCast&&forestSoulUser(unit)&&!forestSoulCastChoice(unit,skill))return false;
     if(unit.mana<skillManaCost(unit,skill))return false;
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key];if(!rule)return false;if(rule.allowOverdraft!==true&&Number(unit.resources?.[key]?.value||0)<cost)return false;}
     return true;
@@ -367,12 +367,12 @@ export function createUnitRuntimeEngine(){
     if(!canUseSkill(unit,skill,world))return null;
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
-    const heal=forestSoulHealingChoice(unit,skill);
+    const soulCast=forestSoulCastChoice(unit,skill);
     const mana=skillManaCost(unit,skill);unit.mana=Math.max(0,unit.mana-mana);
     const spent={};
-    if(heal?.mode==="SOUL"){
-      changeResource(unit,"forestSoul",-heal.cost);
-      spent.forestSoul={cost:heal.cost,remaining:forestSoulValue(unit),max:unit.resources.forestSoul.max};
+    if(soulCast?.mode==="SOUL"){
+      changeResource(unit,"forestSoul",-soulCast.cost);
+      spent.forestSoul={cost:soulCast.cost,remaining:forestSoulValue(unit),max:unit.resources.forestSoul.max};
     }for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
     if(skill?.forestSoulRelease===true&&forestSoulUser(unit)){
       const value=forestSoulValue(unit);
@@ -384,8 +384,8 @@ export function createUnitRuntimeEngine(){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);
-    const heal=forestSoulHealingChoice(unit,skill);
-    if(heal?.mode==="SOUL")labels.push(`森靈之魂 ${heal.cost}`);
+    const soulCast=forestSoulCastChoice(unit,skill);
+    if(soulCast?.mode==="SOUL")labels.push(`森靈之魂 ${soulCast.cost}`);
     if(mana>0)labels.push(`MP ${mana}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
