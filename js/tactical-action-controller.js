@@ -1163,12 +1163,17 @@
       const spent=ctx.consumeSkill(attacker,skill);
       if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
+      // One bow enchant per committed fan attack; never one charge per victim.
+      const fanEnchantment=skill.fanShot?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
       TacticalEngine.faceToward(attacker,center);
+      const fanAffected=skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):null;
       // Present the validated landing without changing the authored hit center.
       // Browser and headless PVP use the SAME canonical LINE transit plan.
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",
         projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
-        landingX:transit?.landing?.x??null,landingY:transit?.landing?.y??null});
+        landingX:transit?.landing?.x??null,landingY:transit?.landing?.y??null,
+        fanTargetCells:fanAffected?.map(t=>({x:t.x,y:t.y}))||null,
+        enchantmentElement:fanEnchantment?.element||null});
       if(skill.tsunamiWave){
         // Stage 1: contact and knockback, before adding water. This keeps
         // wave impact independent of the hydro's steady water depths.
@@ -1216,7 +1221,8 @@
       // are crossed. A committed strike spends exactly one weapon enchant.
       const enchantment=skill.shape==="LINE"?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
       const enchantImpacts=[];
-      const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):ctx.aoeTiles(center,skill.radius||0);
+      const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):
+        skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);
@@ -1266,10 +1272,12 @@
           summary.inArea++;
           // Area magic cannot bypass the ally-facing Holy Wing Wall. Friendlies
           // can still shoot/counter outward through it using the same rule.
-          if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,attacker,occupant,skill)){
+          if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,attacker,occupant,skill)||
+             skill.fanShot&&!TacticalEngine.hasLineOfSight(map,attacker,occupant,
+               {...skill,target:"ENEMY",targetType:"SINGLE"},environmentState)){
             summary.blocked++;
             globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"BLOCK");
-            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 被聖翼壁障阻擋。`,"BATTLE");
+            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 被障礙阻擋。`,"BATTLE");
             return;
           }
           const atCenter=tile.x===center.x&&tile.y===center.y;
@@ -1291,7 +1299,25 @@
           summary.hit++;
           result.damage=Math.round(result.damage*bloodMult);
           const hpBefore=Math.max(0,Number(occupant.hp||0));
-          const shield=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,
+          const fanMagicCrit=!!skill.fanShot&&ctx.random()*100<BattleEngine.critChance(attacker.character,skill);
+          // Do not turn a physical arrow into MAGIC: use official dual-damage shields.
+          const soulBonus=skill.fanShot?BattleResolution.previewInherentBonus(attacker,occupant,skill,{critical:fanMagicCrit}):0;
+          const enchantBonus=skill.fanShot&&fanEnchantment?
+            BattleResolution.enchantmentMagicDamage(attacker,occupant,fanEnchantment,fanMagicCrit,skill):0;
+          const arrowPhysical=skill.fanShot&&result.type!=="MAGIC"?result.damage:0;
+          const arrowMagic=skill.fanShot?Math.round((soulBonus+enchantBonus)*bloodMult):0;
+          let fanPhysicalHpLoss=0,fanMagicHpLoss=0;
+          const shield=skill.fanShot?(()=>{
+            const physical=EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:arrowPhysical,{source:attacker,damageType:"PHYSICAL"});
+            const magic=EffectEngine.applyDamage(occupant,occupant.hallucination?0:arrowMagic,{source:attacker,damageType:"MAGIC"});
+            fanPhysicalHpLoss=Number(physical.hpLoss||0);
+            fanMagicHpLoss=Number(magic.hpLoss||0);
+            result.weaponDamage=arrowPhysical;
+            result.inherentMagicDamage=Math.round(soulBonus*bloodMult);
+            result.enchantmentDamage=Math.round(enchantBonus*bloodMult);
+            result.damage=arrowPhysical+arrowMagic;
+            return{absorbed:Number(physical.absorbed||0)+Number(magic.absorbed||0)};
+          })():EffectEngine.applyDamage(occupant,occupant.hallucination?hpBefore:result.damage,
             {source:attacker,damageType:result.type==="MAGIC"?"MAGIC":"PHYSICAL"});
           const hpLoss=Math.max(0,hpBefore-occupant.hp);
           summary.hpLoss+=hpLoss;
@@ -1299,8 +1325,12 @@
           if(hpLoss>0){
             summary.damaged++;
             globalThis.UnitAnimationEngine?.emitResolvedHit?.(occupant,{
-              damage:hpLoss,critical:result.crit===true,
-              components:BattleResolution.splitActualHpLoss(result,hpLoss),
+              damage:hpLoss,critical:result.crit===true||fanMagicCrit,
+              components:skill.fanShot?{physical:fanPhysicalHpLoss,magic:fanMagicHpLoss}:
+                BattleResolution.splitActualHpLoss(result,hpLoss),
+              criticalComponents:skill.fanShot?{physical:result.crit===true,magic:fanMagicCrit}:null,
+              componentElements:skill.fanShot?{physical:skill.element,
+                magic:soulBonus>0?"NATURE":fanEnchantment?.element||null}:null,
               element:skill.element,skillId:skill.id});
           }else{
             // All the magic can be absorbed by shields, immunity or defenses.
@@ -1649,7 +1679,8 @@
       const engagement=BattleResolution.resolve(
         {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
-          onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect}
+          onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect,
+          onBackstep:(unit,tile)=>ctx.enterTile(unit)}
       );
       if(!engagement.results.length){skillFailure(attacker,skill,"RESOLUTION_EMPTY",defender);ctx.clearEngagement();ctx.setMode("command");ctx.render();return;}
       if(skill.verdictCross)PostEngagementEngine.resolveVerdictCross({

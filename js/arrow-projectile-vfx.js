@@ -1,4 +1,3 @@
-import {VfxDatabase} from './vfx-database.js';
 /**
  * Shared Babylon bow projectile presentation. Every equipped BOW/SHOT attack
  * uses the same flight mesh. It consumes the official UNIT_ANIMATION stream;
@@ -9,7 +8,7 @@ import {VfxDatabase} from './vfx-database.js';
 import {SkillDatabase} from './skill-database.js';
 import {TILE_SIZE,ELEVATION_HEIGHT} from './coordinate-system.js';
 
-const SPECIALIZED=new Set(VfxDatabase.specializedProjectileIds());
+const SPECIALIZED=new Set(['angel_holy_arrow_rain']);
 const clamp=t=>Math.max(0,Math.min(1,t));
 export function isBowProjectileEvent(event){
   if(event?.type!=='UNIT_ANIMATION'||!event.skillId||SPECIALIZED.has(event.skillId))return false;
@@ -80,23 +79,36 @@ export class ArrowProjectileVfx{
       for(let index=0;index<sourceIds.length;index++){
         const id=sourceIds[index],unit=this.unit(snapshot,id);
         if(!unit)continue; // Never reveal a hidden opposing archer.
-        const token=`${mapId}:${event.sequence}:${id}:${index}`;
-        if(this.seen.has(token))continue;
-        this.seen.add(token);if(this.seen.size>160)this.seen.delete(this.seen.values().next().value);
-        const x=Number(event.targetX),y=Number(event.targetY);
-        if(!Number.isFinite(x)||!Number.isFinite(y))continue;
-        const from=this.bowOrigin(unit),to=this.impact(snapshot,x,y);
-        const distance=BABYLON.Vector3.Distance(from,to);
-        const duration=Math.max(290,Math.min(710,300+distance*32));
-        this.active.push({root:this.createArrow(token),from,to,started:now+index*24,duration,
-          sourceId:String(id),targetX:x,targetY:y});
+        const skill=SkillDatabase.get(event.skillId);
+        const fan=skill?.fanShot&&Array.isArray(event.fanTargetCells)?
+          event.fanTargetCells.filter(p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y)):null;
+        const triple=skill?.hitCount===3;
+        const targets=fan?.length?fan:(triple?[0,1,2].map(()=>({x:event.targetX,y:event.targetY})):
+          [{x:event.targetX,y:event.targetY}]);
+        const from=skill?.backstep?new BABYLON.Vector3(Number(event.x)*TILE_SIZE,
+          Number(event.z??unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+1.15,
+          Number(event.y)*TILE_SIZE):this.bowOrigin(unit);
+        const tokenBase=`${mapId}:${event.sequence}:${id}:${index}`;
+        if(this.seen.has(tokenBase))continue;
+        this.seen.add(tokenBase);if(this.seen.size>160)this.seen.delete(this.seen.values().next().value);
+        for(let shotIndex=0;shotIndex<targets.length;shotIndex++){
+          const x=Number(targets[shotIndex].x),y=Number(targets[shotIndex].y);
+          if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+          const token=`${tokenBase}:${shotIndex}`;
+          const to=this.impact(snapshot,x,y);
+          const distance=BABYLON.Vector3.Distance(from,to);
+          const duration=Math.max(290,Math.min(710,300+distance*32));
+          // Single burst fan; sequential rapid fire is separated by each draw.
+          const delay=triple?shotIndex*150:fan?shotIndex*12:index*24;
+          this.active.push({root:this.createArrow(token),from:from.clone(),to,
+            started:now+delay,duration,sourceId:String(id),targetX:x,targetY:y});
+        }
       }
     }
     while(this.active.length>32){const old=this.active.shift();old.root.dispose?.(false,false);}
   }
-  // The explosion VFX shares the arrow's landing time; no extra timer or
-  // scene clock. When multiple arrows strike the same cell, match the
-  // actual FIRE-enchanted contributor instead of using a guessed delay.
+  // Used by shared fire-arrow impact synchronization. Preserve the existing
+  // public contract when replacing the original arrow flight implementation.
   impactTime({x,y,sourceId}={}){
     const source=sourceId==null?null:String(sourceId);
     const entries=this.active.filter(a=>a.targetX===x&&a.targetY===y&&

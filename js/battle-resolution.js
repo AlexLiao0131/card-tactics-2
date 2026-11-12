@@ -171,9 +171,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       weaponDamage:base.damage,enchantmentDamage:extra,enchantmentElement:enchant.element,
       physicalCrit:base.type!=="MAGIC"&&base.crit===true,magicCrit:base.type==="MAGIC"&&base.crit===true||magicalCrit}};
   }
+  function inherentMagicSource(actor,skill){
+    const soulPower=globalThis.UnitRuntimeEngine?.forestSoulMagicPower?.(actor,skill)||0;
+    if(soulPower>0)return{element:"NATURE",power:soulPower};
+    return actor?.character?.weapons?.[skill?.weapon]?.inherentMagic||null;
+  }
   function inherentMagicDamage(actor,target,skill,critical){
     const weapon=actor?.character?.weapons?.[skill?.weapon];
-    const inherent=weapon?.inherentMagic;
+    const inherent=inherentMagicSource(actor,skill);
     if(!inherent||!target?.character)return 0;
     const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
     const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
@@ -187,7 +192,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     return Math.round(inherentMagicDamage(actor,target,skill,critical)*defenseMultiplier*grazeMultiplier);
   }
   function withInherentMagic(resolved,actor,target,skill){
-    const inherent=actor?.character?.weapons?.[skill?.weapon]?.inherentMagic;
+    const inherent=inherentMagicSource(actor,skill);
     if(!inherent||skill.skipInherentMagic)return resolved;
     const base=resolved.result,magicalCrit=componentCritical(actor,skill,base.hit);
     let extra=0;
@@ -218,11 +223,25 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     const magicBonus=Math.max(0,Number(base.enchantmentDamage||0))+Math.max(0,Number(base.inherentMagicDamage||0));
     return{physical:Math.max(0,Math.round(weapon*damageMultiplier)),magic:Math.max(0,Math.round((magicBase+magicBonus)*damageMultiplier))};
   }
+  function backstepDestination(c,actor,target,skill){
+    if(!skill?.backstep||!actor?.alive||!target)return null;
+    const dx=Number(actor.x)-Number(target.x),dy=Number(actor.y)-Number(target.y);
+    const axes=Math.abs(dx)>=Math.abs(dy)?[[Math.sign(dx),0],[0,Math.sign(dy)]]:[[0,Math.sign(dy)],[Math.sign(dx),0]];
+    for(const [ox,oy] of axes){
+      if(!ox&&!oy)continue;
+      const x=actor.x+ox,y=actor.y+oy;
+      const tile=TacticalEngine.tile(c.map,x,y);
+      if(tile&&TacticalEngine.canActiveMove(c.map,c.units,actor,x,y))return tile;
+    }
+    return null;
+  }
   function execute(c,hooks={}){
     // Settle the primary attack's loss-of-control decision BEFORE speed-ordering
     // counterattacks. An enemy whose attack never reaches them cannot react to it.
     // This shares the official per-action random sequence and never alters UI target IDs.
     const primary=c.actions[0],runtime=globalThis.UnitRuntimeEngine;
+    const plannedBackstep=primary?.skill?.backstep&&primary?.actor?.alive?
+      backstepDestination(c,primary.actor,primary.target,primary.skill):null;
     const eligiblePrimary=primary?.actor?.alive&&primary?.target?.alive&&
       (!hooks.canUseSkill||hooks.canUseSkill(primary.actor,primary.skill));
     const primarySkill=eligiblePrimary?(runtime?.applyResourceScaling?.(primary.actor,primary.skill)||primary.skill):null;
@@ -290,7 +309,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
-          duelActive:hasDuel(c,action.actor,action.target,skill)}):null;
+          duelActive:hasDuel(c,action.actor,action.target,skill),
+          backstepLanding:isPrimary&&plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
+            z:Number(plannedBackstep.elevation||0)}:null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         let absorbed=0,physLoss=0,magicLoss=0;
@@ -390,6 +411,18 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       bloodRuntime?.endBloodTransaction?.(a.actor);
     }
     const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
+    // The unit's position commits after the one attack+reaction action;
+    // the same official ATTACK presentation event interpolates the airborne
+    // backward movement while the shot is fired. No extra movement action.
+    if(plannedBackstep&&c.initiator?.alive&&
+       results.some(r=>r.role==="INITIATOR"&&r.actor.id===c.initiator.id)&&
+       TacticalEngine.canActiveMove(c.map,c.units,c.initiator,plannedBackstep.x,plannedBackstep.y)){
+      const unit=c.initiator;
+      unit.x=plannedBackstep.x;unit.y=plannedBackstep.y;
+      if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(unit,plannedBackstep);
+      else unit.z=Number(plannedBackstep.elevation||0);
+      hooks.onBackstep?.(unit,plannedBackstep);
+    }
     return{context:c,queue,results,postEngagement:post};
   }
   function resolve(options,hooks={}){const actions=[...(options.actions||[])];if(options.reaction?.type==="COUNTER"&&options.reaction.skill)actions.push(createCounterAction(options.target,options.initiator,options.reaction.skill));return execute(createContext({...options,actions}),hooks)}

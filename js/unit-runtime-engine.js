@@ -57,6 +57,75 @@ export function createUnitRuntimeEngine(){
     if(entry.value!==before)globalThis.EffectEngine?.syncModifiers?.(unit);
     return entry.value-before;
   }
+  // Forest Soul uses the canonical per-unit resource and persistent real plant
+  // objects. No synthetic plants, per-render mutation, or independent PvP cache.
+  const forestSoulUser=u=>u?.alive===true&&u.character?.id==="ophi"&&
+    !!u.character?.resourceRules?.forestSoul;
+  const soulRound=v=>Math.max(1,Math.floor(Number(v||1)));
+  const soulClean=v=>Math.round(Math.max(0,Number(v||0))*100)/100;
+  function forestSoulValue(unit){
+    if(!forestSoulUser(unit))return 0;
+    syncResources(unit);return Number(unit.resources.forestSoul.value||0);
+  }
+  function forestSoulFull(unit){
+    return forestSoulUser(unit)&&forestSoulValue(unit)>=Number(unit.resources.forestSoul.max||0)&&
+      Number(unit.resources.forestSoul.max||0)>0;
+  }
+  function forestSoulMagicPower(unit,skill){
+    if(!forestSoulFull(unit)||!skill||skill.attackType!=="SHOT"||skill.weapon!=="elven_bow")return 0;
+    return Math.max(0,Number(globalThis.SkillDatabase?.passiveList?.(unit.character.passives||[])?.find(p=>p.id==="FOREST_SOUL_RESONANCE")?.forestSoul?.naturePower??0));
+  }
+  function forestSoulPlantAmount(plant){
+    if(!plant||plant.destroyed||plant.carriedBy)return 0;
+    const type=String(plant.type||"").toUpperCase();
+    if(type!=="TREE"&&type!=="BUSH")return 0;
+    const base=type==="TREE"?3:1;
+    const maximum=Math.max(1,Number(plant.maxDurability??(type==="TREE"?72:24)));
+    const remaining=Math.max(0,Math.min(maximum,Number(plant.durability??maximum)));
+    return soulClean(base*remaining/maximum);
+  }
+  function syncForestSouls(map,roster,round,{emit=true}={}){
+    if(!map||!Array.isArray(map.objects)||!Array.isArray(roster))return[];
+    const r=soulRound(round),collectors=roster.filter(forestSoulUser)
+      .sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+    if(!collectors.length)return[];
+    const events=[];
+    const plants=map.objects.filter(p=>forestSoulPlantAmount(p)>0)
+      .sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+    for(const plant of plants){
+      const amount=forestSoulPlantAmount(plant);
+      const source=plant.ophiForestSoul;
+      if(!source){plant.ophiForestSoul={amount,respawnRound:null};}
+      else if(source.respawnRound!=null&&r>=source.respawnRound){
+        source.amount=amount;source.respawnRound=null;
+      }else if(source.respawnRound==null){source.amount=Math.min(amount,Number(source.amount||0));}
+    }
+    for(const unit of collectors){
+      syncResources(unit);const resource=unit.resources.forestSoul;
+      const rule=unit.character.resourceRules.forestSoul;
+      const radius=Math.max(0,Number(rule.collectionRadius||0));
+      const interval=Math.max(1,Math.floor(Number(rule.regenerationRounds||1)));
+      const nearby=plants.filter(plant=>Math.abs(unit.x-plant.x)+Math.abs(unit.y-plant.y)<=radius)
+        .sort((a,b)=>Math.abs(unit.x-a.x)+Math.abs(unit.y-a.y)-
+          (Math.abs(unit.x-b.x)+Math.abs(unit.y-b.y))||String(a.id).localeCompare(String(b.id)));
+      for(const plant of nearby){
+        const source=plant.ophiForestSoul;
+        if(!source||source.respawnRound!=null||source.amount<=0)continue;
+        const capacity=Math.max(0,Number(resource.max||0)-Number(resource.value||0));
+        const received=soulClean(Math.min(capacity,source.amount));
+        if(received<=0)break;
+        resource.value=soulClean(Number(resource.value||0)+received);
+        source.amount=soulClean(source.amount-received);
+        if(source.amount<=0)source.respawnRound=r+interval;
+        const ev={type:"OPHI_FOREST_SOUL_COLLECT",unitId:unit.id,plantId:plant.id,
+          x:plant.x,y:plant.y,unitX:unit.x,unitY:unit.y,amount:received,
+          value:resource.value,max:resource.max,round:r};
+        events.push(ev);
+        if(emit)globalThis.UnitAnimationEngine?.emitPresentation?.(ev.type,ev);
+      }
+    }
+    return events;
+  }
   // All battle modes read these same passive balance values and the same real Sanity resource.
   function sanityMisfireChance(unit,skill){
     if(!unit?.alive||!(Number(skill?.power||0)>0)||
@@ -107,7 +176,19 @@ export function createUnitRuntimeEngine(){
     const depth=Math.max(0,Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0));
     return changeHumidity(unit,Number(weatherDelta[weather]||0)+(depth>=2?10:depth>0?5:0));
   }
+  // Resource choice is resolved from the SAME live value for preview,
+  // action validation and execution. This is a single cast, never a mixed
+  // partial soul+MP transaction.
+  function forestSoulHealingChoice(unit,skill){
+    if(!skill?.forestSoulHealing||!forestSoulUser(unit))return null;
+    syncResources(unit);
+    const cost=Math.max(1,Number(skill.forestSoulHealing.cost||0));
+    const available=Number(unit.resources.forestSoul.value||0);
+    if(available>=cost)return{mode:"SOUL",cost};
+    return skill.forestSoulHealing.mpFallback===true?{mode:"MANA",cost:0}:null;
+  }
   function skillManaCost(unit,skill){
+    if(forestSoulHealingChoice(unit,skill)?.mode==="SOUL")return 0;
     const base=manaCost(skill),rule=unit?.character?.resourceRules?.humidity;
     if(!base||!skill?.waterMagic||!rule)return base;
     const humidity=humidityValue(unit);
@@ -116,7 +197,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);
     return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:state.label||key.toUpperCase(),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
@@ -252,7 +333,9 @@ export function createUnitRuntimeEngine(){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);
-    const extras=resourceCosts(skill);
+    const extras={...resourceCosts(skill)};
+    const heal=forestSoulHealingChoice(unit,skill);
+    if(heal?.mode==="SOUL")extras.forestSoul=heal.cost;
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill,world=null){
@@ -275,6 +358,7 @@ export function createUnitRuntimeEngine(){
     if(req.flying===true&&String(unit?.verticalState?.mode||"")!=="FLYING")return false;
     if(req.water===true){const runtimeMap=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.(),tile=runtimeMap?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
     syncMana(unit);syncResources(unit);
+    if(skill?.forestSoulHealing&&forestSoulUser(unit)&&!forestSoulHealingChoice(unit,skill))return false;
     if(unit.mana<skillManaCost(unit,skill))return false;
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key];if(!rule)return false;if(rule.allowOverdraft!==true&&Number(unit.resources?.[key]?.value||0)<cost)return false;}
     return true;
@@ -283,14 +367,26 @@ export function createUnitRuntimeEngine(){
     if(!canUseSkill(unit,skill,world))return null;
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
+    const heal=forestSoulHealingChoice(unit,skill);
     const mana=skillManaCost(unit,skill);unit.mana=Math.max(0,unit.mana-mana);
-    const spent={};for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
+    const spent={};
+    if(heal?.mode==="SOUL"){
+      changeResource(unit,"forestSoul",-heal.cost);
+      spent.forestSoul={cost:heal.cost,remaining:forestSoulValue(unit),max:unit.resources.forestSoul.max};
+    }for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
+    if(skill?.forestSoulRelease===true&&forestSoulUser(unit)){
+      const value=forestSoulValue(unit);
+      if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
+    }
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
-    syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);if(mana>0)labels.push(`MP ${mana}`);
+    syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);
+    const heal=forestSoulHealingChoice(unit,skill);
+    if(heal?.mode==="SOUL")labels.push(`森靈之魂 ${heal.cost}`);
+    if(mana>0)labels.push(`MP ${mana}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
   }
@@ -304,6 +400,14 @@ export function createUnitRuntimeEngine(){
         const scaling=rule?.magicScaling;if(!scaling)continue;const state=unit.resources?.[key],max=Math.max(0,Number(state?.max||0));if(max<=0)continue;
         const depleted=1-Math.max(0,Math.min(1,Number(state.value||0)/max));multiplier*=1+depleted*Math.max(0,Number(scaling.maxBonus||0));
       }
+    }
+    if(skill.forestSoulRelease===true&&forestSoulUser(unit)){
+      const soul=forestSoulValue(unit);
+      // The approved diminishing formula operates on accumulated soul, not
+      // live plant count at the target. Captured BEFORE consumeSkill.
+      multiplier*=1+soul/(soul+3);
+      return{...skill,power:Number(skill.power||0)*multiplier,
+        _resourceScaled:true,forestSoulSpent:soul,resourcePowerMultiplier:multiplier};
     }
     if(multiplier===1)return{...skill,_resourceScaled:true,resourcePowerMultiplier:1};
     return{...skill,power:Number(skill.power||0)*multiplier,_resourceScaled:true,resourcePowerMultiplier:multiplier};
@@ -357,7 +461,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

@@ -9,7 +9,8 @@ import {HeroCombatVfxBase,VFX_TILE,VFX_TAU,vfxClamp,vfxLerp,vfxSmooth,vfxVec} fr
 
 const MODULE='nature-growth';
 const SPELLS=VfxDatabase.skillIds(MODULE);
-const LIFE=Object.freeze({ARC:960,THRUST:660,THROW:850,SONG:990,ENTANGLE:720});
+const LIFE=Object.freeze({ARC:960,FAN:1050,TRIPLE:1120,BACK:940,
+  WRATH:1160,SONG:990,ENTANGLE:720,SOUL_PICKUP:780,BASIC:700});
 
 export class NatureGrowthVfx extends HeroCombatVfxBase{
   constructor(scene){
@@ -22,15 +23,42 @@ export class NatureGrowthVfx extends HeroCombatVfxBase{
     this.prepare(snapshot);
     const now=performance.now();
     for(const e of events){
+      if(e.type==='OPHI_FOREST_SOUL_COLLECT'){
+        if(this.findUnit(snapshot,e.unitId))this.startSoulPickup(e,snapshot,now);
+        continue;
+      }
       if(!this.acceptEvent(snapshot,e,SPELLS))continue;
-      if(VfxDatabase.roleFor(MODULE,e.skillId)==='ARC')this.startArc(e,snapshot,now);
-      else if(VfxDatabase.roleFor(MODULE,e.skillId)==='THRUST')this.startThrust(e,snapshot,now);
-      else if(VfxDatabase.roleFor(MODULE,e.skillId)==='THROW')this.startThrow(e,snapshot,now);
-      else if(VfxDatabase.roleFor(MODULE,e.skillId)==='SONG')this.startSong(e,snapshot,now);
+      const role=VfxDatabase.roleFor(MODULE,e.skillId);
+      if(role==='ARC')this.startArc(e,snapshot,now);
+      else if(role==='SONG')this.startSong(e,snapshot,now);
+      else if(role==='WRATH')this.startWrath(e,snapshot,now);
+      else if((role==='TRIPLE'||role==='FAN')&&this.findUnit(snapshot,e.unitId)?.resources?.forestSoul?.resonance)
+        this.startBowBlessing(e,snapshot,now);
+      else if(role==='BACK')this.startBackstepTrail(e,snapshot,now);
+      else if(role==='BASIC'&&this.findUnit(snapshot,e.unitId)?.resources?.forestSoul?.resonance)
+        this.startBowBlessing(e,snapshot,now);
       // Entanglement is visualized from its official applied status below.
     }
     const wanted=new Set();
+    // Only nearby source lights are materialized as meshes (one per plant).
+    // The authoritative soul amounts exist across the WHOLE map, including
+    // unseen plants; the UI cannot create offscreen particle draw calls.
+    const ophi=(snapshot?.units||[]).filter(u=>u.characterId==='ophi');
+    for(const plant of snapshot?.map?.objects||[]){
+      if(!['TREE','BUSH'].includes(String(plant.type||'').toUpperCase())||plant.destroyed||
+         !(Number(plant.ophiForestSoul?.amount||0)>0))continue;
+      if(!ophi.some(u=>Math.abs(u.x-plant.x)+Math.abs(u.y-plant.y)<=5))continue;
+      const key=`SOURCE:${plant.id}`;wanted.add(key);
+      let marker=this.auras.get(key);
+      if(!marker){marker=this.soulSourceAura(key);this.auras.set(key,marker);}
+      marker.root.position.set(Number(plant.x)*VFX_TILE,
+        this.terrainY(snapshot,plant.x,plant.y)+1.38,Number(plant.y)*VFX_TILE);
+    }
     for(const unit of snapshot?.units||[]){
+      if(unit.characterId==='ophi'&&unit.resources?.forestSoul?.resonance){
+        const key=`RESONANCE:${unit.id}`;wanted.add(key);
+        this.status(key,unit,()=>this.forestResonanceAura(key));
+      }
       const effects=unit.effects||[];
       if(effects.some(e=>e.id===VfxDatabase.statusId(MODULE,'SONG')&&e.type==='HEALING_CHANNEL')){
         const key=`SONG:${unit.id}`;wanted.add(key);
@@ -51,35 +79,42 @@ export class NatureGrowthVfx extends HeroCombatVfxBase{
     fx.impact=this.ring(fx.impactRoot,'forest-arrow-gust',.79,'spirit',12);
     fx.impact.rotation.x=Math.PI/2;
   }
-  createSpiritSpear(root,kind){
-    // This is one visual weapon primitive shared by the thrust and throw.
-    // Local +Z points at the impact; no combat position or weapon state changes.
-    const tip=this.mesh(root,`${kind}-spear-tip`,'CreateCylinder',
-      {height:.26,diameterTop:0,diameterBottom:.14,tessellation:6},'glow');
-    tip.rotation.x=Math.PI/2;tip.position.z=.50;
-    const shaft=this.mesh(root,`${kind}-spear-shaft`,'CreateCylinder',
-      {height:.88,diameter:.045,tessellation:6},'deep');
-    shaft.rotation.x=Math.PI/2;
-    return{tip,shaft};
+  soulSourceAura(key){
+    const root=this.node(`spirit-source-${key}`);
+    const orb=this.orb(root,'forest-soul-ready',.19,'spirit');
+    const halo=this.ring(root,'forest-soul-halo',.38,'leaf',10);
+    halo.rotation.x=Math.PI/2;
+    return{root,orb,halo,soulSource:true};
   }
-  startThrust(e,s,now){
-    const fx=this.createEffect('THRUST',e,s,now,LIFE.THRUST);
-    fx.flight=this.node(`spirit-spear-thrust-${e.sequence}`,fx.from);
-    fx.weapon=this.createSpiritSpear(fx.flight,'thrust');
-    fx.aim=fx.to.add(fx.to.subtract(fx.from));
-    fx.flight.setEnabled(false);
-    fx.ring=this.ring(fx.root,'spear-nature-thrust',1.10,'leaf',10);
-    fx.ring.rotation.z=Math.PI/2;
-    fx.sparks=Array.from({length:6},(_,i)=>this.shard(fx.root,`thrust-leaf-${i}`,i%2?'leaf':'glow',.25));
+  forestResonanceAura(key){
+    const root=this.node(`forest-soul-resonance-${key}`);
+    const orbs=Array.from({length:4},(_,i)=>this.orb(root,`resonance-${i}`,.14,'spirit'));
+    return{root,orbs,resonance:true,above:.94};
   }
-  startThrow(e,s,now){
-    const fx=this.createEffect('THROW',e,s,now,LIFE.THROW);
-    fx.flight=this.node(`spirit-spear-flight-${e.sequence}`,fx.from);
-    fx.weapon=this.createSpiritSpear(fx.flight,'throw');
-    fx.trail=Array.from({length:4},(_,i)=>this.orb(fx.flight,`spirit-spear-leaf-${i}`,.10,'leaf'));
-    fx.flight.setEnabled(false);
-    fx.ring=this.ring(fx.root,'spirit-spear-contact',.92,'glow',10);
-    fx.ring.rotation.x=Math.PI/2;
+  startSoulPickup(e,s,now){
+    const fx=this.createEffect('SOUL_PICKUP',{
+      sequence:e.sequence,x:e.x,y:e.y,targetX:e.unitX,targetY:e.unitY
+    },s,now,LIFE.SOUL_PICKUP);
+    fx.from=this.point(s,e.x,e.y,1.35);
+    fx.to=this.point(s,e.unitX,e.unitY,1.06);
+    fx.orb=this.orb(fx.root,'soul-travel',.25,'spirit');
+  }
+  startWrath(e,s,now){
+    const fx=this.createEffect('WRATH',e,s,now,LIFE.WRATH);
+    fx.sphere=this.orb(fx.root,'forest-wrath-missile',.55,'leaf');
+    fx.aura=this.ring(fx.root,'forest-wrath-pulse',1.2,'glow',14);
+    fx.aura.rotation.x=Math.PI/2;
+    fx.leaves=Array.from({length:5},(_,i)=>this.shard(fx.root,`forest-wrath-shard-${i}`,'spirit',.20));
+  }
+  startBackstepTrail(e,s,now){
+    const fx=this.createEffect('BACK',e,s,now,LIFE.BACK);
+    const p=e.backstepLanding;
+    fx.to=p?this.point(s,p.x,p.y,.72):fx.from;
+    fx.leaves=Array.from({length:6},(_,i)=>this.shard(fx.root,`backstep-leaf-${i}`,'spirit',.23));
+  }
+  startBowBlessing(e,s,now){
+    const fx=this.createEffect('BASIC',e,s,now,LIFE.BASIC);
+    fx.light=this.orb(fx.root,'blessed-arrow-trail',.18,'spirit');
   }
   startSong(e,s,now){
     const fx=this.createEffect('SONG',e,s,now,LIFE.SONG);
@@ -147,33 +182,32 @@ export class NatureGrowthVfx extends HeroCombatVfxBase{
       const bloom=vfxSmooth((p-.77)/.15);
       fx.impact.scaling.setAll(.14+1.6*bloom);
       fx.impact.visibility=bloom*(1-vfxSmooth((p-.89)/.10));
-    }else if(fx.kind==='THRUST'){
-      // The visible spear travels along the official caster-target line.
-      // No second hit or movement is generated by this presentation action.
-      const travel=vfxSmooth((p-.06)/.70);
-      const pos=BABYLON.Vector3.Lerp(fx.from,fx.to,travel);
-      fx.flight.position.copyFrom(pos);
-      if(BABYLON.Vector3.DistanceSquared(fx.from,fx.to)>1e-6)fx.flight.lookAt(fx.aim);
-      fx.flight.setEnabled(p<.80);
-      const burst=vfxSmooth(p/.43),fade=1-vfxSmooth((p-.35)/.65);
-      fx.ring.scaling.setAll(.25+burst*1.05);fx.ring.visibility=fade;
-      fx.sparks.forEach((m,i)=>{
-        const a=VFX_TAU*i/fx.sparks.length;
-        m.position.set(Math.cos(a)*burst*.73,Math.sin(a)*burst*.55,Math.sin(a)*burst*.73);
-        m.visibility=fade;
+    }else if(fx.kind==='SOUL_PICKUP'){
+      const q=vfxSmooth(p);
+      const pos=BABYLON.Vector3.Lerp(fx.from,fx.to,q);
+      pos.y+=Math.sin(Math.PI*q)*.48;
+      fx.orb.position.copyFrom(pos.subtract(fx.root.position));
+      fx.orb.visibility=1-vfxSmooth((p-.85)/.15);
+    }else if(fx.kind==='WRATH'){
+      const q=vfxSmooth((p-.18)/.67);
+      const pos=BABYLON.Vector3.Lerp(fx.from,fx.to,q);
+      fx.root.position.copyFrom(pos);
+      fx.sphere.scaling.setAll(.5+.65*Math.sin(Math.PI*Math.min(1,p)));
+      fx.aura.rotation.z+=.02;fx.aura.visibility=(1-vfxSmooth((p-.86)/.14))*.8;
+      fx.leaves.forEach((m,i)=>{
+        const a=VFX_TAU*i/fx.leaves.length+elapsed*.008;
+        m.position.set(Math.cos(a)*.48,Math.sin(a)*.48,Math.sin(a*1.2)*.48);
       });
-    }else if(fx.kind==='THROW'){
-      const q=vfxSmooth((p-.08)/.75);
-      const pt=this.arcPoint(fx,q),next=this.arcPoint(fx,Math.min(1,q+.025));
-      fx.flight.position.copyFrom(pt);fx.flight.lookAt(next);fx.flight.setEnabled(p<.88);
-      fx.trail.forEach((m,i)=>{
-        const a=VFX_TAU*i/fx.trail.length+elapsed*.008;
-        m.position.set(Math.cos(a)*.15,Math.sin(a)*.15,-.30-i*.11);
-        m.visibility=(1-p)*.6;
+    }else if(fx.kind==='BACK'){
+      fx.root.position.copyFrom(BABYLON.Vector3.Lerp(fx.from,fx.to,vfxSmooth(p)));
+      fx.leaves.forEach((m,i)=>{
+        const a=VFX_TAU*i/fx.leaves.length;
+        m.position.set(Math.cos(a)*p,.3+Math.sin(p*Math.PI)*.35,Math.sin(a)*p);
+        m.visibility=1-p;
       });
-      const bloom=vfxSmooth((p-.82)/.1);
-      fx.ring.scaling.setAll(.2+bloom*1.3);
-      fx.ring.visibility=bloom*(1-vfxSmooth((p-.92)/.08));
+    }else if(fx.kind==='BASIC'){
+      const q=vfxSmooth(p);const pos=BABYLON.Vector3.Lerp(fx.from,fx.to,q);
+      fx.light.position.copyFrom(pos.subtract(fx.root.position));fx.light.visibility=1-q;
     }else if(fx.kind==='SONG'){
       const rise=vfxSmooth(p/.44),fade=1-vfxSmooth((p-.60)/.40);
       fx.ring.scaling.setAll(.2+rise*1.05);fx.ring.visibility=fade;
@@ -187,7 +221,16 @@ export class NatureGrowthVfx extends HeroCombatVfxBase{
   }
   updateAuras(now){
     for(const fx of this.auras.values()){
-      if(fx.boundary){
+      if(fx.soulSource){
+        fx.orb.position.y=Math.sin(now*.002)*.13;
+        fx.halo.rotation.z=now*.0013;fx.halo.visibility=.54+.20*Math.sin(now*.003);
+      }else if(fx.resonance){
+        fx.orbs.forEach((orb,i)=>{
+          const a=VFX_TAU*i/fx.orbs.length+now*.0018;
+          orb.position.set(Math.cos(a)*.65,Math.sin(a*1.3)*.18,Math.sin(a)*.65);
+          orb.visibility=.7+.24*Math.sin(a);
+        });
+      }else if(fx.boundary){
         fx.boundary.visibility=.22+.09*Math.sin(now*.004);
         fx.core.rotation.y=now*.002;fx.core.visibility=.61+.17*Math.sin(now*.006);
         fx.motes.forEach((m,i)=>{
@@ -210,5 +253,5 @@ export class NatureGrowthVfx extends HeroCombatVfxBase{
       }
     }
   }
-  removeEffect(fx){super.removeEffect(fx);fx?.flight?.dispose?.(false,false);fx?.impactRoot?.dispose?.(false,false);}
+  removeEffect(fx){super.removeEffect(fx);fx?.impactRoot?.dispose?.(false,false);}
 }

@@ -2408,6 +2408,14 @@ export class UnitRenderer{
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
+    if(state==="ATTACK"&&event?.backstepLanding){
+      const landing=event.backstepLanding;
+      const start=this.positionFor(entry,{x:event.x,y:event.y,renderZ:event.z});
+      const end=this.positionFor(entry,{x:landing.x,y:landing.y,renderZ:landing.z});
+      const t=clamp01(progress),ease=t*t*(3-2*t);
+      entry.root.position.copyFrom(BABYLON.Vector3.Lerp(start,end,ease));
+      entry.root.position.y+=Math.sin(Math.PI*t)*.42;
+    }
     const weaponAction=this.figureAttackType(entry,event);
     if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH","STRIKE","VERDICT_SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;
 
