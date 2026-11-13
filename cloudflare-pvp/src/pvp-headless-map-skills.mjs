@@ -101,6 +101,8 @@ export function isCanonicalImmediateMapSkill(skill){
       Array.isArray(skill.effects)&&skill.effects.length===1&&
       skill.effects[0].type==='DISPEL_POSITIVE'&&!skill.weapon&&!skill.attackType;
   if(AngelWingBarrierEngine.isCanonicalSkill(skill))return true;
+  if(skill?.purifiedSlash&&skill?.id==="nether_slash"&&skill?.target==="TILE"&&
+     skill?.targetType==="AOE"&&skill?.shape==="FAN")return true;
   if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill)||
      isCanonicalRangerVolleySkill(skill))return true;
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
@@ -138,7 +140,7 @@ export function isCanonicalImmediateMapSkill(skill){
 }
 export function canonicalImmediateMapSkillOptions(unit,engine){
   if(!unit?.alive||unit.acted||unit.waited)return[];
-  return SkillDatabase.list(engine.effect.skillIds(unit)).filter(isCanonicalImmediateMapSkill);
+  return SkillDatabase.list(engine.effect.skillIds(unit)).map(s=>engine.unitRuntime.skillForUnit(unit,s)).filter(isCanonicalImmediateMapSkill);
 }
 
 export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEnd){
@@ -174,7 +176,7 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
   }
   const controller=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:TEAM[seat],ENEMY:TEAM[1-seat]},
-    actionState:()=>({map:game.battlefield.map,units:game.units,
+    actionState:()=>({map:game.battlefield.map,units:game.units,round:game.round,
       environmentState:game.environmentState}),
     canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
     consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),

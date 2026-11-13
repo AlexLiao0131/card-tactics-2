@@ -1,4 +1,6 @@
 import {ColinShieldMobilityEngine} from "../../js/colin-shield-mobility-engine.js";
+import {LiviaDualityEngine} from '../../js/livia-duality-engine.js';
+import {chooseAutonomousBattleReaction} from '../../js/battle-reaction-decision-engine.js';
 /**
  * Headless battle command integration under development. NOT DEPLOYED.
  *
@@ -101,7 +103,13 @@ function serverCallbacks(game,engine){
     if(event?.type==='ROUND_START'||event?.type==='ENTER_TILE')
       engine.unitRuntime.syncForestSouls(game.battlefield.map,game.units,event?.round??game.round);
     if(event?.type==='ENTER_TILE'&&event.unitId){
-      const carrier=game.units.find(u=>u.id===event.unitId);
+      const entered=game.units.find(u=>u.id===event.unitId);
+      if(entered?.alive){
+        LiviaDualityEngine.handleEntry({map:game.battlefield.map,units:game.units,round:game.round},entered,{
+          random:engine.random,log:msg=>pushLog(msg,'BATTLE')});
+        event={...event,x:entered.x,y:entered.y,z:entered.z};
+      }
+      const carrier=entered;
       if(carrier?.shieldPassengerId)ColinShieldMobilityEngine.syncPassenger(game.units,carrier,{movement:true});
       if(ColinShieldMobilityEngine.shieldOccupied(carrier))engine.effect.removeEffectById(carrier,"FULL_SHIELD_DEFENSE");
     }
@@ -139,8 +147,8 @@ function serverCallbacks(game,engine){
       log:pushLog,spawn:spawned,onObjectiveChanged:()=>{}});
   };
   const death=DeathLifecycleEngine.create({stageEvent,pushLog,
-    cardStateFor:unit=>game.perceptionState?.session?.defeatCards?.[unit.team==='P'?0:1]||
-      game.cards[unit.team==='P'?0:1],
+    cardStateFor:unit=>game.perceptionState?.session?.defeatCards?.[(unit._liviaOriginalTeam||unit.team)==='P'?0:1]||
+      game.cards[(unit._liviaOriginalTeam||unit.team)==='P'?0:1],
     deathScope:()=>game.perceptionState?.session,allowRewards:()=>!game.perceptionState?.session?.active,
     onDefeated:()=>{},onFinalized:()=>{}});
   const handleDefeated=(unit,source,cause)=>death.finalize(unit,source,cause);
@@ -294,6 +302,10 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       const deployed=game.units.find(u=>u.id===result.unitId);
       if(!deployed)fail('CANONICAL_DEPLOYED_UNIT_MISSING');
       engine.unitRuntime.syncForestSouls(game.battlefield.map,game.units,game.round);
+      if(LiviaDualityEngine.isLivia(deployed)){
+        deployed._liviaRound=game.round;
+        LiviaDualityEngine.spawnWells(game.battlefield.map,game.units,game.round,engine.random);
+      }
       createCanonicalEnvironmentController(game,hooks).applyEnvironmentHazardToUnit(
         deployed,{reason:'部署進入環境',waterTrigger:'ENTER'});
       createCanonicalAreaFields(game,engine,hooks).syncSmokeCover(deployed);
@@ -425,13 +437,20 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         passengerRideMoved:!!passenger?.shieldRideMoved};
       let movement={completed:true};
       let previousTile=TacticalEngine.tile(game.battlefield.map,unit.x,unit.y);
+      LiviaDualityEngine.beginMove(unit);
       for(const step of path){
         if(ColinShieldMobilityEngine.hasShield(unit))
           unit.shieldMobilityMode=ColinShieldMobilityEngine.modeAt(unit,step,previousTile);
+        unit._liviaEntryFrom={x:unit.x,y:unit.y};
         movement=environment.traverseUnitPath(unit,[step]);
+        if(unit._liviaMoveInterrupted){
+          movement={completed:false,reason:'SPACE_DISTORTION'};break;
+        }
         if(!movement.completed)break;
         previousTile=step;
       }
+      const consumedWell=unit._liviaMoveInteracted===true;
+      LiviaDualityEngine.endMove(unit);
       if(ColinShieldMobilityEngine.hasShield(unit)){
         let previous=TacticalEngine.tile(game.battlefield.map,initial.x,initial.y);
         let sliding=false;
@@ -461,13 +480,71 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
       if(unit.alive && (unit.x!==initial.x||unit.y!==initial.y))engine.effect.interruptChannel(unit,'MOVE');
       unit.moved=true;
       // As in the local game, an interrupted/forced movement is committed.
-      game.pendingMove=unit.alive&&movement?.completed===true?initial:null;
+      game.pendingMove=unit.alive&&movement?.completed===true&&!consumedWell?initial:null;
       return {accepted:true,state:game,movement};
     }
     if(action?.type==='END_TACTICAL_PHASE'){
       if(game.phase!==TACTICAL_PHASE[seat]||!sameKeys(action,['type']))fail('INVALID_END_TACTICAL');
-      if(seat===1)return advanceCanonicalRound(game,engine,hooks,
-        matchObjectiveAuthority(game,hooks).checkMatchEnd);
+      if(seat===1){
+        // Berserk is the NEUTRAL action of the current complete round. It must
+        // run AFTER player/enemy tactical actions, not during the following
+        // player's CARD phase. The private server RNG is the only chooser.
+        createCanonicalPerception(game,engine).end('E');
+        const berserkActors=game.units.filter(u=>u.alive&&u.team==='N'&&
+          u._liviaBerserkEndRound===game.round&&!u._liviaBerserkActionDone);
+        for(const neutral of berserkActors){
+          let action=LiviaDualityEngine.chooseBerserkAttack({map:game.battlefield.map,
+            units:game.units,unit:neutral,runtime:engine.unitRuntime,
+            random:engine.random,environmentState:game.environmentState});
+          if(!action){
+            const path=LiviaDualityEngine.chooseBerserkMove({map:game.battlefield.map,
+              units:game.units,unit:neutral,random:engine.random,
+              environmentState:game.environmentState});
+            if(path.length){
+              LiviaDualityEngine.beginMove(neutral);
+              const environment=createCanonicalEnvironmentController(game,hooks);
+              for(const tile of path){
+                neutral._liviaEntryFrom={x:neutral.x,y:neutral.y};
+                const movement=environment.traverseUnitPath(neutral,[tile]);
+                if(!movement?.completed||!neutral.alive||neutral._liviaMoveInterrupted)break;
+              }
+              LiviaDualityEngine.endMove(neutral);
+            }
+            if(neutral.alive)action=LiviaDualityEngine.chooseBerserkAttack({
+              map:game.battlefield.map,units:game.units,unit:neutral,
+              runtime:engine.unitRuntime,random:engine.random,
+              environmentState:game.environmentState});
+          }
+          if(action){
+            // A berserk neutral is autonomous; defend with the same official
+            // reaction selector used by other headless AI. No invented PvP
+            // chance, damage formula or ad-hoc COUNTER shortcut.
+            const defense=chooseAutonomousBattleReaction({map:game.battlefield.map,
+              units:game.units,attacker:neutral,defender:action.target,skill:action.skill,
+              environmentState:game.environmentState,resolution:engine.battleResolution,
+              canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s)});
+            engine.battleResolution.resolve({map:game.battlefield.map,units:game.units,
+              environmentState:game.environmentState,initiator:neutral,target:action.target,
+              skill:action.skill,actions:[],reaction:defense.reaction,
+              interception:defense.interception},{
+                canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
+                consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),
+                onDefeated:hooks.handleDefeated});
+            hooks.pushLog(`${neutral.character.name} 高維失控，敵我不分地發動攻擊。`,'BATTLE');
+          }else hooks.pushLog(`${neutral.character.name} 高維失控，但沒有合法可攻擊目標。`,'BATTLE');
+          neutral._liviaBerserkActionDone=true;neutral.moved=true;neutral.acted=true;neutral.waited=true;
+          if(matchObjectiveAuthority(game,hooks).checkMatchEnd())return{accepted:true,state:game};
+        }
+        // Restore ownership before the existing PvP coordinator's neutral
+        // guard, preserving normal next-round phase and card processing.
+        for(const u of game.units)if(u?.team==='N'&&u._liviaBerserkEndRound)
+          LiviaDualityEngine.completeBerserk(u);
+        const outcome=advanceCanonicalRound(game,engine,hooks,
+          matchObjectiveAuthority(game,hooks).checkMatchEnd);
+        LiviaDualityEngine.onRoundStart({map:game.battlefield.map,
+          units:game.units,round:game.round,random:engine.random});
+        return outcome;
+      }
       // Original tactical-game.endPlayerTurn: real card consumption and
       // turn-end effects happen while the mirror is active; then restore
       // the real world BEFORE enemy field pulses and enemy hallucinations.

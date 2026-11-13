@@ -59,7 +59,7 @@ export function isCanonicalDirectAttackSkill(skill){
 export function canonicalDirectAttackSkillOptions(actor){
   if(!actor?.alive)return[];
   const ids=globalThis.EffectEngine?.skillIds?.(actor)||actor.character?.skills||[];
-  return SkillDatabase.list(ids).filter(isCanonicalDirectAttackSkill);
+  return SkillDatabase.list(ids).map(s=>globalThis.UnitRuntimeEngine?.skillForUnit?.(actor,s)||s).filter(isCanonicalDirectAttackSkill);
 }
 function basicAttackSkill(actor,skillId){
   const skill=canonicalDirectAttackSkillOptions(actor).find(s=>s.id===skillId);
@@ -75,7 +75,10 @@ export function commitCanonicalTargetApproach(game,actor,plan,skill,engine,callb
   if(!plan.path.length)return {ready:true,movement:null};
   const start={x:actor.x,y:actor.y};
   const environment=createCanonicalEnvironmentController(game,callbacks);
+  globalThis.LiviaDualityEngine?.beginMove?.(actor);
+  actor._liviaEntryFrom={x:actor.x,y:actor.y};
   const movement=environment.traverseUnitPath(actor,plan.path,{kind:'UNIT'});
+  globalThis.LiviaDualityEngine?.endMove?.(actor);
   createCanonicalAreaFields(game,engine,callbacks).syncSmokeCover(actor);
   if(actor.x!==start.x||actor.y!==start.y)engine.effect.interruptChannel(actor,'MOVE');
   actor.moved=true;
