@@ -9,7 +9,7 @@ const xy=(x,y)=>`${x},${y}`;
 export class LiviaDualityVfx{
   constructor(scene,{units=null}={}){
     this.scene=scene;this.units=units;this.mapId=null;this.wells=new Map();
-    this.rifts=new Map();this.auras=new Map();this.swings=[];this.materials=new Map();
+    this.rifts=new Map();this.auras=new Map();this.swings=[];this.materials=new Map();this.seenActions=new Set();
     scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
   }
   mat(name,color,alpha=1){
@@ -77,6 +77,35 @@ export class LiviaDualityVfx{
     guard.position.y=.20;
     this.swings.push({pivot,from:face,started:time(),duration:950,materials:[blade.material,core.material]});
   }
+  // One event per committed attack. These meshes depict the black sword itself;
+  // the original renderer remains authoritative for character pose and position.
+  swordTechnique(snapshot,event,{shadow=false}={}){
+    const source=(snapshot?.units||[]).find(u=>String(u.id)===String(event.unitId));
+    if(!source||source.characterId!=='livia')return; // No fog-of-war leaks.
+    const x=Number(event.x??source.x)*TILE_SIZE,z=Number(event.y??source.y)*TILE_SIZE;
+    const tx=Number(event.targetX??source.x)*TILE_SIZE,tz=Number(event.targetY??source.y)*TILE_SIZE;
+    const face=Math.atan2(tx-x,tz-z),height=Number(event.z??source.z??0)*ELEVATION_HEIGHT+1.05;
+    const pivot=new BABYLON.TransformNode(`livia-${shadow?'shadow-flurry':'black-slash'}-${event.sequence}`,this.scene);
+    pivot.position.set(x,height,z);
+    const slices=[],count=shadow?4:1;
+    const mat=this.mat(shadow?'flurry-pulse':'black-steel',shadow?[.58,.18,.97]:[.62,.73,.88],shadow?.82:.93);
+    const glow=this.mat(shadow?'flurry-glow':'black-edge',shadow?[.84,.43,1]:[.92,.96,1],shadow?.72:.86);
+    for(let i=0;i<count;i++){
+      const node=new BABYLON.TransformNode(`livia-sword-sweep-${event.sequence}-${i}`,this.scene);
+      node.parent=pivot;
+      const blade=this.mesh(BABYLON.MeshBuilder.CreateBox(`livia-blade-${event.sequence}-${i}`,{
+        width:shadow?.13:.13,height:shadow?TILE_SIZE*1.23:TILE_SIZE*.95,depth:.07},this.scene),mat,node);
+      blade.position.y=shadow?TILE_SIZE*.50:TILE_SIZE*.43;
+      const edge=this.mesh(BABYLON.MeshBuilder.CreateBox(`livia-blade-edge-${event.sequence}-${i}`,{
+        width:.028,height:shadow?TILE_SIZE*1.26:TILE_SIZE*.98,depth:.085},this.scene),glow,node);
+      edge.position.y=blade.position.y;
+      node.rotation.y=face;
+      node.setEnabled(false);
+      slices.push(node);
+    }
+    this.swings.push({pivot,from:face,kind:shadow?'SHADOW':'BLACK',slices,
+      started:time(),duration:shadow?1080:550});
+  }
   sync(snapshot,events=[]){
     const mapId=snapshot?.map?.id??null;
     if(this.mapId!==null&&mapId!==this.mapId)this.clear();
@@ -93,7 +122,20 @@ export class LiviaDualityVfx{
     const active=new Set(complete.map(u=>String(u.id)));
     for(const u of complete){const id=String(u.id);if(!this.auras.has(id))this.auras.set(id,this.makeAura(u));}
     for(const [key,node] of this.auras)if(!active.has(key)){node.dispose(false,false);this.auras.delete(key);}
-    for(const event of events||[])if(event.type==='UNIT_ANIMATION'&&event.skillId==='livia_purified_nether')this.swing(snapshot,event);
+    for(const event of events||[]){
+      if(event?.type!=='UNIT_ANIMATION'||!['livia_purified_nether','nether_slash','black_slash'].includes(event.skillId))continue;
+      const key=`${mapId}:${event.sequence}:${event.skillId}:${event.unitId}`;
+      if(this.seenActions.has(key))continue;
+      this.seenActions.add(key);
+      // The animation stream drains events; keep a bounded history only as a
+      // safeguard against a replayed network presentation snapshot.
+      if(this.seenActions.size>384)this.seenActions.delete(this.seenActions.values().next().value);
+      if(event.skillId==='livia_purified_nether')this.swing(snapshot,event);
+      else if(event.skillId==='black_slash')this.swordTechnique(snapshot,event);
+      else if(Number(event.hitCount||0)>1||
+        (snapshot?.units||[]).some(u=>String(u.id)===String(event.unitId)&&u.resources?.duality?.value===100))
+        this.swordTechnique(snapshot,event,{shadow:true});
+    }
   }
   updateFrame(now=time()){
     for(const [key,root] of this.wells){root.rotation.y+=.006;
@@ -104,15 +146,29 @@ export class LiviaDualityVfx{
         Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+.12,unit.y*TILE_SIZE);root.rotation.y+=.005;}
     for(const item of [...this.swings]){
       const progress=Math.max(0,Math.min(1,(now-item.started)/item.duration));
-      item.pivot.rotation.y=item.from-.95+progress*1.9;
-      item.pivot.rotation.z=.68-progress*1.35;
-      item.pivot.scaling.setAll(progress<.18?Math.max(.03,progress/.18):progress>.78?Math.max(.02,(1-progress)/.22):1);
+      if(item.kind==='SHADOW'||item.kind==='BLACK'){
+        item.pivot.rotation.y=item.from;
+        const count=item.slices.length;
+        item.slices.forEach((slice,i)=>{
+          const local=progress*count-i;
+          if(local<0||local>1){slice.setEnabled(false);return;}
+          slice.setEnabled(true);
+          slice.rotation.y=(i%2?-.58:.58)+(local-.5)*1.5;
+          slice.rotation.z=(i%2?-1:1)*(.82-local*1.65);
+          slice.position.set(Math.sin(local*Math.PI)*(i%2?-.18:.18),0,Math.sin(local*Math.PI)*.17);
+          slice.scaling.setAll(Math.max(.04,Math.sin(Math.PI*local)));
+        });
+      }else{
+        item.pivot.rotation.y=item.from-.95+progress*1.9;
+        item.pivot.rotation.z=.68-progress*1.35;
+        item.pivot.scaling.setAll(progress<.18?Math.max(.03,progress/.18):progress>.78?Math.max(.02,(1-progress)/.22):1);
+      }
       if(progress>=1){item.pivot.dispose(false,false);this.swings.splice(this.swings.indexOf(item),1);}
     }
   }
   clear(){
     for(const group of [this.wells,this.rifts,this.auras]){for(const node of group.values())node.dispose(false,false);group.clear();}
-    for(const item of this.swings)item.pivot.dispose(false,false);this.swings.length=0;
+    for(const item of this.swings)item.pivot.dispose(false,false);this.swings.length=0;this.seenActions.clear();
   }
   diagnostics(){return{wells:this.wells.size,distortionTiles:this.rifts.size,completeAuras:this.auras.size,bladeSwings:this.swings.length};}
   dispose(){this.clear();for(const material of this.materials.values())material.dispose();this.materials.clear();}

@@ -7,6 +7,7 @@ import {TacticalEngine} from './tactical-engine.js';
 import {BattleResolution} from './battle-resolution.js';
 import {SkillDatabase} from './skill-database.js';
 import {WeaponMaterialEngine} from './weapon-material-engine.js';
+import {CombatContactRules} from './combat-contact-rules.js';
 
 export function officialEngagementForecast({map,attacker,defender,skill,
   unitRuntime=globalThis.UnitRuntimeEngine,
@@ -34,7 +35,7 @@ export function officialEngagementForecast({map,attacker,defender,skill,
   const hp=Math.max(0,Number(defender.hp||0));
   const maxHp=Math.max(1,Number(defender.character.combat?.hp||hp||1));
   const pct=n=>Math.max(0,Math.min(100,Math.round(n)));
-  const guaranteed=normal.guaranteedHit===true;
+  const guaranteed=normal.guaranteedHit===true||CombatContactRules.isPureMagic(attacker,effective);
   const hit=guaranteed?100:pct(normal.hc),crit=pct(normal.cc);
   const type=normal.type;
   const extraNormal=resolution.previewEnchantmentBonus(attacker,defender,effective)+
@@ -70,9 +71,9 @@ export function officialEngagementForecast({map,attacker,defender,skill,
       materialPressure:material.pressure,materialAdvantage:material.materialAdvantage,
       damageIfFailed:baseDamage,hpAfterBlocked:Math.max(0,hp-damageIfBlocked)};
   });
-  const evadeFull=pct(Math.max(0,normal.hc-20));
-  const evadeGraze=pct(Math.max(0,normal.hc)-evadeFull);
-  const evadeMiss=pct(100-evadeFull-evadeGraze);
+  const evadeFull=guaranteed?100:pct(Math.max(0,normal.hc-20));
+  const evadeGraze=guaranteed?0:pct(Math.max(0,normal.hc)-evadeFull);
+  const evadeMiss=guaranteed?0:pct(100-evadeFull-evadeGraze);
   return{attackerId:attacker.id,defenderId:defender.id,hp,maxHp,hit,crit,
     normalDamage:baseDamage,physicalCriticalDamage,magicCriticalDamage,
     criticalDamage:critDamage,hpAfterNormal:Math.max(0,hp-baseDamage),

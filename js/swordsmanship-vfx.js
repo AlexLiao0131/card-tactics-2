@@ -7,7 +7,7 @@ import {VfxDatabase} from './vfx-database.js';
 
 const MODULE='swordsmanship';
 const SKILLS=VfxDatabase.skillIds(MODULE);
-const LENGTH=Object.freeze({CUT:440,GANFAN:510,PIERCE:480,STRIKE:580,FLASH:720,PARRY:390,DODGE:390});
+const LENGTH=Object.freeze({CUT:440,GANFAN:510,PIERCE:480,STRIKE:580,FLASH:720,PARRY:390,DODGE:390,BREAK:450});
 export class SwordsmanshipVfx extends HeroCombatVfxBase{
   constructor(scene){
     super(scene,{name:'swordsmanship',maxActive:10,colors:{
@@ -31,6 +31,13 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
         if(this.seen.has(key))continue;
         this.seen.add(key);
         this.startDefense('PARRY',event,unit,snapshot,now);
+      }else if(event?.type==='LIVIA_GANFAN_BREAK_STANCE'){
+        const source=this.findUnit(snapshot,event.unitId),target=this.findUnit(snapshot,event.targetId);
+        if(source?.characterId!=='livia'||!target)continue;
+        const key=`${snapshot?.map?.id}:${event.sequence}:${event.unitId}:${event.targetId}:GANFAN_BREAK`;
+        if(this.seen.has(key))continue;
+        this.seen.add(key);
+        this.startDefense('BREAK',event,target,snapshot,now);
       }else if(event?.type==='UNIT_FLOAT_TEXT'&&['PARRY','DODGE'].includes(event.kind)){
         const unit=this.findUnit(snapshot,event.unitId);
         if(unit?.characterId!=='leon'&&unit?.character?.id!=='leon')continue;
@@ -73,7 +80,7 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
     const fx=this.createEffect(kind,{...event,unitId:unit.id,
       x:unit.x,y:unit.y,targetX:unit.x,targetY:unit.y},snapshot,now,LENGTH[kind]);
     fx.root.position.copyFrom(this.unitPoint(unit,.96));
-    fx.trail=this.ring(fx.root,`${kind}-defense`,1.17,kind==='PARRY'?'steel':'ghost',16);
+    fx.trail=this.ring(fx.root,`${kind}-defense`,1.17,kind==='PARRY'?'steel':kind==='BREAK'?'impact':'ghost',16);
     fx.trail.rotation.y=Math.PI/2;
     fx.edge=this.mesh(fx.root,`${kind}-flash`,'CreateBox',
       {width:1.05,height:.08,depth:.065},'edge');
@@ -83,7 +90,7 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
   updateEffect(fx,elapsed,t){
     const fade=1-vfxSmooth((t-.52)/.48);
     const strike=vfxSmooth(t/.32);
-    if(fx.kind==='PARRY'||fx.kind==='DODGE'){
+    if(fx.kind==='PARRY'||fx.kind==='DODGE'||fx.kind==='BREAK'){
       fx.trail.scaling.setAll(.35+strike*1.5);
       fx.trail.visibility=fade*.9;
       fx.edge.rotation.y=elapsed*.007;

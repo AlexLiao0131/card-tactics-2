@@ -233,6 +233,12 @@ export function createUnitRuntimeEngine(){
   function bloodMemoryCost(skill){return manaCost(skill)+Object.values(resourceCosts(skill)).reduce((sum,v)=>sum+v,0)}
   function skillForUnit(unit,skill){
     skill=LiviaDualityEngine.transformedSkill(unit,skill);
+    if(skill?.id==="ophi_forest_wrath"&&forestSoulFull(unit)){
+      return {...skill,target:"TILE",targetType:"AOE",radius:2,attackClass:"RANGED",
+        areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},
+        relationEffects:[{relation:"ALLY",type:"HEAL",amount:60}],
+        description:"【30魂・森靈盛放】消耗全部森靈之魂，指定射程1～5格地點，在菱形半徑2格內對敵軍造成自然魔法傷害，對友軍立即治療60 HP。含自身若位於範圍內；傷害和治療各結算一次，不會誤傷友軍。未滿魂維持單體自然魔彈。"};
+    }
     if(!skill||skill._bloodMemory||!isBloodMemory(unit,skill))return skill;
     if(skill.weapon&&!unit.character.weapons?.[skill.weapon]){
       const reference=unit.character.weapons?.rapier||{};

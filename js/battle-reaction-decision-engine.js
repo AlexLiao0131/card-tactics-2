@@ -12,6 +12,7 @@
  */
 import {TacticalEngine} from './tactical-engine.js';
 import {WeaponMaterialEngine} from './weapon-material-engine.js';
+import {CombatContactRules} from './combat-contact-rules.js';
 
 /** No RNG, invented weights, resource expenditure, or mutation of units. */
 export function chooseAutonomousBattleReaction({map,units,attacker,defender,skill,
@@ -27,7 +28,7 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
 
   const attackType=skill.attackType==='INHERIT'?
     attacker.character?.weapons?.[skill.weapon]?.attackType:skill.attackType;
-  const options=resolution.prepareSingleTargetReaction({defender,attacker,canUseSkill});
+  const options=resolution.prepareSingleTargetReaction({defender,attacker,attackSkill:skill,canUseSkill});
   const counters=options.counterSkills.filter(counter=>
     eligibleCounterSkill(counter) &&
     TacticalEngine.canTarget(map,defender,attacker,counter,environmentState));
@@ -86,5 +87,7 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
     interception:null,kind:'DEFENSE'};
   if(counter)return {reaction:resolution.createReaction('COUNTER',{skill:counter.counter}),
     interception:null,kind:'COUNTER'};
-  return {reaction:resolution.createReaction('EVADE'),interception:null,kind:'EVADE'};
+  return CombatContactRules.canActiveEvade(attacker,skill)?
+    {reaction:resolution.createReaction('EVADE'),interception:null,kind:'EVADE'}:
+    {reaction:null,interception:null,kind:'ACCEPT_MAGIC'};
 }

@@ -1,10 +1,11 @@
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 import {WeaponMaterialEngine} from "./weapon-material-engine.js";
 import {chooseAutonomousBattleReaction} from "./battle-reaction-decision-engine.js";
+import {CombatContactRules} from "./combat-contact-rules.js";
 export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
-  const resolveWithRandom=(map,a,t,skill,opt={})=>TacticalEngine.resolve(map,a,t,skill,{...opt,random});
+  const resolveWithRandom=(map,a,t,skill,opt={})=>TacticalEngine.resolve(map,a,t,skill,{...opt,random,forceHit:opt.forceMiss?false:(opt.forceHit===true||CombatContactRules.isPureMagic(a,skill))});
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
   function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
@@ -33,10 +34,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   function supportAnchorDistance(ally){let value=1;for(const passive of SkillDatabase.passiveList(ally?.character?.passives)){const n=Number(passive?.supportRules?.allyDistance);if(Number.isFinite(n))value=Math.max(value,n)}return value}
   function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;const anchor=Math.max(Math.abs(ally.x-initiator.x),Math.abs(ally.y-initiator.y));if(anchor>supportAnchorDistance(ally))continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
   function createSupportAction(ally,target,skill,index=0){return{id:`support-${ally.id}-${index}`,role:"SUPPORT",actor:ally,target,skill}}
-  function counterSkills({defender,attacker,canUseSkill}){
+  function counterSkills({defender,attacker,attackSkill=null,canUseSkill}){
     if(!defender?.alive||!attacker?.alive)return[];
     return SkillDatabase.list(defender.character.skills).filter(s=>{
-      if(s.utilityAction||s.ganfan||s.target!=="ENEMY"||!isSingleTarget(s))return false;
+      if(s.utilityAction||s.target!=="ENEMY"||!isSingleTarget(s))return false;
+      if(s.ganfan&&!CombatContactRules.canGanfanDefend(attacker,defender,attackSkill))return false;
       if(canUseSkill&&!canUseSkill(defender,s))return false;
       const r=s.range||{min:1,max:1},d=distance(defender,attacker);
       if(d<r.min||d>r.max||!reactionTargetable(defender,attacker,s))return false;
@@ -56,7 +58,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   }
   function createCounterAction(defender,attacker,skill){return{id:`counter-${defender.id}`,role:"COUNTER",actor:defender,target:attacker,skill}}
   function createReaction(type,options={}){if(!["COUNTER","DEFENSE","EVADE"].includes(type))throw new Error(`Unknown reaction type: ${type}`);return{type,...options}}
-  function prepareSingleTargetReaction({defender,attacker,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE","EVADE"]}}
+  function prepareSingleTargetReaction({defender,attacker,attackSkill=null,canUseSkill}){return{defender,attacker,counterSkills:counterSkills({defender,attacker,attackSkill,canUseSkill}),defenseMethods:defenseMethods(defender),choices:["COUNTER","DEFENSE",...(CombatContactRules.canActiveEvade(attacker,attackSkill)?["EVADE"]:[])]}}
   function createContext({map,units=[],environmentState=null,initiator,target,skill,actions=[],reaction=null,interception=null}){
     [initiator,target,...actions.map(a=>a.actor)].forEach(u=>TacticalEngine.ensureFacing(u));
     const linked=globalThis.EffectEngine?.linkedGuardian?.(target,units);
@@ -149,7 +151,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(a.skill?.bloodShadow)return resolveWithRandom(c.map,a.actor,a.target,a.skill,{forceHit:true});
     if(!isPrimaryIncomingAction(c,a))return resolveWithRandom(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
-    if(c.reaction?.type==="EVADE")return resolveEvade(c.map,a.actor,a.target,a.skill);
+    if(c.reaction?.type==="EVADE"&&CombatContactRules.canActiveEvade(a.actor,a.skill))return resolveEvade(c.map,a.actor,a.target,a.skill);
     if(c.reaction?.type==="DEFENSE")return resolveDefense(c.map,a.actor,a.target,a.skill,c.reaction);
     return resolveWithRandom(c.map,a.actor,a.target,a.skill)
   }
@@ -335,7 +337,13 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         queue.splice(queue.findIndex(a=>a.role==="INITIATOR"&&a.actor.id===c.initiator.id)+1,0,delayed);
       }
     }
-    let ganfanFirstStrikeCommitted=false,ganfanParryResolved=false;
+    const defendingGanfan=c.reaction?.type==="COUNTER"&&c.reaction.skill?.ganfan&&
+      CombatContactRules.canGanfanDefend(c.initiator,c.originalTarget,c.skill)&&!c.interception;
+    if(defendingGanfan){
+      const ix=queue.findIndex(a=>a.role==="COUNTER"&&a.actor.id===c.originalTarget.id&&a.skill?.ganfan);
+      if(ix>=0)queue.splice(ix,1); // Defensive Ganfan never executes a free ordinary counter.
+    }
+    let ganfanFirstStrikeCommitted=false,ganfanParryResolved=false,defensiveGanfanChecked=false;
     // Backward shooting is an attack ability, not an initiator-only movement.
     // Queue one authoritative landing for each actually executed action,
     // including a chosen or automatically generated COUNTER.
@@ -386,6 +394,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(plannedBackstep&&!followup)
         backsteps.push({unit:action.actor,tile:plannedBackstep});
       let friendlyHpLoss=0,successfulDefenseForCounter=false;
+      let ganfanGuardContact=false;
       const enchantment=followup?null:globalThis.EffectEngine?.consumeWeaponEnchantment?.(action.actor,skill.weapon)||null;
       globalThis.EffectEngine?.interruptChannel?.(action.actor,"ATTACK");
       globalThis.EffectEngine?.interruptChannel?.(action.target,"ENGAGEMENT");
@@ -436,6 +445,44 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           }
         }
       }
+      // Defensive Ganfan: prevent the initiating MELEE strike once, before hit,
+      // status, shield and post-effect. Failed parry takes the normal attack.
+      if(isPrimary&&defendingGanfan&&!defensiveGanfanChecked){
+        defensiveGanfanChecked=true;
+        const guardSkill=c.reaction.skill;
+        const profile=EquipmentDatabase.defenseProfiles(action.target.character).find(p=>
+          p.counterOnly===true&&p.id===guardSkill.ganfan.parryProfileId&&p.method==="PARRY"&&
+          p.sourceId===attackWeapon(action.target,guardSkill)?.id);
+        const incoming=attackType(action.actor,skill);
+        if(profile?.vs?.[incoming]){
+          const match=WeaponMaterialEngine.defenseMatchup({attacker:action.actor,defender:action.target,
+            skill,method:profile,attackType:incoming});
+          const chance=Number(match.chance);
+          const roll=random()*100;
+          // One defense commitment. No follow-up if the incoming attack is not parried.
+          hooks.consumeSkill?.(action.target,guardSkill);
+          if(Number.isFinite(chance)&&roll<chance){
+            globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role});
+            globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"PARRY");
+            globalThis.UnitAnimationEngine?.emitPresentation?.("LIVIA_GANFAN_PARRY",{
+              unitId:action.target.id,sourceId:action.actor.id,x:action.target.x,y:action.target.y,
+              targetX:action.actor.x,targetY:action.actor.y,skillId:"ganfan"});
+            const blocked={...action,id:`${a.id}-defensive-ganfan`,role:"GANFAN_PARRY",
+              result:{hit:false,ganfanParry:true,damage:0,physicalHpDamage:0,magicHpDamage:0,crit:false,
+                hc:null,accuracy:0,evasion:0,shieldAbsorbed:0},hpAfter:action.target.hp,
+              resolved:{terrain:{acc:0,eva:0},defense:{method:profile,valid:true,
+                attackType:incoming,triggered:true,success:true,roll,chance,damageMultiplier:0}},enchantment:null};
+            results.push(blocked);hooks.onAction?.(blocked);
+            if(action.target.alive&&action.actor.alive){
+              queue.splice(index+1,0,{id:`ganfan-defensive-followup-${action.target.id}`,
+                role:"GANFAN_FOLLOWUP",actor:action.target,target:action.actor,
+                skill:{...guardSkill,power:Number(guardSkill.ganfan.followupPower),ganfanFollowup:true}});
+            }
+            bloodRuntime?.endBloodTransaction?.(a.actor);
+            continue;
+          }
+        }
+      }
       // Multi-contact weapons resolve independent hit/crit/damage rolls inside a
       // single committed action. Counter/support selection and resource cost
       // remain one per action, not one per blade.
@@ -443,6 +490,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       for(let hitIndex=0;hitIndex<hitCount&&action.target.alive;hitIndex++){
         const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,hitIndex===0?enchantment:null,skill),action.actor,action.target,skill);
         const original=resolved.result;
+        // When a defended Ganfan strike is actually blocked or parried, the
+        // defender's committed stance exposes the opening for one riposte.
+        // A missed first cut or a failed/unavailable defensive method is not
+        // a successful BLOCK and never grants a free second hit.
+        if(isPrimary&&c.skill?.ganfan&&!action.misfire&&!c.interception&&
+           c.reaction?.type==="DEFENSE"&&original.hit===true&&
+           resolved.defense?.triggered===true&&resolved.defense.success===true&&
+           Number(resolved.defense.damageMultiplier)<1)ganfanGuardContact=true;
         if(isPrimary&&!action.misfire&&!c.interception&&c.reaction&&
           SkillDatabase.passiveList(action.target.character?.passives||[])
             .some(p=>p.counterOnDefense?.methods?.includes(
@@ -460,7 +515,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
-          duelActive:hasDuel(c,action.actor,action.target,skill),
+          duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,
           backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
             z:Number(plannedBackstep.elevation||0)}:null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
@@ -540,6 +595,21 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         }
       }
       if(isPrimary&&c.skill?.ganfan&&!action.misfire)ganfanFirstStrikeCommitted=true;
+      // A successful enemy block is not a free way to turn off Ganfan.
+      // Reuse the already authored 1.6-power followup, official hit, armor,
+      // shield and critical rules; the defender's original active defense
+      // applies to the FIRST committed strike only.
+      if(ganfanGuardContact&&action.actor.alive&&action.target.alive&&
+         TacticalEngine.canTarget(c.map,action.actor,action.target,c.skill,c.environmentState||null)){
+        const first=SkillDatabase.get("ganfan");
+        queue.splice(index+1,0,{id:`ganfan-block-followup-${action.actor.id}`,
+          role:"GANFAN_FOLLOWUP",actor:action.actor,target:action.target,
+          skill:{...first,power:Number(first.ganfan.followupPower),ganfanFollowup:true}});
+        globalThis.UnitAnimationEngine?.emitPresentation?.("LIVIA_GANFAN_BREAK_STANCE",{
+          unitId:action.actor.id,targetId:action.target.id,
+          x:action.actor.x,y:action.actor.y,targetX:action.target.x,targetY:action.target.y,
+          skillId:"ganfan"});
+      }
       // A successful parry or full dodge schedules ONE legal counter after
       // the entire incoming attack. The reaction engine has no Leon branch.
       // Newly queued counters are not a primary defense: no infinite chain.

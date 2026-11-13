@@ -1084,7 +1084,7 @@
       if(!globalThis.EffectEngine||(!Array.isArray(skill.effects)&&!Array.isArray(skill.relationEffects)))return;
       for(const tile of affected){
         const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant||!relationAllows(skill,attacker,occupant))continue;
-        const effects=Array.isArray(skill.relationEffects)?skill.relationEffects.filter(effect=>!effect.relation||effect.relation===EffectEngine.relation(attacker,occupant)):(skill.effects||[]);
+        const effects=Array.isArray(skill.relationEffects)?skill.relationEffects.filter(effect=>!effect.relation||effect.relation===EffectEngine.relation(attacker,occupant)||effect.relation==="ALLY"&&EffectEngine.relation(attacker,occupant)==="SELF"):(skill.effects||[]);
         for(const effect of effects){
           const result=EffectEngine.apply({source:attacker,target:occupant,effect});
           if(!result?.applied){
@@ -1148,6 +1148,8 @@
     }
 
     function executeMapSkill(attacker,center,skill){
+      // Canonical action gate: stale UI button clicks may never cast after commit.
+      if(!attacker?.alive||attacker.acted||attacker.waited)return false;
       const {map,environmentState}=state();
       if(skill?.purifiedSlash)return executeLiviaPurifiedSlash(attacker,center,skill);
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
@@ -1304,7 +1306,7 @@
         });
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
-      if(skill.areaDamage?.mode==="MAGIC_POWER"){
+      if(skill.areaDamage?.mode==="MAGIC_POWER"||skill.areaDamage?.mode==="PHYSICAL_VOLLEY"){
         let friendlyHpLoss=0;
         // One actual outcome for each unit in the canonical footprint. The
         // Babylon arrow count is presentation-only and never implies damage.
@@ -1335,7 +1337,7 @@
           // AREA_CONTACT is authored in SkillDatabase: an actual ground-covered
           // enemy cannot 'dodge' the entire raining spell as a single arrow.
           // This does not bypass MDEF, damage reductions, shields or barriers.
-          const contact=skill.areaDamage.hitRule==="AREA_CONTACT";
+          const contact=skill.areaDamage.hitRule==="AREA_CONTACT"||globalThis.CombatContactRules?.isPureMagic?.(attacker,skill)===true;
           const result=BattleEngine.calculate(attacker.character,occupant.character,
             attackSkill,{distance,random:ctx.random,forceHit:contact});
           if(!result.hit){
