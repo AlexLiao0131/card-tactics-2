@@ -197,6 +197,8 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
     consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),
     onDefeated:callbacks.handleDefeated,
     onAction:entry=>{
+      if(entry.role==='GANFAN_PARRY')
+        callbacks.pushLog(`${entry.target.character.name} 雁反招架成功，取消 ${entry.actor.character.name} 的反擊，立即追加返斬。`,'BATTLE');
       results.push({role:entry.role,actorId:entry.actor.id,targetId:entry.target.id,
         skillId:entry.skill.id,damage:entry.result.damage,hit:entry.result.hit,
         crit:entry.result.crit,evadeOutcome:entry.result.evadeOutcome??null});
