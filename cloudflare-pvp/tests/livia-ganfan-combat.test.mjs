@@ -6,10 +6,10 @@ import {EQUIPMENT,EquipmentDatabase} from '../../js/equipment-database.js';
 import {VfxDatabase} from '../../js/vfx-database.js';
 
 function fight({roll=0,counter=true,counterSkill=null,positions=[{x:1,y:1},{x:2,y:1}],
-  liviaHp=450,enemyHp=450,forceCounterFaster=false,primarySkill=SKILLS.ganfan,autonomous=false}={}){
+  liviaHp=450,enemyHp=450,forceCounterFaster=false,primarySkill=SKILLS.ganfan,autonomous=false,defenseMethodId=null,enemyEquipment=[]}={}){
   const [p,e]=positions;
   const heroChar={id:'livia',name:'莉維亞',weapons:{black_sword:EQUIPMENT.black_sword},armor:EQUIPMENT.livia_light_armor,equipment:[],skills:['black_slash','ganfan'],passives:[],combat:{hp:450,atk:94,matk:90,def:55,mdef:90}};
-  const enemyChar={id:'imperial_swordsman',name:'測試對手',weapons:{sword:EQUIPMENT.imperial_sword,bow:EQUIPMENT.imperial_bow},armor:EQUIPMENT.imperial_medium_armor,equipment:[],skills:['slash'],passives:[],combat:{hp:450,atk:90,matk:20,def:60,mdef:40}};
+  const enemyChar={id:'imperial_swordsman',name:'測試對手',weapons:{sword:EQUIPMENT.imperial_sword,bow:EQUIPMENT.imperial_bow},armor:EQUIPMENT.imperial_medium_armor,equipment:enemyEquipment,skills:['slash'],passives:[],combat:{hp:450,atk:90,matk:20,def:60,mdef:40}};
   const l={id:'p1',character:heroChar,x:p.x,y:p.y,hp:liviaHp,mana:120,alive:true,team:'P',moved:false,acted:false};
   const eUnit={id:'e1',character:enemyChar,x:e.x,y:e.y,hp:enemyHp,mana:120,alive:true,team:'E',moved:false,acted:false};
   const originalGlobals=Object.fromEntries(['TacticalEngine','BattleEngine','SkillDatabase','EquipmentDatabase','UnitRuntimeEngine','EffectEngine','PostEngagementEngine','UnitAnimationEngine'].map(k=>[k,globalThis[k]]));
@@ -34,7 +34,7 @@ function fight({roll=0,counter=true,counterSkill=null,positions=[{x:1,y:1},{x:2,
   const hooks={canUseSkill:()=>true,consumeSkill:(u,s)=>{commits.push({id:u.id,skill:s.id});return{cost:0,resources:{}}},onAction:x=>receipts.push(x),onDefeated:()=>{}};
   try{
     const output=resolution.resolve({map,units:[l,eUnit],initiator:l,target:eUnit,skill:primarySkill,actions:[],
-      autonomousReaction:autonomous,reaction:!autonomous&&counter?resolution.createReaction('COUNTER',{skill}):null},hooks);
+      autonomousReaction:autonomous,reaction:defenseMethodId?resolution.createReaction('DEFENSE',{methodId:defenseMethodId}):!autonomous&&counter?resolution.createReaction('COUNTER',{skill}):null},hooks);
     return{l,e:eUnit,output,receipts,commits,animation,pfx,defenseChoices:resolution.defenseMethods(l)};
   }finally{for(const [name,value] of Object.entries(originalGlobals))if(value===undefined)delete globalThis[name];else globalThis[name]=value;}
 }
@@ -132,4 +132,58 @@ test('單機對AI施放雁反，能使用既有自主反應進行合法近戰反
 test('PvP人工接受攻擊時（未標示自主反應），不會自行產生反擊',()=>{
  const f=fight({counter:false,autonomous:false});
  assert.deepEqual(f.receipts.map(r=>r.role),['INITIATOR']);
+});
+
+
+test('雁反遇敵人成功招架首斬，能突破防守僵局再斬一次',()=>{
+ const f=fight({counter:false,defenseMethodId:'sword_parry',roll:0});
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR','GANFAN_FOLLOWUP']);
+ assert.deepEqual(f.receipts.map(x=>x.result.damage),[0,64]);
+ assert.deepEqual(f.commits.map(x=>x.skill),['ganfan']);
+ assert.equal(f.e.hp,450-64);
+ assert.equal(f.pfx.filter(x=>x.type==='LIVIA_GANFAN_BREAK_STANCE').length,1);
+});
+
+test('雁反首次落空或防禦失敗，不會無條件追擊',()=>{
+ const f=fight({counter:false,defenseMethodId:'sword_parry',roll:0.999});
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR']);
+ assert.equal(f.e.hp,410);
+});
+
+test('普通黑劍斬遇成功招架，不應觸發雁反專屬返斬',()=>{
+ const f=fight({counter:false,defenseMethodId:'sword_parry',roll:0,primarySkill:SKILLS.black_slash});
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR']);
+ assert.equal(f.e.hp,450);
+});
+
+test('雁反防守追擊不會重複消耗技能資源，且第一斬擊敗敵人不追加',()=>{
+ const f=fight({counter:false,defenseMethodId:'sword_parry',roll:0,enemyHp:30});
+ assert.deepEqual(f.commits.map(x=>x.skill),['ganfan']);
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR','GANFAN_FOLLOWUP']);
+ assert.equal(f.e.alive,false);
+});
+
+test('雁反對普通BRACE格擋仍能追加破勢返斬，不會因重複格擋失效',()=>{
+ const f=fight({counter:false,defenseMethodId:'heavy_armor_brace',enemyEquipment:[EQUIPMENT.imperial_heavy_armor]});
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR','GANFAN_FOLLOWUP']);
+ assert.deepEqual(f.receipts.map(x=>x.result.damage),[30,64]);
+ assert.deepEqual(f.commits.map(x=>x.skill),['ganfan']);
+});
+
+test('黑劍原本無視一般GUARD的特性保留，不額外繞過第二套護甲／招架判定',()=>{
+ const f=fight({counter:false,defenseMethodId:'large_shield_guard',enemyEquipment:[EQUIPMENT.imperial_large_shield]});
+ assert.deepEqual(f.receipts.map(x=>x.role),['INITIATOR']);
+ assert.equal(f.receipts[0].resolved?.defense?.bypassed,true);
+ assert.equal(f.receipts[0].result.damage,40);
+});
+
+
+test('雁反成功格擋追斬有正式 Babylon 事件路由',()=>{
+ assert.ok(VfxDatabase.hasEvent('swordsmanship','LIVIA_GANFAN_BREAK_STANCE'));
+});
+
+test('莉維亞黑劍斬與幽影連斬，皆送入雙極 Babylon VFX',()=>{
+ assert.ok(VfxDatabase.routeSkill('black_slash').includes('livia-duality'));
+ assert.ok(VfxDatabase.routeSkill('nether_slash').includes('livia-duality'));
+ assert.ok(VfxDatabase.routeSkill('livia_purified_nether').includes('livia-duality'));
 });
