@@ -1725,7 +1725,8 @@
         skill=committedApproachSkill(skill);
       }
       const engagement=BattleResolution.resolve(
-        {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction},
+        {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction,
+          autonomousReaction:!reaction&&!!skill.ganfan&&attacker.team===ctx.TEAM.PLAYER&&defender.team!==ctx.TEAM.PLAYER},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect,
           onBackstep:(unit,tile)=>ctx.enterTile(unit)}

@@ -8,8 +8,8 @@ const defs={
   'livia-duality':{roles:{PURIFIED:['livia_purified_nether']},events:[],legacy:'liviaDualityVfx'},
   'shield-guard':{roles:{SWAP:['colin_ally_swap'],GUARD:['colin_full_shield_defense'],BASH:['colin_shield_bash']},events:[],status:{GUARD:'FULL_SHIELD_DEFENSE',STUN:'STUN'},legacy:'shieldGuardVfx'},
   'swordsmanship':{
-    roles:{CUT:['leon_slash'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
-    events:['UNIT_FLOAT_TEXT'],legacy:'swordsmanshipVfx'},
+    roles:{CUT:['leon_slash'],GANFAN:['ganfan'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
+    events:['UNIT_FLOAT_TEXT','LIVIA_GANFAN_PARRY'],legacy:'swordsmanshipVfx'},
   'holy-blade':{
     roles:{VERDICT:['templar_verdict']},events:['TEMPLAR_VERDICT_IMPACT'],
     legacy:'verdictVfx'},

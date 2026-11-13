@@ -1,5 +1,5 @@
 /**
- * Leon's sword technique visuals. Uses already committed UNIT_ANIMATION and
+ * Shared sword technique visuals for Leon and Livia. Uses committed UNIT_ANIMATION and
  * UNIT_FLOAT_TEXT, never re-rolls hit/defense, changes HP or moves combatants.
  */
 import {HeroCombatVfxBase,VFX_TAU,vfxSmooth,vfxClamp} from './hero-combat-vfx-common.js';
@@ -7,7 +7,7 @@ import {VfxDatabase} from './vfx-database.js';
 
 const MODULE='swordsmanship';
 const SKILLS=VfxDatabase.skillIds(MODULE);
-const LENGTH=Object.freeze({CUT:440,PIERCE:480,STRIKE:580,FLASH:720,PARRY:390,DODGE:390});
+const LENGTH=Object.freeze({CUT:440,GANFAN:510,PIERCE:480,STRIKE:580,FLASH:720,PARRY:390,DODGE:390});
 export class SwordsmanshipVfx extends HeroCombatVfxBase{
   constructor(scene){
     super(scene,{name:'swordsmanship',maxActive:10,colors:{
@@ -24,6 +24,13 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
         const kind=VfxDatabase.roleFor(MODULE,event.skillId);
         if(!kind)continue;
         this.startSword(kind,event,snapshot,now);
+      }else if(event?.type==='LIVIA_GANFAN_PARRY'){
+        const unit=this.findUnit(snapshot,event.unitId);
+        if(unit?.characterId!=='livia'||!Number.isFinite(event.x)||!Number.isFinite(event.y))continue;
+        const key=`${snapshot?.map?.id}:${event.sequence}:${event.unitId}:GANFAN_PARRY`;
+        if(this.seen.has(key))continue;
+        this.seen.add(key);
+        this.startDefense('PARRY',event,unit,snapshot,now);
       }else if(event?.type==='UNIT_FLOAT_TEXT'&&['PARRY','DODGE'].includes(event.kind)){
         const unit=this.findUnit(snapshot,event.unitId);
         if(unit?.characterId!=='leon'&&unit?.character?.id!=='leon')continue;
@@ -42,13 +49,14 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
       fx.to=this.point(snapshot,event.landingX,event.landingY,.82);
     fx.span=fx.to.subtract(fx.from);
     fx.duel=event.duelActive===true;
+    fx.ganfanReturn=kind==='GANFAN'&&event.role==='GANFAN_FOLLOWUP';
     const glow=fx.duel?'gold':'steel';
     fx.edge=this.mesh(fx.root,`${kind}-blade`,'CreateBox',
       {width:kind==='PIERCE'?.08:1.42,height:kind==='PIERCE'?.07:.08,
         depth:kind==='PIERCE'?1.45:.055},'edge');
-    fx.trail=this.ring(fx.root,`${kind}-arc`,kind==='STRIKE'?1.4:1.05,glow,16);
+    fx.trail=this.ring(fx.root,`${kind}-arc`,kind==='STRIKE'?1.4:kind==='GANFAN'?(fx.ganfanReturn?1.38:1.16):1.05,glow,16);
     fx.trail.rotation.x=Math.PI/3;
-    fx.sparks=Array.from({length:kind==='FLASH'?7:4},(_,i)=>
+    fx.sparks=Array.from({length:kind==='FLASH'?7:kind==='GANFAN'?(fx.ganfanReturn?7:5):4},(_,i)=>
       this.shard(fx.root,`${kind}-afterimage-${i}`,i%2?'ghost':glow,.18));
     if(fx.duel){
       fx.duelRing=this.ring(fx.root,'duel-rune',1.4,'gold',20);
@@ -91,9 +99,10 @@ export class SwordsmanshipVfx extends HeroCombatVfxBase{
       }
       fx.edge.rotation.y=elapsed*(fx.kind==='PIERCE'?.002:.008);
       fx.edge.rotation.z=fx.kind==='STRIKE'?.68*Math.sin(t*Math.PI):
-        fx.kind==='CUT'?.86*Math.sin(t*Math.PI):fx.edge.rotation.z;
+        fx.kind==='CUT'?.86*Math.sin(t*Math.PI):
+        fx.kind==='GANFAN'?(fx.ganfanReturn?-1:1)*1.07*Math.sin(t*Math.PI):fx.edge.rotation.z;
       fx.edge.visibility=fade;
-      fx.trail.scaling.setAll(.40+strike*(isFlash?1.7:1.1));
+      fx.trail.scaling.setAll(.40+strike*(isFlash?1.7:fx.ganfanReturn?1.65:1.1));
       fx.trail.visibility=fade*.75;
       if(fx.duelRing){fx.duelRing.scaling.setAll(.7+strike*.9);fx.duelRing.visibility=fade*.76;}
     }

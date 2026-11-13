@@ -1,6 +1,7 @@
 export const EQUIPMENT={
   kahns_bow:{id:"kahns_bow",name:"卡恩贈送的獵弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
-  black_sword:{id:"black_sword",name:"父親留下的黑劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:["PHYSICAL_DEFENSE_IGNORE","IGNORE_ARMOR_DISADVANTAGE"]},
+  black_sword:{id:"black_sword",name:"父親留下的黑劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:["PHYSICAL_DEFENSE_IGNORE","IGNORE_ARMOR_DISADVANTAGE"],
+    grantedSkillIds:["ganfan"],weaponDefense:{counterOnly:true,id:"livia_black_sword_parry",name:"黑劍招架",baseline:"SWORD",overrides:{SLASH:{chance:80},PIERCE:{chance:75},STRIKE:{chance:45},SHOT:{chance:0},MAGIC:{chance:0}}}},
   imperial_sword:{id:"imperial_sword",name:"帝國制式長劍",kind:"WEAPON",weaponKind:"SWORD",materialId:"COMMON_METAL",attackType:"SLASH",element:"NONE",affixes:[],weaponDefense:{"id":"sword_parry","name":"長劍招架","baseline":"SWORD"}},
   imperial_spear:{id:"imperial_spear",name:"帝國制式長槍",kind:"WEAPON",weaponKind:"POLEARM",materialId:"COMMON_METAL",attackType:"PIERCE",element:"NONE",affixes:[],weaponDefense:{"id":"spear_deflect","name":"長槍偏斜","baseline":"POLEARM"}},
   imperial_bow:{id:"imperial_bow",name:"帝國制式弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
@@ -191,7 +192,7 @@ export const EquipmentDatabase=(()=>{
     if(!base||item.weaponKind!==spec.baseline)throw new Error("INVALID_WEAPON_DEFENSE_BASELINE:"+item.id);
     const vs={};
     for(const [type,rule] of Object.entries(base.vs))vs[type]={...rule,...(spec.overrides?.[type]||{})};
-    return[{id:spec.id,method:base.method,name:spec.name,vs},...(item.defenseProfiles||[]).map(profile=>({...profile,vs:Object.fromEntries(Object.entries(profile.vs||{}).map(([type,rule])=>[type,{...rule}]))}))];
+    return[{id:spec.id,method:base.method,name:spec.name,vs,...(spec.counterOnly===true?{counterOnly:true}:{})},...(item.defenseProfiles||[]).map(profile=>({...profile,vs:Object.fromEntries(Object.entries(profile.vs||{}).map(([type,rule])=>[type,{...rule}]))}))];
   }
   function weaponDefenseMatchup(item,incomingAttackType){
     const profile=itemDefenseProfiles(item)[0]||null;
