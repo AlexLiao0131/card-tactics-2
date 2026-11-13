@@ -6,6 +6,7 @@
 import {TacticalEngine} from './tactical-engine.js';
 import {BattleResolution} from './battle-resolution.js';
 import {SkillDatabase} from './skill-database.js';
+import {WeaponMaterialEngine} from './weapon-material-engine.js';
 
 export function officialEngagementForecast({map,attacker,defender,skill,
   unitRuntime=globalThis.UnitRuntimeEngine,
@@ -51,7 +52,8 @@ export function officialEngagementForecast({map,attacker,defender,skill,
       attacker.character.weapons?.[effective.weapon]?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&
       method.artifact!==true;
     if(blocked)return{id:method.id,label:method.name,valid:false,bypassed:true};
-    const successRate=Number.isFinite(Number(rule.chance))?pct(Number(rule.chance)):100;
+    const material=WeaponMaterialEngine.defenseMatchup({attacker,defender,skill:effective,method,attackType:type});
+    const successRate=material.chance===null?100:pct(material.chance);
     const reduction=method.method==='PARRY'?0:
       Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1;
     const guardMultiplier=method.method==='GUARD'?
@@ -59,8 +61,13 @@ export function officialEngagementForecast({map,attacker,defender,skill,
     const holyInherent=attacker.character.weapons?.[effective.weapon]?.inherentMagic?.unblockable===true;
     const unblockedExtra=holyInherent?resolution.previewInherentBonus(attacker,defender,effective):0;
     const reducedBase=baseDamage-unblockedExtra;
-    const damageIfBlocked=Math.max(0,Math.round(reducedBase*(effective?.pureHoly?1:reduction*guardMultiplier)+unblockedExtra));
+    // Material-based STRIKE deflection redirects physical force only; it does
+    // not reduce the independent enchantment or inherent magic component.
+    const damageIfBlocked=method.physicalOnly===true?
+      Math.max(0,Math.round(Number(normal.damage||0)*(effective?.pureHoly?1:reduction))+extraNormal):
+      Math.max(0,Math.round(reducedBase*(effective?.pureHoly?1:reduction*guardMultiplier)+unblockedExtra));
     return{id:method.id,label:method.name,valid:true,successRate,damageIfBlocked,
+      materialPressure:material.pressure,materialAdvantage:material.materialAdvantage,
       damageIfFailed:baseDamage,hpAfterBlocked:Math.max(0,hp-damageIfBlocked)};
   });
   const evadeFull=pct(Math.max(0,normal.hc-20));

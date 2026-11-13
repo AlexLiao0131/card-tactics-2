@@ -11,6 +11,7 @@
  * and may be adopted by other hosts without importing any PVP state.
  */
 import {TacticalEngine} from './tactical-engine.js';
+import {WeaponMaterialEngine} from './weapon-material-engine.js';
 
 /** No RNG, invented weights, resource expenditure, or mutation of units. */
 export function chooseAutonomousBattleReaction({map,units,attacker,defender,skill,
@@ -60,10 +61,27 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
   // Profiles and their per-attack chance/reduction come from the original
   // equipment, passive and effect data. An explicitly impossible chance or an
   // unblockable pure-Holy attack should not trigger a meaningless active guard.
-  const defense=skill.pureHoly?null:options.defenseMethods.find(profile=>{
+  const eligibleDefenses=skill.pureHoly?[]:options.defenseMethods.filter(profile=>{
     const rule=profile?.vs?.[attackType];
-    return !!rule&&(!Number.isFinite(Number(rule.chance))||Number(rule.chance)>0);
+    if(!rule)return false;
+    const material=WeaponMaterialEngine.defenseMatchup({attacker,defender,skill,method:profile,attackType});
+    return material.chance===null||material.chance>0;
   });
+  // Preserve the existing choice order outside the star-iron material branch.
+  // If a weapon has a physical deflection alternative, choose the option with
+  // the greater expected physical reduction, using only its canonical profile.
+  const materialDeflect=eligibleDefenses.find(profile=>profile.physicalOnly===true);
+  const materialChoices=materialDeflect?
+    eligibleDefenses.filter(profile=>profile.sourceId===materialDeflect.sourceId):[];
+  const expectedReduction=profile=>{
+    const rule=profile.vs[attackType];
+    const material=WeaponMaterialEngine.defenseMatchup({attacker,defender,skill,method:profile,attackType});
+    const probability=material.chance===null?1:material.chance/100;
+    const multiplier=profile.method==='PARRY'?0:Number(rule.damageMultiplier??1);
+    return probability*(1-multiplier);
+  };
+  materialChoices.sort((a,b)=>expectedReduction(b)-expectedReduction(a));
+  const defense=materialChoices[0]||eligibleDefenses[0]||null;
   if(defense)return {reaction:resolution.createReaction('DEFENSE',{methodId:defense.id}),
     interception:null,kind:'DEFENSE'};
   if(counter)return {reaction:resolution.createReaction('COUNTER',{skill:counter.counter}),

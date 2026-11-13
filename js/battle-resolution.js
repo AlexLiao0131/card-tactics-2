@@ -1,4 +1,5 @@
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
+import {WeaponMaterialEngine} from "./weapon-material-engine.js";
 export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
@@ -117,8 +118,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     const z=resolveWithRandom(map,a,t,s),b=z.result;
     if(!b.hit)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,reason:"ATTACK_MISSED"}};
     if(!s?.pureHoly&&p.method==="GUARD"&&hasAffix(attackWeapon(a,s),"PHYSICAL_DEFENSE_IGNORE")&&p.artifact!==true)return{...z,defense:{method:p,valid:true,attackType:type,triggered:false,bypassed:true,reason:"PHYSICAL_DEFENSE_IGNORE"}};
+    const material=WeaponMaterialEngine.defenseMatchup({attacker:a,defender:t,skill:s,method:p,attackType:type});
+    const effectiveChance=material.chance;
     let success=true,roll=null;
-    if(Number.isFinite(Number(rule.chance))){roll=random()*100;success=roll<Number(rule.chance)}
+    if(effectiveChance!==null&&Number.isFinite(Number(effectiveChance))){roll=random()*100;success=roll<Number(effectiveChance)}
     let m=1,waitedMultiplier=1,afterInterceptEffects=[];
     if(success){
       m=s?.pureHoly?1:(p.method==="PARRY"?0:(Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1));
@@ -131,7 +134,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(!s?.pureHoly)m*=waitedMultiplier;
       }
     }
-    return{...z,result:{...b,damage:Math.round(b.damage*m)},defense:{method:p,valid:true,attackType:type,triggered:true,success,roll,chance:Number.isFinite(Number(rule.chance))?Number(rule.chance):null,damageMultiplier:m,waitedMultiplier,afterInterceptEffects:success&&r?.guardInterception?afterInterceptEffects:[]}};
+    return{...z,result:{...b,damage:Math.round(b.damage*m)},defense:{method:p,valid:true,attackType:type,triggered:true,success,roll,chance:effectiveChance!==null&&Number.isFinite(Number(effectiveChance))?Number(effectiveChance):null,
+      baseChance:Number.isFinite(Number(rule.chance))?Number(rule.chance):null,
+      materialPressure:material.pressure,materialAdvantage:material.materialAdvantage,
+      physicalOnly:p.physicalOnly===true,damageMultiplier:m,waitedMultiplier,afterInterceptEffects:success&&r?.guardInterception?afterInterceptEffects:[]}};
   }
   function resolveAction(c,a){
     TacticalEngine.ensureFacing(a.actor);TacticalEngine.ensureFacing(a.target);
@@ -184,7 +190,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(base.hit){
       let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
       const defense=resolved.defense;
-      if(defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
+      if(defense?.triggered&&defense.success!==false&&defense.physicalOnly!==true)multiplier*=Number(defense.damageMultiplier??1);
       extra=Math.round(enchantmentMagicDamage(actor,target,enchant,magicalCrit,skill)*multiplier);
     }
     return{...resolved,enchantment:enchant,result:{...base,damage:base.damage+extra,
@@ -219,7 +225,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(base.hit){
       let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
       const defense=resolved.defense;
-      if(!inherent.unblockable&&defense?.triggered&&defense.success!==false)multiplier*=Number(defense.damageMultiplier??1);
+      if(!inherent.unblockable&&defense?.triggered&&defense.success!==false&&defense.physicalOnly!==true)multiplier*=Number(defense.damageMultiplier??1);
       extra=Math.round(inherentMagicDamage(actor,target,skill,magicalCrit)*multiplier);
     }
     return {...resolved,result:{...base,weaponDamage:base.weaponDamage??base.damage,
