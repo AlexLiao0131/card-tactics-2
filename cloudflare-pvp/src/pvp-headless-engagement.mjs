@@ -8,6 +8,7 @@ import {SkillDatabase} from '../../js/skill-database.js';
 import {resolveCanonicalChargeVariant} from './pvp-headless-charge.mjs';
 import {chooseAutonomousBattleReaction} from '../../js/battle-reaction-decision-engine.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
+import {CombatContactRules} from '../../js/combat-contact-rules.js';
 import {officialEngagementForecast} from '../../js/battle-engagement-forecast.js';
 import '../../js/post-engagement-engine.js';
 import '../../js/trajectory-engine.js';
@@ -40,7 +41,8 @@ function combatant(game,id,team){return game.units?.find(u=>u.id===id&&u.alive&&
 export function isCanonicalDirectAttackSkill(skill){
   return !!skill&&['ATTACK','MAGIC','SPECIAL'].includes(skill.category)&&
     skill.target==='ENEMY'&&(!skill.targetType||skill.targetType==='SINGLE')&&
-    !!skill.weapon&&Number(skill.power)>0&&!!skill.attackType&&
+    (!!skill.weapon||skill.id==='ophi_forest_wrath'&&skill.attackType==='MAGIC')&&
+    Number(skill.power)>0&&!!skill.attackType&&
     !skill.utilityAction&&!skill.approach&&!skill.moveToTarget&&!skill.bloodShadow&&
     !skill.channel&&!skill.effects&&!skill.relationEffects&&!skill.bloodBurst&&
     (!skill.verdictCross||globalThis.PostEngagementEngine?.canResolveVerdictCross?.(skill))&&
@@ -153,19 +155,19 @@ export function pendingReactionOptions(game,seat,engine){
   const defender=combatant(game,p.targetId,TEAM[p.defendingSeat]);
   if(!attacker||!defender)fail('PENDING_COMBATANT_MISSING');
   const resolution=engine.battleResolution;
-  const prep=resolution.prepareSingleTargetReaction({defender,attacker,
+  const attackSkill=basicAttackSkill(attacker,p.skillId);
+  const prep=resolution.prepareSingleTargetReaction({defender,attacker,attackSkill,
     canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s)});
   const counterSkills=prep.counterSkills.filter(s=>TacticalEngine.canTarget(
     game.battlefield.map,defender,attacker,s,game.environmentState));
   const guardians=resolution.guardCandidates({map:game.battlefield.map,units:game.units,target:defender});
-  const attackSkill=basicAttackSkill(attacker,p.skillId);
   // Do not leak an unseen attacker's stats through a read-only forecast.
   const canIdentify=TacticalEngine.teamCanIdentifyUnit({map:game.battlefield.map,
     units:game.units,environmentState:game.environmentState},TEAM[seat],attacker,game.environmentState);
   const forecast=canIdentify?officialEngagementForecast({map:game.battlefield.map,attacker,defender,
     skill:attackSkill,unitRuntime:engine.unitRuntime,resolution}):null;
   return {attackerId:attacker.id,targetId:defender.id,skillId:p.skillId,forecast,
-    choices:['ACCEPT','EVADE','DEFENSE','COUNTER','GUARD'],
+    choices:['ACCEPT',...(prep.choices.includes('EVADE')?['EVADE']:[]),'DEFENSE','COUNTER','GUARD'],
     defenses:prep.defenseMethods.map(m=>({id:m.id,name:m.name})),
     counters:counterSkills.map(s=>({id:s.id,name:s.name})),
     guardians:guardians.map(x=>({guardianId:x.guardian.id,
@@ -255,7 +257,10 @@ export function reactCanonicalAttack(game,action,seat,engine,callbacks,checkMatc
     fail('INVALID_REACTION_COMMAND');
   if(action.reaction==='ACCEPT'||action.reaction==='EVADE'){
     if(!exact(action,['type','reaction']))fail('INVALID_REACTION_COMMAND');
-    if(action.reaction==='EVADE')reaction=engine.battleResolution.createReaction('EVADE');
+    if(action.reaction==='EVADE'){
+      if(!opt.choices.includes('EVADE'))fail('ILLEGAL_EVADE_REACTION');
+      reaction=engine.battleResolution.createReaction('EVADE');
+    }
   }else if(action.reaction==='DEFENSE'){
     if(!exact(action,['type','reaction','methodId'])||
        !opt.defenses.some(m=>m.id===action.methodId))fail('ILLEGAL_DEFENSE_METHOD');

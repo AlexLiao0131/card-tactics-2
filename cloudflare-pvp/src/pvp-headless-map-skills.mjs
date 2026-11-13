@@ -114,15 +114,25 @@ export function isCanonicalImmediateMapSkill(skill){
      skill.environmentTarget||skill.waterContact||skill.approach||
      skill.variants?.length||skill.statusEffects?.length||
      skill.postEffects?.length||skill.afterUseEffects?.length||
-     skill.relationEffects?.length||skill.effects?.length)return false;
+     skill.effects?.length)return false;
+  const forestBloom=skill.id==='ophi_forest_wrath'&&
+    Array.isArray(skill.relationEffects)&&skill.relationEffects.length===1&&
+    skill.relationEffects[0].relation==='ALLY'&&
+    skill.relationEffects[0].type==='HEAL'&&
+    Number(skill.relationEffects[0].amount)===60&&
+    skill.areaDamage?.hitRule==='AREA_CONTACT'&&Number(skill.radius)===2;
+  if(skill.relationEffects?.length&&!forestBloom)return false;
   // executeMapSkill explicitly owns these synchronous effects. An unknown
   // AOE payload must not be 'successful' while silently doing nothing.
-  if(skill.areaDamage&&skill.areaDamage.mode!=='MAGIC_POWER')return false;
+  const physicalVolley=skill.areaDamage?.mode==='PHYSICAL_VOLLEY'&&
+    skill.fanShot?.length>0&&skill.attackType==='SHOT'&&skill.weapon&&
+    skill.id==='ophi_multishot'&&skill.areaDamage?.relation==='ENEMY';
+  if(skill.areaDamage&&skill.areaDamage.mode!=='MAGIC_POWER'&&!physicalVolley)return false;
   if(skill.environmentForces&&!Array.isArray(skill.environmentForces))return false;
   if(Array.isArray(skill.environmentForces)&&
      !skill.environmentForces.every(f=>Object.values(EnvironmentEngine.FORCE).includes(f)))
     return false;
-  const damages=skill.areaDamage?.mode==='MAGIC_POWER'&&
+  const damages=(skill.areaDamage?.mode==='MAGIC_POWER'||physicalVolley)&&
     Number.isFinite(Number(skill.power))&&Number(skill.power)>0;
   const floods=Number.isFinite(Number(skill.hydrologyFlood?.surfaceRise))&&
     Number(skill.hydrologyFlood.surfaceRise)>0;
