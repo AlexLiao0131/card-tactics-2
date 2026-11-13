@@ -28,6 +28,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   let renderRevision=0;
   let debugEnvironmentSteps=0;
   let pendingEnemyAttack=null;
+  let pendingBerserkResume=null;
   let pendingReactionType=null;
   let selectedGuardian=null;
   let selectedGuardInterception=null;
@@ -331,7 +332,18 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function traverseUnitPath(...args){
     const unit=args[0],before=unit?{x:unit.x,y:unit.y}:null;
     const path=args[1]||[],beforeTile=before&&TacticalEngine.tile(map,before.x,before.y);
-    const result=environmentController.traverseUnitPath(...args);
+    const duality=globalThis.LiviaDualityEngine;
+    duality?.beginMove(unit);
+    let result={completed:true};
+    for(const step of path){
+      if(unit)unit._liviaEntryFrom={x:unit.x,y:unit.y};
+      result=environmentController.traverseUnitPath(unit,[step],args[2]);
+      if(unit?._liviaMoveInterrupted){
+        result={completed:false,reason:"SPACE_DISTORTION"};break;
+      }
+      if(!result?.completed||!unit?.alive)break;
+    }
+    duality?.endMove(unit);
     if(unit&&before&&(unit.x!==before.x||unit.y!==before.y)){
       EffectEngine.interruptChannel(unit,"MOVE");syncSmokeCover(unit);
       const shield=globalThis.ColinShieldMobilityEngine;
@@ -375,13 +387,14 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     debugEnvironmentSteps=0;
     areaFields.reset();
     enemyController?.reset?.();actionController?.reset?.();perceptionState.session=null;perception.reset();
+    pendingBerserkResume=null;
     globalThis.ItemInventoryEngine?.beginBattle?.(window.CardTacticsBattleSetup?.itemLoadouts||{});
     const requestedStageId=window.CardTacticsBattleSetup?.stageId||"prototype_battle";
     const setup=BattleSetupEngine.create({stageId:requestedStageId,battleSetup:window.CardTacticsBattleSetup,TEAM});
     ({stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,unitSerial}=setup);
     enchantIdentityById.clear();enchantIdentityCounters.clear();releaseEnchantmentMarkers();
     EffectEngine.syncConditionalPassives(units,environmentState);
-    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
+    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;globalThis.LiviaDualityEngine?.spawnWells?.(map,units,round,Math.random);stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
   function unitAt(x,y){return units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y);}
   function shieldBoardOrDismount(unit,{passenger=null,tile=null}={}){
@@ -396,12 +409,21 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     render();return true;
   }
   function spawnFromScript(action){const requested=String(action.team||"ENEMY").toUpperCase();const team=requested==="PLAYER"?TEAM.PLAYER:requested==="NEUTRAL"?TEAM.NEUTRAL:TEAM.ENEMY;if(unitAt(action.x,action.y))return null;const character=CHARACTERS[action.characterId];if(!character)return null;const prefix=team===TEAM.PLAYER?"p":team===TEAM.NEUTRAL?"n":"e";let n=0,id;do{id=`${prefix}s${n++}`;}while(units.some(u=>u.id===id));const unit=createUnit(id,team,action.characterId,action.x,action.y);units.push(unit);onUnitCreated(unit);pushLog(`${character.name} 出現在 (${action.x},${action.y})。`);return unit;}
-  function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){const result=environmentController.enterTile(...args);if(args[0])syncSmokeCover(args[0]);return result;}
+  function captureOwnerForTeam(team){return coreCaptureController.ownerForTeam(team);}function coreForOwner(owner){return coreCaptureController.coreForOwner(owner);}function enemyOwner(owner){return coreCaptureController.enemyOwner(owner);}function coreAt(x,y){return coreCaptureController.coreAt(x,y);}function capturePointForUnit(unit){return coreCaptureController.capturePointForUnit(unit);}function canUnitCapture(unit){return coreCaptureController.canUnitCapture(unit);}function damageCore(owner,damage,source){return coreCaptureController.damageCore(owner,damage,source);}function executeCapture(unit){return coreCaptureController.executeCapture(unit);}function coreCombatTarget(core,attackerTeam){return coreCaptureController.coreCombatTarget(core,attackerTeam);}function combatTargetEntities(unit){return coreCaptureController.combatTargetEntities(unit);}function applyEnvironmentHazardToUnit(...args){return environmentController.applyEnvironmentHazardToUnit(...args);}function applyEnvironmentHazards(...args){return environmentController.applyEnvironmentHazards(...args);}function resolveEnvironmentEvents(...args){return environmentController.resolveEnvironmentEvents(...args);}function enterTile(...args){const result=environmentController.enterTile(...args);
+      if(args[0])syncSmokeCover(args[0]);return result;}
   function stageEvent(event){
     // Every canonical tile entry (normal movement, current, knockback, collision)
     // must relocate the visible rider in the SAME authoritative event chain.
     if(event?.type==="ENTER_TILE"&&event.unitId){
-      const carrier=units.find(u=>u.id===event.unitId);
+      const entered=units.find(u=>u.id===event.unitId);
+      if(entered?.alive){
+        globalThis.LiviaDualityEngine?.handleEntry?.({map,units,round},entered,{
+          random:Math.random,
+          log:msg=>pushLog(msg,"BATTLE"),
+          commit:unit=>actionController?.commitPendingMove?.(unit)});
+        event={...event,x:entered.x,y:entered.y,z:entered.z};
+      }
+      const carrier=entered;
       if(carrier?.shieldPassengerId)globalThis.ColinShieldMobilityEngine?.syncPassenger?.(units,carrier,{movement:true});
       if(globalThis.ColinShieldMobilityEngine?.shieldOccupied?.(carrier))
         globalThis.EffectEngine?.removeEffectById?.(carrier,"FULL_SHIELD_DEFENSE");
@@ -427,8 +449,12 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     return{ordinal,mark:enchantRecipientMark(ordinal),
       name:identity?.type||unit.character?.name||"友軍"};
   }
-  function onUnitCreated(unit){if(unit){EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);
-    UnitRuntimeEngine.syncForestSouls(map,units,round);}return unit;}
+  function onUnitCreated(unit){if(unit){
+    if(globalThis.LiviaDualityEngine?.isLivia?.(unit))unit._liviaRound=round;
+    EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);
+    UnitRuntimeEngine.syncForestSouls(map,units,round);
+    if(globalThis.LiviaDualityEngine?.isLivia?.(unit))globalThis.LiviaDualityEngine.spawnWells(map,units,round,Math.random);
+    }return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
     if(result){commitHallucinationSkillExpense(unit,result);window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
@@ -506,7 +532,9 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     const completed=beginPlayerRoundSequence({
       endEnemyPerception:()=>endHallucinationTurn(TEAM.ENEMY),
       checkMatchEnd:()=>checkMatchEnd(),
-      advanceRound:()=>{round++;phase=PHASE.PLAYER;},
+      advanceRound:()=>{round++;phase=PHASE.PLAYER;
+        const dual=globalThis.LiviaDualityEngine?.onRoundStart?.({map,units,round,random:Math.random});
+        if(dual?.berserk?.length)pushLog(`高維污染失控：${dual.berserk.join("、")} 失去自我一回合。`,"BATTLE");},
       expireSmoke:()=>expireSmoke(),
       resetActions:()=>resetActions(TEAM.PLAYER),
       clearInput:()=>{clearSelection();clearEnemyReaction();},
@@ -523,13 +551,57 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     });
     if(!completed)render();
   }
-  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
-  function runEnemyPhase(){tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);enemyController?.runPhase();}
+  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills).map(s=>UnitRuntimeEngine.skillForUnit(unit,s)),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,round,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function runEnemyPhase(){
+    tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);
+    const dual=globalThis.LiviaDualityEngine;
+    const actors=units.filter(unit=>unit.alive&&unit.team===TEAM.NEUTRAL&&
+      unit._liviaBerserkEndRound===round&&!unit._liviaBerserkActionDone);
+    if(!actors.length){enemyController?.runPhase();return;}
+    phase=PHASE.ENEMY;
+    const processNext=()=>{
+      if(checkMatchEnd()){render();return;}
+      const actor=actors.shift();
+      if(!actor){enemyController?.runPhase();return;}
+      if(!actor.alive){processNext();return;}
+      let attack=dual.chooseBerserkAttack({map,units,unit:actor,runtime:UnitRuntimeEngine,
+        random:Math.random,environmentState});
+      if(!attack){
+        const path=dual.chooseBerserkMove({map,units,unit:actor,random:Math.random,environmentState});
+        if(path.length)traverseUnitPath(actor,path);
+        if(actor.alive)attack=dual.chooseBerserkAttack({map,units,unit:actor,
+          runtime:UnitRuntimeEngine,random:Math.random,environmentState});
+      }
+      actor._liviaBerserkActionDone=true;
+      if(!actor.alive){processNext();return;}
+      if(!attack){actor.moved=true;actor.acted=true;actor.waited=true;
+        pushLog(`${actor.character.name} 高維失控，本次未找到可攻擊的合法目標。`,"BATTLE");
+        processNext();return;}
+      const {skill,target}=attack;
+      pushLog(`${actor.character.name} 高維失控，敵我不分地攻擊 ${target.character.name}。`,"BATTLE");
+      if(target.team===TEAM.PLAYER){
+        pendingEnemyAttack={attacker:actor,defender:target,skill};
+        pendingBerserkResume=processNext;
+        mode="enemy-reaction";render();return;
+      }
+      BattleResolution.resolve({map,units,environmentState,initiator:actor,
+        target,skill,actions:[]},{canUseSkill,consumeSkill,onDefeated:handleDefeated,
+        onAction:logBattleAction,onPostEffect:logPostEffect,
+        onBackstep:(unit,tile)=>enterTile(unit)});
+      actor.moved=true;actor.acted=true;actor.waited=true;
+      processNext();
+    };
+    processNext();
+  }
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
   function endPlayerTurn({automatic=false}={}){if(engagementPlayback?.isActive())return false;if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
   function finishUnit(unit,reason,{waited=false}={}){unit.moved=true;unit.acted=true;unit.waited=waited;selectedSkill=null;clearEngagement();mode="inspect";pushLog(`${unit.character.name} ${reason}`);maybeAutoEndPlayerTurn();}
   function logBattleAction(entry){const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":entry.role==="FERVOR_FOLLOWUP"?"狂熱追擊｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}if(entry.refundedMana>0)pushLog(`${actor.character.name}｜聖痕・暴擊返還 ${entry.refundedMana} MP。`,"BATTLE");environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
-  function executeEnemyAttack(reaction=null,interception=null){if(!pendingEnemyAttack)return;const {attacker,defender,skill}=pendingEnemyAttack;const guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:EffectEngine.linkedGuardian(defender,units);if(guardian)pushLog(`${guardian.character.name} 援護 ${defender.character.name}，承接 ${attacker.character.name} 的攻擊。`,"BATTLE");BattleResolution.resolve({map,units,initiator:attacker,target:defender,skill,actions:[],reaction,interception},{canUseSkill,consumeSkill,onDefeated:handleDefeated,onAction:logBattleAction,onPostEffect:logPostEffect,onBackstep:(unit,tile)=>enterTile(unit)});attacker.moved=true;attacker.acted=true;attacker.waited=true;clearEnemyReaction();mode="idle";if(checkMatchEnd()){render();return;}render();enemyController?.continuePhase();}
+  function executeEnemyAttack(reaction=null,interception=null){if(!pendingEnemyAttack)return;const {attacker,defender,skill}=pendingEnemyAttack;const guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:EffectEngine.linkedGuardian(defender,units);if(guardian)pushLog(`${guardian.character.name} 援護 ${defender.character.name}，承接 ${attacker.character.name} 的攻擊。`,"BATTLE");BattleResolution.resolve({map,units,initiator:attacker,target:defender,skill,actions:[],reaction,interception},{canUseSkill,consumeSkill,onDefeated:handleDefeated,onAction:logBattleAction,onPostEffect:logPostEffect,onBackstep:(unit,tile)=>enterTile(unit)});attacker.moved=true;attacker.acted=true;attacker.waited=true;clearEnemyReaction();mode="idle";if(checkMatchEnd()){render();return;}render();
+    if(pendingBerserkResume){
+      const resume=pendingBerserkResume;pendingBerserkResume=null;
+      resume();
+    }else enemyController?.continuePhase();}
   function guardCandidates(){if(!pendingEnemyAttack)return[];const {defender}=pendingEnemyAttack;return BattleResolution.guardCandidates({map,units,target:defender});}
   function chooseGuardian(guardian){selectedGuardian=guardian;selectedGuardInterception=null;pendingReactionType=null;mode="enemy-guard-reaction";render();}
   function chooseEnemyReaction(type){if(!pendingEnemyAttack)return;pendingReactionType=type;if(type==="EVADE"){executeEnemyAttack(BattleResolution.createReaction("EVADE"));return;}mode=type==="COUNTER"?"enemy-counter-select":"enemy-defense-select";render();}
@@ -997,7 +1069,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       const followup=actionController.enchantmentFollowup();
       if(!followup||followup.unitId!==selected.id)return;
       const skills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills)
-        .filter(skill=>skill.weapon===followup.weaponSlot&&skill.target==="ENEMY"&&!skill.utilityAction&&(skill.targetType||"SINGLE")==="SINGLE");
+        .map(s=>UnitRuntimeEngine.skillForUnit(selected,s)).filter(skill=>skill.weapon===followup.weaponSlot&&skill.target==="ENEMY"&&!skill.utilityAction&&(skill.targetType||"SINGLE")==="SINGLE");
       skills.forEach(skill=>{
         addActionButton(`攻擊｜${skill.name}`,()=>{
           if(!canUseSkill(selected,skill))return;
@@ -1008,7 +1080,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       addActionButton("取消攻擊並待機（保留附魔）",()=>actionController.cancelEnchantmentFollowup());return;
     }
     const memoryIds=new Set(EffectEngine.bloodMemorySkills(selected).map(skill=>skill.id));
-    const allSkills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills);
+    const allSkills=SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(selected):selected.character.skills).map(s=>UnitRuntimeEngine.skillForUnit(selected,s));
     const shownSkills=battleSkillsForMenu(allSkills,{mode,memoryIds});
     if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){

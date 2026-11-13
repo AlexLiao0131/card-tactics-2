@@ -104,13 +104,17 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     }
     return{damage:remaining,absorbed,bloodAbsorbed,shieldHp:shieldHp(unit)};
   }
-  function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT",damageType="PHYSICAL"}={}){
+  function applyDamage(target,amount,{source=null,kind="EXTERNAL",charge="DIRECT",damageType="PHYSICAL",unresistable=false}={}){
     const hpBefore=Math.max(0,Number(target?.hp||0));
     if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
     if(isInvulnerable(target))return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),invulnerable:true};
     if(damageType==="MAGIC"&&kind!=="INTERNAL"&&underSanctuary(target))
       return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),sanctuaryImmune:true};
-    const shield=resolveIncomingDamage(target,amount,{kind});
+    const cloak=damageType==="MAGIC"&&kind!=="INTERNAL"
+      ?globalThis.LiviaDualityEngine?.resistMagic?.(target,amount,{random,unresistable})
+      :null;
+    const shield=resolveIncomingDamage(target,cloak?cloak.damage:amount,{kind});
+    if(cloak?.blocked)shield.absorbed+=cloak.blocked;
     target.hp=Math.max(0,hpBefore-shield.damage);
     const hpLoss=hpBefore-target.hp;
     // Humidity responds to real HP loss from magic, after all shields and immunity.
@@ -255,6 +259,9 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       for(const [key,value] of Object.entries(restored))unit.character.attributes[key]=Number(value);
     }
     unit.character.combat.mdef+=Number(globalThis.UnitRuntimeEngine?.humidityMdefBonus?.(unit)||0);
+    const completeBonus=globalThis.LiviaDualityEngine?.statBonus?.(unit)||0;
+    if(completeBonus>0)for(const key of ["atk","matk","def","mdef"])
+      unit.character.combat[key]=Math.round(Number(unit.character.combat[key]||0)*(1+completeBonus));
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
     globalThis.UnitRuntimeEngine?.syncMana?.(unit);

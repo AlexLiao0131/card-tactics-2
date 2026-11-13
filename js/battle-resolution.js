@@ -396,7 +396,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const sealMultiplier=action.misfire?1:
           a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
-        const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier:0);
+        const berserkMultiplier=action.actor?._liviaBerserkEndRound?
+          (globalThis.LiviaDualityEngine?.RULES?.berserkDamageMultiplier||1):1;
+        const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
           duelActive:hasDuel(c,action.actor,action.target,skill),
@@ -408,7 +410,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(original.hit){
           // One attack event: each damage type passes through the official shield/immunity engine.
           const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
-          const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC"})||{hpLoss:0,absorbed:0};
+          const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC",unresistable:skill.pureHoly===true||skill.inherentMagic?.unresistable===true||action.actor.character?.weapons?.[skill.weapon]?.inherentMagic?.unresistable===true})||{hpLoss:0,absorbed:0};
           absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
           physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
         }

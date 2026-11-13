@@ -1,4 +1,5 @@
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
+import {LiviaDualityEngine} from "./livia-duality-engine.js";
 export function createUnitRuntimeEngine(){
   const MANA_BASE=40,MANA_INT_FACTOR=2,MANA_WIL_FACTOR=2;
   const liveUnits=new Map();
@@ -195,8 +196,8 @@ export function createUnitRuntimeEngine(){
     return Math.max(1,Math.ceil(base*(1-Math.max(0,Number(rule.waterManaDiscountMax||0))*humidity/Math.max(1,Number(rule.max||100)))));
   }
   function resourceSnapshot(unit){
-    syncResources(unit);
-    return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:state.label||key.toUpperCase(),
+    syncResources(unit);LiviaDualityEngine.initialize(unit);
+    return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
       ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:{})}]));
   }
   function resourceCosts(skill){
@@ -231,6 +232,7 @@ export function createUnitRuntimeEngine(){
   function isBloodMemory(unit,skill){return bloodUser(unit)&&!!skill?.id&&(unit.grantedSkills||[]).some(g=>g.skillId===skill.id&&g.bloodMemory===true)}
   function bloodMemoryCost(skill){return manaCost(skill)+Object.values(resourceCosts(skill)).reduce((sum,v)=>sum+v,0)}
   function skillForUnit(unit,skill){
+    skill=LiviaDualityEngine.transformedSkill(unit,skill);
     if(!skill||skill._bloodMemory||!isBloodMemory(unit,skill))return skill;
     if(skill.weapon&&!unit.character.weapons?.[skill.weapon]){
       const reference=unit.character.weapons?.rapier||{};
@@ -291,7 +293,7 @@ export function createUnitRuntimeEngine(){
       for(const effect of passive.openingEffects||[])unit.effects.push(clone(effect));
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
-    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});if(unit.character.resourceRules?.humidity)globalThis.EffectEngine?.syncModifiers?.(unit);reconcileBlood(unit);
+    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});LiviaDualityEngine.initialize(unit);if(unit.character.resourceRules?.humidity)globalThis.EffectEngine?.syncModifiers?.(unit);reconcileBlood(unit);
     const target=initialFacingTarget(team,cores??globalThis.CardTacticsRuntime?.getCores?.());
     if(target)TacticalEngine.faceToward(unit,target);
     else TacticalEngine.ensureFacing(unit);
@@ -378,6 +380,7 @@ export function createUnitRuntimeEngine(){
       const value=forestSoulValue(unit);
       if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
     }
+    LiviaDualityEngine.afterCommittedSkill(unit,skill);
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){

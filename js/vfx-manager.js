@@ -22,8 +22,10 @@ import {AquaticMagicVfx} from './aquatic-magic-vfx.js';
 import {BladeStealthVfx} from './blade-stealth-vfx.js';
 import {SwordsmanshipVfx} from './swordsmanship-vfx.js';
 import {ShieldGuardVfx} from './shield-guard-vfx.js';
+import {LiviaDualityVfx} from './livia-duality-vfx.js';
 
 const factories=Object.freeze({
+  'livia-duality':(scene,ctx)=>new LiviaDualityVfx(scene,{units:ctx.units}),
   'shield-guard':scene=>new ShieldGuardVfx(scene),
   'swordsmanship':scene=>new SwordsmanshipVfx(scene),
   'holy-blade':(scene,ctx)=>new HolyBladeVfx(scene,{units:ctx.units}),

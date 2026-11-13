@@ -1100,8 +1100,56 @@
       }
     }
 
+
+    function executeLiviaPurifiedSlash(attacker,center,skill){
+      const {map,units,environmentState}=state();
+      const duality=globalThis.LiviaDualityEngine;
+      if(!duality?.isLivia(attacker)||!skill.purifiedSlash||!duality.status(attacker).blueFull)
+        return skillFailure(attacker,skill,"PURIFICATION_NOT_AVAILABLE",center);
+      if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
+        return skillFailure(attacker,skill,"PURIFIED_SLASH_ILLEGAL_AIM",center);
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
+      const tiles=TacticalEngine.fanTiles(map,attacker,center,{length:skill.purifiedSlash.length});
+      if(!tiles?.length)return skillFailure(attacker,skill,"PURIFIED_SLASH_EMPTY_FOOTPRINT",center);
+      // Resolve while complete form is active, and reset only AFTER all victims.
+      const spent=ctx.consumeSkill(attacker,skill);
+      if(!spent)return false;
+      EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+      TacticalEngine.faceToward(attacker,center);
+      const targets=tiles.map(tile=>ctx.unitAt(tile.x,tile.y)).filter(u=>u?.alive&&u.team!==attacker.team);
+      // One charge for the whole actual cast, never one MP spend per victim.
+      // The private hit skill has no distinct VFX role; the official one-shot
+      // presentation event below owns the giant beam-blade sweep.
+      const hitSkill={...skill,id:"livia_purified_hit",name:skill.name,
+        target:"ENEMY",targetType:"SINGLE",shape:null,purifiedSlash:null,
+        power:Number(skill.power||0)*Number(skill.purifiedSlash.powerMultiplier||1),
+        manaCost:0,hitCount:1};
+      let hits=0;
+      for(const target of targets){
+        if(!target.alive)continue;
+        const res=BattleResolution.resolve({map,units,environmentState,initiator:attacker,
+          target,skill:hitSkill,actions:[]},{
+            canUseSkill:()=>true,consumeSkill:()=>({cost:0,resources:{}}),
+            onDefeated:ctx.handleDefeated,onAction:ctx.logBattleAction,
+            onPostEffect:ctx.logPostEffect});
+        for(const entry of res.results||[]){
+          if(entry.actor?.id!==attacker.id)continue;
+          if(entry.result?.hit)hits++;
+        }
+      }
+      duality.createDistortion(map,attacker.team,tiles,state().round||1);
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,{id:"livia_purified_nether",name:skill.name,
+        category:"ATTACK",weapon:skill.weapon},{targetKind:"MAP",fanTargetCells:tiles.map(t=>({x:t.x,y:t.y})),
+        purifiedSlash:true});
+      duality.resetBlueAfterUltimate(attacker);
+      // Do not leak fog-hidden enemy counts in a shared PVP battle log.
+      ctx.pushLog(`${attacker.character.name}｜${skill.name}｜光刃掃過地圖，留下空間扭曲區域。`,"BATTLE");
+      return finishActiveSkill(attacker);
+    }
+
     function executeMapSkill(attacker,center,skill){
       const {map,environmentState}=state();
+      if(skill?.purifiedSlash)return executeLiviaPurifiedSlash(attacker,center,skill);
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
       if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
         if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
