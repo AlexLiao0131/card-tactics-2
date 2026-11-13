@@ -197,3 +197,12 @@
 .unit-hud-holy-orbs{display:flex;align-items:center;justify-content:center;gap:8px;padding:3px 0 2px}
 .unit-hud-holy-orb{width:16px;height:16px;border-radius:50%;border:2px solid #ae822e;background:#3a3430;box-shadow:inset 0 0 0 2px #29221b;flex:0 0 auto}
 .unit-hud-holy-orb.is-charged{background:#f4ce63;box-shadow:0 0 7px #f0c44b90,inset 0 0 4px #fff4ad}
+/* Livia's one bipolar bar (same native HUD, no second resource meter). */
+.unit-hud-resource[data-resource="duality"] .unit-hud-track {
+  position: relative;
+  background:linear-gradient(90deg,#2459df 0%,#82b6e0 36%,#9194a0 50%,#ac80db 65%,#8429c8 100%);
+}
+.unit-hud-resource[data-resource="duality"] .unit-hud-fill {
+  background:rgba(245,250,255,.35);
+  box-shadow:inset -2px 0 0 #f8fdff;
+}
