@@ -105,6 +105,16 @@ export function isCanonicalImmediateMapSkill(skill){
      skill?.targetType==="AOE"&&skill?.shape==="FAN")return true;
   if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill)||
      isCanonicalRangerVolleySkill(skill))return true;
+  if(skill?.jumpShockwave===true)
+    return skill.jumpShockwave===true&&skill.shape==='W_STEP'&&
+      skill.moveToTarget===true&&skill.target==='TILE'&&skill.targetType==='AOE'&&
+      skill.category==='SPECIAL'&&skill.attackType==='STRIKE'&&
+      skill.areaDamage?.mode==='PHYSICAL_IMPACT'&&skill.areaDamage.relation==='ENEMY'&&
+      Number(skill.power)>0&&Number.isSafeInteger(skill.radius)&&skill.radius===1&&
+      Number.isSafeInteger(skill.range?.max)&&Number.isSafeInteger(skill.range?.min)&&
+      skill.range.min>=1&&skill.range.max>=skill.range.min&&
+      Number(skill.resourceCosts?.rage)>0&&!skill.utilityAction;
+
   if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
      skill.target!=='TILE'||skill.targetType!=='AOE'||
      !Number.isFinite(Number(skill.radius))||Number(skill.radius)<0||

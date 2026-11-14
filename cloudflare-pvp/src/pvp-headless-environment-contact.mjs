@@ -1,9 +1,8 @@
 /**
- * Environment-targeting half of a direct water-contact projectile.
- * A unit hit uses the same BattleResolution as every ordinary attack;
- * the alternate empty burning tile is executed by the exact original
+ * Environment-targeting half of an official direct attack.
+ * Unit contact uses BattleResolution; empty environmental cells use the exact
  * TacticalActionController.environmentTargetTiles/executeEnvironmentTargetSkill.
- * No parallel extinguish, travel, flood, or resource rules.
+ * No parallel water, forest, resource, damage or felling rules in PvP.
  */
 import {SkillDatabase} from '../../js/skill-database.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
@@ -17,11 +16,13 @@ const validId=v=>typeof v==='string'&&v.length>0;
 const exact=(o,keys)=>!!o&&typeof o==='object'&&!Array.isArray(o)&&
   Object.keys(o).sort().join('|')===keys.slice().sort().join('|');
 export function isCanonicalEnvironmentContactSkill(skill){
+  const burning=skill?.environmentTarget==='BURNING'&&skill.waterContact==='RAIN_EVENT';
+  const tree=skill?.environmentTarget==='TREE'&&skill.treeFelling===true&&
+    skill.giantUppercut===true&&skill.id==='magda_breaking_cleave';
   return !!skill&&skill.target==='ENEMY'&&
     (!skill.targetType||skill.targetType==='SINGLE')&&
     ['ATTACK','MAGIC'].includes(skill.category)&&!!skill.weapon&&!!skill.attackType&&
-    Number(skill.power)>0&&skill.environmentTarget==='BURNING'&&
-    skill.waterContact==='RAIN_EVENT'&&
+    Number(skill.power)>0&&(burning||tree)&&
     !skill.utilityAction&&!skill.approach&&!skill.moveToTarget&&!skill.shape&&
     !skill.effects&&!skill.relationEffects&&!skill.statusEffects?.length&&
     !skill.postEffects?.length&&!skill.afterUseEffects?.length&&
@@ -40,7 +41,7 @@ function officialContactController(game,engine,hooks,checkMatchEnd,actor){
   const environment=createCanonicalEnvironmentController(game,hooks);
   return globalThis.TacticalActionController.create({
     TEAM:{PLAYER:TEAM[0],ENEMY:TEAM[1]},
-    actionState:()=>({map:game.battlefield.map,units:game.units,
+    actionState:()=>({map:game.battlefield.map,units:game.units,round:game.round,
       environmentState:game.environmentState,selected:actor}),
     canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
     consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),
