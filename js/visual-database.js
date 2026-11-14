@@ -100,6 +100,48 @@ export const VISUALS={
         }
       }
     },
+    magda_default:{
+      portrait:"assets/images/cards/heroes/magda.png",
+      card:"assets/images/cards/heroes/magda.png",
+      tactical:"assets/images/cards/heroes/magda.png",
+      expressions:{},
+      battle:{
+        kind:"FIGURE",baseFacing:"E",height:1.76,
+        figure:{
+          style:"ARENA_GLADIATOR",
+          sturdyBuild:true,friendlySmile:true,
+          braid:true,longHair:true,arenaBraidedCrown:true,
+          replaceBaseTorso:true,scaleArmor:true,bareArms:true,
+          arenaGladiatorArmor:true,arenaSkirt:true,arenaDrapes:true,
+          cape:false,skirtPanels:false,
+          bracerDetail:true,gloveDetail:true,darkGloves:true,
+          legStraps:true,bootDetail:true,
+          arenaGreatsword:true,twoHanded:true,
+          sideSword:false,bow:false,quiver:false,
+          colors:{
+            skin:"#c98b70",hair:"#8a4938",hairDark:"#5b3028",eyes:"#a95b28",
+            cape:"#9d1825",capeDark:"#68131d",accent:"#a91f2b",
+            shirt:"#f1e7d9",tabard:"#f4ede3",pants:"#3b3030",boots:"#30272a",
+            leather:"#5b392d",leatherDark:"#2b2020",metal:"#b58a4e",
+            armor:"#80613d",chainmail:"#66513a",steelDark:"#373940",
+            gold:"#d5ad5c",weapon:"#3d4149",scale:"#b18b50",scaleLight:"#e2c783",
+            gem:"#d8a84e",holy:"#d5ad5c"
+          }
+        },
+        animations:{
+          IDLE:{duration:1220,loop:true,procedural:"BREATHE"},
+          WALK:{duration:205,loop:true,procedural:"STEP",figureMotion:{
+            bodyBob:.032,rootSway:.016,bodySway:.018,torsoBob:.010,
+            legSwing:.42,armSwing:.24,bowSwing:0,capeSwing:.10,capeTwist:.035,
+            braidSwing:.22,braidTwist:.085,followLag:.76
+          }},
+          ATTACK:{duration:520,loop:false,procedural:"LUNGE"},
+          CAST:{duration:620,loop:false,procedural:"CAST"},
+          HURT:{duration:280,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:800,loop:false,procedural:"FALL"}
+        }
+      }
+    },
     livia_default:{
       portrait:"assets/images/characters/livia/portrait.png",
       card:"assets/images/characters/livia/full.png",
@@ -818,7 +860,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
-    livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
+    magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",
     seraphina:"seraphina.png",nereia:"nereia.png",

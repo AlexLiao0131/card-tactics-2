@@ -121,37 +121,3 @@ export const LoadoutDatabase=(()=>{
 
 globalThis.LOADOUTS=LOADOUTS;
 globalThis.LoadoutDatabase=LoadoutDatabase;
-// Reuse VisualDatabase's existing registration API; no hero renderer/registry JS.
-// The model is an authored static GLB; inherited animations only drive the root
-// until an explicitly approved skeletal animation asset is provided.
-globalThis.VisualDatabase?.register?.('characters','magda_default',{
-  portrait:'assets/images/cards/heroes/magda.png',
-  card:'assets/images/cards/heroes/magda.png',
-  tactical:'assets/images/cards/heroes/magda.png',
-  battle:{kind:'MODEL',asset:'assets/models/magda_varga_gladiator_blockout.glb',
-    modelHeight:1.93,height:1.74,baseFacing:'E',
-    animations:{IDLE:{duration:1200,loop:true,procedural:'BREATHE'},
-      WALK:{duration:230,loop:true,procedural:'STEP'},
-      ATTACK:{duration:540,loop:false,procedural:'LUNGE'},
-      CAST:{duration:650,loop:false,procedural:'CAST'},
-      HURT:{duration:340,loop:false,procedural:'RECOIL'},
-      DEATH:{duration:850,loop:false,procedural:'FALL'}}}});
-
-// Presentation-only optional registration. PvP's headless import has no Babylon
-// nor VisualDatabase; optional chaining avoids an unnecessary server dependency.
-// Keep the existing visual database intact; no parallel renderer or new JS file.
-globalThis.VisualDatabase?.register?.('characters','magda_default',{
-  portrait:'assets/images/cards/heroes/magda.png',
-  card:'assets/images/cards/heroes/magda.png',
-  tactical:'assets/images/cards/heroes/magda.png',
-  battle:{kind:'MODEL',asset:'assets/models/magda_varga_gladiator_blockout.glb',
-    modelHeight:1.93,height:1.74,baseFacing:'E',animations:{
-      IDLE:{duration:1200,loop:true,procedural:'BREATHE'},
-      WALK:{duration:230,loop:true,procedural:'STEP'},
-      ATTACK:{duration:540,loop:false,procedural:'LUNGE'},
-      CAST:{duration:650,loop:false,procedural:'CAST'},
-      HURT:{duration:340,loop:false,procedural:'RECOIL'},
-      DEATH:{duration:850,loop:false,procedural:'FALL'}
-    }}
-});
-

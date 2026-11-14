@@ -4,23 +4,6 @@ const DEFAULT_BATTLE_VISUAL=Object.freeze({kind:"CAPSULE"});
 const FACING_ANGLE=Object.freeze({S:0,E:Math.PI/2,N:Math.PI,W:-Math.PI/2});
 const FACING_VECTOR=Object.freeze({N:{x:0,z:-1},E:{x:1,z:0},S:{x:0,z:1},W:{x:-1,z:0}});
 const DEBUG_MIN_DURATION=Object.freeze({WALK:360,ATTACK:620,CAST:760,HURT:520,DEATH:1050});
-// Babylon's existing SceneLoader remains the ONLY GLB importer. A shared promise
-// avoids repeatedly inserting the public loader for multiple MODEL instances.
-let glbLoaderPromise=null;
-function ensureGlbLoader(){
-  if(BABYLON.SceneLoader?.IsPluginForExtensionAvailable?.('.glb'))return Promise.resolve();
-  if(glbLoaderPromise)return glbLoaderPromise;
-  if(typeof document==='undefined')return Promise.reject(new Error('BABYLON_GLTF_LOADER_UNAVAILABLE'));
-  glbLoaderPromise=new Promise((resolve,reject)=>{
-    const node=document.createElement('script');
-    node.src='https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js';
-    node.async=true;
-    node.onload=()=>BABYLON.SceneLoader?.IsPluginForExtensionAvailable?.('.glb')?resolve():reject(new Error('BABYLON_GLTF_PLUGIN_MISSING'));
-    node.onerror=()=>reject(new Error('BABYLON_GLTF_LOADER_FAILED'));
-    document.head.appendChild(node);
-  }).catch(error=>{glbLoaderPromise=null;throw error;});
-  return glbLoaderPromise;
-}
 
 function normalizeFacing(value){
   const facing=String(value||"S").toUpperCase();
@@ -464,7 +447,7 @@ export class UnitRenderer{
         figureParts[part].metadata.figureBase.scaling.copyFrom(figureParts[part].scaling);
       }
     }
-    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldWarHammer){
+    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.arenaGreatsword||figure.fieldWarHammer){
       // The hilt is centered inside the RIGHT glove. Rotating that arm carries
       // the entire arming sword; it cannot drift when walking or slashing.
       const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
@@ -622,6 +605,19 @@ export class UnitRenderer{
       const data=new BABYLON.VertexData();data.positions=positions;data.indices=indices;data.normals=normals;data.applyToMesh(mesh);
       return finish(mesh,mat,null,null,null,{part});
     };
+    const lionFace=(name,part,x,y,z,size)=>{
+      sphere(`${name}-mane`,size,material.gold,[x,y,z],[1.08,1.04,.38],8,part);
+      sphere(`${name}-face`,size*.66,material.armor,[x,y,z+size*.13],[.92,1.08,.34],8,part);
+      sphere(`${name}-brow-l`,size*.23,material.gold,[x-size*.23,y+size*.13,z+size*.26],[.9,.42,.30],6,part);
+      sphere(`${name}-brow-r`,size*.23,material.gold,[x+size*.23,y+size*.13,z+size*.26],[.9,.42,.30],6,part);
+      sphere(`${name}-eye-l`,size*.075,material.dark,[x-size*.16,y+size*.04,z+size*.32],[1,.7,.42],5,part);
+      sphere(`${name}-eye-r`,size*.075,material.dark,[x+size*.16,y+size*.04,z+size*.32],[1,.7,.42],5,part);
+      sphere(`${name}-muzzle-l`,size*.18,material.gold,[x-size*.105,y-size*.15,z+size*.31],[1,.72,.38],6,part);
+      sphere(`${name}-muzzle-r`,size*.18,material.gold,[x+size*.105,y-size*.15,z+size*.31],[1,.72,.38],6,part);
+      sphere(`${name}-nose`,size*.095,material.steelDark,[x,y-size*.11,z+size*.44],[1,.72,.35],5,part);
+      for(const side of [-1,1])
+        sphere(`${name}-ear-${side}`,size*.19,material.gold,[x+side*size*.39,y+size*.27,z],[.72,.72,.38],6,part);
+    };
 
     // Head: keep the face simple, spend geometry on silhouette instead of features.
     sphere("figure-head",.33,material.skin,[0,1.54,.015],[.92,1.02,.88],6,"head");
@@ -731,6 +727,16 @@ export class UnitRenderer{
         cylinder(`figure-long-hair-${i}`,outer?.78:.88,.075,.11,material.hairDark,[x,1.08,-.15],[0,0,x*.32],6,"hairBack");
       }
       box("figure-long-hair-back",[.46,.52,.10],material.hair,[0,1.22,-.145],[.10,0,0],"hairBack");
+    }
+    if(figure.arenaBraidedCrown){
+      // Small linked braid segments follow the crown above the brow; the loose
+      // rear hair remains on the existing hairBack pivot for walk/death motion.
+      for(let i=0;i<8;i++){
+        const t=i/7,x=-.205+t*.410,y=1.695+Math.sin(t*Math.PI)*.035;
+        cylinder(`figure-arena-crown-braid-${i}`,.075,.060,.064,material.hair,
+          [x,y,.118],[0,0,(t-.5)*.72],7,"head");
+      }
+      sphere("figure-arena-braid-clasp",.050,material.gold,[.205,1.655,.12],[.9,.8,.5],6,"head");
     }
     if(figure.elfHairVines){
       // Reusable elven ceremonial hair ornaments; attached to the same head
@@ -907,6 +913,31 @@ export class UnitRenderer{
         sphere(`figure-scale-tile-${seaScaleIndex++}`,.085,seaScaleIndex%2?material.scaleLight:material.scale,[x,row.y,.195],[.85,.48,.28],5,"body");
       }
       sphere("figure-scale-chest-gem",.075,material.gem,[0,1.34,.215],[.72,1,.40],7,"body");
+    }
+
+    if(figure.arenaGladiatorArmor){
+      // Lion-faced bronze shoulder guards, waist crest and knee guards are
+      // assembled from the same shared FIGURE primitives and animated pivots.
+      for(const side of [-1,1]){
+        const tag=side<0?"l":"r",arm=side<0?"leftArm":"rightArm",leg=side<0?"leftLeg":"rightLeg";
+        sphere(`figure-arena-pauldron-${tag}`,.265,material.armor,[side*.305,1.315,.012],[1.18,.62,.88],8,arm);
+        box(`figure-arena-pauldron-rim-${tag}`,[.23,.032,.18],material.gold,[side*.315,1.275,.095],[0,0,side*.08],arm);
+        lionFace(`figure-arena-lion-shoulder-${tag}`,arm,side*.305,1.315,.105,.135);
+        box(`figure-arena-greave-${tag}`,[.18,.30,.085],material.armor,[side*.115,.305,.112],[0,0,-side*.02],leg);
+        box(`figure-arena-greave-edge-${tag}`,[.19,.028,.095],material.gold,[side*.115,.455,.125],[0,0,-side*.02],leg);
+        sphere(`figure-arena-knee-disc-${tag}`,.18,material.armor,[side*.115,.505,.145],[1.08,.82,.40],7,leg);
+        lionFace(`figure-arena-lion-knee-${tag}`,leg,side*.115,.505,.205,.085);
+      }
+      sphere("figure-arena-chest-medallion",.115,material.gold,[0,1.335,.225],[1,.90,.35],8,"body");
+      lionFace("figure-arena-lion-chest","body",0,1.335,.265,.080);
+      lionFace("figure-arena-lion-belt","body",0,.955,.205,.125);
+      for(const side of [-1,1]){
+        const arm=side<0?"leftArm":"rightArm",x=side*.295;
+        cylinder(`figure-arena-bracer-${side}`,.25,.145,.13,material.armor,[x,.945,.035],[0,0,side*.04],8,arm);
+        cylinder(`figure-arena-bracer-rim-${side}`,.045,.155,.15,material.gold,[x,1.065,.04],[0,0,side*.04],8,arm);
+        box(`figure-arena-thigh-strap-${side}`,[.22,.055,.20],material.leather,[side*.115,.69,.035],[0,0,-side*.025],side<0?"leftLeg":"rightLeg");
+        box(`figure-arena-thigh-gold-${side}`,[.23,.025,.205],material.gold,[side*.115,.72,.04],[0,0,-side*.025],side<0?"leftLeg":"rightLeg");
+      }
     }
 
     if(figure.militaryTabard){
@@ -1354,6 +1385,27 @@ export class UnitRenderer{
       }
     }
 
+    if(figure.arenaSkirt){
+      const panel=(name,points,mat)=>custom(name,points,[0,2,1,0,3,2],mat,"skirt");
+      panel("figure-arena-skirt-white-l",[[-.24,.94,.115],[-.035,.94,.145],[-.10,.34,.18],[-.32,.38,.12]],material.tabard);
+      panel("figure-arena-skirt-white-r",[[.035,.94,.145],[.24,.94,.115],[.32,.38,.12],[.10,.34,.18]],material.tabard);
+      panel("figure-arena-skirt-red-front",[[-.105,.95,.165],[.105,.95,.165],[.145,.29,.20],[-.145,.29,.20]],material.accent);
+      panel("figure-arena-skirt-red-back",[[-.18,.93,-.13],[.18,.93,-.13],[.24,.28,-.16],[-.24,.28,-.16]],material.capeDark);
+      box("figure-arena-skirt-gold-hem-l",[.22,.025,.025],material.gold,[-.215,.365,.19],[0,0,-.04],"skirt");
+      box("figure-arena-skirt-gold-hem-r",[.22,.025,.025],material.gold,[.215,.365,.19],[0,0,.04],"skirt");
+      box("figure-arena-skirt-gold-front",[.27,.025,.028],material.gold,[0,.305,.215],null,"skirt");
+    }
+    if(figure.arenaDrapes){
+      custom("figure-arena-red-drape-l",[[-.29,1.39,-.17],[-.17,1.36,-.18],[-.48,.18,-.13],[-.60,.22,-.10]],
+        [0,2,1,0,3,2],material.cape,"cape");
+      custom("figure-arena-red-drape-r",[[.17,1.36,-.18],[.29,1.39,-.17],[.60,.22,-.10],[.48,.18,-.13]],
+        [0,2,1,0,3,2],material.cape,"cape");
+      custom("figure-arena-white-lining-l",[[-.25,1.30,-.19],[-.19,1.29,-.20],[-.43,.26,-.15],[-.49,.28,-.13]],
+        [0,2,1,0,3,2],material.tabard,"cape");
+      custom("figure-arena-white-lining-r",[[.19,1.29,-.20],[.25,1.30,-.19],[.49,.28,-.13],[.43,.26,-.15]],
+        [0,2,1,0,3,2],material.tabard,"cape");
+    }
+
     if(figure.elfCourtDrapes){
       // Asymmetric ceremonial panels, moving with the existing skirt joint.
       // Wide panels echo the illustrated flowing green cape without obscuring
@@ -1651,6 +1703,31 @@ export class UnitRenderer{
       box("figure-field-greatsword-guard-core",[.060,.075,.088],material.steelDark,[.285,1.01,.075],[0,0,-.04],"weapon");
     }
 
+    if(figure.arenaGreatsword){
+      // Oversized dark-steel gladiator blade with broad shoulders and a pointed
+      // lower tip; it is attached to the existing right-hand weapon pivot.
+      custom("figure-arena-greatsword-blade",[
+        [.145,.925,.115],[.475,.925,.115],[.445,.245,.115],[.31,-.145,.115],[.175,.245,.115],
+        [.145,.925,.045],[.475,.925,.045],[.445,.245,.045],[.31,-.145,.045],[.175,.245,.045]
+      ],[
+        0,2,1,0,3,2,0,4,3,5,6,7,5,7,8,5,8,9,
+        0,1,6,0,6,5,1,2,7,1,7,6,2,3,8,2,8,7,
+        3,4,9,3,9,8,4,0,5,4,5,9
+      ],material.weapon,"weapon");
+      custom("figure-arena-greatsword-fuller",[
+        [.285,.86,.124],[.335,.86,.124],[.326,.20,.124],[.31,-.04,.124],[.294,.20,.124]
+      ],[0,2,1,0,3,2,0,4,3],material.steelDark,"weapon");
+      box("figure-arena-greatsword-edge-l",[.025,.72,.025],material.gold,[.166,.58,.132],[0,0,-.015],"weapon");
+      box("figure-arena-greatsword-edge-r",[.025,.72,.025],material.gold,[.454,.58,.132],[0,0,.015],"weapon");
+      box("figure-arena-greatsword-guard",[.49,.075,.105],material.gold,[.31,.985,.085],[0,0,-.025],"weapon");
+      box("figure-arena-greatsword-guard-dark",[.36,.026,.112],material.steelDark,[.31,.985,.143],[0,0,-.025],"weapon");
+      cylinder("figure-arena-greatsword-grip",.30,.060,.060,material.leatherDark,[.275,1.17,.075],[0,0,-.04],9,"weapon");
+      cylinder("figure-arena-greatsword-grip-band-a",.045,.075,.075,material.gold,[.275,1.08,.075],[0,0,-.04],9,"weapon");
+      cylinder("figure-arena-greatsword-grip-band-b",.045,.075,.075,material.gold,[.275,1.25,.075],[0,0,-.04],9,"weapon");
+      sphere("figure-arena-greatsword-pommel",.105,material.gold,[.268,1.355,.075],[.95,.95,.55],8,"weapon");
+      lionFace("figure-arena-greatsword-lion","weapon",.31,.985,.19,.090);
+    }
+
     if(figure.greatsword){
       box("figure-greatsword-blade",[.115,1.10,.050],material.weapon,[.31,.47,.075],[0,0,-.04],"weapon");
       box("figure-greatsword-core",[.036,.96,.058],material.holy,[.31,.50,.075],[0,0,-.04],"weapon");
@@ -1868,57 +1945,6 @@ export class UnitRenderer{
     };
   }
 
-  createModel(unit,definition){
-    const height=Math.max(.8,Number(definition?.height||UNIT_VISUAL_HEIGHT));
-    const asset=this.baseAssetForFacing(unit,definition);
-    if(!asset||!String(asset).toLowerCase().endsWith('.glb'))return this.createCapsule(unit);
-    const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
-    root.metadata={kind:'unit',unitId:unit.id,visualKind:'MODEL'};
-    // A non-destructive placeholder keeps a temporarily unloaded model visible.
-    // The imported PBR GLB replaces it once ready, within this SAME entry.
-    const proxy=BABYLON.MeshBuilder.CreateCapsule(`unit-loading-${unit.id}`,{height,radius:.19},this.scene);
-    proxy.parent=root;proxy.position.y=height/2;proxy.material=this.materials[unit.team]||this.materials.NEUTRAL;
-    proxy.isPickable=false;
-    const meshes=[proxy];
-    const entry={root,meshes,kind:'MODEL',height,lift:Number(definition?.lift||0),asset,loading:true};
-    ensureGlbLoader().then(async()=>{
-      if(root.isDisposed?.())return;
-      const location=String(asset),cut=location.lastIndexOf('/');
-      const path=cut>=0?location.slice(0,cut+1):'./',filename=location.slice(cut+1);
-      const imported=await BABYLON.SceneLoader.ImportMeshAsync('',path,filename,this.scene);
-      if(root.isDisposed?.()){
-        for(const mesh of imported.meshes||[])mesh.dispose();
-        for(const node of imported.transformNodes||[])node.dispose();
-        return;
-      }
-      const assetsRoot=new BABYLON.TransformNode(`unit-model-root-${unit.id}`,this.scene);
-      assetsRoot.parent=root;
-      // The authored source GLB height (1.93) is specified in the model
-      // manifest and not inferred from the canvas or camera zoom.
-      const nativeHeight=Number(definition.modelHeight||1.93);
-      assetsRoot.scaling.setAll(height/nativeHeight);
-      for(const mesh of imported.meshes||[]){
-        if(!mesh.parent)mesh.parent=assetsRoot;
-        mesh.isPickable=false;
-        if(mesh.getTotalVertices?.()>0){
-          mesh.metadata={...(mesh.metadata||{}),kind:'unit-part',unitId:unit.id,visualKind:'MODEL'};
-          mesh.receiveShadows=true;
-          meshes.push(mesh);
-        }
-      }
-      for(const node of imported.transformNodes||[])if(!node.parent)node.parent=assetsRoot;
-      if(meshes.length>1){proxy.dispose();meshes.splice(meshes.indexOf(proxy),1);}
-      entry.loading=false;
-      const visibleUnit=this.entries.get(unit.id);
-      if(visibleUnit?.root===root)this.setVisibility(visibleUnit,visibleUnit.lastVisibility??1);
-    }).catch(error=>{
-      entry.loading=false;entry.loadError=String(error?.message||error);
-      // A failed asset load is visible as a proxy, never a blank battlefield.
-      console.error(`Card Tactics MODEL asset failed: ${asset}`,error);
-    });
-    return entry;
-  }
-
   createEntry(unit,definition,signature){
     const entryStart=performance.now();
     const kind=String(definition?.kind||"CAPSULE").toUpperCase();
@@ -1926,8 +1952,6 @@ export class UnitRenderer{
       ?this.createBillboard(unit,definition)
       :kind==="FIGURE"
         ?this.createFigure(unit,definition,signature)
-        :kind==="MODEL"
-          ?this.createModel(unit,definition)
         :kind==="BIRD"
           ?this.createBird(unit,definition,signature)
           :this.createCapsule(unit);
@@ -1969,7 +1993,6 @@ export class UnitRenderer{
   }
 
   setVisibility(entry,value){
-    if(entry)entry.lastVisibility=value;
     for(const mesh of entry?.meshes||[])mesh.visibility=value;
     for(const mesh of entry?.facingMarker?.meshes||[])mesh.visibility=value;
   }
@@ -2221,7 +2244,7 @@ export class UnitRenderer{
     if(figure.fieldSpear)return"PIERCE";
     if(figure.fieldWarHammer)return"STRIKE";
     if(figure.fieldBow||figure.holyBow||figure.bow===true)return"SHOT";
-    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldGreatsword)return"SLASH";
+    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.arenaGreatsword||figure.fieldGreatsword)return"SLASH";
     return type;
   }
 
@@ -2384,7 +2407,7 @@ export class UnitRenderer{
 
     if(type==="SLASH"&&(parts.sword||parts.weapon)){
       const figure=entry.definition?.figure||{},twoHanded=figure.twoHanded===true;
-      const weapon=(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.fieldGreatsword)
+      const weapon=(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.arenaGreatsword||figure.fieldGreatsword)
         ?parts.weapon:(parts.sword||parts.weapon);
       const wind=ease(progress/.28),swing=Math.sin(Math.PI*clamp01((progress-.18)/.66));
       if(parts.rightArm){parts.rightArm.rotation.x-=wind*(twoHanded?.70:.48);parts.rightArm.rotation.z-=wind*(twoHanded?.78:.64)-swing*(twoHanded?1.42:1.28);}
