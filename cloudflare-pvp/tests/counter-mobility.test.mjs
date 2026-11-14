@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import {BattleResolution} from '../../js/battle-resolution.js';
+import {createBattleResolution} from '../../js/battle-resolution.js';
+const BattleResolution=createBattleResolution({random:()=>99});
+const FailedEvadeResolution=createBattleResolution({random:()=>0});
 import {SkillDatabase} from '../../js/skill-database.js';
 
 const tiles=Array.from({length:100},(_,i)=>({x:i%10,y:Math.floor(i/10),terrain:'PLAIN',elevation:0}));
@@ -28,9 +30,9 @@ function make(id,x,y,facing='N',heroId='other'){
   return{id,alive:true,team:id==='a'?'E':'P',x,y,z:0,facing,hp:1000,
   character:{id:heroId,combat:{hp:1000,move:5,atk:100,matk:100},weapons:{sword:{weaponKind:'SWORD'},rapier:{weaponKind:'RAPIER'},elven_bow:{weaponKind:'BOW'}},passives:[],skills:[]}};
 }
-function react(counter,defender,attacker,extra=[]){
+function react(counter,defender,attacker,extra=[],engine=BattleResolution){
   spent=0;moves=[];entrances=0;participants=[attacker,defender,...extra];
-  const result=BattleResolution.resolve({map,units:participants,initiator:attacker,target:defender,skill:basic,
+  const result=engine.resolve({map,units:participants,initiator:attacker,target:defender,skill:basic,
     actions:[],reaction:{type:'COUNTER',skill:counter}},{
     canUseSkill:()=>true,consumeSkill:()=>{spent++;return {cost:0,resources:{}}},
     onAction:()=>{},onDefeated:()=>{},onBackstep:()=>{entrances++}
@@ -44,6 +46,14 @@ function react(counter,defender,attacker,extra=[]){
   assert.deepEqual([defender.x,defender.y],[4,6]);
   assert.equal(moves.filter(m=>m.unit==='b'&&m.kind==='BACKSTEP').length,1);
   assert.equal(entrances,1);
+}
+{
+  const attacker=make('a',4,3,'N'),defender=make('b',4,5,'S','ophi');
+  const result=react(SkillDatabase.get('ophi_backstep_shot'),defender,attacker,[],FailedEvadeResolution);
+  assert.equal(result.results.some(e=>e.role==='COUNTER'),false,'failed evasion must cancel the follow-up shot');
+  assert.deepEqual([defender.x,defender.y],[4,5],'failed evasion must not backstep');
+  assert.equal(moves.some(m=>m.unit==='b'&&m.kind==='BACKSTEP'),false);
+  assert.equal(spent,1,'only the incoming attack is committed when evasion fails');
 }
 {
   const attacker=make('a',4,3,'N'),defender=make('b',4,6,'S','church_templar_hero');

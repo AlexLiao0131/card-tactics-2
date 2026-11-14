@@ -4,16 +4,16 @@ import {readFileSync} from 'node:fs';
 const src=p=>readFileSync(new URL(`../../${p}`,import.meta.url),'utf8');
 test('offline/PvP authoritative tile-entry callback consumes wells and spatial anomaly exactly once',()=>{
  const a=src('js/tactical-game.js'),p=src('cloudflare-pvp/src/pvp-headless-tactical.mjs');
- assert.match(a,/function stageEvent\(event\)[\s\S]*?LiviaDualityEngine\?\.handleEntry/);
- assert.match(p,/const stageEvent=event=>[\s\S]*?LiviaDualityEngine\.handleEntry/);
+ assert.match(a,/function stageEvent\(event\)[\s\S]*?BattlefieldFieldEngine\?\.handleEntry/);
+ assert.match(p,/const stageEvent=event=>[\s\S]*?BattlefieldFieldEngine\.handleEntry/);
  assert.match(a,/function traverseUnitPath\([\s\S]*?duality\?\.beginMove/);
- assert.match(p,/LiviaDualityEngine\.beginMove\(unit\)/);
+ assert.match(p,/BattlefieldFieldEngine\.beginMove\(unit\)/);
  assert.match(p,/SPACE_DISTORTION/);
 });
 test('both game modes use official skill mutation at actual commit, never on aim/cancel',()=>{
  const a=src('js/unit-runtime-engine.js'),p=src('cloudflare-pvp/src/pvp-headless-engagement.mjs'),t=src('js/tactical-game.js');
- assert.match(a,/function consumeSkill\([\s\S]*?LiviaDualityEngine\.afterCommittedSkill/);
- assert.match(a,/function skillForUnit\([\s\S]*?LiviaDualityEngine\.transformedSkill/);
+ assert.match(a,/function consumeSkill\([\s\S]*?UnitTraitEngine\.afterCommittedSkill/);
+ assert.match(a,/function skillForUnit\([\s\S]*?UnitTraitEngine\.transformedSkill/);
  assert.match(p,/SkillDatabase\.list\(ids\)\.map\(s=>globalThis\.UnitRuntimeEngine\?\.skillForUnit/);
  assert.match(t,/const allSkills=SkillDatabase\.list\([\s\S]*?\.map\(s=>UnitRuntimeEngine\.skillForUnit/);
 });
@@ -22,7 +22,7 @@ test('purified ultimate is one official cast, official target-by-target resoluti
  assert.match(a,/function executeLiviaPurifiedSlash\(/);
  assert.match(a,/const spent=ctx\.consumeSkill\(attacker,skill\)/);
  assert.match(a,/BattleResolution\.resolve\(\{map,units,environmentState,initiator:attacker/);
- assert.match(a,/duality\.createDistortion/);
+ assert.match(a,/globalThis\.BattlefieldFieldEngine\.createDistortion/);
  assert.match(a,/duality\.resetBlueAfterUltimate/);
 });
 test('berserk executes via official battle engines, includes player defense offline and autonomous PvP defense',()=>{
@@ -31,10 +31,10 @@ test('berserk executes via official battle engines, includes player defense offl
  assert.match(a,/BattleResolution\.resolve/);
  assert.match(p,/chooseAutonomousBattleReaction/);
  assert.match(p,/engine\.battleResolution\.resolve/);
- assert.match(p,/onRoundStart:round=>LiviaDualityEngine\.onRoundStart/);
- assert.doesNotMatch(p,/LiviaDualityEngine\.completeBerserk\(u\)/);
+ assert.match(p,/onRoundStart:round=>BattleRoundRuleEngine\.onRoundStart/);
+ assert.doesNotMatch(p,/UnitTraitEngine\.completeBerserk\(u\)/);
  const turns=src('cloudflare-pvp/src/pvp-headless-turns.mjs');
- assert.match(turns,/u\._liviaBerserkEndRound/);
+ assert.match(turns,/u\.controlOverride/);
 });
 test('opponent cannot access hidden mana-well pins from filtered public snapshot',()=>{
  const a=src('js/battle-presentation-controller.js');
@@ -44,7 +44,7 @@ test('opponent cannot access hidden mana-well pins from filtered public snapshot
 test('magic cloak is an official damage-layer rule with explicit unresistable exception',()=>{
  const a=src('js/effect-engine.js'),b=src('js/battle-resolution.js');
  assert.match(a,/function applyDamage\(target,amount,\{[^\n]*unresistable=false/);
- assert.match(a,/LiviaDualityEngine\?\.resistMagic/);
+ assert.match(a,/UnitTraitEngine\?\.resistMagic/);
  assert.match(b,/\.inherentMagic\?\.unresistable===true/);
 });
 test('Babylon blade is VFX-only and routed by its authored skill ID',()=>{

@@ -37,7 +37,8 @@ assert.equal(VfxDatabase.roleFor('nature-growth','ophi_triple_shot'),'TRIPLE');
 assert.equal(VfxDatabase.roleFor('nature-growth','ophi_forest_wrath'),'WRATH');
 assert.equal(SkillDatabase.getPassive('FOREST_SOUL_RESONANCE').id,'FOREST_SOUL_RESONANCE');
 assert.equal(SkillDatabase.get('ophi_triple_shot').hitCount,3);
-assert.equal(SkillDatabase.get('ophi_multishot').targetType,'AOE');
+assert.equal(globalThis.SKILLS.ophi_multishot,undefined,'obsolete Multi-shot is removed from the skill database');
+assert.equal(VfxDatabase.roleFor('nature-growth','ophi_multishot'),null,'obsolete Multi-shot has no VFX route');
 assert.equal(SkillDatabase.get('ophi_backstep_shot').backstep.distance,1);
 // Shared official geometry is a wedge, not a circular radius around the cursor.
 const map={tiles:Array.from({length:11*11},(_,i)=>({x:i%11,y:Math.floor(i/11),elevation:0,terrain:'PLAIN'}))};

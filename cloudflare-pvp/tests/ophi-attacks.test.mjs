@@ -21,6 +21,8 @@ globalThis.EffectEngine={applyDamage:(u,n)=>{const amount=Math.max(0,Math.min(u.
 globalThis.UnitAnimationEngine={emitAction:()=>{attackEvents++;return{}},emitResolvedHit:()=>{},emitHit:()=>{},emitOutcome:()=>{}};
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;
 globalThis.VerticalMobilityEngine={syncUnit:(u,t)=>{u.z=t.elevation}};
+assert.equal(globalThis.SKILLS.ophi_multishot,undefined,'obsolete Multi-shot is not registered');
+assert.equal(SkillDatabase.get('ophi_backstep_shot').evasiveCounter,true,'backstep shot is a true evade-counter');
 const hitSkill=SkillDatabase.get('ophi_triple_shot');
 const combat=BattleResolution.resolve({map,units:[actor,target],initiator:actor,target,skill:hitSkill,actions:[]},{
  canUseSkill:()=>true,consumeSkill:(a,s)=>UnitRuntimeEngine.consumeSkill(a,s),onAction:e=>hookEntries.push(e),onDefeated:()=>{}

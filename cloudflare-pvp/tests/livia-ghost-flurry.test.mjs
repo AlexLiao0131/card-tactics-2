@@ -81,7 +81,7 @@ test('no second resource is spent on intra-skill blinks',()=>{
   assert.deepEqual(t.commits,['nether_slash']);
 });
 test('berserk snapshot exports authoritative flag and vfx event is routed',()=>{
-  assert.match(src('unit-runtime-engine.js'),/berserk:LiviaDualityEngine\.status\(unit\)\?\.berserk===true/);
+  assert.match(src('unit-runtime-engine.js'),/berserk:UnitTraitEngine\.status\(unit\)\?\.berserk===true/);
   assert.match(src('vfx-database.js'),/events:\['LIVIA_FLURRY_PATH'\]/);
   assert.match(src('livia-duality-vfx.js'),/resources\?\.duality\?\.berserk===true/);
   assert.match(src('livia-duality-vfx.js'),/this\.units\.positionFor\(entry,point\)/);

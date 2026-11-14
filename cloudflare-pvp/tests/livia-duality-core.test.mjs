@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LiviaDualityEngine as d} from '../../js/livia-duality-engine.js';
+import {mechanics as d,control,state} from './shared-mechanics-fixture.mjs';
 const grid=(w=5,h=5)=>({id:'test',width:w,height:h,tiles:Array.from({length:w*h},(_,i)=>({x:i%w,y:Math.floor(i/w),terrain:'PLAIN',elevation:0}))});
-const u=(id='livia',team='P',x=2,y=2)=>({id,team,alive:true,x,y,character:{id:'livia',equipment:[{id:'blue_cloak',affixes:['MAGIC_RESIST']}],skills:['shadow_step','nether_slash']},mana:35,maxMana:120,resources:{}});
+const u=(id='livia',team='P',x=2,y=2)=>({id,team,alive:true,x,y,character:{id:'livia',resourceRules:{duality:{}},equipment:[{id:'blue_cloak',affixes:['MAGIC_RESIST']}],skills:['shadow_step','nether_slash']},mana:35,maxMana:120,resources:{}});
 globalThis.TacticalEngine={
  tile:(map,x,y)=>map.tiles.find(t=>t.x===x&&t.y===y)||null,
  canOccupyTerrain:()=>true,isBlockedByObject:()=>false,canTraverseElevation:()=>true,
@@ -38,12 +38,12 @@ test('purple corruption uses high-dimensional committed skill only, refreshes re
  assert.equal(d.status(a).purpleFull,false);
 });
 test('corruption loss of control persists until blue actually covers purple to center',()=>{
- const a=u();const map=grid();d.initialize(a);d.setPolarity(a,100);a._liviaHoldUntil=3;
+ const a=u();const map=grid();d.initialize(a);d.setPolarity(a,100);state(d,a).holdUntil=3;
  const a2=d.onRoundStart({map,units:[a],round:2,random:()=>0});
  assert.deepEqual(a2.berserk,[]);
  const a3=d.onRoundStart({map,units:[a],round:3,random:()=>0});
  assert.deepEqual(a3.berserk,['livia']);assert.equal(a.team,'N');
- assert.equal(a._liviaOriginalTeam,'P');assert.equal(a._liviaBerserkEndRound,3);
+ assert.equal(a.controlOverride.originalTeam,'P');assert.equal(a.controlOverride.startedRound,3);
  for(const [round,value] of [[4,90],[5,80],[6,70],[7,60]]){
    d.onRoundStart({map,units:[a],round,random:()=>0});
    assert.equal(a.team,'N');assert.equal(d.polarity(a),value);
@@ -79,7 +79,7 @@ test('blue cloak rolls chance 30%, blocks 50% resistible magic only',()=>{
  assert.equal(d.resistMagic(a,100,{random:()=>0,unresistable:true}).damage,100);
 });
 test('berserk AI randomly selects either former ally or enemy, never itself',()=>{
- const map=grid(5,5),actor=u();d.initialize(actor);actor.team='N';actor._liviaOriginalTeam='P';actor._liviaBerserkEndRound=3;
+ const map=grid(5,5),actor=u();d.initialize(actor);control(actor,3);
  const formerAlly={...u('ally','P',2,1),character:{id:'ally'}},foe={...u('foe','E',1,2),character:{id:'foe'}};
  const runtime={canUseSkill:()=>true,skillForUnit:(unit,skill)=>skill};
  const low=d.chooseBerserkAttack({map,units:[actor,formerAlly,foe],unit:actor,runtime,random:()=>0});

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {LiviaDualityEngine as dual} from '../../js/livia-duality-engine.js';
+import {mechanics as dual,control,state} from './shared-mechanics-fixture.mjs';
 
 const tacticalSrc=readFileSync(new URL('../src/pvp-headless-tactical.mjs',import.meta.url),'utf8');
 const originalTurns=readFileSync(new URL('../src/pvp-headless-turns.mjs',import.meta.url),'utf8');
@@ -30,9 +30,8 @@ const setup=(gauge=100)=>{
   const unit={id:'L',team:'N',alive:true,acted:true,moved:true,waited:true,
     character:{id:'livia'},participatesInTurn:false,
     resources:{duality:{value:gauge,max:100,label:'雙極'}},
-    _liviaRound:4,_liviaCorruptionRounds:0,_liviaHoldUntil:0,
-    _liviaBerserkEndRound:4,_liviaBerserkCheckedRound:4,
-    _liviaOriginalTeam:'P',_liviaOriginalParticipation:true,_liviaBerserkActionDone:true};
+    resourceMechanicStates:{duality:{round:4,fullRounds:0,holdUntil:0,processedRound:4}},
+    controlOverride:{type:'BERSERK',sourceResource:'duality',startedRound:4,originalTeam:'P',originalParticipation:true,actionDoneRound:4}};
   const map={tiles:[],manaWells:[],spatialDistortions:[]};
   const game={round:4,phase:'ENEMY_TACTICAL_PHASE',activeSeat:1,pendingAttack:null,
     units:[unit],battlefield:{map},cards:[{},{}],stageId:'test',environmentState:{}};
@@ -51,7 +50,8 @@ test('PVP 失控可以合法跨回合，紫色依資源遞減、不會被強制�
   assert.equal(w.game.round,5);
   assert.equal(w.unit.team,'N');
   assert.equal(w.unit.resources.duality.value,90);
-  assert.equal(w.unit._liviaBerserkActionDone,undefined);
+  assert.equal(w.unit.controlOverride.actionDoneRound,4);
+  assert.equal(w.unit.controlOverride.actionDoneRound!==w.game.round,true);
   assert.deepEqual(h.stages,['advance','reset','card']);
 });
 
@@ -66,13 +66,13 @@ test('PVP 回藍達中央時在重置玩家行動前恢復陣營，該回合可�
 });
 
 test('PVP 不能藉失控例外讓普通中立單位跳過回合協調',()=>{
-  const w=setup();w.unit.character.id='monster';const h=makeHarness();
+  const w=setup();delete w.unit.controlOverride;w.unit.character.id='monster';const h=makeHarness();
   assert.throws(()=>h.fn(w.game,w.engine,w.callbacks,()=>false,w.start),/UNSUPPORTED_CROSS_ROUND_MECHANIC/);
 });
 
 test('PVP 主程式仍在每輪結束時安排暴走行動，並把 onRoundStart 交由回合協調層',()=>{
-  assert.match(tacticalSrc,/u\._liviaBerserkEndRound&&u\._liviaBerserkEndRound<=game\.round/);
+  assert.match(tacticalSrc,/NeutralActorEngine\.availableActors\(game\.units,game\.round\)/);
   assert.match(tacticalSrc,/advanceCanonicalRound\(game,engine,hooks,/);
-  assert.match(tacticalSrc,/onRoundStart:round=>LiviaDualityEngine\.onRoundStart/);
-  assert.doesNotMatch(tacticalSrc,/LiviaDualityEngine\.completeBerserk\(u\)/);
+  assert.match(tacticalSrc,/onRoundStart:round=>BattleRoundRuleEngine\.onRoundStart/);
+  assert.doesNotMatch(tacticalSrc,/UnitTraitEngine\.completeBerserk\(u\)/);
 });

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LiviaDualityEngine as d} from '../../js/livia-duality-engine.js';
+import {mechanics as d,control,state} from './shared-mechanics-fixture.mjs';
 const original={...globalThis};
 const grid=(w=8,h=8)=>({id:'duality-integration',width:w,height:h,tiles:Array.from({length:w*h},(_,i)=>({x:i%w,y:Math.floor(i/w),terrain:'PLAIN',elevation:0}))});
-const livia=(id='livia1',team='P',x=3,y=3)=>({id,team,x,y,z:0,alive:true,participatesInTurn:true,mana:40,maxMana:120,character:{id:'livia',name:'莉維亞',skills:['black_slash','nether_slash','shadow_step'],equipment:[]},resources:{}});
+const livia=(id='livia1',team='P',x=3,y=3)=>({id,team,x,y,z:0,alive:true,participatesInTurn:true,mana:40,maxMana:120,character:{id:'livia',resourceRules:{duality:{}},name:'莉維亞',skills:['black_slash','nether_slash','shadow_step'],equipment:[]},resources:{}});
 const soldier=(id,team,x,y)=>({id,team,x,y,z:0,alive:true,mana:10,maxMana:80,character:{id,name:id,skills:['black_slash']}});
 const skillData={
  black_slash:{id:'black_slash',name:'黑劍斬擊',target:'ENEMY',targetType:'SINGLE',weapon:'black_sword',power:1,range:{min:1,max:1}},
@@ -52,9 +52,9 @@ test('distortion requires enemy entry, uses valid landing and interrupts exactly
  const m=grid(),a=livia(),enemy=soldier('enemy','E',4,4),logs=[];
  d.createDistortion(m,'P',[{x:4,y:4}],1);
  d.beginMove(enemy);const first=d.handleEntry({map:m,units:[a,enemy],round:1},enemy,{random:()=>0,log:msg=>logs.push(msg)});
- assert.equal(first.distorted,true);assert.equal(enemy._liviaMoveInterrupted,true);
+ assert.equal(first.distorted,true);assert.equal(enemy._fieldMoveInterrupted,true);
  const second=d.handleEntry({map:m,units:[a,enemy],round:1},enemy,{random:()=>0});assert.equal(second.distorted,false);
- d.endMove(enemy);assert.equal(enemy._liviaMoveActionActive,undefined);
+ d.endMove(enemy);assert.equal(enemy._fieldMoveActionActive,undefined);
  assert.equal(logs.length,1);
 });
 test('distortions persist for two complete future rounds, excluding cast round',()=>{
@@ -65,13 +65,13 @@ test('distortions persist for two complete future rounds, excluding cast round',
  d.onRoundStart({map:m,units:[a],round:8,random:()=>.9});assert.equal(m.spatialDistortions.length,0);
 });
 test('purple misses do not change rules; only actual commits maintain high dimensional hold',()=>{
- const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);a._liviaRound=1;a._liviaHoldUntil=2;
+ const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);state(d,a).round=1;state(d,a).holdUntil=2;
  d.onRoundStart({map:m,units:[a],round:2,random:()=>.9});assert.equal(d.polarity(a),100);
  // No actual commit in second turn: next round naturally shifts to blue.
  d.onRoundStart({map:m,units:[a],round:3,random:()=>.9});assert.equal(d.polarity(a),90);
 });
 test('berserk remains neutral through multiple rounds and restores on actual blue recovery',()=>{
- const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);a._liviaHoldUntil=3;
+ const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);state(d,a).holdUntil=3;
  d.onRoundStart({map:m,units:[a],round:2,random:()=>.99});
  const r=d.onRoundStart({map:m,units:[a],round:3,random:()=>0});
  assert.deepEqual(r.berserk,[a.id]);assert.equal(a.team,'N');assert.equal(a.participatesInTurn,false);
@@ -83,11 +83,11 @@ test('berserk remains neutral through multiple rounds and restores on actual blu
  }
  d.onRoundStart({map:m,units:[a],round:8,random:()=>.99});
  assert.equal(a.team,'P');assert.equal(a.participatesInTurn,true);
- assert.equal(a._liviaBerserkEndRound,undefined);assert.equal(d.polarity(a),50);
+ assert.equal(a.controlOverride,undefined);assert.equal(d.polarity(a),50);
 });
 test('berserk chooses visible legal enemies OR former allies, never fog-hidden targets',()=>{
  const m=grid(),a=livia(),friend=soldier('friend','P',2,3),foe=soldier('foe','E',4,3),hidden=soldier('hidden','E',3,2);
- hidden.hidden=true;a.team='N';a._liviaOriginalTeam='P';a._liviaBerserkEndRound=2;
+ hidden.hidden=true;control(a,2);
  const runtime={canUseSkill:()=>true,skillForUnit:(u,s)=>s};
  const low=d.chooseBerserkAttack({map:m,units:[a,friend,foe,hidden],unit:a,runtime,random:()=>0});
  const high=d.chooseBerserkAttack({map:m,units:[a,friend,foe,hidden],unit:a,runtime,random:()=>.999});
@@ -95,7 +95,7 @@ test('berserk chooses visible legal enemies OR former allies, never fog-hidden t
  assert.notEqual(low.target.id,'hidden');assert.notEqual(high.target.id,'hidden');
 });
 test('berserk pathfinding uses real reachability and targets both factions',()=>{
- const m=grid(),a=livia('livia','N',0,0),foe=soldier('foe','E',2,2);
+ const m=grid(),a=livia('livia','N',0,0),foe=soldier('foe','E',2,2);control(a,2);
  const path=d.chooseBerserkMove({map:m,units:[a,foe],unit:a,random:()=>0});
  assert.ok(path.length);assert.ok(Math.abs(path[0].x-foe.x)+Math.abs(path[0].y-foe.y)<4);
 });

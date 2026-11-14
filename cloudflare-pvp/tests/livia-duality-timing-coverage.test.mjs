@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {LiviaDualityEngine as L} from '../../js/livia-duality-engine.js';
+import {mechanics as L,control,state} from './shared-mechanics-fixture.mjs';
 
 const grid=()=>({tiles:Array.from({length:25},(_,i)=>({x:i%5,y:Math.floor(i/5),terrain:'PLAIN',elevation:0}))});
 
