@@ -12,13 +12,19 @@ const skills=globalThis.SkillDatabase;
 const get=id=>skills.get(id);
 const create=()=>rt.create({id:'magda-test',team:'P',characterId:'magda',x:1,y:1,
   map:{id:'test',width:3,height:3,tiles:Array.from({length:9},(_,i)=>({x:i%3,y:Math.floor(i/3),terrain:'PLAIN',elevation:0})),objects:[]}});
-test('官方角色資源、卡牌、裝備、技能與 MODEL 注册完整',()=>{
+test('官方角色資源、卡牌、裝備、技能與既有 FIGURE 視覺註冊完整',()=>{
   assert.equal(globalThis.LoadoutDatabase.validate(),true);
   const u=create();
   assert.equal(u.mana,0);assert.equal(u.maxMana,0);
   assert.deepEqual(u.resources.rage,{value:0,max:100,label:'憤怒'});
   assert.equal(globalThis.CARDS.magda_card.characterId,'magda');
-  assert.equal(globalThis.VisualDatabase.characterBattle('magda_default').kind,'MODEL');
+  const visual=globalThis.VisualDatabase.characterBattle('magda_default');
+  assert.equal(visual.kind,'FIGURE');
+  assert.equal(visual.figure.arenaGreatsword,true);
+  assert.equal(visual.figure.arenaGladiatorArmor,true);
+  assert.equal(visual.figure.arenaSkirt,true);
+  assert.equal(visual.asset,undefined);
+  assert.equal(globalThis.VisualDatabase.characterHudPortrait('magda'),'assets/images/cards/heroes/magda.png');
   assert.equal(u.character.weapons.greatsword.id,'magda_gladiator_greatsword');
   assert.deepEqual(u.character.skills,['magda_rage_slash','magda_leap_quake','magda_breaking_cleave','magda_execution']);
 });
