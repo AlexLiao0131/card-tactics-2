@@ -64,7 +64,7 @@ function transformedSkill(u,skill){
     return{...skill,name:'奧義・淨界斬',category:'SPECIAL',target:'TILE',targetType:'AOE',
       range:{min:1,max:R.purifiedSlashRange},shape:'FAN',radius:0,
       purifiedSlash:{length:R.purifiedSlashRange,powerMultiplier:R.purifiedSlashPowerMultiplier},
-      description:'【完整型態・淨化奧義】水晶共鳴將黑劍延伸為巨大藍白光刃，對前方扇形範圍敵軍作一次高威力空間斬擊；斬過的地格留下兩回合空間扭曲，敵軍移入時可能偏移落點。施放後雙極回到中央，完整型態增益結束。',
+      description:'【完整型態・淨化奧義】水晶共鳴將黑劍延伸為巨大藍白光刃，對前方扇形範圍敵軍作一次高威力空間斬擊；斬過的地格留下施放後兩個完整回合的空間扭曲，敵軍移入時可能偏移落點。施放後雙極回到中央，完整型態增益結束。',
       support:false};
   }
   if(v===R.purpleFull){
@@ -133,7 +133,10 @@ function createDistortion(map,team,tiles,round){
   if(!map?.tiles||!Array.isArray(tiles)||!tiles.length)return 0;
   map.spatialDistortions??=[];
   const normalized=[...new Set(tiles.map(t=>tileKey(t.x,t.y)))].map(k=>{const[x,y]=k.split(',').map(Number);return{x,y};});
-  map.spatialDistortions.push({team,cells:normalized,fromRound:round,expireRound:round+R.distortionDurationRounds});
+  map.spatialDistortions.push({team,cells:normalized,fromRound:round,// Duration counts COMPLETE future battle rounds. A cast on round N
+  // remains active through N+1 and N+2; expiration runs at the start of N+3.
+  // All clients/Worker/renderer use the same exclusive expireRound boundary.
+  expireRound:round+R.distortionDurationRounds+1});
   return normalized.length;
 }
 function eligibleWarpLanding(map,units,unit,from,to){
