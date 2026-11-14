@@ -22,8 +22,8 @@ export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd,{onRou
   // Ordinary unknown/monster neutral actors still require their own turn
   // coordinator and must never silently pass this headless guard.
   if(game.units.some(u=>u.alive&&u.team==='N'&&
-     !(u.character?.id==='livia'&&u._liviaBerserkEndRound&&
-       (u._liviaOriginalTeam==='P'||u._liviaOriginalTeam==='E'))))
+     !(u.controlOverride?.type==='BERSERK'&&
+       (u.controlOverride.originalTeam==='P'||u.controlOverride.originalTeam==='E'))))
     fail('UNSUPPORTED_CROSS_ROUND_MECHANIC');
   CardPhaseEngine.resolveTurnEndEffects(game.cards[1],{units:game.units,team:'E'});
   const fields=createCanonicalAreaFields(game,engine,callbacks);

@@ -1,3 +1,4 @@
+import {BattlefieldFieldEngine} from '../../js/battlefield-field-engine.js';
 import {isCanonicalEnvironmentContactSkill} from './pvp-headless-environment-contact.mjs';
 /**
  * Experimental server-owned ATTACK -> DEFENDER_REACTION -> OFFICIAL RESOLUTION.
@@ -77,10 +78,10 @@ export function commitCanonicalTargetApproach(game,actor,plan,skill,engine,callb
   if(!plan.path.length)return {ready:true,movement:null};
   const start={x:actor.x,y:actor.y};
   const environment=createCanonicalEnvironmentController(game,callbacks);
-  globalThis.LiviaDualityEngine?.beginMove?.(actor);
-  actor._liviaEntryFrom={x:actor.x,y:actor.y};
+  BattlefieldFieldEngine.beginMove(actor);
+  actor._fieldEntryFrom={x:actor.x,y:actor.y};
   const movement=environment.traverseUnitPath(actor,plan.path,{kind:'UNIT'});
-  globalThis.LiviaDualityEngine?.endMove?.(actor);
+  BattlefieldFieldEngine.endMove(actor);
   createCanonicalAreaFields(game,engine,callbacks).syncSmokeCover(actor);
   if(actor.x!==start.x||actor.y!==start.y)engine.effect.interruptChannel(actor,'MOVE');
   actor.moved=true;
