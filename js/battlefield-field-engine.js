@@ -30,15 +30,38 @@ function accessibleTiles(map,units,unit){
   }
   return candidates;
 }
+function hasManaWellRule(unit){
+  if(!live(unit)||['N','NEUTRAL'].includes(String(unit.team||'').toUpperCase()))return false;
+  return Object.values(ResourceEngine.resourceRules(unit)).some(rule=>rule?.manaWells);
+}
+function activeManaWellTeams(units=[]){
+  return new Set((units||[]).filter(hasManaWellRule).map(unit=>String(unit.team)));
+}
+function canSenseManaWells(units,team){
+  if(team==null)return false;
+  return (units||[]).some(unit=>hasManaWellRule(unit)&&sameTeam(unit.team,team));
+}
+/** Remove team-private wells as soon as their living Livia source leaves play. */
+function pruneManaWells(map,units=[]){
+  if(!map)return 0;
+  const activeTeams=activeManaWellTeams(units);
+  const previous=Array.isArray(map.manaWells)?map.manaWells:[];
+  map.manaWells=previous.filter(well=>activeTeams.has(String(well.team)));
+  map.manaWellSpawnedRounds??={};
+  for(const team of Object.keys(map.manaWellSpawnedRounds))
+    if(!activeTeams.has(String(team)))delete map.manaWellSpawnedRounds[team];
+  return previous.length-map.manaWells.length;
+}
 function spawnWells(map,units,round,random=Math.random){
   if(!map?.tiles)return 0;
   map.manaWells??=[];
+  pruneManaWells(map,units);
   // A new round cannot create a second copy of an occupied coordinate.
   let spawned=0;
   map.manaWellSpawnedRounds??={};
-  for(const source of (units||[]).filter(u=>live(u)&&u.team!=='N'&&
-    Object.values(ResourceEngine.resourceRules(u)).some(rule=>rule.manaWells))){
-    const W=Object.values(ResourceEngine.resourceRules(source)).find(rule=>rule.manaWells).manaWells;
+  for(const source of (units||[]).filter(hasManaWellRule)){
+    const W=Object.values(ResourceEngine.resourceRules(source)).find(rule=>rule?.manaWells)?.manaWells;
+    if(!W)continue;
     if(map.manaWellSpawnedRounds[source.team]===round)continue;
     const owned=map.manaWells.filter(w=>sameTeam(w.team,source.team));
     if(owned.length>=W.maxPerTeam)continue;
@@ -76,7 +99,9 @@ function eligibleWarpLanding(map,units,unit,from,to){
 function onEnterTile(map,units,unit,round,{random=Math.random}={}){
   if(!map||!unit?.alive)return{restored:0,distorted:false};
   let restored=0;
-  const well=(map.manaWells||[]).find(w=>w.x===unit.x&&w.y===unit.y&&sameTeam(w.team,unit.team));
+  const well=canSenseManaWells(units,unit.team)
+    ?(map.manaWells||[]).find(w=>w.x===unit.x&&w.y===unit.y&&sameTeam(w.team,unit.team))
+    :null;
   if(well&&Number(unit.mana)<Number(unit.maxMana)){
     restored=globalThis.UnitRuntimeEngine?.restoreMana?.(unit,well.amount)||0;
     if(restored>0)map.manaWells.splice(map.manaWells.indexOf(well),1);
@@ -142,6 +167,6 @@ function onRoundStart({map,units=[],round,random=Math.random}={}){
     map.spatialDistortions=map.spatialDistortions.filter(f=>Number(f.expireRound)>round);
   return spawnWells(map,units,round,random);
 }
-export const BattlefieldFieldEngine=Object.freeze({spawnWells,createDistortion,onEnterTile,
-  handleEntry,beginMove,endMove,onRoundStart});
+export const BattlefieldFieldEngine=Object.freeze({hasManaWellRule,canSenseManaWells,pruneManaWells,
+  spawnWells,createDistortion,onEnterTile,handleEntry,beginMove,endMove,onRoundStart});
 globalThis.BattlefieldFieldEngine=BattlefieldFieldEngine;

@@ -322,13 +322,18 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function pushLog(text,type="SYSTEM"){logs.push(String(text));if(logs.length>240)logs.splice(0,logs.length-240);BattleLog.add(logState,type,String(text));window.dispatchEvent(new CustomEvent("cardtactics:log",{detail:{type,text:String(text)}}));}
   function logPostEffect(entry){const {source,target,effect,result}=entry;if(!result)return;if(!result.applied){pushLog(`${target.character.name}｜${effect.type} 未生效${result.reason?`（${result.reason}）`:""}。`,"DETAIL");return;}const moved=result.steps?.length||0;if(moved>0)EffectEngine.interruptChannel(target,"FORCED_MOVE");const visitCollisions=(r,mover=target)=>{for(const collision of r?.collisions||[]){environmentController.resolveCollisionRuntime(collision,{mover,source});if(collision.chain&&collision.surface?.unit)visitCollisions(collision.chain,collision.surface.unit);}};visitCollisions(result);pushLog(`${source.character.name} → ${target.character.name}：${effect.type==="PULL"?"拉近":"擊退"} ${moved} 格。`,"BATTLE");if(result.falls?.length){const drops=result.falls.map(f=>`Z${f.from}→H${f.to}`).join("、");pushLog(`${target.character.name} 墜落 ${drops}｜墜落傷害 ${result.fallDamage}｜HP ${target.hp}。`,"BATTLE");}else pushLog(`${target.character.name} 強制位移完成｜無墜落傷害。`,"DETAIL");if(result.applied&&target.alive)enterTile(target);}
   function handleDefeated(unit,source,skillOrEffect){
-    if(unit?.hallucination){unit.hp=0;unit.alive=false;return{hallucination:true};}
+    if(unit?.hallucination){unit.hp=0;unit.alive=false;
+      globalThis.BattlefieldFieldEngine?.pruneManaWells?.(map,units);
+      return{hallucination:true};}
     if(perceptionState.session?.active&&unit?.mirrorOfUnitId){
       unit.hp=0;unit.alive=false;
       // No deferred real-world death: the original actor was never hit.
+      globalThis.BattlefieldFieldEngine?.pruneManaWells?.(map,units);
       return{perceptionDefeat:true};
     }
-    return deathLifecycle.finalize(unit,source,skillOrEffect);
+    const result=deathLifecycle.finalize(unit,source,skillOrEffect);
+    globalThis.BattlefieldFieldEngine?.pruneManaWells?.(map,units);
+    return result;
   }
   function resolveCollisionRuntime(...args){return environmentController.resolveCollisionRuntime(...args);}
   function applyForcedMovement(...args){return environmentController.applyForcedMovement(...args);}
@@ -452,13 +457,20 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     return{ordinal,mark:enchantRecipientMark(ordinal),
       name:identity?.type||unit.character?.name||"友軍"};
   }
-  function onUnitCreated(unit){if(unit){
-    if(globalThis.UnitTraitEngine?.hasResource?.(unit))unit.resourceMechanicStates??={};const key=globalThis.UnitTraitEngine.resourceKey(unit);
-    unit.resourceMechanicStates[key]??={round};unit.resourceMechanicStates[key].round=round;
+  function onUnitCreated(unit){if(!unit)return unit;
+    // Only polarity-trait units own resourceMechanicStates. Other characters
+    // may still have shared resources (faith, forestSoul, humidity, etc.) but
+    // must not index a null UnitTraitEngine.resourceKey.
+    const key=globalThis.UnitTraitEngine?.resourceKey?.(unit)??null;
+    if(key){
+      unit.resourceMechanicStates??={};
+      unit.resourceMechanicStates[key]??={round};
+      unit.resourceMechanicStates[key].round=round;
+      globalThis.BattlefieldFieldEngine?.spawnWells?.(map,units,round,Math.random);
+    }
     EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);
     UnitRuntimeEngine.syncForestSouls(map,units,round);
-    if(globalThis.UnitTraitEngine?.hasResource?.(unit))globalThis.BattlefieldFieldEngine.spawnWells(map,units,round,Math.random);
-    }return unit;}
+    return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
     if(result){commitHallucinationSkillExpense(unit,result);window.CardTacticsDiagnostics?.gameAction?.("SKILL_COMMIT",{
@@ -666,7 +678,11 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     render();return true;
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
-  function render(){AngelWingBarrierEngine.reconcile(map,units);renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
+  function render(){
+    // Remove stale team-private mana wells before publishing a new presentation
+    // snapshot whenever their living Livia source has left the battlefield.
+    globalThis.BattlefieldFieldEngine?.pruneManaWells?.(map,units);
+    AngelWingBarrierEngine.reconcile(map,units);renderRevision++;renderTurnStatus();renderPanel();window.dispatchEvent(new CustomEvent("cardtactics:battle-render",{detail:{revision:renderRevision}}));}
   function handleTileClick(tile,unit,core,reachable,targets){if(engagementPlayback?.isActive())return;inspectedTile=tile;window.dispatchEvent(new CustomEvent("cardtactics:inspection"));if(matchResult){render();return;}if(phase===PHASE.CARD){if(pendingCard&&CardDatabase.isSpell(pendingCard)){cardPhaseController.resolveAt(pendingCard,tile);return;}if(pendingCard&&CardDatabase.isCharacter(pendingCard)&&!unit)cardPhaseController.deployAt(tile);return;}if(phase!==PHASE.PLAYER)return;
     if(mode==="enchant-weapon-select"){
       const pending=actionController?.enchantmentSelection?.();
