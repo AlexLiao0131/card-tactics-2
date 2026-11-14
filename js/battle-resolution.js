@@ -311,6 +311,26 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     }
     return actor.alive;
   }
+  // One authored four-hit combo. Each blink must land on a REAL unoccupied
+  // terrain tile, with a valid locked target and the original Shadow Step's
+  // horizontal reach. This only plans a landing; no RNG or damage here.
+  function liviaFlurryLanding(c,actor,target,skill,contactIndex,used){
+    if(!c.map||!actor?.alive||!target?.alive)return null;
+    const offsets=[[0,-1],[1,0],[0,1],[-1,0]];
+    const maxBlink=Number(globalThis.SkillDatabase?.get?.('shadow_step')?.range?.max||0);
+    if(maxBlink<=0)return null;
+    for(let k=0;k<offsets.length;k++){
+      const [ox,oy]=offsets[(contactIndex-1+k)%offsets.length];
+      const tile=TacticalEngine.tile(c.map,target.x+ox,target.y+oy);
+      if(!tile||used.has(`${tile.x},${tile.y}`)||distance(actor,tile)>maxBlink||
+         !TacticalEngine.canOccupyTerrain(actor,tile)||
+         TacticalEngine.isBlockedByObject(c.map,tile.x,tile.y,actor)||
+         c.units.some(u=>u!==actor&&u.alive&&u.occupiesTile!==false&&u.x===tile.x&&u.y===tile.y)||
+         !TacticalEngine.canTarget(c.map,{...actor,x:tile.x,y:tile.y},target,skill,c.environmentState||null))continue;
+      return tile;
+    }
+    return null;
+  }
   function execute(c,hooks={}){
     // Settle the primary attack's loss-of-control decision BEFORE speed-ordering
     // counterattacks. An enemy whose attack never reaches them cannot react to it.
@@ -487,7 +507,32 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       // single committed action. Counter/support selection and resource cost
       // remain one per action, not one per blade.
       const hitCount=Math.max(1,Math.floor(Number(skill.hitCount||1)));
-      for(let hitIndex=0;hitIndex<hitCount&&action.target.alive;hitIndex++){
+      const blinkCombo=action.actor.character?.id==='livia'&&skill.id==='nether_slash'&&
+        hitCount>1&&!followup&&!action.misfire&&!c.interception;
+      const origin=blinkCombo?{x:action.actor.x,y:action.actor.y,z:action.actor.z}:null;
+      const blinkPath=blinkCombo?[{...origin}]:null,visited=new Set();
+      if(blinkCombo)visited.add(`${origin.x},${origin.y}`);
+      for(let hitIndex=0;hitIndex<hitCount&&action.target.alive&&action.actor.alive;hitIndex++){
+        if(blinkCombo&&hitIndex>0){
+          const landing=liviaFlurryLanding(c,action.actor,action.target,skill,hitIndex,visited);
+          if(landing){
+            action.actor.x=landing.x;action.actor.y=landing.y;
+            if(globalThis.VerticalMobilityEngine?.syncUnit)
+              VerticalMobilityEngine.syncUnit(action.actor,landing);
+            else action.actor.z=Number(landing.elevation||0);
+            visited.add(`${landing.x},${landing.y}`);
+            TacticalEngine.faceToward(action.actor,action.target);
+            // ENTER_TILE remains canonical for hazards, mana wells and terrain.
+            const previouslyInterrupted=!!action.actor._liviaMoveInterrupted;
+            hooks.onBackstep?.(action.actor,landing);
+            if(!previouslyInterrupted&&action.actor._liviaMoveInterrupted){
+              blinkPath.push({x:action.actor.x,y:action.actor.y,z:action.actor.z});
+              break; // Spatial distortion interrupted this blink sequence.
+            }
+          }
+          blinkPath.push({x:action.actor.x,y:action.actor.y,z:action.actor.z});
+          if(!action.actor.alive||!action.target.alive)break;
+        }
         const resolved=withInherentMagic(withEnchantment(resolveAction(c,action),action.actor,action.target,hitIndex===0?enchantment:null,skill),action.actor,action.target,skill);
         const original=resolved.result;
         // When a defended Ganfan strike is actually blocked or parried, the
@@ -515,7 +560,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
-          duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,
+          duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,blinkCombo:blinkCombo,
           backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
             z:Number(plannedBackstep.elevation||0)}:null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
@@ -593,6 +638,17 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
           queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
         }
+      }
+      if(blinkCombo&&blinkPath.length>1){
+        // Publish *committed* coordinates only. Babylon may animate the figure
+        // through these checkpoints, but it can never relocate Game State.
+        globalThis.UnitAnimationEngine?.emitPresentation?.('LIVIA_FLURRY_PATH',{
+          unitId:action.actor.id,team:action.actor.team,skillId:skill.id,
+          targetId:action.target.id,targetX:action.target.x,targetY:action.target.y,
+          path:blinkPath});
+        if(origin.x!==action.actor.x||origin.y!==action.actor.y)
+          globalThis.UnitAnimationEngine?.emitMove?.(action.actor,
+            {from:origin,kind:'TELEPORT',duration:180});
       }
       if(isPrimary&&c.skill?.ganfan&&!action.misfire)ganfanFirstStrikeCommitted=true;
       // A successful enemy block is not a free way to turn off Ganfan.

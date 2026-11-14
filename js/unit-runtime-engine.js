@@ -198,7 +198,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);LiviaDualityEngine.initialize(unit);
     return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="duality"?{berserk:LiviaDualityEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};

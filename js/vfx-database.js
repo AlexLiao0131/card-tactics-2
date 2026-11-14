@@ -5,7 +5,7 @@
  * A new skill can reuse a role without changing BabylonRenderer.
  */
 const defs={
-  'livia-duality':{roles:{PURIFIED:['livia_purified_nether'],SHADOW_FLURRY:['nether_slash'],BLACK_BLADE:['black_slash']},events:[],legacy:'liviaDualityVfx'},
+  'livia-duality':{roles:{PURIFIED:['livia_purified_nether'],SHADOW_FLURRY:['nether_slash'],BLACK_BLADE:['black_slash']},events:['LIVIA_FLURRY_PATH'],legacy:'liviaDualityVfx'},
   'shield-guard':{roles:{SWAP:['colin_ally_swap'],GUARD:['colin_full_shield_defense'],BASH:['colin_shield_bash']},events:[],status:{GUARD:'FULL_SHIELD_DEFENSE',STUN:'STUN'},legacy:'shieldGuardVfx'},
   'swordsmanship':{
     roles:{CUT:['leon_slash'],GANFAN:['ganfan'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
