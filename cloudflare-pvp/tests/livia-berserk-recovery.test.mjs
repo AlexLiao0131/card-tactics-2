@@ -6,7 +6,7 @@ const world=(team='P')=>{
   const unit={id:'livia01',alive:true,team,participatesInTurn:true,
     character:{id:'livia',name:'莉維亞',skills:[]},
     resources:{duality:{label:'雙極',value:100,max:100}},
-    _liviaRound:3,_liviaCorruptionRounds:1,_liviaHoldUntil:0,
+    _liviaRound:3,_liviaCorruptionRounds:1,_liviaHoldUntil:4,
     acted:false,moved:false,waited:false};
   return {unit,units:[unit],map:{tiles:[],manaWells:[],spatialDistortions:[]}};
 };
@@ -72,7 +72,7 @@ test('失控期間不強制結束，直到實際藍紫達到中央',()=>{
 });
 
 test('普通未失控莉維亞仍按原規則自然回藍',()=>{
-  const w=world();w.unit._liviaCorruptionRounds=0;
+  const w=world();w.unit._liviaCorruptionRounds=0;w.unit._liviaHoldUntil=0;
   dual.setPolarity(w.unit,80);
   tick(w,4);assert.equal(w.unit.resources.duality.value,70);
   assert.equal(w.unit.team,'P');assert.equal(dual.status(w.unit).berserk,false);
