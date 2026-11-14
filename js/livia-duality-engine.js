@@ -246,7 +246,11 @@ function onRoundStart({map,units,round,random=Math.random}={}){
         unit._liviaBerserkCheckedRound=round;
         delete unit._liviaBerserkActionDone;
         unit._liviaCorruptionRounds=0;
-        berserk.push(unit.id);continue;
+        berserk.push(unit.id);
+        // Becoming berserk must NOT swallow the first eligible blue-recovery
+        // tick.  A purple-full cast in round N locks the entire round N+1;
+        // round N+2 recovers normally even if control is lost on that tick.
+        // _liviaBerserkCheckedRound already prevents a second tick in N+2.
       }
     }
     if(round>unit._liviaHoldUntil){setPolarity(unit,polarity(unit)-R.roundBlueRecovery);}
