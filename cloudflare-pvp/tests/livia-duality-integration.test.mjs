@@ -57,11 +57,12 @@ test('distortion requires enemy entry, uses valid landing and interrupts exactly
  d.endMove(enemy);assert.equal(enemy._liviaMoveActionActive,undefined);
  assert.equal(logs.length,1);
 });
-test('distortions are two turn fields and are purged only at the next eligible round boundary',()=>{
+test('distortions persist for two complete future rounds, excluding cast round',()=>{
  const m=grid(),a=livia();d.createDistortion(m,'P',[{x:3,y:3}],5);
- assert.equal(m.spatialDistortions[0].expireRound,7);
+ assert.equal(m.spatialDistortions[0].expireRound,8);
  d.onRoundStart({map:m,units:[a],round:6,random:()=>.9});assert.equal(m.spatialDistortions.length,1);
- d.onRoundStart({map:m,units:[a],round:7,random:()=>.9});assert.equal(m.spatialDistortions.length,0);
+ d.onRoundStart({map:m,units:[a],round:7,random:()=>.9});assert.equal(m.spatialDistortions.length,1);
+ d.onRoundStart({map:m,units:[a],round:8,random:()=>.9});assert.equal(m.spatialDistortions.length,0);
 });
 test('purple misses do not change rules; only actual commits maintain high dimensional hold',()=>{
  const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);a._liviaRound=1;a._liviaHoldUntil=2;
@@ -69,15 +70,20 @@ test('purple misses do not change rules; only actual commits maintain high dimen
  // No actual commit in second turn: next round naturally shifts to blue.
  d.onRoundStart({map:m,units:[a],round:3,random:()=>.9});assert.equal(d.polarity(a),90);
 });
-test('berserk removes player control and normal neutral AI participation; restores precisely one round later',()=>{
- const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);a._liviaHoldUntil=9;
+test('berserk remains neutral through multiple rounds and restores on actual blue recovery',()=>{
+ const a=livia(),m=grid();d.initialize(a);d.setPolarity(a,100);a._liviaHoldUntil=3;
  d.onRoundStart({map:m,units:[a],round:2,random:()=>.99});
  const r=d.onRoundStart({map:m,units:[a],round:3,random:()=>0});
  assert.deepEqual(r.berserk,[a.id]);assert.equal(a.team,'N');assert.equal(a.participatesInTurn,false);
  const stable=d.onRoundStart({map:m,units:[a],round:3,random:()=>0});
  assert.deepEqual(stable.berserk,[]);assert.equal(a.team,'N');
- d.onRoundStart({map:m,units:[a],round:4,random:()=>.99});
- assert.equal(a.team,'P');assert.equal(a.participatesInTurn,true);assert.equal(a._liviaBerserkEndRound,undefined);
+ for(const [round,value] of [[4,90],[5,80],[6,70],[7,60]]){
+   d.onRoundStart({map:m,units:[a],round,random:()=>.99});
+   assert.equal(a.team,'N');assert.equal(d.polarity(a),value);
+ }
+ d.onRoundStart({map:m,units:[a],round:8,random:()=>.99});
+ assert.equal(a.team,'P');assert.equal(a.participatesInTurn,true);
+ assert.equal(a._liviaBerserkEndRound,undefined);assert.equal(d.polarity(a),50);
 });
 test('berserk chooses visible legal enemies OR former allies, never fog-hidden targets',()=>{
  const m=grid(),a=livia(),friend=soldier('friend','P',2,3),foe=soldier('foe','E',4,3),hidden=soldier('hidden','E',3,2);

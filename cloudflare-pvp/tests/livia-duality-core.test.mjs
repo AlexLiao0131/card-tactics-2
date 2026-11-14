@@ -37,15 +37,19 @@ test('purple corruption uses high-dimensional committed skill only, refreshes re
  assert.equal(d.polarity(a),90);
  assert.equal(d.status(a).purpleFull,false);
 });
-test('corruption loss of control lasts a full round as neutral and later restores ownership',()=>{
+test('corruption loss of control persists until blue actually covers purple to center',()=>{
  const a=u();const map=grid();d.initialize(a);d.setPolarity(a,100);a._liviaHoldUntil=3;
  const a2=d.onRoundStart({map,units:[a],round:2,random:()=>0});
  assert.deepEqual(a2.berserk,[]);
  const a3=d.onRoundStart({map,units:[a],round:3,random:()=>0});
  assert.deepEqual(a3.berserk,['livia']);assert.equal(a.team,'N');
  assert.equal(a._liviaOriginalTeam,'P');assert.equal(a._liviaBerserkEndRound,3);
- d.onRoundStart({map,units:[a],round:4,random:()=>0});
- assert.equal(a.team,'P');assert.equal(d.polarity(a),40); // restored 50 then natural blue recovery
+ for(const [round,value] of [[4,90],[5,80],[6,70],[7,60]]){
+   d.onRoundStart({map,units:[a],round,random:()=>0});
+   assert.equal(a.team,'N');assert.equal(d.polarity(a),value);
+ }
+ d.onRoundStart({map,units:[a],round:8,random:()=>0});
+ assert.equal(a.team,'P');assert.equal(d.polarity(a),50);
 });
 test('mana wells spawn only on legal reachable cells, are team private and recover all friendly MP',()=>{
  const map=grid(4,4);const a=u('livia','P',0,0);d.initialize(a);

@@ -31,7 +31,10 @@ test('berserk executes via official battle engines, includes player defense offl
  assert.match(a,/BattleResolution\.resolve/);
  assert.match(p,/chooseAutonomousBattleReaction/);
  assert.match(p,/engine\.battleResolution\.resolve/);
- assert.match(p,/LiviaDualityEngine\.completeBerserk/);
+ assert.match(p,/onRoundStart:round=>LiviaDualityEngine\.onRoundStart/);
+ assert.doesNotMatch(p,/LiviaDualityEngine\.completeBerserk\(u\)/);
+ const turns=src('cloudflare-pvp/src/pvp-headless-turns.mjs');
+ assert.match(turns,/u\._liviaBerserkEndRound/);
 });
 test('opponent cannot access hidden mana-well pins from filtered public snapshot',()=>{
  const a=src('js/battle-presentation-controller.js');
