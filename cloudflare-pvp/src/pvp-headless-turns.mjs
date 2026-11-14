@@ -14,13 +14,16 @@ import {createCanonicalAreaFields} from './pvp-field-controller.mjs';
 import {createCanonicalPerception} from './pvp-perception-controller.mjs';
 
 function fail(code){throw new PvpCommandError(code);}
-export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd){
+export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd,{onRoundStart=null}={}){
   if(game.phase!=='ENEMY_TACTICAL_PHASE'||game.activeSeat!==1||game.pendingAttack)
     fail('NOT_END_OF_ROUND');
-  // The original single-player turn coordinator has additional active-field,
-  // hallucination and neutral actor steps. Never silently skip an active
-  // feature until the same rule path is available headlessly.
-  if(game.units.some(u=>u.alive&&u.team==='N'))
+  // An authorized berserk Livia is a cross-round neutral participant; its
+  // original team is preserved and the shared duality state owns recovery.
+  // Ordinary unknown/monster neutral actors still require their own turn
+  // coordinator and must never silently pass this headless guard.
+  if(game.units.some(u=>u.alive&&u.team==='N'&&
+     !(u.character?.id==='livia'&&u._liviaBerserkEndRound&&
+       (u._liviaOriginalTeam==='P'||u._liviaOriginalTeam==='E'))))
     fail('UNSUPPORTED_CROSS_ROUND_MECHANIC');
   CardPhaseEngine.resolveTurnEndEffects(game.cards[1],{units:game.units,team:'E'});
   const fields=createCanonicalAreaFields(game,engine,callbacks);
@@ -28,7 +31,9 @@ export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd){
   beginPlayerRoundSequence({
     endEnemyPerception:()=>createCanonicalPerception(game,engine).end('E'),
     checkMatchEnd:()=>checkMatchEnd(),
-    advanceRound:()=>{game.round++;},
+    // Recovery must run BEFORE resetActions(P) and new-round effects. A
+    // freshly recovered Livia gets exactly one normal player action.
+    advanceRound:()=>{game.round++;onRoundStart?.(game.round);},
     expireSmoke:()=>fields.expireSmoke(),
     resetActions:()=>{
       engine.unitRuntime.resetActions(game.units,'P');

@@ -491,7 +491,7 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         // player's CARD phase. The private server RNG is the only chooser.
         createCanonicalPerception(game,engine).end('E');
         const berserkActors=game.units.filter(u=>u.alive&&u.team==='N'&&
-          u._liviaBerserkEndRound===game.round&&!u._liviaBerserkActionDone);
+          u._liviaBerserkEndRound&&u._liviaBerserkEndRound<=game.round&&!u._liviaBerserkActionDone);
         for(const neutral of berserkActors){
           let action=LiviaDualityEngine.chooseBerserkAttack({map:game.battlefield.map,
             units:game.units,unit:neutral,runtime:engine.unitRuntime,
@@ -535,15 +535,15 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
           neutral._liviaBerserkActionDone=true;neutral.moved=true;neutral.acted=true;neutral.waited=true;
           if(matchObjectiveAuthority(game,hooks).checkMatchEnd())return{accepted:true,state:game};
         }
-        // Restore ownership before the existing PvP coordinator's neutral
-        // guard, preserving normal next-round phase and card processing.
-        for(const u of game.units)if(u?.team==='N'&&u._liviaBerserkEndRound)
-          LiviaDualityEngine.completeBerserk(u);
-        const outcome=advanceCanonicalRound(game,engine,hooks,
-          matchObjectiveAuthority(game,hooks).checkMatchEnd);
-        LiviaDualityEngine.onRoundStart({map:game.battlefield.map,
-          units:game.units,round:game.round,random:engine.random});
-        return outcome;
+        // The PvP coordinator explicitly supports a cross-round berserk Livia.
+        // Run polarity recovery DURING round advance (before resetting units)
+        // so an actor released at center can act on its restored original team.
+        return advanceCanonicalRound(game,engine,hooks,
+          matchObjectiveAuthority(game,hooks).checkMatchEnd,{
+            onRoundStart:round=>LiviaDualityEngine.onRoundStart({
+              map:game.battlefield.map,units:game.units,
+              round,random:engine.random})
+          });
       }
       // Original tactical-game.endPlayerTurn: real card consumption and
       // turn-end effects happen while the mirror is active; then restore
