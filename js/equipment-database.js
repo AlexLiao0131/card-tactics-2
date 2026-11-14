@@ -1,4 +1,7 @@
 export const EQUIPMENT={
+  magda_gladiator_greatsword:{id:'magda_gladiator_greatsword',name:'鬥士巨劍',kind:'WEAPON',weaponKind:'GREATSWORD',materialId:'COMMON_METAL',attackType:'SLASH',element:'NONE',affixes:[],
+    weaponDefense:{id:'magda_greatsword_parry',name:'巨劍招架',baseline:'GREATSWORD'}},
+  magda_arena_armor:{id:'magda_arena_armor',name:'獅紋競技場鎧甲',kind:'ARMOR',type:'MEDIUM',types:['MEDIUM'],element:'NONE',affixes:[]},
   kahns_bow:{id:"kahns_bow",name:"卡恩贈送的獵弓",kind:"WEAPON",weaponKind:"BOW",attackType:"SHOT",element:"NONE",affixes:[]},
   black_sword:{id:"black_sword",name:"父親留下的黑劍",kind:"WEAPON",weaponKind:"SWORD",attackType:"SLASH",element:"NONE",affixes:["PHYSICAL_DEFENSE_IGNORE","IGNORE_ARMOR_DISADVANTAGE"],
     grantedSkillIds:["ganfan"],weaponDefense:{counterOnly:true,id:"livia_black_sword_parry",name:"黑劍招架",baseline:"SWORD",overrides:{SLASH:{chance:80},PIERCE:{chance:75},STRIKE:{chance:45},SHOT:{chance:0},MAGIC:{chance:0}}}},

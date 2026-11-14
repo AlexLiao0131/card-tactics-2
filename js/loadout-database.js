@@ -1,4 +1,7 @@
 export const LOADOUTS={
+  magda_default:{id:'magda_default',characterId:'magda',armorId:'magda_arena_armor',
+    weaponIds:{greatsword:'magda_gladiator_greatsword'},
+    skillIds:['magda_rage_slash','magda_leap_quake','magda_breaking_cleave','magda_execution']},
   livia_default:{id:"livia_default",characterId:"livia",armorId:"livia_light_armor",weaponIds:{kahns_bow:"kahns_bow",black_sword:"black_sword"},equipmentIds:["blue_cloak","leather_bracers","sapphire_pendant"],skillIds:["bow_shot","black_slash","shadow_step","nether_slash","elemental_enchant"]},
   leon_default:{id:"leon_default",characterId:"leon",armorId:"chainmail",weaponIds:{star_iron_sword:"star_iron_sword"},equipmentIds:["buckler","imperial_cloak"],skillIds:["leon_slash","leon_thrust","leon_strike","lion_flash"]},
   kahn_default:{id:"kahn_default",characterId:"kahn",armorId:"hunter_leather",weaponIds:{kahn_hunter_bow:"kahn_hunter_bow",hunting_knife:"hunting_knife"},equipmentIds:["hunter_cloak","hunter_bracers"],skillIds:["kahn_precision","kahn_snipe","kahn_knife"]},
@@ -118,3 +121,37 @@ export const LoadoutDatabase=(()=>{
 
 globalThis.LOADOUTS=LOADOUTS;
 globalThis.LoadoutDatabase=LoadoutDatabase;
+// Reuse VisualDatabase's existing registration API; no hero renderer/registry JS.
+// The model is an authored static GLB; inherited animations only drive the root
+// until an explicitly approved skeletal animation asset is provided.
+globalThis.VisualDatabase?.register?.('characters','magda_default',{
+  portrait:'assets/images/cards/heroes/magda.png',
+  card:'assets/images/cards/heroes/magda.png',
+  tactical:'assets/images/cards/heroes/magda.png',
+  battle:{kind:'MODEL',asset:'assets/models/magda_varga_gladiator_blockout.glb',
+    modelHeight:1.93,height:1.74,baseFacing:'E',
+    animations:{IDLE:{duration:1200,loop:true,procedural:'BREATHE'},
+      WALK:{duration:230,loop:true,procedural:'STEP'},
+      ATTACK:{duration:540,loop:false,procedural:'LUNGE'},
+      CAST:{duration:650,loop:false,procedural:'CAST'},
+      HURT:{duration:340,loop:false,procedural:'RECOIL'},
+      DEATH:{duration:850,loop:false,procedural:'FALL'}}}});
+
+// Presentation-only optional registration. PvP's headless import has no Babylon
+// nor VisualDatabase; optional chaining avoids an unnecessary server dependency.
+// Keep the existing visual database intact; no parallel renderer or new JS file.
+globalThis.VisualDatabase?.register?.('characters','magda_default',{
+  portrait:'assets/images/cards/heroes/magda.png',
+  card:'assets/images/cards/heroes/magda.png',
+  tactical:'assets/images/cards/heroes/magda.png',
+  battle:{kind:'MODEL',asset:'assets/models/magda_varga_gladiator_blockout.glb',
+    modelHeight:1.93,height:1.74,baseFacing:'E',animations:{
+      IDLE:{duration:1200,loop:true,procedural:'BREATHE'},
+      WALK:{duration:230,loop:true,procedural:'STEP'},
+      ATTACK:{duration:540,loop:false,procedural:'LUNGE'},
+      CAST:{duration:650,loop:false,procedural:'CAST'},
+      HURT:{duration:340,loop:false,procedural:'RECOIL'},
+      DEATH:{duration:850,loop:false,procedural:'FALL'}
+    }}
+});
+

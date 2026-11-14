@@ -17,6 +17,12 @@ export const DeathLifecycleEngine=(()=>{
       if(scope.has(unit.id))return false;
       scope.add(unit.id);
 
+      // A defeated unit is counted once across reaction chains, DOT and VFX.
+      // The canonical runtime records Rage spending; neither a UI nor PvP may
+      // invent a second kill credit or repay the same cast more than once.
+      if(source?.alive&&source.team!==unit.team)
+        globalThis.UnitRuntimeEngine?.onRageDefeat?.(source,cause);
+
       globalThis.UnitAnimationEngine?.emitDeath?.(unit,{
         sourceId:source?.id||null,
         causeType:cause?.type||cause?.id||null,

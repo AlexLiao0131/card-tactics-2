@@ -1,4 +1,6 @@
 export const CARDS={
+  magda_card:{id:'magda_card',name:'瑪格妲・瓦爾加',type:'CHARACTER',characterId:'magda',
+    loadoutId:'magda_default',faction:'ARENA',unitType:'HERO',cost:6},
   livia_card:{id:"livia_card",name:"莉維亞",type:"CHARACTER",characterId:"livia",loadoutId:"livia_default",faction:"HUNTER",unitType:"HERO",cost:6},
   leon_card:{id:"leon_card",name:"第一劍士・雷昂",type:"CHARACTER",characterId:"leon",loadoutId:"leon_default",faction:"IMPERIAL",unitType:"HERO",cost:6},
   kahn_card:{id:"kahn_card",name:"卡恩",type:"CHARACTER",characterId:"kahn",loadoutId:"kahn_default",faction:"HUNTER",unitType:"HERO",cost:6},
@@ -52,9 +54,8 @@ export const CARDS={
 
   seraphina_card:{id:"seraphina_card",name:"瑟拉菲娜",type:"CHARACTER",characterId:"seraphina",loadoutId:"seraphina_default",faction:"VAMPIRE",unitType:"HERO",cost:6,pack:"SERAPHINA_SUPPLEMENT"},
   nereia_card:{id:"nereia_card",name:"深海女王・涅瑞雅",type:"CHARACTER",characterId:"nereia",loadoutId:"nereia_default",faction:"SEA_WORLD",unitType:"HERO",cost:6,pack:"SEA_WORLD_SUPPLEMENT"},
-  steal_hand_card:{id:"steal_hand_card",name:"偷竊",description:"隨機奪取敵方一張尚未使用的手牌；若敵人沒有手牌則不可施放。",type:"SPELL",spellType:"TACTICAL",faction:"BEAST",pack:"BEAST_SUPPLEMENT",cost:5,effect:{type:"STEAL_HAND"}},
   cat_thief_hero_card:{id:"cat_thief_hero_card",name:"米菈",type:"CHARACTER",characterId:"cat_thief_hero",loadoutId:"cat_thief_hero_default",faction:"BEAST",unitType:"HERO",cost:6,pack:"BEAST_SUPPLEMENT"},
-  angel_archer_hero_card:{id:"angel_archer_hero_card",name:"艾蕾希雅",type:"CHARACTER",characterId:"angel_archer_hero",loadoutId:"angel_archer_hero_default",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"},
+  angel_archer_hero_card:{id:"angel_archer_hero_card",name:"天使族弓箭手",type:"CHARACTER",characterId:"angel_archer_hero",loadoutId:"angel_archer_hero_default",faction:"ANGEL",unitType:"HERO",cost:6,pack:"ANGEL_SUPPLEMENT"},
   velsa_card:{id:"velsa_card",name:"薇爾莎・奈赫爾",type:"CHARACTER",characterId:"velsa",loadoutId:"velsa_default",faction:"DEMON",unitType:"HERO",cost:6}
 };
 export const CardDatabase=(()=>{

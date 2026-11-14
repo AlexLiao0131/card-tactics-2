@@ -2,6 +2,22 @@ const BLEEDING_STATUS=Object.freeze({type:"DAMAGE_OVER_TIME",id:"BLEEDING",name:
 const POISON_THROW_TOTAL_DAMAGE=18; // Existing poison knife bonus, distributed over its newly specified 3 ticks.
 const POISON_THROW_DURATION=3;
 export const SKILLS={
+  magda_rage_slash:{id:'magda_rage_slash',name:'蓄怒斬擊',category:'ATTACK',weapon:'greatsword',power:1,
+    rageOnHit:true,
+    range:{min:1,max:1},attackType:'SLASH',element:'NONE',speed:0,target:'ENEMY',support:false,
+    description:'以鬥士巨劍斬擊目標；造成真實HP傷害後額外蓄怒。一般造成／承受傷害也會產生憤怒，這招不消耗憤怒。'},
+  magda_leap_quake:{id:'magda_leap_quake',name:'跳躍震地',category:'SPECIAL',weapon:'greatsword',power:1.05,
+    resourceCosts:{rage:20},range:{min:1,max:3},target:'TILE',targetType:'AOE',radius:1,
+    shape:'W_STEP',moveToTarget:true,jumpShockwave:true,attackType:'STRIKE',element:'NONE',support:false,
+    areaDamage:{mode:'PHYSICAL_IMPACT',relation:'ENEMY',hitRule:'AREA_CONTACT'},
+    description:'消耗憤怒，跳至合法空格後，以自己為中心震擊鄰近敵軍，造成物理打擊及向上震飛，落地另結算墜落傷害。整段是同一招。'},
+  magda_breaking_cleave:{id:'magda_breaking_cleave',name:'破陣劈斬',category:'ATTACK',weapon:'greatsword',power:1.25,
+    resourceCosts:{rage:25},range:{min:1,max:1},attackType:'STRIKE',element:'NONE',speed:-5,target:'ENEMY',support:false,
+    giantUppercut:true,treeFelling:true,environmentTarget:'TREE',
+    description:'消耗憤怒對敵人劈斬：無甲至中甲向上擊飛，落地獨立計算墜落傷害；重甲不擊飛而降低防禦。亦可選擇相鄰樹木直接劈倒，生成既有樹樁與倒木。'},
+  magda_execution:{id:'magda_execution',name:'斬殺',category:'ATTACK',weapon:'greatsword',power:1.35,
+    rageSpendAll:true,range:{min:1,max:1},attackType:'SLASH',element:'NONE',speed:-10,target:'ENEMY',support:false,
+    rageExecution:true,description:'消耗施放前全部憤怒；憤怒越高，敵人當前生命低於的斬殺線就越高。命中且符合處決條件時直接斬殺合法單位；其餘情況造成一般物理斬擊傷害。'},
   bow_shot:{id:"bow_shot",name:"弓箭射擊",description:"莉維亞引弦凝神，以精準箭術追擊遠處敵人。若長弓受到火焰或雷霆祝福，下一次離弦的箭矢也將釋放元素之力。",category:"ATTACK",weapon:"kahns_bow",power:1,range:{min:2,max:4},attackType:"SHOT",element:"INHERIT",speed:0,target:"ENEMY",support:true,affixes:[]},
   black_slash:{id:"black_slash",name:"黑劍斬擊",description:"黑劍劃破敵人防線，沉穩而凌厲。若武器已受火或雷元素祝福，斬擊將一併釋放那股力量。",category:"ATTACK",weapon:"black_sword",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[]},
   ganfan:{id:"ganfan",name:"雁反",category:"ATTACK",weapon:"black_sword",power:1,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:0,target:"ENEMY",support:false,affixes:[],
@@ -121,6 +137,12 @@ export const SKILLS={
   velsa_existence_breakdown:{id:"velsa_existence_breakdown",description:"對射程 2～5 格內單一敵軍施放高威力暗屬性魔法，依正式命中、暴擊、魔防及護盾結算。Sanity 越低魔法越強，認知失控時可能誤擊合法射程內友軍。純高威力單體攻擊，不具即死或無視魔防效果。消耗 55 MP、20 Sanity。",name:"存在崩解",category:"MAGIC",weapon:"staff",power:1.75,manaCost:55,resourceCosts:{sanity:20},range:{min:2,max:5},attackType:"MAGIC",element:"DARK",speed:-20,target:"ENEMY",support:false,highDimensional:true,affixes:["HIGH_DIMENSION","SANITY_SCALING","EXISTENCE_BREAKDOWN"]}
 };
 export const PASSIVES={
+  MAGDA_BATTLE_HUNGER:{id:'MAGDA_BATTLE_HUNGER',name:'嗜戰',category:'PASSIVE',
+    description:'擊殺敵人回復憤怒；以消耗憤怒的技能擊殺時，額外返還這次技能實際消耗的憤怒。同次施技的消耗最多返還一次，其他擊殺回復逐敵結算。'},
+  MAGDA_GIANT_STRENGTH:{id:'MAGDA_GIANT_STRENGTH',name:'巨人之力',category:'PASSIVE',
+    description:'巨人血統使她能抵抗暈眩、恐懼、束縛、定身等負面控制，也會降低被擊退、拉扯、升空的位移量。並非完全免疫。',
+    controlResistanceTypes:['STUN','FEAR','ROOT','ENTANGLED','IMMOBILIZE'],
+    displacementResistance:true},
   GUARDIAN_INSTINCT:{id:"GUARDIAN_INSTINCT",name:"守護本能",category:"PASSIVE",defenseProfiles:[{id:"guardian_instinct_guard",method:"GUARD",name:"守護本能",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.70},PIERCE:{damageMultiplier:.75},SHOT:{damageMultiplier:.70},STRIKE:{damageMultiplier:.80},MAGIC:{damageMultiplier:.90}}}]},
   GUARD_ALLY:{id:"GUARD_ALLY",name:"援護防禦",category:"PASSIVE",defenseProfiles:[{id:"guard_ally",method:"GUARD",name:"援護防禦",canGuardAlly:true,vs:{SLASH:{damageMultiplier:.65},PIERCE:{damageMultiplier:.70},SHOT:{damageMultiplier:.60},STRIKE:{damageMultiplier:.75},MAGIC:{damageMultiplier:.90}}}]},
   SWORDSMAN:{id:"SWORDSMAN",name:"劍術",category:"PASSIVE"},
@@ -191,6 +213,7 @@ export const SkillDatabase=(()=>{
     const relation={ALLY:"友軍",ENEMY:"敵軍",SELF:"自身",TILE:"地格"}[active.target];
     const costs=[];
     if(Number(active.manaCost)>0)costs.push(`魔力 ${active.manaCost}`);
+    if(active.rageSpendAll)costs.push('全部憤怒');
     for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${{holyPower:"聖能",faith:"信仰",blood:"血能",sanity:"Sanity"}[key]||key} ${value}`);
     const mechanics=[];
     if(range)mechanics.push(`射程 ${range.min}–${range.max}`);

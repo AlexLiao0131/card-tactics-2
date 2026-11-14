@@ -125,6 +125,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       const credit=charge==="BLEED"?hpLoss/2:charge==="DIRECT"?hpLoss:0;
       if(credit>0)UnitRuntimeEngine.changeBlood(source,credit);
     }
+    if(hpLoss>0)globalThis.UnitRuntimeEngine?.onRageDamage?.(source,target,hpLoss,{charge,kind});
     return{...shield,hpLoss,damage:hpLoss};
   }
   function damage(unit,amount,options){const result=applyDamage(unit,amount,options);if(unit?.hp<=0)unit.alive=false;return result.hpLoss;}
@@ -347,6 +348,13 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
         const chance=Number(passive.commandStatusResistance||0);
         if(Number.isFinite(chance))best=Math.max(best,chance);
       }
+    }
+    for(const passive of SkillDatabase.passiveList(target.character?.passives||[])){
+      const relevant=passive.controlResistanceTypes||[];
+      if(!relevant.length)continue;
+      const identity=String(effect.id||effect.type||'').toUpperCase();
+      if(relevant.some(type=>identity.includes(type)))
+        best=Math.max(best,Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.controlResistance||0));
     }
     return Math.min(100,Math.max(0,best));
   }

@@ -1,6 +1,10 @@
 /** Declarative resource profiles. Character identity never owns an executor.
  * These values are the existing authored balance and skill variants, not logic. */
 export const RESOURCE_PROFILES=Object.freeze({
+  rage:Object.freeze({label:'憤怒',max:100,initial:0,naturalRecovery:0,
+    // First-playtest values live HERE; no hero-specific second resource store.
+    damagePerPoint:8,slashBonus:8,killBonus:15,controlResistance:40,
+    uppercutLift:4,shockwaveLift:3,executeMaxHpRatio:.50}),
   duality:Object.freeze({
     label:'雙極',max:100,initial:50,naturalRecovery:0,
     polarity:{center:50,blueFull:0,purpleFull:100,roundRecovery:10,holdFullFutureRounds:1,

@@ -287,7 +287,20 @@
         TacticalEngine.lightTransmission(map,observer,{x:tile.x,y:tile.y,radius:0},environmentState)>0;
     }
     function environmentTargetTiles(unit,skill){
-      if(skill?.environmentTarget!=="BURNING"||skill?.waterContact!=="RAIN_EVENT"||!unit?.alive||unit.acted)return[];
+      if(!unit?.alive||unit.acted)return[];
+      if(skill?.environmentTarget==='TREE'){
+        const {map,units,environmentState}=state(),range=TacticalEngine.range(skill);
+        return map.tiles.filter(tile=>{
+          const tree=(globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,tile.x,tile.y)||[])
+            .some(o=>['TREE','DEAD_TREE'].includes(String(o.type||'').toUpperCase()));
+          if(!tree||ctx.unitAt(tile.x,tile.y))return false;
+          const distance=Math.abs(tile.x-unit.x)+Math.abs(tile.y-unit.y);
+          if(distance<range.min||distance>range.max)return false;
+          return TacticalEngine.teamCanSee(map,units,unit.team,tile,environmentState)&&
+            TacticalEngine.hasLineOfSight(map,unit,tile,skill,environmentState);
+        });
+      }
+      if(skill?.environmentTarget!=="BURNING"||skill?.waterContact!=="RAIN_EVENT")return[];
       const {map,units,environmentState}=state();
       const origins=skill.approach?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       const r=TacticalEngine.range(skill);
@@ -304,6 +317,24 @@
       const {map,environmentState}=state();
       if(!ctx.canUseSkill(unit,skill)||!environmentTargetTiles(unit,skill).includes(tile))
         return skillFailure(unit,skill,"ENVIRONMENT_TARGET_INVALID",tile);
+      if(skill.environmentTarget==='TREE'){
+        const objects=globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,tile.x,tile.y)||[];
+        const tree=objects.find(o=>['TREE','DEAD_TREE'].includes(String(o.type||'').toUpperCase()));
+        if(!tree)return skillFailure(unit,skill,'TREE_MISSING',tile);
+        const cast=ctx.effectiveSkill(unit,skill);
+        if(!ctx.consumeSkill(unit,cast))return skillFailure(unit,skill,'RESOURCE_OR_REQUIREMENT',tile);
+        globalThis.EffectEngine?.breakStealth?.(unit,'ACTION');
+        const events=[];
+        const log=globalThis.EnvironmentObjectEngine.fellTree(map,tree,{events,reason:'MAGDA_GREAT_SWORD'});
+        if(log){
+          map.plantObservationRevision=Number(map.plantObservationRevision||0)+1;
+          UnitRuntimeEngine.syncForestSouls(map,state().units,state().round);
+          globalThis.UnitAnimationEngine?.emitAction?.(unit,tile,cast,{targetKind:'MAP'});
+          events.forEach(ctx.logEnvironmentEvent);
+          ctx.pushLog(`${unit.character.name} 以 ${skill.name} 砍倒 (${tile.x},${tile.y}) 的樹木。`,'BATTLE');
+        }
+        return finishActiveSkill(unit);
+      }
       const r=TacticalEngine.range(skill),originalFacing=unit.facing;
       let origin=null,path=[];
       for(const candidate of attackOrigins(unit)){
@@ -669,6 +700,8 @@
         }
         if(skill.shape==="W_STEP"){
           if(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false)return false;
+          if(skill.jumpShockwave&&(!TacticalEngine.canOccupyTerrain(attacker,tile)||
+              TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)))return false;
         }
         if(skill.trapPlacement&&(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false))return false;
         if(skill.requiresVision!==false&&!TacticalEngine.canSee(map,attacker,tile,environmentState))return false;
@@ -1216,6 +1249,22 @@
       // One bow enchant per committed fan attack; never one charge per victim.
       const fanEnchantment=skill.fanShot?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
       TacticalEngine.faceToward(attacker,center);
+      if(skill.jumpShockwave){
+        const landing=TacticalEngine.tile(map,center.x,center.y),previous={x:attacker.x,y:attacker.y,z:attacker.z};
+        // Commit legal leap BEFORE quake damage. One action and one resource spend.
+        if(!landing||ctx.unitAt(landing.x,landing.y)||
+           !TacticalEngine.canOccupyTerrain(attacker,landing)||
+           TacticalEngine.isBlockedByObject(map,landing.x,landing.y,attacker))
+          throw new Error('Validated jump shockwave landing lost during commit.');
+        attacker.x=landing.x;attacker.y=landing.y;
+        if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
+        else attacker.z=Number(TacticalEngine.elevation(landing)||0);
+        globalThis.UnitAnimationEngine?.emitMove?.(attacker,{from:previous,path:[
+          previous,{x:attacker.x,y:attacker.y,z:attacker.z}],kind:'LEAP',duration:750});
+        ctx.enterTile(attacker);
+        if(!attacker.alive)return finishActiveSkill(attacker);
+        ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 躍至 (${attacker.x},${attacker.y})。`,'BATTLE');
+      }
       const fanAffected=skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):null;
       // Present the validated landing without changing the authored hit center.
       // Browser and headless PVP use the SAME canonical LINE transit plan.
@@ -1306,7 +1355,7 @@
         });
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
-      if(skill.areaDamage?.mode==="MAGIC_POWER"||skill.areaDamage?.mode==="PHYSICAL_VOLLEY"){
+      if(['MAGIC_POWER','PHYSICAL_VOLLEY','PHYSICAL_IMPACT'].includes(skill.areaDamage?.mode)){
         let friendlyHpLoss=0;
         // One actual outcome for each unit in the canonical footprint. The
         // Babylon arrow count is presentation-only and never implies damage.
@@ -1390,8 +1439,18 @@
           }
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${hpLoss} HP 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
-          else if(hpLoss>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,
-            {sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
+          else if(hpLoss>0){
+            globalThis.UnitAnimationEngine?.emitHit?.(occupant,
+              {sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
+            if(skill.jumpShockwave&&globalThis.PostEngagementEngine?.forcedMove){
+              const lift=Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.shockwaveLift||0);
+              const move=PostEngagementEngine.forcedMove({map,units:state().units,source:attacker,
+                target:occupant,effect:{type:'KNOCKBACK',distance:0,lift}});
+              ctx.logPostEffect?.({source:attacker,target:occupant,effect:{type:'KNOCKBACK',distance:0,lift},result:move});
+              UnitRuntimeEngine.onRageForcedLanding(attacker,occupant,move);
+              if(move.defeated)ctx.handleDefeated(occupant,attacker,skill);
+            }
+          }
         });
         if(sanityMisfire&&friendlyHpLoss>0){
           const manaRestored=UnitRuntimeEngine.sanityBacklashRefund(attacker,{cost:spent?.cost||0},friendlyHpLoss);
@@ -1448,7 +1507,7 @@
           ctx.enterTile(attacker);
           ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 穿越敵陣，瞬閃至 (${attacker.x},${attacker.y})。`,"BATTLE");
         }
-      }else if(skill.moveToTarget&&!ctx.unitAt(center.x,center.y)){
+      }else if(skill.moveToTarget&&!skill.jumpShockwave&&!ctx.unitAt(center.x,center.y)){
         if(skill.shape==="W_STEP"){
           attacker.x=center.x;attacker.y=center.y;attacker.z=Number(TacticalEngine.elevation(TacticalEngine.tile(map,center.x,center.y))||0);ctx.enterTile(attacker);
           ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 進行空間移動至 (${center.x},${center.y})。`,"BATTLE");

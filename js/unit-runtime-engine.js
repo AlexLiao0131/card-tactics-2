@@ -12,6 +12,34 @@ export function createUnitRuntimeEngine(){
   function drainMana(unit,amount){return -ResourceEngine.changeMana(unit,-Math.max(0,Math.round(Number(amount||0))));}
   function manaCost(skill){return Math.max(0,Math.round(Number(skill?.manaCost||0)))}
   const extraResourceRules=ResourceEngine.resourceRules;
+  const rageUser=u=>u?.character?.resourceRules?.rage!=null;
+  const rageRules=u=>extraResourceRules(u).rage||null;
+  function rageValue(u){return rageUser(u)?Number(ResourceEngine.value(u,'rage')||0):0;}
+  function changeRage(u,delta){return rageUser(u)?ResourceEngine.change(u,'rage',delta):0;}
+  function onRageDamage(source,target,actualHpLoss,{charge='DIRECT',kind='EXTERNAL'}={}){
+    if(actualHpLoss<=0||kind==='INTERNAL')return;
+    const gain=u=>Math.max(1,Math.ceil(actualHpLoss/Math.max(1,Number(rageRules(u)?.damagePerPoint||1))));
+    if(rageUser(target))changeRage(target,gain(target));
+    if(source&&source!==target&&source.team!==target?.team&&rageUser(source))changeRage(source,gain(source));
+  }
+  // Existing falling engine applies the HP loss without an attack source.
+  // The falling unit already gains Rage through EffectEngine.applyDamage.
+  // Credit ONLY the originating attacker here, once per resolved landing.
+  function onRageForcedLanding(source,target,result){
+    const loss=Math.max(0,Number(result?.fallDamage||0));
+    if(!loss||!source?.alive||source.team===target?.team||!rageUser(source))return 0;
+    return changeRage(source,Math.max(1,Math.ceil(loss/Math.max(1,Number(rageRules(source)?.damagePerPoint||1)))));
+  }
+  function onRageDefeat(source,skill){
+    if(!rageUser(source)||!source.character?.passives?.includes('MAGDA_BATTLE_HUNGER'))return 0;
+    const before=rageValue(source),rule=rageRules(source),spent=source._rageLastSkillSpend;
+    changeRage(source,Number(rule.killBonus||0));
+    if(spent&&spent.skillId===skill?.id&&!spent.refunded&&spent.amount>0){
+      spent.refunded=true;
+      changeRage(source,spent.amount);
+    }
+    return rageValue(source)-before;
+  }
   const resourceLabelFor=ResourceEngine.resourceLabel;
   const syncResources=ResourceEngine.sync;
   // One resource storage owner. Side effects remain at the owning battle rule.
@@ -157,7 +185,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);UnitTraitEngine.initialize(unit);
     return Object.fromEntries(Object.entries(ResourceEngine.snapshot(unit)).map(([key,state])=>[key,{...state,label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="rage"?{color:"#c53838"}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
@@ -320,6 +348,7 @@ export function createUnitRuntimeEngine(){
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);
     const extras={...resourceCosts(skill)};
+    if(skill?.rageSpendAll&&rageUser(unit))extras.rage=rageValue(unit);
     const soulCast=forestSoulCastChoice(unit,skill);
     if(soulCast?.mode==="SOUL")extras.forestSoul=soulCast.cost;
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
@@ -332,6 +361,7 @@ export function createUnitRuntimeEngine(){
       if(value===null||(value!==0&&value!==maximum))return false;
     }
     if(isBloodMemory(unit,skill)&&!unit._bloodAwakened)return false;
+    if(skill?.rageSpendAll&&rageValue(unit)<=0)return false;
     skill=skillForUnit(unit,skill);
     if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits(),skill,world).length)return false;
     if(skill?.approach&&unit?.moved)return false;
@@ -354,12 +384,21 @@ export function createUnitRuntimeEngine(){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const soulCast=forestSoulCastChoice(unit,skill);
+    const rageBefore=rageValue(unit);
     const mana=skillManaCost(unit,skill);ResourceEngine.changeMana(unit,-mana);
     const spent={};
     if(soulCast?.mode==="SOUL"){
       changeResource(unit,"forestSoul",-soulCast.cost);
       spent.forestSoul={cost:soulCast.cost,remaining:forestSoulValue(unit),max:unit.resources.forestSoul.max};
     }for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;ResourceEngine.change(unit,key,-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
+    if(rageUser(unit)){
+      const amount=skill?.rageSpendAll?rageBefore:Number(resourceCosts(skill).rage||0);
+      unit._rageLastSkillSpend={skillId:skill?.id,amount,refunded:false};
+      if(skill.rageSpendAll&&amount>0){
+        changeRage(unit,-amount);
+        spent.rage={cost:amount,remaining:rageValue(unit),max:unit.resources.rage.max};
+      }
+    }
     if(skill?.forestSoulRelease===true&&forestSoulUser(unit)){
       const value=forestSoulValue(unit);
       if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
@@ -374,6 +413,7 @@ export function createUnitRuntimeEngine(){
     const soulCast=forestSoulCastChoice(unit,skill);
     if(soulCast?.mode==="SOUL")labels.push(`森靈之魂 ${soulCast.cost}`);
     if(mana>0)labels.push(`MP ${mana}`);
+    if(skill?.rageSpendAll)labels.push(`全部憤怒 ${rageValue(unit)}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
   }
@@ -381,6 +421,12 @@ export function createUnitRuntimeEngine(){
     skill=skillForUnit(unit,skill);
     if(!skill||skill._resourceScaled)return skill;
     let multiplier=1;
+    const rageSnapshot=rageUser(unit)?rageValue(unit):null;
+    if(rageSnapshot!==null&&skill?.attackType&&Number(skill.power||0)>0){
+      const maximum=Math.max(1,Number(unit.resources?.rage?.max||100));
+      multiplier*=1+rageSnapshot/maximum;
+      skill={...skill,rageSnapshot};
+    }
     if(skill.category==="MAGIC"||skill.attackType==="MAGIC"){
       syncResources(unit);
       for(const[key,rule]of Object.entries(extraResourceRules(unit))){
@@ -448,7 +494,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

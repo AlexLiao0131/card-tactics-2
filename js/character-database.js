@@ -1,4 +1,13 @@
+import {RESOURCE_PROFILES} from "./resource-profile-database.js";
 export const CHARACTERS={
+magda:{id:'magda',name:'瑪格妲・瓦爾加',title:'競技場的戰獅',visualId:'magda_default',
+  race:'GIANT_BLOODLINE',faction:'ARENA',archetype:'GLADIATOR',genetics:{grade:'3V',values:['STR','AGI','VIT']},
+  attributes:{str:20,agi:20,int:8,wil:14,vit:20,luk:12},
+  combat:{hp:285,atk:108,matk:20,def:74,mdef:59,move:5},
+  resourceRules:{mana:false,rage:RESOURCE_PROFILES.rage},displacement:{weightClass:'HEAVY',resistance:2},
+  passives:['MAGDA_BATTLE_HUNGER','MAGDA_GIANT_STRENGTH'],
+  lore:{role:'豪放的女競技場鬥士／巨人後裔',daughter:'蘿莎・瓦爾加',
+    notes:'豪放坦率，繼承巨人血統；競技場外是疼愛女兒的母親。'}} ,
 livia:{id:"livia",name:"莉維亞",visualId:"livia_default",archetype:"RANGED",resourceRules:{mana:true,duality:{}},attributes:{str:20,agi:20,int:20,wil:20,vit:20,luk:16},combat:{hp:210,atk:94,matk:90,def:55,mdef:90,move:5},passives:["CAPTAIN_HIGHEST_AUTHORITY","MANA_SENSE","AMBUSH"]},
 leon:{id:"leon",name:"第一劍士・雷昂",visualId:"leon_default",archetype:"MELEE",attributes:{str:20,agi:18,int:8,wil:14,vit:17,luk:12},combat:{hp:260,atk:100,matk:35,def:75,mdef:58,move:4},passives:["FIRST_SWORD","OFFENSE_DEFENSE_UNITY"]},
 kahn:{id:"kahn",name:"卡恩",archetype:"RANGED",attributes:{str:17,agi:20,int:10,wil:17,vit:15,luk:18},combat:{hp:225,atk:96,matk:42,def:58,mdef:65,move:5},passives:["HUNTER_OF_THE_EDGE"]},

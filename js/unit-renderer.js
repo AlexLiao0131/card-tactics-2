@@ -4,6 +4,23 @@ const DEFAULT_BATTLE_VISUAL=Object.freeze({kind:"CAPSULE"});
 const FACING_ANGLE=Object.freeze({S:0,E:Math.PI/2,N:Math.PI,W:-Math.PI/2});
 const FACING_VECTOR=Object.freeze({N:{x:0,z:-1},E:{x:1,z:0},S:{x:0,z:1},W:{x:-1,z:0}});
 const DEBUG_MIN_DURATION=Object.freeze({WALK:360,ATTACK:620,CAST:760,HURT:520,DEATH:1050});
+// Babylon's existing SceneLoader remains the ONLY GLB importer. A shared promise
+// avoids repeatedly inserting the public loader for multiple MODEL instances.
+let glbLoaderPromise=null;
+function ensureGlbLoader(){
+  if(BABYLON.SceneLoader?.IsPluginForExtensionAvailable?.('.glb'))return Promise.resolve();
+  if(glbLoaderPromise)return glbLoaderPromise;
+  if(typeof document==='undefined')return Promise.reject(new Error('BABYLON_GLTF_LOADER_UNAVAILABLE'));
+  glbLoaderPromise=new Promise((resolve,reject)=>{
+    const node=document.createElement('script');
+    node.src='https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js';
+    node.async=true;
+    node.onload=()=>BABYLON.SceneLoader?.IsPluginForExtensionAvailable?.('.glb')?resolve():reject(new Error('BABYLON_GLTF_PLUGIN_MISSING'));
+    node.onerror=()=>reject(new Error('BABYLON_GLTF_LOADER_FAILED'));
+    document.head.appendChild(node);
+  }).catch(error=>{glbLoaderPromise=null;throw error;});
+  return glbLoaderPromise;
+}
 
 function normalizeFacing(value){
   const facing=String(value||"S").toUpperCase();
@@ -1851,6 +1868,57 @@ export class UnitRenderer{
     };
   }
 
+  createModel(unit,definition){
+    const height=Math.max(.8,Number(definition?.height||UNIT_VISUAL_HEIGHT));
+    const asset=this.baseAssetForFacing(unit,definition);
+    if(!asset||!String(asset).toLowerCase().endsWith('.glb'))return this.createCapsule(unit);
+    const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
+    root.metadata={kind:'unit',unitId:unit.id,visualKind:'MODEL'};
+    // A non-destructive placeholder keeps a temporarily unloaded model visible.
+    // The imported PBR GLB replaces it once ready, within this SAME entry.
+    const proxy=BABYLON.MeshBuilder.CreateCapsule(`unit-loading-${unit.id}`,{height,radius:.19},this.scene);
+    proxy.parent=root;proxy.position.y=height/2;proxy.material=this.materials[unit.team]||this.materials.NEUTRAL;
+    proxy.isPickable=false;
+    const meshes=[proxy];
+    const entry={root,meshes,kind:'MODEL',height,lift:Number(definition?.lift||0),asset,loading:true};
+    ensureGlbLoader().then(async()=>{
+      if(root.isDisposed?.())return;
+      const location=String(asset),cut=location.lastIndexOf('/');
+      const path=cut>=0?location.slice(0,cut+1):'./',filename=location.slice(cut+1);
+      const imported=await BABYLON.SceneLoader.ImportMeshAsync('',path,filename,this.scene);
+      if(root.isDisposed?.()){
+        for(const mesh of imported.meshes||[])mesh.dispose();
+        for(const node of imported.transformNodes||[])node.dispose();
+        return;
+      }
+      const assetsRoot=new BABYLON.TransformNode(`unit-model-root-${unit.id}`,this.scene);
+      assetsRoot.parent=root;
+      // The authored source GLB height (1.93) is specified in the model
+      // manifest and not inferred from the canvas or camera zoom.
+      const nativeHeight=Number(definition.modelHeight||1.93);
+      assetsRoot.scaling.setAll(height/nativeHeight);
+      for(const mesh of imported.meshes||[]){
+        if(!mesh.parent)mesh.parent=assetsRoot;
+        mesh.isPickable=false;
+        if(mesh.getTotalVertices?.()>0){
+          mesh.metadata={...(mesh.metadata||{}),kind:'unit-part',unitId:unit.id,visualKind:'MODEL'};
+          mesh.receiveShadows=true;
+          meshes.push(mesh);
+        }
+      }
+      for(const node of imported.transformNodes||[])if(!node.parent)node.parent=assetsRoot;
+      if(meshes.length>1){proxy.dispose();meshes.splice(meshes.indexOf(proxy),1);}
+      entry.loading=false;
+      const visibleUnit=this.entries.get(unit.id);
+      if(visibleUnit?.root===root)this.setVisibility(visibleUnit,visibleUnit.lastVisibility??1);
+    }).catch(error=>{
+      entry.loading=false;entry.loadError=String(error?.message||error);
+      // A failed asset load is visible as a proxy, never a blank battlefield.
+      console.error(`Card Tactics MODEL asset failed: ${asset}`,error);
+    });
+    return entry;
+  }
+
   createEntry(unit,definition,signature){
     const entryStart=performance.now();
     const kind=String(definition?.kind||"CAPSULE").toUpperCase();
@@ -1858,6 +1926,8 @@ export class UnitRenderer{
       ?this.createBillboard(unit,definition)
       :kind==="FIGURE"
         ?this.createFigure(unit,definition,signature)
+        :kind==="MODEL"
+          ?this.createModel(unit,definition)
         :kind==="BIRD"
           ?this.createBird(unit,definition,signature)
           :this.createCapsule(unit);
@@ -1899,6 +1969,7 @@ export class UnitRenderer{
   }
 
   setVisibility(entry,value){
+    if(entry)entry.lastVisibility=value;
     for(const mesh of entry?.meshes||[])mesh.visibility=value;
     for(const mesh of entry?.facingMarker?.meshes||[])mesh.visibility=value;
   }
@@ -2349,6 +2420,10 @@ export class UnitRenderer{
     const point={x:lerp(a.x,b.x,local),y:lerp(a.y,b.y,local),z:lerp(a.z,b.z,local)};
     entry.root.position.copyFrom(this.positionFor(entry,point));
     entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
+    // A leap remains a genuine grid move with a raised visual arc. Ground
+    // marker follows the committed grid path, never the temporary air height.
+    if(String(event?.kind||'').toUpperCase()==='LEAP')
+      entry.root.position.y+=Math.sin(Math.PI*clamp01(progress))*.9*ELEVATION_HEIGHT;
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
 

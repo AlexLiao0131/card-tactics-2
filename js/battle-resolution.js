@@ -172,9 +172,31 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   function applyStatuses(entry){
     if(!entry?.result?.hit||Number(entry.result.damage||0)<=0||!globalThis.EffectEngine)return[];const applied=[];
     for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result})}
+    if(entry.skill?.giantUppercut===true&&
+      uppercutHitsHeavyArmor(entry.target)){
+      const result=EffectEngine.apply({source:entry.actor,target:entry.target,
+        effect:normalizeStatus({type:'DEF_DOWN',id:'MAGDA_ARMOR_BREAK',name:'巨劍破甲',value:20,duration:2})});
+      if(result?.applied)applied.push({effect:result.effect,result});
+    }
     return applied;
   }
-  function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect})}return q}
+  function uppercutHitsHeavyArmor(target){
+    const c=target?.character||{};
+    const armor=c.armor||globalThis.EquipmentDatabase?.get?.(c.armorId);
+    return String(armor?.type||'NONE').toUpperCase()==='HEAVY';
+  }
+  function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;
+      for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect});
+      // Giant uppercut is strictly vertical: the target stays on its original tile.
+      // Heavy armor takes a DEF_DOWN status instead and is never launched.
+      if(entry.skill?.giantUppercut===true&&entry.target?.alive&&
+         !uppercutHitsHeavyArmor(entry.target)){
+        const profile=globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage;
+        q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,
+          skill:entry.skill,effect:{type:'KNOCKBACK',distance:0,lift:Number(profile?.uppercutLift||0)}});
+      }
+    }return q}
+
   // A weapon attack has one contact roll but independent critical results for physical and magical components.
   function enchantmentMagicDamage(actor,target,enchant,critical,skill){
     if(!enchant||!target?.character||!actor?.character||!skill)return 0;
@@ -584,6 +606,13 @@ export function createBattleResolution({random=()=>Math.random()}={}){
             z:Number(plannedBackstep.elevation||0)}:null}):null;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
+        const executionLine=skill?.rageExecution===true&&original.hit&&
+          action.target?.character?.unitRole!=='CORE'&&action.target?.kind!=='CORE'&&
+          !action.target?.character?.traits?.includes('EXECUTION_IMMUNE')&&
+          Number(skill.rageSnapshot||0)>0&&
+          hpBefore/Math.max(1,Number(action.target.character?.combat?.hp||hpBefore))<=
+            (Number(skill.rageSnapshot||0)/Math.max(1,Number(action.actor.resources?.rage?.max||100)))*
+              Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.executeMaxHpRatio||0);
         let absorbed=0,physLoss=0,magicLoss=0;
         if(original.hit){
           // One attack event: each damage type passes through the official shield/immunity engine.
@@ -591,6 +620,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC",unresistable:skill.pureHoly===true||skill.inherentMagic?.unresistable===true||action.actor.character?.weapons?.[skill.weapon]?.inherentMagic?.unresistable===true})||{hpLoss:0,absorbed:0};
           absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
           physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
+        }
+        if(executionLine&&original.hit&&!globalThis.EffectEngine?.isInvulnerable?.(action.target)){
+          const extra=globalThis.EffectEngine?.applyDamage?.(action.target,Math.max(0,Number(action.target.hp||0)),
+            {source:action.actor,damageType:'PHYSICAL'})||{hpLoss:0};
+          physLoss+=Number(extra.hpLoss||0);
         }
         // Colin's last line belongs to ONE successful ally interception, not
         // ordinary self-defense, AOE, environment damage or recurring DOT.
@@ -642,6 +676,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
             (result.damage>0||result.shieldAbsorbed>0));
           visualEvent.targetDefeated=action.target.hp===0;
         }
+        if(Number(result.damage||0)>0&&skill?.rageOnHit===true&&
+          globalThis.UnitRuntimeEngine?.rageUser?.(action.actor))
+          globalThis.UnitRuntimeEngine.changeRage(action.actor,
+            Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.slashBonus||0));
         if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
         else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
         if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
@@ -718,7 +756,17 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(counterIndex>=0)queue.splice(counterIndex,1);
       }
     }
-    const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
+    const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{
+      onEffect:hooks.onPostEffect,
+      onDefeated:(defeated,source,effect)=>{
+        // The fall/knockback belongs to the triggering skill, including the
+        // once-only Battle Hunger cost refund for a skill-caused fall kill.
+        const record=pq.find(item=>item.target===defeated&&item.source===source&&item.effect===effect);
+        hooks.onDefeated?.(defeated,source,record?.skill||effect);
+      }
+    }):{queue:pq,results:[]};
+    for(const event of post.results||[])if(Number(event?.result?.fallDamage||0)>0)
+      globalThis.UnitRuntimeEngine?.onRageForcedLanding?.(event.source,event.target,event.result);
     // Every executed backstep (including a defender's counterattack) commits
     // once after engagement, never when the reaction picker is opened.
     // Keep standard occupancy/elevation/terrain checks and the single official
