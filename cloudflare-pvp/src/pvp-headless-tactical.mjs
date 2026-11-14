@@ -154,7 +154,11 @@ function serverCallbacks(game,engine){
       game.cards[(unit.controlOverride?.originalTeam||unit.team)==='P'?0:1],
     deathScope:()=>game.perceptionState?.session,allowRewards:()=>!game.perceptionState?.session?.active,
     onDefeated:()=>{},onFinalized:()=>{}});
-  const handleDefeated=(unit,source,cause)=>death.finalize(unit,source,cause);
+  const handleDefeated=(unit,source,cause)=>{
+    const result=death.finalize(unit,source,cause);
+    BattlefieldFieldEngine.pruneManaWells(game.battlefield.map,game.units);
+    return result;
+  };
   const damageUnitFlat=(unit,rawDamage,name='ENVIRONMENT')=>{
     if(!unit?.alive)return;
     const actual=engine.effect.applyDamage(unit,rawDamage,{kind:'EXTERNAL'});
