@@ -37,7 +37,8 @@ function status(u){const v=polarity(u);return{
   value:v,blueFull:v===R.blueFull,purpleFull:v===R.purpleFull,
   mode:v===R.blueFull?'COMPLETE':v===R.purpleFull?'CORRUPTED':'NORMAL',
   corruptionRounds:Number(u?._liviaCorruptionRounds||0),
-  berserk:!!u?._liviaBerserkEndRound
+  berserk:!!u?._liviaBerserkEndRound,
+  recoveryRemaining:!!u?._liviaBerserkEndRound?Math.max(0,v-R.center):0
 };}
 function setPolarity(u,value){const r=initialize(u);if(!r)return 0;
   const prev=r.value;r.value=clamp(Math.round(asNumber(value)),0,100);
@@ -47,6 +48,9 @@ function setPolarity(u,value){const r=initialize(u);if(!r)return 0;
 }
 function afterCommittedSkill(u,s){
   if(!isLivia(u)||!s||s.purifiedSlash)return;
+  // An uncontrolled neutral strike is not a player-maintained purple form.
+  // Let sapphire-blue recover even when the berserk AI casts Nether Slash.
+  if(u._liviaBerserkEndRound)return;
   const cur=polarity(u);if(!isHighDimension(s))return;
   const delta=s.id==='shadow_step'?R.shadowStepCorruption:R.netherSlashCorruption;
   if(cur<R.purpleFull)setPolarity(u,cur+delta);
@@ -215,11 +219,19 @@ function onRoundStart({map,units,round,random=Math.random}={}){
   for(const unit of units||[]){
     if(!isLivia(unit)||!live(unit))continue;
     initialize(unit);
-    if(unit._liviaBerserkEndRound&&round>unit._liviaBerserkEndRound){
-      completeBerserk(unit);
-    }
     unit._liviaRound=round;
-    if(unit._liviaBerserkEndRound)continue;
+    // Berserk is not a one-round timer: sapphire-blue recovers over the
+    // SAME signed polarity bar until both sides are balanced at center.
+    // One legitimate neutral action is available in every occupied round.
+    if(unit._liviaBerserkEndRound){
+      if(unit._liviaBerserkCheckedRound===round)continue;
+      unit._liviaBerserkCheckedRound=round;
+      if(round>unit._liviaHoldUntil)
+        setPolarity(unit,polarity(unit)-R.roundBlueRecovery);
+      if(polarity(unit)<=R.center)completeBerserk(unit);
+      else delete unit._liviaBerserkActionDone;
+      continue;
+    }
     if(polarity(unit)===R.purpleFull){
       unit._liviaCorruptionRounds++;
       const risk=clamp((unit._liviaCorruptionRounds-1)*R.corruptionRiskIncreasePerRound,0,1);
@@ -228,7 +240,10 @@ function onRoundStart({map,units,round,random=Math.random}={}){
         unit._liviaOriginalParticipation=unit.participatesInTurn!==false;
         // Ordinary neutral AI must not run this temporary actor a second time.
         unit.participatesInTurn=false;
+        // Historical property is now the nonzero BERSERK START marker,
+        // never a scheduled expiry round. Existing renderer consumes it.
         unit.team='N';unit._liviaBerserkEndRound=round;
+        unit._liviaBerserkCheckedRound=round;
         delete unit._liviaBerserkActionDone;
         unit._liviaCorruptionRounds=0;
         berserk.push(unit.id);continue;
@@ -240,13 +255,15 @@ function onRoundStart({map,units,round,random=Math.random}={}){
   return{round,berserk};
 }
 function completeBerserk(unit){
-  if(!isLivia(unit)||!unit._liviaBerserkEndRound)return false;
+  // Only the actual blue/purple balance releases control; no snap to center
+  // and no caller-specific PvP override of the canonical resource value.
+  if(!isLivia(unit)||!unit._liviaBerserkEndRound||polarity(unit)>R.center)return false;
   unit.team=unit._liviaOriginalTeam;
   unit.participatesInTurn=unit._liviaOriginalParticipation!==false;
   delete unit._liviaOriginalTeam;delete unit._liviaOriginalParticipation;
   delete unit._liviaBerserkEndRound;delete unit._liviaBerserkActionDone;
+  delete unit._liviaBerserkCheckedRound;
   unit._liviaCorruptionRounds=0;
-  setPolarity(unit,R.center);
   return true;
 }
 /** Command on an already-converted neutral actor. No browser-side decisions and

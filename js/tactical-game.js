@@ -534,7 +534,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       checkMatchEnd:()=>checkMatchEnd(),
       advanceRound:()=>{round++;phase=PHASE.PLAYER;
         const dual=globalThis.LiviaDualityEngine?.onRoundStart?.({map,units,round,random:Math.random});
-        if(dual?.berserk?.length)pushLog(`高維污染失控：${dual.berserk.join("、")} 失去自我一回合。`,"BATTLE");},
+        if(dual?.berserk?.length)pushLog(`高維污染失控：${dual.berserk.join("、")} 進入鬼魅暴走，待藍色回復至雙極平衡才恢復操控。`,"BATTLE");},
       expireSmoke:()=>expireSmoke(),
       resetActions:()=>resetActions(TEAM.PLAYER),
       clearInput:()=>{clearSelection();clearEnemyReaction();},
@@ -556,7 +556,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);
     const dual=globalThis.LiviaDualityEngine;
     const actors=units.filter(unit=>unit.alive&&unit.team===TEAM.NEUTRAL&&
-      unit._liviaBerserkEndRound===round&&!unit._liviaBerserkActionDone);
+      unit._liviaBerserkEndRound&&unit._liviaBerserkEndRound<=round&&!unit._liviaBerserkActionDone);
     if(!actors.length){enemyController?.runPhase();return;}
     phase=PHASE.ENEMY;
     const processNext=()=>{
