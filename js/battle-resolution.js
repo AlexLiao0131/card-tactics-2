@@ -2,6 +2,7 @@ import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 import {WeaponMaterialEngine} from "./weapon-material-engine.js";
 import {chooseAutonomousBattleReaction} from "./battle-reaction-decision-engine.js";
 import {CombatContactRules} from "./combat-contact-rules.js";
+import {UnitRuntimeEngine} from "./unit-runtime-engine.js";
 export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
@@ -34,11 +35,17 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   function supportAnchorDistance(ally){let value=1;for(const passive of SkillDatabase.passiveList(ally?.character?.passives)){const n=Number(passive?.supportRules?.allyDistance);if(Number.isFinite(n))value=Math.max(value,n)}return value}
   function supportCandidates({units,initiator,target,canUseSkill}){const out=[];for(const ally of units){if(!ally.alive||ally.id===initiator.id||ally.team!==initiator.team||ally.waited===true)continue;const anchor=Math.max(Math.abs(ally.x-initiator.x),Math.abs(ally.y-initiator.y));if(anchor>supportAnchorDistance(ally))continue;const skills=supportSkills({ally,target,canUseSkill});if(skills.length)out.push({ally,skills})}return out}
   function createSupportAction(ally,target,skill,index=0){return{id:`support-${ally.id}-${index}`,role:"SUPPORT",actor:ally,target,skill}}
+  function counterSkillForm(defender,skill){
+    if(!["nether_slash","ophi_forest_wrath"].includes(skill?.id))return skill;
+    return UnitRuntimeEngine.skillForUnit(defender,{...skill,_reactionCounter:true})||
+      {...skill,_reactionCounter:true,target:"ENEMY",targetType:"SINGLE"};
+  }
   function counterSkills({defender,attacker,attackSkill=null,canUseSkill}){
     if(!defender?.alive||!attacker?.alive)return[];
-    return SkillDatabase.list(defender.character.skills).filter(s=>{
+    return SkillDatabase.list(defender.character.skills).map(s=>counterSkillForm(defender,s)).filter(s=>{
       if(s.utilityAction||s.target!=="ENEMY"||!isSingleTarget(s))return false;
       if(s.ganfan&&!CombatContactRules.canGanfanDefend(attacker,defender,attackSkill))return false;
+      if(s.evasiveCounter&&!CombatContactRules.canActiveEvade(attacker,attackSkill))return false;
       if(canUseSkill&&!canUseSkill(defender,s))return false;
       const r=s.range||{min:1,max:1},d=distance(defender,attacker);
       if(d<r.min||d>r.max||!reactionTargetable(defender,attacker,s))return false;
@@ -151,7 +158,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(a.skill?.bloodShadow)return resolveWithRandom(c.map,a.actor,a.target,a.skill,{forceHit:true});
     if(!isPrimaryIncomingAction(c,a))return resolveWithRandom(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
-    if(c.reaction?.type==="EVADE"&&CombatContactRules.canActiveEvade(a.actor,a.skill))return resolveEvade(c.map,a.actor,a.target,a.skill);
+    const evasiveCounter=c.reaction?.type==="COUNTER"&&c.reaction.skill?.evasiveCounter===true;
+    if((c.reaction?.type==="EVADE"||evasiveCounter)&&CombatContactRules.canActiveEvade(a.actor,a.skill))
+      return resolveEvade(c.map,a.actor,a.target,a.skill);
     if(c.reaction?.type==="DEFENSE")return resolveDefense(c.map,a.actor,a.target,a.skill,c.reaction);
     return resolveWithRandom(c.map,a.actor,a.target,a.skill)
   }
@@ -357,6 +366,15 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         queue.splice(queue.findIndex(a=>a.role==="INITIATOR"&&a.actor.id===c.initiator.id)+1,0,delayed);
       }
     }
+    const evasiveCounter=c.reaction?.type==="COUNTER"&&c.reaction.skill?.evasiveCounter===true;
+    if(evasiveCounter){
+      const first=queue.findIndex(a=>a.role==="INITIATOR"&&a.actor.id===c.initiator.id);
+      const counter=queue.findIndex(a=>a.role==="COUNTER"&&a.actor.id===c.originalTarget.id);
+      if(first>=0&&counter>=0&&counter<first){
+        const [delayed]=queue.splice(counter,1);
+        queue.splice(first+1,0,delayed);
+      }
+    }
     const defendingGanfan=c.reaction?.type==="COUNTER"&&c.reaction.skill?.ganfan&&
       CombatContactRules.canGanfanDefend(c.initiator,c.originalTarget,c.skill)&&!c.interception;
     if(defendingGanfan){
@@ -364,6 +382,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(ix>=0)queue.splice(ix,1); // Defensive Ganfan never executes a free ordinary counter.
     }
     let ganfanFirstStrikeCommitted=false,ganfanParryResolved=false,defensiveGanfanChecked=false;
+    let evasiveCounterChecked=false,evasiveCounterSucceeded=true;
     // Backward shooting is an attack ability, not an initiator-only movement.
     // Queue one authoritative landing for each actually executed action,
     // including a chosen or automatically generated COUNTER.
@@ -523,9 +542,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
             visited.add(`${landing.x},${landing.y}`);
             TacticalEngine.faceToward(action.actor,action.target);
             // ENTER_TILE remains canonical for hazards, mana wells and terrain.
-            const previouslyInterrupted=!!action.actor._liviaMoveInterrupted;
+            const previouslyInterrupted=!!action.actor._fieldMoveInterrupted;
             hooks.onBackstep?.(action.actor,landing);
-            if(!previouslyInterrupted&&action.actor._liviaMoveInterrupted){
+            if(!previouslyInterrupted&&action.actor._fieldMoveInterrupted){
               blinkPath.push({x:action.actor.x,y:action.actor.y,z:action.actor.z});
               break; // Spatial distortion interrupted this blink sequence.
             }
@@ -555,8 +574,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const sealMultiplier=action.misfire?1:
           a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
         const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
-        const berserkMultiplier=action.actor?._liviaBerserkEndRound?
-          (globalThis.LiviaDualityEngine?.RULES?.berserkDamageMultiplier||1):1;
+        const berserkMultiplier=action.actor?.controlOverride?.type==='BERSERK'?
+          (globalThis.UnitTraitEngine?.berserkDamageMultiplier?.(action.actor)||1):1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
@@ -593,6 +612,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           physicalHpDamage:physLoss,magicHpDamage:magicLoss,
           physicalCrit,magicCrit,crit:physicalCrit||magicCrit,
           criticalComponents:{physical:physicalCrit,magic:magicCrit},hallucinationBroken:hallucinationHit};
+        if(isPrimary&&evasiveCounter){
+          evasiveCounterChecked=true;
+          if(original.evadeOutcome!=="MISS")evasiveCounterSucceeded=false;
+        }
         globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{damage:result.damage,critical:result.crit,
           components:{physical:physLoss,magic:magicLoss},criticalComponents:result.criticalComponents,
           element:original.el||skill.element,componentElements:{
@@ -686,7 +709,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(action.actor.alive&&globalThis.EffectEngine&&!followup)
         for(const effect of skill?.afterUseEffects||[])
           EffectEngine.apply({source:action.actor,target:action.actor,effect});
+      if(skill?._reactionCounter&&skill.purifiedSlash===true)
+        globalThis.UnitTraitEngine?.resetBlueAfterUltimate?.(a.actor);
       bloodRuntime?.endBloodTransaction?.(a.actor);
+      if(isPrimary&&evasiveCounter&&(!evasiveCounterChecked||!evasiveCounterSucceeded)){
+        const counterIndex=queue.findIndex((candidate,j)=>j>index&&candidate.role==="COUNTER"&&
+          candidate.actor.id===c.originalTarget.id&&candidate.skill?.evasiveCounter===true);
+        if(counterIndex>=0)queue.splice(counterIndex,1);
+      }
     }
     const pq=postQueue(results),post=globalThis.PostEngagementEngine?PostEngagementEngine.process({map:c.map,units:c.units,queue:pq},{onEffect:hooks.onPostEffect,onDefeated:hooks.onDefeated}):{queue:pq,results:[]};
     // Every executed backstep (including a defender's counterattack) commits

@@ -1103,8 +1103,8 @@
 
     function executeLiviaPurifiedSlash(attacker,center,skill){
       const {map,units,environmentState}=state();
-      const duality=globalThis.LiviaDualityEngine;
-      if(!duality?.isLivia(attacker)||!skill.purifiedSlash||!duality.status(attacker).blueFull)
+      const duality=globalThis.UnitTraitEngine;
+      if(!duality?.hasResource(attacker)||!skill.purifiedSlash||!duality.status(attacker).blueFull)
         return skillFailure(attacker,skill,"PURIFICATION_NOT_AVAILABLE",center);
       if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
         return skillFailure(attacker,skill,"PURIFIED_SLASH_ILLEGAL_AIM",center);
@@ -1137,7 +1137,7 @@
           if(entry.result?.hit)hits++;
         }
       }
-      duality.createDistortion(map,attacker.team,tiles,state().round||1);
+      globalThis.BattlefieldFieldEngine.createDistortion(map,attacker.team,tiles,state().round||1);
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,{id:"livia_purified_nether",name:skill.name,
         category:"ATTACK",weapon:skill.weapon},{targetKind:"MAP",fanTargetCells:tiles.map(t=>({x:t.x,y:t.y})),
         purifiedSlash:true});

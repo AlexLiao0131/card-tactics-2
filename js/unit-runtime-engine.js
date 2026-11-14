@@ -1,62 +1,25 @@
+import {ResourceEngine} from "./resource-engine.js";
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
-import {LiviaDualityEngine} from "./livia-duality-engine.js";
+import {UnitTraitEngine} from "./unit-trait-engine.js";
 export function createUnitRuntimeEngine(){
-  const MANA_BASE=40,MANA_INT_FACTOR=2,MANA_WIL_FACTOR=2;
+  const {base:MANA_BASE,intFactor:MANA_INT_FACTOR,wilFactor:MANA_WIL_FACTOR}=ResourceEngine.RESOURCE_MANA;
   const liveUnits=new Map();
   const clone=value=>JSON.parse(JSON.stringify(value));
-  function maxManaFromAttributes(attributes={}){
-    return Math.max(0,Math.round(MANA_BASE+Number(attributes.int||0)*MANA_INT_FACTOR+Number(attributes.wil||0)*MANA_WIL_FACTOR));
-  }
-  function maxMana(unit){return unit?.character?.resourceRules?.mana===false?0:maxManaFromAttributes(unit?.character?.attributes||{})}
-  function syncMana(unit,{initialize=false}={}){
-    if(!unit)return{mana:0,maxMana:0};
-    const nextMax=maxMana(unit);
-    if(initialize||!Number.isFinite(Number(unit.mana)))unit.mana=nextMax;
-    else unit.mana=Math.min(Math.max(0,Number(unit.mana||0)),nextMax);
-    unit.maxMana=nextMax;
-    return{mana:unit.mana,maxMana:unit.maxMana};
-  }
-  function restoreMana(unit,amount){
-    syncMana(unit);
-    const before=unit.mana;
-    unit.mana=Math.min(unit.maxMana,before+Math.max(0,Math.round(Number(amount||0))));
-    return unit.mana-before;
-  }
-  function drainMana(unit,amount){
-    syncMana(unit);
-    const before=Math.max(0,Number(unit?.mana||0));
-    const spent=Math.min(before,Math.max(0,Math.round(Number(amount||0))));
-    if(unit)unit.mana=before-spent;
-    return spent;
-  }
+  const maxManaFromAttributes=ResourceEngine.manaMaxFromAttributes;
+  const maxMana=ResourceEngine.manaMax;
+  const syncMana=ResourceEngine.syncMana;
+  function restoreMana(unit,amount){return ResourceEngine.changeMana(unit,Math.max(0,Math.round(Number(amount||0))));}
+  function drainMana(unit,amount){return -ResourceEngine.changeMana(unit,-Math.max(0,Math.round(Number(amount||0))));}
   function manaCost(skill){return Math.max(0,Math.round(Number(skill?.manaCost||0)))}
-  function extraResourceRules(unit){
-    const rules=unit?.character?.resourceRules||{},out={};
-    for(const[key,value]of Object.entries(rules))if(key!=="mana"&&value&&typeof value==="object")out[key]=value;
-    return out;
-  }
-  function resourceLabelFor(key,rule={}){return String(rule.label||rule.shortLabel||(key==="sanity"?"SAN":key.toUpperCase()));}
-  function syncResources(unit,{initialize=false,applyRecovery=false}={}){
-    if(!unit)return{};
-    unit.resources??={};
-    for(const[key,rule]of Object.entries(extraResourceRules(unit))){
-      const max=Math.max(0,Number(rule.max??100)),initial=Math.max(0,Math.min(max,Number(rule.initial??max)));
-      let current=Number(unit.resources[key]?.value);
-      if(initialize||!Number.isFinite(current))current=initial;
-      if(applyRecovery&&Number(rule.naturalRecovery||0)!==0)current+=Number(rule.naturalRecovery||0);
-      current=Math.max(0,Math.min(max,current));
-      unit.resources[key]={value:current,max,label:resourceLabelFor(key,rule)};
-    }
-    return unit.resources;
-  }
-  // Official generalized extra-resource change: only authored character resources can change.
+  const extraResourceRules=ResourceEngine.resourceRules;
+  const resourceLabelFor=ResourceEngine.resourceLabel;
+  const syncResources=ResourceEngine.sync;
+  // One resource storage owner. Side effects remain at the owning battle rule.
   function changeResource(unit,key,delta){
-    if(!unit||typeof key!=="string"||!Number.isFinite(Number(delta))||!extraResourceRules(unit)[key])return 0;
-    syncResources(unit);
-    const entry=unit.resources[key],before=Number(entry.value||0);
-    entry.value=Math.max(0,Math.min(entry.max,before+Number(delta)));
-    if(entry.value!==before)globalThis.EffectEngine?.syncModifiers?.(unit);
-    return entry.value-before;
+    if(!extraResourceRules(unit)[key])return 0;
+    const moved=ResourceEngine.change(unit,key,delta);
+    if(moved!==0)globalThis.EffectEngine?.syncModifiers?.(unit);
+    return moved;
   }
   // Forest Soul uses the canonical per-unit resource and persistent real plant
   // objects. No synthetic plants, per-render mutation, or independent PvP cache.
@@ -115,7 +78,7 @@ export function createUnitRuntimeEngine(){
         const capacity=Math.max(0,Number(resource.max||0)-Number(resource.value||0));
         const received=soulClean(Math.min(capacity,source.amount));
         if(received<=0)break;
-        resource.value=soulClean(Number(resource.value||0)+received);
+        ResourceEngine.set(unit,"forestSoul",soulClean(Number(resource.value||0)+received));
         source.amount=soulClean(source.amount-received);
         if(source.amount<=0)source.respawnRound=r+interval;
         const ev={type:"OPHI_FOREST_SOUL_COLLECT",unitId:unit.id,plantId:plant.id,
@@ -157,12 +120,8 @@ export function createUnitRuntimeEngine(){
     return Number(unit.resources.humidity.value||0);
   }
   function changeHumidity(unit,delta){
-    if(!unit?.character?.resourceRules?.humidity||!Number.isFinite(Number(delta)))return 0;
-    syncResources(unit);
-    const entry=unit.resources.humidity,before=Number(entry.value||0);
-    entry.value=Math.max(0,Math.min(entry.max,before+Number(delta)));
-    if(before!==entry.value)globalThis.EffectEngine?.syncModifiers?.(unit);
-    return entry.value-before;
+    if(!unit?.character?.resourceRules?.humidity)return 0;
+    return changeResource(unit,'humidity',delta);
   }
   function humidityMdefBonus(unit){
     const humidity=humidityValue(unit),rule=unit?.character?.resourceRules?.humidity;
@@ -196,9 +155,9 @@ export function createUnitRuntimeEngine(){
     return Math.max(1,Math.ceil(base*(1-Math.max(0,Number(rule.waterManaDiscountMax||0))*humidity/Math.max(1,Number(rule.max||100)))));
   }
   function resourceSnapshot(unit){
-    syncResources(unit);LiviaDualityEngine.initialize(unit);
-    return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,state])=>[key,{value:Number(state.value||0),max:Number(state.max||0),label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="duality"?{berserk:LiviaDualityEngine.status(unit)?.berserk===true}:{})}]));
+    syncResources(unit);UnitTraitEngine.initialize(unit);
+    return Object.fromEntries(Object.entries(ResourceEngine.snapshot(unit)).map(([key,state])=>[key,{...state,label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
@@ -216,11 +175,10 @@ export function createUnitRuntimeEngine(){
     if(was!==!!unit._bloodAwakened)globalThis.EffectEngine?.syncModifiers?.(unit);
   }
   function changeBlood(unit,delta){
-    if(!bloodUser(unit)||!Number.isFinite(Number(delta)))return 0;
-    const before=bloodValue(unit),r=unit.resources.blood;
-    r.value=Math.min(r.max,Math.max(0,before+Number(delta)));
+    if(!bloodUser(unit))return 0;
+    const changed=ResourceEngine.change(unit,'blood',delta);
     reconcileBlood(unit);
-    return r.value-before;
+    return changed;
   }
   function beginBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=(unit._bloodTransactionDepth||0)+1}
   function endBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=Math.max(0,(unit._bloodTransactionDepth||0)-1);reconcileBlood(unit)}
@@ -232,13 +190,38 @@ export function createUnitRuntimeEngine(){
   function isBloodMemory(unit,skill){return bloodUser(unit)&&!!skill?.id&&(unit.grantedSkills||[]).some(g=>g.skillId===skill.id&&g.bloodMemory===true)}
   function bloodMemoryCost(skill){return manaCost(skill)+Object.values(resourceCosts(skill)).reduce((sum,v)=>sum+v,0)}
   function skillForUnit(unit,skill){
-    skill=LiviaDualityEngine.transformedSkill(unit,skill);
+    const reactionCounter=skill?._reactionCounter===true;
+    const source=skill;
+    skill=UnitTraitEngine.transformedSkill(unit,skill);
+    // Reaction selection is anchored to the attacker, not a free-aim tile.
+    // Keep the official transformed name and power while adapting the form to
+    // the single attacker that can legally be countered.
+    if(reactionCounter&&source?.id==="nether_slash"){
+      const purified=skill?.purifiedSlash;
+      if(purified){
+        const power=source._counterPowerApplied?Number(source.power||0):
+          Number(source.power||0)*Number(purified.powerMultiplier||1);
+        return {...source,name:skill.name,description:skill.description,power,
+          purifiedSlash:true,_counterPowerApplied:true,_reactionCounter:true,
+          target:"ENEMY",targetType:"SINGLE",shape:undefined,range:source.range};
+      }
+      return {...source,name:skill?.name||source.name,description:skill?.description||source.description,
+        hitCount:Math.max(1,Number(skill?.hitCount||source.hitCount||1)),
+        _reactionCounter:true,target:"ENEMY",targetType:"SINGLE",shape:undefined,range:source.range};
+    }
     if(skill?.id==="ophi_forest_wrath"&&forestSoulFull(unit)){
-      return {...skill,target:"TILE",targetType:"AOE",radius:2,attackClass:"RANGED",
+      const area={...skill,target:"TILE",targetType:"AOE",radius:2,attackClass:"RANGED",
         areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},
         relationEffects:[{relation:"ALLY",type:"HEAL",amount:60}],
         description:"【30魂・森靈盛放】消耗全部森靈之魂，指定射程1～5格地點，在菱形半徑2格內對敵軍造成自然魔法傷害，對友軍立即治療60 HP。含自身若位於範圍內；傷害和治療各結算一次，不會誤傷友軍。未滿魂維持單體自然魔彈。"};
+      if(reactionCounter)return {...area,target:"ENEMY",targetType:"SINGLE",radius:undefined,
+        areaDamage:undefined,relationEffects:undefined,_reactionCounter:true,
+        description:"【反擊形態】以自然魔彈直接反擊當前攻擊者。滿30魂時仍會依森靈之魂計算威力並消耗全部魂量；反擊只命中攻擊者，不展開範圍治療。"};
+      return area;
     }
+    if(reactionCounter&&source?.id==="ophi_forest_wrath")
+      return {...skill,target:"ENEMY",targetType:"SINGLE",radius:undefined,
+        areaDamage:undefined,relationEffects:undefined,_reactionCounter:true};
     if(!skill||skill._bloodMemory||!isBloodMemory(unit,skill))return skill;
     if(skill.weapon&&!unit.character.weapons?.[skill.weapon]){
       const reference=unit.character.weapons?.rapier||{};
@@ -249,18 +232,13 @@ export function createUnitRuntimeEngine(){
       description:`【血術重現】原技能消耗合計 ${bloodMemoryCost(skill)} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
   }
   function changeHolyPower(unit,delta){
-    if(!unit?.character?.resourceRules?.holyPower||!Number.isFinite(Number(delta)))return 0;
-    syncResources(unit);const r=unit.resources.holyPower,before=r.value;
-    r.value=Math.max(0,Math.min(r.max,before+Number(delta)));
-    return r.value-before;
+    if(!unit?.character?.resourceRules?.holyPower)return 0;
+    return ResourceEngine.change(unit,'holyPower',delta);
   }
   const faithUser=unit=>!!unit?.character?.resourceRules?.faith;
-  function faithValue(unit){syncResources(unit);return faithUser(unit)?Number(unit.resources.faith.value):null;}
+  function faithValue(unit){return faithUser(unit)?ResourceEngine.value(unit,'faith'):null;}
   function changeFaith(unit,delta){
-    if(!faithUser(unit)||!Number.isFinite(Number(delta)))return 0;
-    syncResources(unit);const resource=unit.resources.faith,before=resource.value;
-    resource.value=Math.max(0,Math.min(resource.max,before+Number(delta)));
-    return resource.value-before;
+    return faithUser(unit)?ResourceEngine.change(unit,'faith',delta):0;
   }
   function criticalManaRefund(unit,skill,spent,critical){
     if(!critical||!spent||!unit?.alive)return 0;
@@ -299,7 +277,7 @@ export function createUnitRuntimeEngine(){
       for(const effect of passive.openingEffects||[])unit.effects.push(clone(effect));
     }
     globalThis.VerticalMobilityEngine?.initialize?.(unit,map);
-    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});LiviaDualityEngine.initialize(unit);if(unit.character.resourceRules?.humidity)globalThis.EffectEngine?.syncModifiers?.(unit);reconcileBlood(unit);
+    syncMana(unit,{initialize:true});syncResources(unit,{initialize:true});UnitTraitEngine.initialize(unit);if(unit.character.resourceRules?.humidity)globalThis.EffectEngine?.syncModifiers?.(unit);reconcileBlood(unit);
     const target=initialFacingTarget(team,cores??globalThis.CardTacticsRuntime?.getCores?.());
     if(target)TacticalEngine.faceToward(unit,target);
     else TacticalEngine.ensureFacing(unit);
@@ -376,17 +354,17 @@ export function createUnitRuntimeEngine(){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const soulCast=forestSoulCastChoice(unit,skill);
-    const mana=skillManaCost(unit,skill);unit.mana=Math.max(0,unit.mana-mana);
+    const mana=skillManaCost(unit,skill);ResourceEngine.changeMana(unit,-mana);
     const spent={};
     if(soulCast?.mode==="SOUL"){
       changeResource(unit,"forestSoul",-soulCast.cost);
       spent.forestSoul={cost:soulCast.cost,remaining:forestSoulValue(unit),max:unit.resources.forestSoul.max};
-    }for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;state.value=Math.max(0,Number(state.value||0)-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
+    }for(const[key,cost]of Object.entries(resourceCosts(skill))){const state=unit.resources[key];if(!state)continue;ResourceEngine.change(unit,key,-cost);if(key==="blood")reconcileBlood(unit);spent[key]={cost,remaining:state.value,max:state.max};}
     if(skill?.forestSoulRelease===true&&forestSoulUser(unit)){
       const value=forestSoulValue(unit);
       if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
     }
-    LiviaDualityEngine.afterCommittedSkill(unit,skill);
+    UnitTraitEngine.afterCommittedSkill(unit,skill);
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
   function resourceLabel(unit,skill){

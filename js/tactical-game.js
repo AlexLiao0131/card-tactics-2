@@ -1,3 +1,6 @@
+import {BattleRoundRuleEngine} from './battle-round-rule-engine.js';
+import {BattlefieldFieldEngine} from './battlefield-field-engine.js';
+import {NeutralActorEngine} from './neutral-actor-engine.js';
 import {beginPlayerRoundSequence} from './battle-round-sequence.js';
 import {createBattleEngagementPlayback} from './battle-engagement-playback.js';
 import {AngelWingBarrierEngine} from './angel-wing-barrier-engine.js';
@@ -332,13 +335,13 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function traverseUnitPath(...args){
     const unit=args[0],before=unit?{x:unit.x,y:unit.y}:null;
     const path=args[1]||[],beforeTile=before&&TacticalEngine.tile(map,before.x,before.y);
-    const duality=globalThis.LiviaDualityEngine;
+    const duality=globalThis.BattlefieldFieldEngine;
     duality?.beginMove(unit);
     let result={completed:true};
     for(const step of path){
-      if(unit)unit._liviaEntryFrom={x:unit.x,y:unit.y};
+      if(unit)unit._fieldEntryFrom={x:unit.x,y:unit.y};
       result=environmentController.traverseUnitPath(unit,[step],args[2]);
-      if(unit?._liviaMoveInterrupted){
+      if(unit?._fieldMoveInterrupted){
         result={completed:false,reason:"SPACE_DISTORTION"};break;
       }
       if(!result?.completed||!unit?.alive)break;
@@ -394,7 +397,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     ({stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,unitSerial}=setup);
     enchantIdentityById.clear();enchantIdentityCounters.clear();releaseEnchantmentMarkers();
     EffectEngine.syncConditionalPassives(units,environmentState);
-    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;globalThis.LiviaDualityEngine?.spawnWells?.(map,units,round,Math.random);stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
+    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;globalThis.BattlefieldFieldEngine?.spawnWells?.(map,units,round,Math.random);stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
   function unitAt(x,y){return units.find(u=>u.alive&&u.occupiesTile!==false&&u.x===x&&u.y===y);}
   function shieldBoardOrDismount(unit,{passenger=null,tile=null}={}){
@@ -417,7 +420,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     if(event?.type==="ENTER_TILE"&&event.unitId){
       const entered=units.find(u=>u.id===event.unitId);
       if(entered?.alive){
-        globalThis.LiviaDualityEngine?.handleEntry?.({map,units,round},entered,{
+        globalThis.BattlefieldFieldEngine?.handleEntry?.({map,units,round},entered,{
           random:Math.random,
           log:msg=>pushLog(msg,"BATTLE"),
           commit:unit=>actionController?.commitPendingMove?.(unit)});
@@ -450,10 +453,11 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       name:identity?.type||unit.character?.name||"友軍"};
   }
   function onUnitCreated(unit){if(unit){
-    if(globalThis.LiviaDualityEngine?.isLivia?.(unit))unit._liviaRound=round;
+    if(globalThis.UnitTraitEngine?.hasResource?.(unit))unit.resourceMechanicStates??={};const key=globalThis.UnitTraitEngine.resourceKey(unit);
+    unit.resourceMechanicStates[key]??={round};unit.resourceMechanicStates[key].round=round;
     EffectEngine.syncConditionalPassives([unit],environmentState);syncSmokeCover(unit);
     UnitRuntimeEngine.syncForestSouls(map,units,round);
-    if(globalThis.LiviaDualityEngine?.isLivia?.(unit))globalThis.LiviaDualityEngine.spawnWells(map,units,round,Math.random);
+    if(globalThis.UnitTraitEngine?.hasResource?.(unit))globalThis.BattlefieldFieldEngine.spawnWells(map,units,round,Math.random);
     }return unit;}
   function living(team){return UnitRuntimeEngine.living(units,team);}function turnActors(team){return UnitRuntimeEngine.turnActors(units,team);}function resetActions(team){const result=UnitRuntimeEngine.resetActions(units,team);EffectEngine.syncConditionalPassives(units,environmentState,{rearmTeam:team});return result;}function allFinished(team){return UnitRuntimeEngine.allFinished(units,team);}function resourceFor(unit,skill){return UnitRuntimeEngine.resourceFor(unit,skill);}function canUseSkill(unit,skill){return UnitRuntimeEngine.canUseSkill(unit,skill);}function consumeSkill(unit,skill){
     const result=UnitRuntimeEngine.consumeSkill(unit,skill);
@@ -533,7 +537,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       endEnemyPerception:()=>endHallucinationTurn(TEAM.ENEMY),
       checkMatchEnd:()=>checkMatchEnd(),
       advanceRound:()=>{round++;phase=PHASE.PLAYER;
-        const dual=globalThis.LiviaDualityEngine?.onRoundStart?.({map,units,round,random:Math.random});
+        const dual=globalThis.BattleRoundRuleEngine?.onRoundStart?.({map,units,round,random:Math.random});
         if(dual?.berserk?.length)pushLog(`高維污染失控：${dual.berserk.join("、")} 進入鬼魅暴走，待藍色回復至雙極平衡才恢復操控。`,"BATTLE");},
       expireSmoke:()=>expireSmoke(),
       resetActions:()=>resetActions(TEAM.PLAYER),
@@ -554,9 +558,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills).map(s=>UnitRuntimeEngine.skillForUnit(unit,s)),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,round,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
   function runEnemyPhase(){
     tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);
-    const dual=globalThis.LiviaDualityEngine;
-    const actors=units.filter(unit=>unit.alive&&unit.team===TEAM.NEUTRAL&&
-      unit._liviaBerserkEndRound&&unit._liviaBerserkEndRound<=round&&!unit._liviaBerserkActionDone);
+    const dual=globalThis.NeutralActorEngine;
+    const actors=dual.availableActors(units,round);
     if(!actors.length){enemyController?.runPhase();return;}
     phase=PHASE.ENEMY;
     const processNext=()=>{
@@ -564,15 +567,15 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       const actor=actors.shift();
       if(!actor){enemyController?.runPhase();return;}
       if(!actor.alive){processNext();return;}
-      let attack=dual.chooseBerserkAttack({map,units,unit:actor,runtime:UnitRuntimeEngine,
+      let attack=dual.chooseAttack({map,units,unit:actor,runtime:UnitRuntimeEngine,
         random:Math.random,environmentState});
       if(!attack){
-        const path=dual.chooseBerserkMove({map,units,unit:actor,random:Math.random,environmentState});
+        const path=dual.chooseMove({map,units,unit:actor,random:Math.random,environmentState});
         if(path.length)traverseUnitPath(actor,path);
-        if(actor.alive)attack=dual.chooseBerserkAttack({map,units,unit:actor,
+        if(actor.alive)attack=dual.chooseAttack({map,units,unit:actor,
           runtime:UnitRuntimeEngine,random:Math.random,environmentState});
       }
-      actor._liviaBerserkActionDone=true;
+      dual.markActed(actor,round);
       if(!actor.alive){processNext();return;}
       if(!attack){actor.moved=true;actor.acted=true;actor.waited=true;
         pushLog(`${actor.character.name} 高維失控，本次未找到可攻擊的合法目標。`,"BATTLE");

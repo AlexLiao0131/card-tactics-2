@@ -33,7 +33,7 @@ const defs={
     status:{WEAPON_ENCHANT:'WEAPON_ENCHANT'},legacy:'liviaCombatVfx'},
   'nature-growth':{
     roles:{ARC:['ophi_eagle_arc_shot'],BASIC:['ophi_elven_shot'],
-      FAN:['ophi_multishot'],TRIPLE:['ophi_triple_shot'],BACK:['ophi_backstep_shot'],
+      TRIPLE:['ophi_triple_shot'],BACK:['ophi_backstep_shot'],
       WRATH:['ophi_forest_wrath'],SONG:['ophi_healing_song'],ENTANGLE:['ophi_forest_entangle']},
       events:['OPHI_FOREST_SOUL_COLLECT'],
     status:{SONG:'OPHI_HEALING_SONG',ENTANGLE:'FOREST_ENTANGLED'},legacy:'ophiNatureVfx'},
