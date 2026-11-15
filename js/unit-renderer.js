@@ -2443,12 +2443,31 @@ export class UnitRenderer{
     const point={x:lerp(a.x,b.x,local),y:lerp(a.y,b.y,local),z:lerp(a.z,b.z,local)};
     entry.root.position.copyFrom(this.positionFor(entry,point));
     entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
-    // A leap remains a genuine grid move with a raised visual arc. Ground
-    // marker follows the committed grid path, never the temporary air height.
-    if(String(event?.kind||'').toUpperCase()==='LEAP')
-      entry.root.position.y+=Math.sin(Math.PI*clamp01(progress))*.9*ELEVATION_HEIGHT;
+    const leap=String(event?.kind||'').toUpperCase()==='LEAP';
+    // FIGURE, BIRD and CAPSULE all use the same official coordinate system.
+    // An arc in terrain-level units travels from the *original* height to the
+    // actual destination height. The ground marker stays on the ground.
+    if(leap)entry.root.position.y+=Math.sin(Math.PI*clamp01(progress))*
+      Math.max(0,Number(event.arcHeight??.9))*ELEVATION_HEIGHT;
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
+    if(leap){
+      // The unit is in flight, not taking WALK steps on an invisible floor.
+      // Pose uses the existing FIGURE articulated pivots; no Magda-only mesh.
+      if(entry.kind==='FIGURE'){
+        const parts=entry.figureParts||{},air=Math.sin(Math.PI*clamp01(progress));
+        if(parts.leftLeg)parts.leftLeg.rotation.x+=air*.35;
+        if(parts.rightLeg)parts.rightLeg.rotation.x-=air*.30;
+        if(parts.leftArm)parts.leftArm.rotation.x-=air*.25;
+        if(parts.rightArm)parts.rightArm.rotation.x-=air*.40;
+        if(parts.weapon)parts.weapon.rotation.x-=air*.35;
+        if(parts.body)parts.body.rotation.x+=air*.14;
+        if(parts.hairBack)parts.hairBack.rotation.x+=air*.18;
+        if(parts.cape)parts.cape.rotation.x+=air*.24;
+        if(parts.skirt)parts.skirt.rotation.x+=air*.12;
+      }
+      return;
+    }
 
     const forcedKind=String(event?.kind||"").toUpperCase();
     if(forcedKind==="AIRBORNE_FORCE"){

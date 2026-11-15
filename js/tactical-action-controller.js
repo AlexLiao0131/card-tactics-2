@@ -704,7 +704,11 @@
               TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)))return false;
         }
         if(skill.trapPlacement&&(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false))return false;
-        if(skill.requiresVision!==false&&!TacticalEngine.canSee(map,attacker,tile,environmentState))return false;
+        // An airborne leap can cross enemy bodies, walls and opaque intervening
+        // terrain. The landing must STILL be observed by the team (known()).
+        // Do not turn this into ignoreFogOfWar or a ground-traversal move.
+        if(skill.requiresVision!==false&&!skill.jumpShockwave&&
+           !TacticalEngine.canSee(map,attacker,tile,environmentState))return false;
         if(skill.whirlpool&&!HydrologyEngine.isWater(tile))return false;
         if(skill.tsunamiWave&&!EnvironmentEngine.planTsunami(map,attacker,tile,{width:skill.tsunamiWave.width,surfaceRise:skill.hydrologyFlood?.surfaceRise}).cells.length)return false;
         if(skill.environmentRequirement==="CONDUCTIVE"&&!EnvironmentEngine.isConductive(map,environmentState,tile.x,tile.y))return false;
@@ -1235,6 +1239,11 @@
         return skillFailure(attacker,skill,"WHIRLPOOL_REQUIRES_WATER",center);
       const transit=skill.shape==="LINE"&&skill.moveToTarget?lineTransitPlan(attacker,center,skill):null;
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
+      // The host and PVP must validate the same leap landing as the aim UI
+      // BEFORE rage is spent, including team vision and occupied/blocked tiles.
+      if(skill.jumpShockwave&&
+         !mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
+        return skillFailure(attacker,skill,"NO_LEGAL_LEAP_LANDING",center);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
@@ -1259,8 +1268,14 @@
         attacker.x=landing.x;attacker.y=landing.y;
         if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
         else attacker.z=Number(TacticalEngine.elevation(landing)||0);
+        // Real airtime is an authored WALK presentation on the existing
+        // animation queue. Arc clearance derives from the live 3D body height
+        // and BOTH terrain elevations, not a flat fake 0.9-tile bounce.
+        const startZ=Number(previous.z??0),endZ=Number(attacker.z??0);
+        const bodyHeight=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(attacker)??2);
+        const arcHeight=Math.max(0,bodyHeight)+Math.max(0,Math.max(startZ,endZ)-(startZ+endZ)/2);
         globalThis.UnitAnimationEngine?.emitMove?.(attacker,{from:previous,path:[
-          previous,{x:attacker.x,y:attacker.y,z:attacker.z}],kind:'LEAP',duration:750});
+          previous,{x:attacker.x,y:attacker.y,z:attacker.z}],kind:'LEAP',arcHeight,duration:750});
         ctx.enterTile(attacker);
         if(!attacker.alive)return finishActiveSkill(attacker);
         ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 躍至 (${attacker.x},${attacker.y})。`,'BATTLE');

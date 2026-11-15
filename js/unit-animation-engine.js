@@ -224,7 +224,7 @@ export const UnitAnimationEngine=(()=>{
     return emit(unit,STATE.DEATH,{duration:durationFor(unit,STATE.DEATH,detail),...detail});
   }
 
-  function emitMove(unit,{from=null,path=[],kind="UNIT",duration=null,shieldSupportId=null,shieldSupportFacing=null}={}){
+  function emitMove(unit,{from=null,path=[],kind="UNIT",duration=null,shieldSupportId=null,shieldSupportFacing=null,arcHeight=null}={}){
     if(!unit?.id)return null;
     const points=[];
     const push=point=>{
@@ -244,6 +244,7 @@ export const UnitAnimationEngine=(()=>{
     const steps=Math.max(1,points.length-1);
     return emit(unit,STATE.WALK,{
       kind,shieldSupportId,shieldSupportFacing,
+      ...(arcHeight==null?{}:{arcHeight:Math.max(0,Number(arcHeight)||0)}),
       path:points,
       duration:duration==null?Math.max(180,steps*160):duration
     });
