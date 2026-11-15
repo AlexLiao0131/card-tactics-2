@@ -1499,10 +1499,16 @@
             globalThis.UnitAnimationEngine?.emitHit?.(occupant,
               {sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
             if(skill.jumpShockwave&&globalThis.PostEngagementEngine?.forcedMove){
-              const lift=Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.shockwaveLift||0);
-              const move=PostEngagementEngine.forcedMove({map,units:state().units,source:attacker,
-                target:occupant,effect:{type:'KNOCKBACK',distance:0,lift}});
-              ctx.logPostEffect?.({source:attacker,target:occupant,effect:{type:'KNOCKBACK',distance:0,lift},result:move});
+              const rageProfile=globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage;
+              const lift=Number(rageProfile?.shockwaveLift||0);
+              const distance=Number(rageProfile?.shockwavePushDistance||0);
+              // The radial shockwave has BOTH horizontal throw and upward lift.
+              // The canonical displacement/trajectory/collision engines apply
+              // weight resistance, world collisions, landing and fall damage.
+              const effect={type:'KNOCKBACK',distance,lift};
+              const move=PostEngagementEngine.forcedMove({map,units:state().units,
+                source:attacker,target:occupant,effect});
+              ctx.logPostEffect?.({source:attacker,target:occupant,effect,result:move});
               UnitRuntimeEngine.onRageForcedLanding(attacker,occupant,move);
               if(move.defeated)ctx.handleDefeated(occupant,attacker,skill);
             }

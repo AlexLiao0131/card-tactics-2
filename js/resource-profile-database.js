@@ -6,7 +6,9 @@ export const RESOURCE_PROFILES=Object.freeze({
     damagePerPoint:8,slashBonus:8,killBonus:15,controlResistance:40,
     // Maximum bonus to ordinary attack skill power at full Rage (+30%).
     attackPowerBonusMaxRatio:.30,
-    uppercutLift:4,shockwaveLift:3,executeMaxHpRatio:.50}),
+    // Use the same authored 3-step impulse for radial throw as the existing
+    // vertical shockwave. Both axes still obey displacement weight resistance.
+    uppercutLift:4,shockwaveLift:3,shockwavePushDistance:3,executeMaxHpRatio:.50}),
   duality:Object.freeze({
     label:'雙極',max:100,initial:50,naturalRecovery:0,
     polarity:{center:50,blueFull:0,purpleFull:100,roundRecovery:10,holdFullFutureRounds:1,
