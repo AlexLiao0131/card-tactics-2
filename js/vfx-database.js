@@ -10,6 +10,9 @@ const defs={
   'swordsmanship':{
     roles:{CUT:['leon_slash'],GANFAN:['ganfan'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
     events:['UNIT_FLOAT_TEXT','LIVIA_GANFAN_PARRY','LIVIA_GANFAN_BREAK_STANCE'],legacy:'swordsmanshipVfx'},
+  'physical-impact':{
+    roles:{RAGE_SLASH:['magda_rage_slash'],QUAKE:['magda_leap_quake'],CLEAVE:['magda_breaking_cleave'],EXECUTION:['magda_execution']},
+    events:[],legacy:'physicalImpactVfx'},
   'holy-blade':{
     roles:{VERDICT:['templar_verdict']},events:['TEMPLAR_VERDICT_IMPACT'],
     legacy:'verdictVfx'},
