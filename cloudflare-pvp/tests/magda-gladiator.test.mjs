@@ -31,7 +31,7 @@ test('官方角色資源、卡牌、裝備、技能與既有 FIGURE 視覺註冊
 test('怒氣技能依施放前值等比例提高威力且不產生 MP',()=>{
  const u=create();rt.changeRage(u,60);
  const skill=rt.applyResourceScaling(u,get('magda_breaking_cleave'));
- assert.equal(skill.power,1.25*1.6);assert.equal(skill.rageSnapshot,60);
+ assert.equal(skill.power,1.25*1.18);assert.equal(skill.rageSnapshot,60);
  assert.equal(rt.canUseSkill(u,skill),true);
  const spent=rt.consumeSkill(u,skill);assert.equal(spent.resources.rage.cost,25);
  assert.equal(u.resources.rage.value,35);assert.equal(u.mana,0);

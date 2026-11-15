@@ -51,7 +51,7 @@ test('瑪格妲可跳過遮擋視線的敵人，選取其身後隊伍已知的�
   const f=fixture(),tiles=f.controller.mapTargetTiles(f.attacker,f.skill);
   assert(tiles.some(t=>t.x===2&&t.y===2));
   assert(tiles.some(t=>t.x===2&&t.y===1));
-  assert(!tiles.some(t=>t.x===3&&t.y===2),'occupied enemy tile must not be a legal landing');
+  assert(tiles.some(t=>t.x===3&&t.y===2),'visible enemy tile is a legal aim, not a landing');
 });
 test('空中跳躍不會揭露未知落點，也不能穿牆落在不可用位置',()=>{
   const f=fixture();f.seen.delete('2,2');
