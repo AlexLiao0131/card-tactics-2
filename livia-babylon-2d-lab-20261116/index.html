@@ -1,1 +1,48 @@
-
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<title>莉維亞｜Babylon 3D 地圖 × 2D Sprite 隔離測試</title>
+<style>
+:root{color-scheme:dark;--edge:#526772;--gold:#dec08a;--ink:#06141f}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#06121b;color:#ecf1f5;font-family:system-ui,-apple-system,"PingFang TC",sans-serif}
+body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}header{z-index:4;background:linear-gradient(#0c2231,#071622);border-bottom:1px solid var(--edge);padding:10px 12px 8px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:space-between}header strong{font-size:15px;color:#f1d5a3}header .sub{font-size:11px;color:#9fb9c8}header .tag{font-size:11px;border:1px solid #5c725b;border-radius:5px;padding:4px 7px;color:#c0eacb;background:#162d29}
+#battle-view{position:relative;flex:1;min-height:210px;overflow:hidden;background:radial-gradient(ellipse at 50% 65%,#203c4b,#06131d 72%)}#battleCanvas{width:100%;height:100%;display:block;touch-action:none;outline:none}#hud{position:absolute;top:10px;left:9px;right:9px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;gap:8px}#hud>div{padding:8px 10px;border:1px solid #7b826c;background:#081820db;border-radius:9px;font-size:12px;line-height:1.6;box-shadow:0 3px 14px #0007}.name{font-size:14px;color:#f5d69c;font-weight:700}#status{position:absolute;left:10px;bottom:10px;right:10px;background:#05111bcc;border:1px solid #73818a;border-radius:7px;padding:8px 9px;font-size:12px;white-space:pre-wrap;line-height:1.4;pointer-events:none;max-height:110px;overflow:auto}#status.error{border-color:#e47e65;color:#ffd5c4}
+nav{background:#0d202b;border-top:1px solid #3f5360;padding:9px 10px calc(10px + env(safe-area-inset-bottom));display:grid;gap:8px}nav .line{display:flex;gap:7px;flex-wrap:wrap;align-items:center}button,select{appearance:none;border:1px solid #536e7b;border-radius:8px;min-height:37px;background:linear-gradient(#1b3b49,#102631);color:#edf3f6;padding:7px 10px;font:inherit;font-size:13px;cursor:pointer;touch-action:manipulation}button:active{background:#385665}button.primary{background:linear-gradient(#916d3d,#5a442b);border-color:#bc9561;font-weight:700}select{max-width:145px}label{font-size:12px;color:#a7c1cb;white-space:nowrap}#legend{font-size:11px;color:#a2b9c5;line-height:1.45}a{color:#cbeaff} .spacer{flex:1}
+@media(max-width:600px){#status{font-size:11px}nav{padding-top:6px;gap:6px}button,select{min-height:38px;padding:6px 8px;font-size:12px}#legend{font-size:10px}header{padding:8px 10px}}
+@media(orientation:landscape) and (max-height:540px){nav{max-height:116px;overflow:auto}header{padding:4px 10px}}
+</style>
+</head>
+<body>
+<header>
+<div><strong>莉維亞｜Babylon 3D 地圖 × 2D 角色</strong><div class="sub">Card Tactics 2.0 · 獨立視覺測試 · 不修改現有遊戲</div></div>
+<div class="tag">獨立入口 · 唯讀引用 ../js/</div>
+</header>
+<section id="battle-view" class="active">
+  <canvas id="battleCanvas" aria-label="Babylon 3D 戰棋測試地圖"></canvas>
+  <div id="hud"><div><span class="name">莉維亞</span> · 2D Sprite<br><span id="pose">待機 / 朝東</span></div><div id="hudEnv">載入中…</div></div>
+  <div id="status" role="status">準備載入原版 Babylon 地圖渲染器…</div>
+</section>
+<nav>
+ <div class="line">
+  <button class="primary" id="idle">待機</button>
+  <button id="walk">移動展示</button>
+  <button id="attack">攻擊動畫</button>
+  <button id="face">轉向</button>
+  <button id="rotateLeft">鏡頭 ↶</button>
+  <button id="rotateRight">鏡頭 ↷</button>
+  <button id="zoomOut">－</button><button id="zoomIn">＋</button>
+ </div>
+ <div class="line">
+  <label for="map">地圖</label><select id="map"><option value="generated">原版隨機小圖</option><option value="static">原版固定測試圖</option></select>
+  <label for="weather">天氣</label><select id="weather"><option value="CLEAR">晴朗</option><option value="FOG">迷霧</option><option value="RAIN">雨</option><option value="HEAVY_RAIN">豪雨</option><option value="THUNDERSTORM">雷暴</option><option value="TYPHOON">颱風</option><option value="SNOW">雪</option><option value="BLIZZARD">暴雪</option></select>
+  <button id="dayNight">日夜切換</button><button id="turn">下一環境回合</button><button id="reset">重置場景</button>
+ </div>
+ <div id="legend">點地格：只移動 2D 動畫模型做視覺檢查，不進行戰棋行動判定／不扣行動點。原版 Babylon 地形、水面、樹木與氣候模組照常運作。<b>目前只有單一側向美術：左右可翻向，正背面完整素材尚未製作。</b></div>
+</nav>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+<script type="module" src="./hybrid-demo.js"></script>
+</body>
+</html>
