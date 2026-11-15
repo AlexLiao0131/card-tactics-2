@@ -133,13 +133,13 @@
 .hero-card__resources { display: none; position: absolute; z-index: 4;
   left: 17%; right: 17%; top: 83%; height: 2.8%;
   align-items: center; justify-content: center; gap: 4px;
-  color: #7131a0; font-weight: 850;
+  color: #aeb8c4; font-weight: 850;
   font-size: clamp(7px, 4.6cqw, 14px); white-space: nowrap;
 }
 .hero-card--preview.hero-card--has-resources .hero-card__details { height: 5.2%; }
 .hero-card--preview.hero-card--has-resources .hero-card__resources { display: flex; }
 .hero-card__resource { white-space: nowrap; }
-.hero-info-resource span { color: #bf9aff; }
+.hero-info-resource span { color: #aeb8c4; }
 .hero-info-resources { margin: 6px 0 8px; padding: 0 0 0 18px; color: #e1d0ee; }
 .hero-info-resources li { margin-bottom: 6px; }
 .hero-info-resources small { display: block; line-height: 1.5; }
@@ -377,4 +377,8 @@
 /* One resource semantic palette, not one purple default for all heroes. */
 .hero-card__resource[data-resource="faith"],.hero-info-resource[data-resource="faith"] span{color:#b78318}
 .hero-card__resource[data-resource="blood"],.hero-info-resource[data-resource="blood"] span{color:#c32d48}
+.hero-card__resource[data-resource="rage"],.hero-info-resource[data-resource="rage"] span{color:#c53838}
 .hero-card__resource[data-resource="sanity"],.hero-info-resource[data-resource="sanity"] span{color:#8d5bd6}
+.hero-card__resource[data-resource="humidity"],.hero-info-resource[data-resource="humidity"] span{color:#14b8e6}
+.hero-card__resource[data-resource="forestSoul"],.hero-info-resource[data-resource="forestSoul"] span{color:#38ad78}
+.hero-card__resource[data-resource="holyPower"],.hero-info-resource[data-resource="holyPower"] span{color:#f4ce63}
