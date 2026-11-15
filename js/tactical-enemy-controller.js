@@ -218,6 +218,7 @@
         if(!attacker?.alive||!defender?.alive)return false;
         showStep("ATTACK",`${actorLabel(attacker)} 決策｜${attacker.character.name} → ${defender.character.name}｜${skill.name}`,{unitId:attacker.id});
         afterStep(()=>{
+          if(!attacker.alive||!defender.alive){afterStep(continuePhase,0);return;}
           BattleResolution.resolve(
             {map:ctx.map(),units:ctx.state().units,initiator:attacker,target:defender,skill,actions:[]},
             {
@@ -236,9 +237,11 @@
       };
 
       const requestAttack=attack=>{
+        if(!attack?.attacker?.alive){afterStep(continuePhase,0);return;}
         if(attack.skill?.bloodBurst||attack.skill?.bloodShadow){
           showStep("ATTACK",`AI｜${attack.attacker.character.name} 使用 ${attack.skill.name}`,{unitId:attack.attacker.id});
           afterStep(()=>{
+            if(!attack.attacker.alive||!attack.defender?.alive){afterStep(continuePhase,0);return;}
             if(attack.skill.bloodBurst)ctx.performBloodBurst?.(attack.attacker,attack.skill);
             else ctx.performBloodShadow?.(attack.attacker,attack.defender,attack.skill);
             afterStep(continuePhase,350);
@@ -247,6 +250,7 @@
         if(attack.defender?.kind==="CORE"){
           showStep("ATTACK",`AI 決策｜${attack.attacker.character.name} → ${attack.defender.core?.name||"CORE"}｜${attack.skill.name}`,{unitId:attack.attacker.id});
           afterStep(()=>{
+            if(!attack.attacker.alive){afterStep(continuePhase,0);return;}
             ctx.resolveDirectTargetAttack(attack.attacker,attack.defender,attack.skill);
             afterStep(continuePhase,350);
           },400);
@@ -255,17 +259,21 @@
 
         // During a hallucinated AI turn, the AI resolves against its mirror world without
         // opening a reaction window on the unaffected player's real presentation.
-        if(ctx.hallucinationActiveFor?.(attack.attacker?.team)){resolveAutonomousAttack(attack);return;}
+        if(ctx.hallucinationActiveFor?.(attack.attacker?.team)){
+          if(!resolveAutonomousAttack(attack))afterStep(continuePhase,0);
+          return;
+        }
 
         // Any hostile SINGLE attack against a player-controlled unit uses the same reaction pipeline.
         // AI-vs-neutral and neutral-vs-AI remain autonomous because neither side is player-controlled.
         if(attack.defender.team!==ctx.TEAM.PLAYER){
-          resolveAutonomousAttack(attack);
+          if(!resolveAutonomousAttack(attack))afterStep(continuePhase,0);
           return;
         }
 
         showStep("ATTACK",`${actorLabel(attack.attacker)} 決策｜${attack.attacker.character.name} → ${attack.defender.character.name}｜${attack.skill.name}`,{unitId:attack.attacker.id});
         afterStep(()=>{
+          if(!attack.attacker.alive||!attack.defender.alive){afterStep(continuePhase,0);return;}
           ctx.setPendingEnemyAttack(attack);ctx.setMode("enemy-reaction");
           ctx.pushLog(`${attack.attacker.character.name} 對 ${attack.defender.character.name} 發動 ${attack.skill.name}。`);
           ctx.render();ctx.emitState();
@@ -279,6 +287,14 @@
         ctx.beginPlayerTurn();
       };
 
+      // A defeated actor forfeits only its own action. A reset generation, unlike
+      // death, invalidates the entire old action chain and must never resume it.
+      const skipDefeatedActor=(actor,marker)=>{
+        if(marker!==generation)return true;
+        if(actor.alive)return false;
+        afterStep(continuePhase,0);
+        return true;
+      };
       const continuePhase=()=>{
         const state=ctx.state();
         if(state.phase!==ctx.PHASE.ENEMY||state.matchResult||ctx.pendingEnemyAttack())return;
@@ -288,19 +304,22 @@
         const marker=generation;
         showStep("THINK",`${actorLabel(actor)} 思考｜${actor.character.name}`,{unitId:actor.id});
         afterStep(async()=>{
-          if(marker!==generation||!actor.alive)return;
+          if(skipDefeatedActor(actor,marker))return;
           if(isNeutral(actor)){
             const attack=measureDecision("enemyAI.chooseAttack",()=>chooseAttack(actor));
             if(attack){requestAttack(attack);return;}
             const path=measureDecision("enemyAI.movePath",()=>movePath(actor));
-            animateMove(actor,path,()=>{const follow=chooseAttack(actor);if(follow)requestAttack(follow);
+            animateMove(actor,path,()=>{
+              if(skipDefeatedActor(actor,marker))return;
+              const follow=chooseAttack(actor);if(follow)requestAttack(follow);
               else{actor.moved=true;actor.acted=true;actor.waited=true;afterStep(continuePhase,300);}});return;
           }
           if(!ctx.geminiEnabled?.()&&state.stage?.ruleset==="CORE_CAPTURE"&&ctx.canUnitCapture(actor)){
             ctx.executeCapture(actor);afterStep(continuePhase,300);return;
           }
           let picked=ctx.geminiEnabled?.()?await geminiPick("ENEMY_TACTICAL",tacticalChoices(actor),actor):null;
-          if(marker!==generation||ctx.pendingEnemyAttack()||!actor.alive)return;
+          if(marker!==generation||ctx.pendingEnemyAttack())return;
+          if(skipDefeatedActor(actor,marker))return;
           if(picked?.kind==="CAPTURE"&&ctx.canUnitCapture(actor)){ctx.executeCapture(actor);afterStep(continuePhase,300);return;}
           if(picked?.kind==="ATTACK"&&picked.attack){requestAttack(picked.attack);return;}
           const originalAttack=()=>measureDecision("enemyAI.chooseAttack",()=>chooseAttack(actor));
@@ -314,12 +333,12 @@
             :measureDecision("enemyAI.movePath",()=>movePath(actor));
           if(path.length)showStep("MOVE_PLAN",`${actorLabel(actor)} 決策｜${actor.character.name} 移動 ${path.length} 格`,{unitId:actor.id});
           afterStep(()=>animateMove(actor,path,async()=>{
-            if(marker!==generation||!actor.alive)return;
+            if(skipDefeatedActor(actor,marker))return;
             if(state.stage?.ruleset==="CORE_CAPTURE"&&ctx.canUnitCapture(actor)){
               ctx.executeCapture(actor);afterStep(continuePhase,300);return;
             }
             const next=ctx.geminiEnabled?.()?await geminiPick("ENEMY_TACTICAL",tacticalChoices(actor,{afterMove:true}),actor):null;
-            if(marker!==generation||!actor.alive)return;
+            if(skipDefeatedActor(actor,marker))return;
             const attack=next?.kind==="ATTACK"?next.attack:next?.kind==="WAIT"?null:originalAttack();
             if(attack){requestAttack(attack);return;}
             actor.moved=true;actor.acted=true;actor.waited=true;
