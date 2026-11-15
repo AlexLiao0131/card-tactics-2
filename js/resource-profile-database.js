@@ -4,6 +4,8 @@ export const RESOURCE_PROFILES=Object.freeze({
   rage:Object.freeze({label:'憤怒',max:100,initial:0,naturalRecovery:0,
     // First-playtest values live HERE; no hero-specific second resource store.
     damagePerPoint:8,slashBonus:8,killBonus:15,controlResistance:40,
+    // Maximum bonus to ordinary attack skill power at full Rage (+30%).
+    attackPowerBonusMaxRatio:.30,
     uppercutLift:4,shockwaveLift:3,executeMaxHpRatio:.50}),
   duality:Object.freeze({
     label:'雙極',max:100,initial:50,naturalRecovery:0,

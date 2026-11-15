@@ -663,6 +663,30 @@
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
       if(!ctx.checkMatchEnd?.())ctx.maybeAutoEndPlayerTurn?.();ctx.render();return true;
     }
+    // The official TILE/AOE leap supports either an empty landing or a visible
+    // enemy as an aim point. Clicking an enemy picks ONE nearby empty landing;
+    // the enemy remains in the quake footprint. Browser, Gemini and PVP all
+    // use this same read-only plan; it never moves or spends resources.
+    function jumpShockwaveLanding(attacker,target,skill){
+      if(!skill?.jumpShockwave||!target?.alive||target.occupiesTile===false||
+         target.team===attacker.team)return null;
+      const {map,units,environmentState}=state(),range=TacticalEngine.range(skill);
+      const known=tile=>skill.ignoreFogOfWar===true||skill.requiresVision===false||
+        TacticalEngine.teamCanSee(map,units,attacker.team,tile,environmentState);
+      const distance=tile=>Math.abs(attacker.x-tile.x)+Math.abs(attacker.y-tile.y);
+      if(!known(target)||distance(target)<range.min||distance(target)>range.max)return null;
+      const candidates=[[0,-1],[-1,0],[1,0],[0,1]].map(([dx,dy])=>
+        TacticalEngine.tile(map,target.x+dx,target.y+dy)).filter(tile=>
+          tile&&known(tile)&&distance(tile)>=range.min&&distance(tile)<=range.max&&
+          TERRAINS[tile.terrain]?.passable!==false&&
+          TacticalEngine.canOccupyTerrain(attacker,tile)&&
+          !TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)&&
+          !ctx.unitAt(tile.x,tile.y)&&!ctx.coreAt?.(tile.x,tile.y));
+      // Deterministic nearest-side selection; no new AI or landing resource.
+      candidates.sort((a,b)=>distance(a)-distance(b)||a.y-b.y||a.x-b.x);
+      return candidates[0]||null;
+    }
+
     function mapTargetTiles(attacker,skill){
       if(skill?.terrainTargeting)return enchantedTerrainTargetTiles(attacker,skill);
       if(skill?.utilityAction?.type==="RANGER_FORMATION_MARCH")return rangerFormationLegalTiles(attacker,skill);
@@ -699,9 +723,16 @@
           if(skill.moveToTarget&&!lineTransitPlan(attacker,tile,skill))return false;
         }
         if(skill.shape==="W_STEP"){
-          if(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false)return false;
-          if(skill.jumpShockwave&&(!TacticalEngine.canOccupyTerrain(attacker,tile)||
-              TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)))return false;
+          const occupant=ctx.unitAt(tile.x,tile.y);
+          // Occupied enemy cells are *aims*, never landings. The actual landing
+          // is determined by the shared jumpShockwaveLanding plan.
+          if(occupant){
+            if(!skill.jumpShockwave||!jumpShockwaveLanding(attacker,occupant,skill))return false;
+          }else{
+            if(TERRAINS[tile.terrain]?.passable===false)return false;
+            if(skill.jumpShockwave&&(!TacticalEngine.canOccupyTerrain(attacker,tile)||
+                TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)))return false;
+          }
         }
         if(skill.trapPlacement&&(ctx.unitAt(tile.x,tile.y)||TERRAINS[tile.terrain]?.passable===false))return false;
         // An airborne leap can cross enemy bodies, walls and opaque intervening
@@ -1241,9 +1272,19 @@
       if(skill.shape==="LINE"&&skill.moveToTarget&&!transit)return skillFailure(attacker,skill,"NO_LEGAL_LINE_LANDING",center);
       // The host and PVP must validate the same leap landing as the aim UI
       // BEFORE rage is spent, including team vision and occupied/blocked tiles.
-      if(skill.jumpShockwave&&
-         !mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
-        return skillFailure(attacker,skill,"NO_LEGAL_LEAP_LANDING",center);
+      if(skill.jumpShockwave){
+        const aimedTile=center;
+        if(!mapTargetTiles(attacker,skill).some(t=>t.x===aimedTile.x&&t.y===aimedTile.y))
+          return skillFailure(attacker,skill,"NO_LEGAL_LEAP_LANDING",aimedTile);
+        const occupant=ctx.unitAt(aimedTile.x,aimedTile.y);
+        if(occupant){
+          const landing=jumpShockwaveLanding(attacker,occupant,skill);
+          if(!landing)return skillFailure(attacker,skill,"NO_LEGAL_LEAP_LANDING",aimedTile);
+          // Use the *actual landing* as the center of the quake, not the
+          // occupied target tile. The target lies in its radius-one footprint.
+          center=landing;
+        }
+      }
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",center);
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");

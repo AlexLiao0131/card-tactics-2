@@ -10,7 +10,7 @@ export const SKILLS={
     resourceCosts:{rage:20},range:{min:1,max:3},target:'TILE',targetType:'AOE',radius:1,
     shape:'W_STEP',moveToTarget:true,jumpShockwave:true,attackType:'STRIKE',element:'NONE',support:false,
     areaDamage:{mode:'PHYSICAL_IMPACT',relation:'ENEMY',hitRule:'AREA_CONTACT'},
-    description:'消耗憤怒，跳至合法空格後，以自己為中心震擊鄰近敵軍，造成物理打擊及向上震飛，落地另結算墜落傷害。整段是同一招。'},
+    description:'消耗憤怒，可指定射程內可見敵人，自動跳至其相鄰的合法空格；亦可直接指定空地。躍入敵陣後以落點為中心震擊上下左右的敵軍，造成物理打擊及向上震飛，落地另結算墜落傷害。整段是同一招，不能與敵人重疊。'},
   magda_breaking_cleave:{id:'magda_breaking_cleave',name:'破陣劈斬',category:'ATTACK',weapon:'greatsword',power:1.25,
     resourceCosts:{rage:25},range:{min:1,max:1},attackType:'STRIKE',element:'NONE',speed:-5,target:'ENEMY',support:false,
     giantUppercut:true,treeFelling:true,environmentTarget:'TREE',

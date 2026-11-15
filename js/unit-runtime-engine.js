@@ -424,7 +424,10 @@ export function createUnitRuntimeEngine(){
     const rageSnapshot=rageUser(unit)?rageValue(unit):null;
     if(rageSnapshot!==null&&skill?.attackType&&Number(skill.power||0)>0){
       const maximum=Math.max(1,Number(unit.resources?.rage?.max||100));
-      multiplier*=1+rageSnapshot/maximum;
+      // Rage increases skill power by at most the canonical profile's bonus.
+      // This also applies to basic attacks; execution threshold is unchanged.
+      const maxBonus=Number(rageRules(unit)?.attackPowerBonusMaxRatio??0);
+      multiplier*=1+Math.max(0,maxBonus)*(Math.max(0,Math.min(maximum,rageSnapshot))/maximum);
       skill={...skill,rageSnapshot};
     }
     if(skill.category==="MAGIC"||skill.attackType==="MAGIC"){
