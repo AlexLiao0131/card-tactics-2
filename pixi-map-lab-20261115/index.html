@@ -1,1 +1,98 @@
-
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5, user-scalable=yes">
+<meta name="theme-color" content="#0b161d">
+<title>Card Tactics 2.0｜PixiJS 地圖渲染原型</title>
+<style>
+:root{--bg:#0a121a;--panel:#14232c;--border:#52706c88;--soft:#a5bbb4;--gold:#e9c789;--cyan:#8bdde0;--night-dim:0}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif;color:#e6ece9;background:radial-gradient(ellipse at 50% 0%,#203840 0%,#101f2a 42%,#0a131a 85%)}
+body{min-height:100dvh}button,select,input{font:inherit}button,select{cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}
+#app{min-height:100dvh;display:flex;flex-direction:column;padding:12px;gap:10px;max-width:1900px;margin:auto}
+.top{border:1px solid #70837b75;border-radius:10px;padding:11px 17px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:linear-gradient(115deg,#172c34ed,#152630e8 65%,#15242be8);box-shadow:0 12px 50px #0004}
+.brand{display:flex;align-items:center;gap:11px}.crest{height:45px;width:45px;border:1px solid #eac78799;display:grid;place-items:center;border-radius:8px;color:var(--gold);font-size:25px;background:radial-gradient(circle at 50% 50%,#68563a,#162630 68%)}
+h1{font:700 20px/1.12 Georgia,system-ui;letter-spacing:.03em;margin:0;color:#f4dfb0}.sub{font:11px/1.4 system-ui;color:#8bacb1;letter-spacing:.14em;text-transform:uppercase;margin-top:5px}
+.status-row{display:flex;align-items:center;flex-wrap:wrap;gap:7px}.metric{padding:7px 10px;border:1px solid #ffffff24;border-radius:6px;background:#07151b6e;min-width:87px}.metric .lab{font-size:11px;color:#97b2b0;margin-bottom:3px}.metric b{font-size:15px;font-weight:650;color:#f4e6c5}.metric b.cyan{color:#b0eced}
+.layout{display:grid;grid-template-columns:254px minmax(360px,1fr) 238px;gap:10px;align-items:stretch;flex:1;min-height:0}
+.panel{border:1px solid var(--border);background:linear-gradient(155deg,#172a33ee,#0d1d28ed);box-shadow:inset 0 1px #ffffff0e,0 10px 35px #0003;border-radius:9px;padding:14px;min-width:0}
+.h{font:700 14px Georgia,serif;color:#edd39d;letter-spacing:.10em;display:flex;align-items:center;gap:7px;margin:1px 0 12px}.h:before{content:'✦';font-size:13px;color:#d5b77b}
+.field{display:grid;gap:5px;margin-bottom:10px}.field label{font-size:12px;color:#a8c0b9}
+select,input{width:100%;min-height:36px;background:#0b1a23;color:#edf4f0;border:1px solid #617b788a;border-radius:5px;padding:6px 8px;font-size:13px;outline:none}
+select:focus,input:focus{border-color:#9ccfb5;box-shadow:0 0 0 2px #9ccfb522}
+.btn{border:1px solid #a1b0a047;border-radius:5px;padding:9px 8px;background:#1a3138;color:#e3f3ed;font-size:13px;min-height:39px;transition:background .12s}
+.btn:active{transform:translateY(1px)}.btn:hover{background:#2b4b51}.btn.primary{background:linear-gradient(120deg,#b28c49,#7f6336);border-color:#d9be7f;color:#fff7df;font-weight:750}
+.btn.chosen{background:#1f5560;border-color:#7ec7c8;color:#d4faf4}.btn.wide{width:100%}.button-row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px}.sep{height:1px;background:linear-gradient(90deg,transparent,#7d958c69,transparent);margin:13px 0}
+.note{font-size:11px;line-height:1.65;color:#9fb7b2;margin-top:6px}.tag{font-size:10px;color:#bfece4;border:1px solid #69a2a052;border-radius:4px;padding:3px 6px;background:#1d464753}
+.stagepanel{position:relative;min-height:550px;overflow:hidden;border:1px solid #57787485;border-radius:10px;box-shadow:0 20px 50px #0007,inset 0 0 70px #051017;isolation:isolate;background:radial-gradient(ellipse at 48% 68%,#326174 0%,#19374d 38%,#0d2636 75%,#081924 100%)}
+.stagepanel:before{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:linear-gradient(160deg,#fff2 0%,transparent 30%),repeating-linear-gradient(0deg,#ffffff08 0 1px,transparent 1px 3px);opacity:.25}
+#stage{position:absolute;inset:0;overflow:hidden;touch-action:none;user-select:none}#stage canvas{display:block;width:100%;height:100%;touch-action:none;image-rendering:pixelated}
+#loading{position:absolute;inset:0;background:#0b1f29db;display:grid;place-items:center;text-align:center;z-index:11;color:#f1dcae;font-size:14px;padding:24px}#loading.hidden{display:none}#loading .fail{max-width:540px;text-align:left;background:#19232a;padding:20px;border:1px solid #e6b39b;border-radius:9px;color:#f8e9d1}#loading p{line-height:1.65;color:#d5dce0;white-space:pre-wrap}
+#loading code{word-break:break-all;color:#f0db9d}
+#stageStatus{position:absolute;left:11px;top:10px;right:11px;pointer-events:none;z-index:2;display:flex;justify-content:space-between;gap:7px;align-items:flex-start}
+.floating-info{background:#081922d6;border:1px solid #b4a27d8c;border-radius:7px;color:#dedacb;padding:7px 9px;font:600 12px/1.45 system-ui;max-width:70%;backdrop-filter:blur(6px)}
+#status.error{color:#ffc5af}.stage-vignette{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 85px #010911ac}
+.fab{position:absolute;right:12px;bottom:13px;display:flex;gap:6px;z-index:3}.fab button{width:38px;height:36px;background:#102b38d9;border:1px solid #88b9b9b0;border-radius:7px;color:#e3ffff;font-size:18px}
+.stagecaption{position:absolute;bottom:16px;left:12px;font-size:11px;color:#def1ef;opacity:.74;pointer-events:none;text-shadow:0 2px #000}
+.right p{color:#bacdc9;font-size:12px;line-height:1.8}.kv{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 1px;border-bottom:1px solid #ffffff15;font-size:12px;color:#b8c9c7}.kv b{font-size:13px;color:#f1e5c6;font-variant-numeric:tabular-nums}
+.tile-title{font-weight:700;color:#f4dfae;font-size:16px;padding-bottom:8px;border-bottom:1px solid #a7bd9d56}.tile-title small{font-size:11px;color:#93afae;font-weight:400}
+.tile-foot,.emptyhint{font-size:11px;color:#8eb0af;line-height:1.6;margin-top:12px}.legend{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}.legend span{font-size:11px;color:#ccd9d7;display:flex;align-items:center;gap:7px}.dot{display:inline-block;width:12px;height:12px;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);flex:none}.foot{font-size:11px;color:#8ba9a8;text-align:center;line-height:1.5;padding:3px 6px}
+.info-mini{padding:10px;background:#0e2530;border:1px solid #5c807f65;border-radius:6px;display:grid;grid-template-columns:1fr auto;gap:10px;font-size:12px}.info-mini b{color:#def1dc;font-variant-numeric:tabular-nums}
+@media(max-width:1100px){.layout{grid-template-columns:230px 1fr}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 2fr;gap:12px}.right .h{grid-column:1/-1;margin-bottom:0}.right #tileinfo{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 14px}.right #tileinfo .tile-title,.right #tileinfo .emptyhint,.right #tileinfo .tile-foot{grid-column:1/-1}.stagepanel{min-height:510px}}
+@media(max-width:700px){#app{padding:6px;gap:7px}.top{padding:9px;display:block}.brand{margin-bottom:9px}.crest{height:38px;width:38px;font-size:22px}h1{font-size:18px}.status-row{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.metric{padding:7px 5px;min-width:0}.metric .lab{font-size:10px}.metric b{font-size:13px}.layout{display:flex;flex-direction:column}.panel{padding:11px}.left{display:grid;grid-template-columns:1fr 1fr;gap:6px 9px}.left>.h,.left>.sep,.left>.note,.left>.sectionhead{grid-column:1/-1}.left>.field{margin-bottom:3px}.left>.button-row{margin-bottom:0;align-self:end}.left>.btn.wide{align-self:end}.stagepanel{min-height:430px;height:62dvh;max-height:750px;flex:none}.floating-info{font-size:10px;padding:5px;max-width:80%}.stagecaption{display:none}.right{display:block}.right #tileinfo{display:block}.foot{font-size:10px}.btn{font-size:12px;min-height:37px;padding:6px}.h{margin-bottom:5px}}
+@media(max-width:380px){.metric .lab{font-size:9px}.left{grid-template-columns:1fr 1fr}.stagepanel{height:58dvh;min-height:355px}}
+</style>
+</head>
+<body>
+<div id="app">
+ <header class="top">
+  <div class="brand"><div class="crest">✥</div><div><h1>CARD TACTICS 2.0</h1><div class="sub">PIXIjS / 2.5D TERRAIN RENDERER · PROTOTYPE</div></div></div>
+  <div class="status-row">
+   <div class="metric"><div class="lab">環境回合</div><b id="turnValue">00</b></div>
+   <div class="metric"><div class="lab">日夜</div><b id="dayValue" class="cyan">白晝</b></div>
+   <div class="metric"><div class="lab">天氣</div><b id="weatherValue">晴朗</b></div>
+   <div class="metric"><div class="lab">月相</div><b id="moonValue">半月</b></div>
+  </div>
+ </header>
+ <main class="layout">
+  <aside class="panel left" id="controls">
+   <div class="h">地圖資料源</div>
+   <div class="field"><label for="mapSelect">原版地圖</label><select id="mapSelect"><option value="static">原版 Three Fronts（14×9）</option><option value="prototype">Prototype Field（8×6）</option><option value="small">隨機對戰 SMALL（14×10）</option><option value="medium">隨機對戰 MEDIUM（20×14）</option></select></div>
+   <div class="field"><label for="seed">MapGenerator Seed</label><input id="seed" inputmode="numeric" type="number" value="20261115" min="0" max="4294967295" step="1"></div>
+   <button class="btn wide" id="regenerate">⟳ 重建原版地圖</button>
+   <div class="sep"></div><div class="h">氣候與時間</div>
+   <div class="field"><label for="weatherSelect">切換原版天氣</label><select id="weatherSelect"><option value="CLEAR">☀ 晴朗</option><option value="FOG">▥ 濃霧</option><option value="RAIN">☂ 降雨</option><option value="HEAVY_RAIN">☂ 豪雨</option><option value="THUNDERSTORM">ϟ 雷暴</option><option value="TYPHOON">ϟ 颱風</option><option value="SNOW">❅ 降雪</option><option value="BLIZZARD">❄ 暴風雪</option><option value="SCORCHING_SUN">☀ 烈日</option></select></div>
+   <div class="field"><label for="moonSelect">月相</label><select id="moonSelect"><option value="FULL">滿月</option><option value="PARTIAL" selected>半月</option><option value="NONE">無月</option></select></div>
+   <button class="btn wide" id="dayToggle">☾ 手動切換日夜</button>
+   <div class="button-row"><button class="btn primary" id="advance">▶ 下一環境回合</button><button class="btn" id="auto">▶ 自動推演</button></div>
+   <div class="sep"></div><div class="h">畫面控制</div>
+   <div class="button-row"><button class="btn" id="gridToggle">▦ 地格線</button><button class="btn" id="fit">⊡ 重設鏡頭</button></div>
+   <div class="note" id="cycleValue">正在讀取原版氣候週期…</div>
+   <div class="note">手指拖曳地圖；雙指縮放；點擊地格查看水文資料。<br>所有環境變化由原版 JS 推進，PixiJS 不修改任何規則。</div>
+  </aside>
+  <section class="stagepanel" aria-label="PixiJS 2.5D 戰棋地形預覽">
+   <div id="stage"></div>
+   <div id="stageStatus"><div class="floating-info" id="status">準備載入既有原版地形資料…</div><div class="floating-info">像素地形試作 <span style="color:#a9ebe2">● LIVE</span></div></div>
+   <div class="stage-vignette"></div><div class="stagecaption">VISUAL-ONLY / 規則來自 card-tactics-2/main</div>
+   <div class="fab"><button id="zoomOut" aria-label="縮小">−</button><button id="zoomIn" aria-label="放大">＋</button></div>
+   <div id="loading">原版地圖與 PixiJS 讀取中…</div>
+  </section>
+  <aside class="panel right">
+   <div class="h">原始地圖資料 / Inspector</div>
+   <div class="info-mini"><span>地圖尺寸</span><b id="terrainValue">—</b><span>有積水的地格</span><b id="waterValue">—</b><span>有積雪的地格</span><b id="snowValue">—</b><span>儲水總量 D</span><b id="waterVol">—</b></div>
+   <div class="sep"></div>
+   <div id="tileinfo"><div class="emptyhint">點一下地圖格子，查看從原版 Engine 讀出的高度、水深、積雪與冰層。</div></div>
+   <div class="sep"></div><div class="h">視覺圖例</div>
+   <div class="legend">
+    <span><i class="dot" style="background:#73965a"></i>平地</span><span><i class="dot" style="background:#3f715a"></i>森林</span>
+    <span><i class="dot" style="background:#a2a9a4"></i>高地</span><span><i class="dot" style="background:#2d9da5"></i>水面</span>
+    <span><i class="dot" style="background:#d3e2db"></i>積雪</span><span><i class="dot" style="background:#78b7c2"></i>冰面</span>
+   </div>
+   <p style="margin-top:20px"><span class="tag">技術說明</span> 這是地圖渲染驗證頁，不是另一套戰鬥程式。原版水面在 Babylon 中還依賴地形三角形做精確岸線裁切；這裡先以 PixiJS 2.5D 圖層呈現同一份 Game State，精細岸線仍屬後續移植項目。</p>
+  </aside>
+ </main>
+ <footer class="foot">PIXIjS Visual Prototype · 地圖取自現有 MapDatabase / MapGenerator · 水文與日月氣候使用原版 HydrologyEngine / EnvironmentEngine</footer>
+</div>
+<script type="module" src="./map-view.js"></script>
+</body>
+</html>
