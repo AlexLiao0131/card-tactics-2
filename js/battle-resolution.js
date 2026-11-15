@@ -187,13 +187,17 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   }
   function postQueue(results){const q=[];for(const entry of results){if(!entry.result?.hit)continue;
       for(const effect of entry.skill?.postEffects||[])q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,skill:entry.skill,effect});
-      // Giant uppercut is strictly vertical: the target stays on its original tile.
-      // Heavy armor takes a DEF_DOWN status instead and is never launched.
-      if(entry.skill?.giantUppercut===true&&entry.target?.alive&&
-         !uppercutHitsHeavyArmor(entry.target)){
+      // Giant uppercut also launches HEAVY armor targets: the same Starfall
+      // horizontal throw travels through the official displacement engine,
+      // while the existing heavy-armor DEF_DOWN status remains independent.
+      // No second displacement executor or special heavy-only parameters.
+      if(entry.skill?.giantUppercut===true&&entry.target?.alive){
         const profile=globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage;
         q.push({actionId:entry.id,role:entry.role,source:entry.actor,target:entry.target,
-          skill:entry.skill,effect:{type:'KNOCKBACK',distance:0,lift:Number(profile?.uppercutLift||0)}});
+          skill:entry.skill,effect:{type:'KNOCKBACK',
+            distance:Number(profile?.shockwavePushDistance||0),
+            lift:Number(profile?.uppercutLift||0),
+            resistAxes:{horizontal:false,vertical:true}}});
       }
     }return q}
 

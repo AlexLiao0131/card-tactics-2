@@ -1502,10 +1502,11 @@
               const rageProfile=globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage;
               const lift=Number(rageProfile?.shockwaveLift||0);
               const distance=Number(rageProfile?.shockwavePushDistance||0);
-              // The radial shockwave has BOTH horizontal throw and upward lift.
-              // The canonical displacement/trajectory/collision engines apply
-              // weight resistance, world collisions, landing and fall damage.
-              const effect={type:'KNOCKBACK',distance,lift};
+              // Reuse Starfall shockwave axis rules: horizontal throw is not
+              // canceled by armor weight; vertical lift still checks weight.
+              // The existing trajectory/collision/landing engines own results.
+              const effect={type:'KNOCKBACK',distance,lift,
+                resistAxes:{horizontal:false,vertical:true}};
               const move=PostEngagementEngine.forcedMove({map,units:state().units,
                 source:attacker,target:occupant,effect});
               ctx.logPostEffect?.({source:attacker,target:occupant,effect,result:move});

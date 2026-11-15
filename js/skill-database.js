@@ -14,7 +14,7 @@ export const SKILLS={
   magda_breaking_cleave:{id:'magda_breaking_cleave',name:'破陣劈斬',category:'ATTACK',weapon:'greatsword',power:1.25,
     resourceCosts:{rage:25},range:{min:1,max:1},attackType:'STRIKE',element:'NONE',speed:-5,target:'ENEMY',support:false,
     giantUppercut:true,treeFelling:true,environmentTarget:'TREE',
-    description:'消耗憤怒對敵人劈斬：無甲至中甲向上擊飛，落地獨立計算墜落傷害；重甲不擊飛而降低防禦。亦可選擇相鄰樹木直接劈倒，生成既有樹樁與倒木。'},
+    description:'消耗憤怒對敵人劈斬：無甲至重甲都會向後擊退並向上擊飛，落地獨立計算墜落傷害；重甲另會降低防禦。亦可選擇相鄰樹木直接劈倒，生成既有樹樁與倒木。'},
   magda_execution:{id:'magda_execution',name:'斬殺',category:'ATTACK',weapon:'greatsword',power:1.35,
     rageSpendAll:true,range:{min:1,max:1},attackType:'SLASH',element:'NONE',speed:-10,target:'ENEMY',support:false,
     rageExecution:true,description:'消耗施放前全部憤怒；憤怒越高，敵人當前生命低於的斬殺線就越高。命中且符合處決條件時直接斬殺合法單位；其餘情況造成一般物理斬擊傷害。'},
