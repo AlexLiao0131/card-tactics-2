@@ -1,6 +1,7 @@
 export const CARD_GROUPS={
   LIVIA_SUPPLEMENT:{id:"LIVIA_SUPPLEMENT",name:"莉維亞補充包",cards:["livia_card","kahn_card","cassandra_card","bear_trap_card","avalanche_card","cassandra_blessing_card"]},
   IMPERIAL:{id:"IMPERIAL",name:"帝國",cards:["leon_card","imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card"]},
+  ARENA:{id:"ARENA",name:"鬥技場",cards:["magda_card"]},
   MAGIC:{id:"MAGIC",name:"魔法",cards:["thunderstorm_card","typhoon_card","wildfire_card","tornado_card","whirlpool_card","miracle_card","fog_card","starfall_card","snow_card","blizzard_card","scorching_sun_card"]},
   ELF_EMPIRE:{id:"ELF_EMPIRE",name:"精靈帝國",cards:["reina_card","elf_shapeshifter_card","elf_ranger_card","elf_guard_card","elf_priest_card"]},
   OPHI_SUPPLEMENT:{id:"OPHI_SUPPLEMENT",name:"奧菲補充包",cards:["ophi_card","colin_card","moon_goddess_blessing_card"]},
