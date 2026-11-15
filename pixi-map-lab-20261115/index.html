@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5, user-scalable=yes">
 <meta name="theme-color" content="#0b161d">
-<title>Card Tactics 2.0｜PixiJS 地圖渲染原型</title>
+<title>Card Tactics 2.0｜PixiJS 地圖渲染 V2</title>
 <style>
 :root{--bg:#0a121a;--panel:#14232c;--border:#52706c88;--soft:#a5bbb4;--gold:#e9c789;--cyan:#8bdde0;--night-dim:0}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif;color:#e6ece9;background:radial-gradient(ellipse at 50% 0%,#203840 0%,#101f2a 42%,#0a131a 85%)}
@@ -39,14 +39,19 @@ select:focus,input:focus{border-color:#9ccfb5;box-shadow:0 0 0 2px #9ccfb522}
 .tile-foot,.emptyhint{font-size:11px;color:#8eb0af;line-height:1.6;margin-top:12px}.legend{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}.legend span{font-size:11px;color:#ccd9d7;display:flex;align-items:center;gap:7px}.dot{display:inline-block;width:12px;height:12px;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);flex:none}.foot{font-size:11px;color:#8ba9a8;text-align:center;line-height:1.5;padding:3px 6px}
 .info-mini{padding:10px;background:#0e2530;border:1px solid #5c807f65;border-radius:6px;display:grid;grid-template-columns:1fr auto;gap:10px;font-size:12px}.info-mini b{color:#def1dc;font-variant-numeric:tabular-nums}
 @media(max-width:1100px){.layout{grid-template-columns:230px 1fr}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 2fr;gap:12px}.right .h{grid-column:1/-1;margin-bottom:0}.right #tileinfo{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 14px}.right #tileinfo .tile-title,.right #tileinfo .emptyhint,.right #tileinfo .tile-foot{grid-column:1/-1}.stagepanel{min-height:510px}}
-@media(max-width:700px){#app{padding:6px;gap:7px}.top{padding:9px;display:block}.brand{margin-bottom:9px}.crest{height:38px;width:38px;font-size:22px}h1{font-size:18px}.status-row{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.metric{padding:7px 5px;min-width:0}.metric .lab{font-size:10px}.metric b{font-size:13px}.layout{display:flex;flex-direction:column}.panel{padding:11px}.left{display:grid;grid-template-columns:1fr 1fr;gap:6px 9px}.left>.h,.left>.sep,.left>.note,.left>.sectionhead{grid-column:1/-1}.left>.field{margin-bottom:3px}.left>.button-row{margin-bottom:0;align-self:end}.left>.btn.wide{align-self:end}.stagepanel{min-height:430px;height:62dvh;max-height:750px;flex:none}.floating-info{font-size:10px;padding:5px;max-width:80%}.stagecaption{display:none}.right{display:block}.right #tileinfo{display:block}.foot{font-size:10px}.btn{font-size:12px;min-height:37px;padding:6px}.h{margin-bottom:5px}}
+@media(max-width:700px){#app{padding:6px;gap:7px}.top{padding:9px;display:block}.brand{margin-bottom:9px}.crest{height:38px;width:38px;font-size:22px}h1{font-size:18px}.status-row{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.metric{padding:7px 5px;min-width:0}.metric .lab{font-size:10px}.metric b{font-size:13px}.layout{display:flex;flex-direction:column}.panel{padding:11px}.left{display:grid;grid-template-columns:1fr 1fr;gap:6px 9px}.left>.h,.left>.sep,.left>.note,.left>.sectionhead{grid-column:1/-1}.left>.field{margin-bottom:3px}.left>.button-row{margin-bottom:0;align-self:end}.left>.btn.wide{align-self:end}.stagepanel{order:0;min-height:480px;height:70dvh;max-height:900px;flex:none}.left{order:1}.right{order:2}.floating-info{font-size:10px;padding:5px;max-width:80%}.stagecaption{display:none}.right{display:block}.right #tileinfo{display:block}.foot{font-size:10px}.btn{font-size:12px;min-height:37px;padding:6px}.h{margin-bottom:5px}}
 @media(max-width:380px){.metric .lab{font-size:9px}.left{grid-template-columns:1fr 1fr}.stagepanel{height:58dvh;min-height:355px}}
+
+.stagepanel.map-fullscreen{position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;max-height:none!important;min-height:0!important;border-radius:0!important;z-index:900!important;margin:0!important}
+.stagepanel.map-fullscreen .stage-vignette{display:none}
+.fab button#fullMap{width:42px;font-size:21px}
+@media(max-width:700px){#stageStatus .floating-info{max-width:57%}}
 </style>
 </head>
 <body>
 <div id="app">
  <header class="top">
-  <div class="brand"><div class="crest">✥</div><div><h1>CARD TACTICS 2.0</h1><div class="sub">PIXIjS / 2.5D TERRAIN RENDERER · PROTOTYPE</div></div></div>
+  <div class="brand"><div class="crest">✥</div><div><h1>CARD TACTICS 2.0</h1><div class="sub">PIXIjS / 2.5D TERRAIN · ART PASS 02</div></div></div>
   <div class="status-row">
    <div class="metric"><div class="lab">環境回合</div><b id="turnValue">00</b></div>
    <div class="metric"><div class="lab">日夜</div><b id="dayValue" class="cyan">白晝</b></div>
@@ -74,7 +79,7 @@ select:focus,input:focus{border-color:#9ccfb5;box-shadow:0 0 0 2px #9ccfb522}
    <div id="stage"></div>
    <div id="stageStatus"><div class="floating-info" id="status">準備載入既有原版地形資料…</div><div class="floating-info">像素地形試作 <span style="color:#a9ebe2">● LIVE</span></div></div>
    <div class="stage-vignette"></div><div class="stagecaption">VISUAL-ONLY / 規則來自 card-tactics-2/main</div>
-   <div class="fab"><button id="zoomOut" aria-label="縮小">−</button><button id="zoomIn" aria-label="放大">＋</button></div>
+   <div class="fab"><button id="fullMap" aria-label="切換地圖全螢幕">⛶</button><button id="zoomOut" aria-label="縮小">−</button><button id="zoomIn" aria-label="放大">＋</button></div>
    <div id="loading">原版地圖與 PixiJS 讀取中…</div>
   </section>
   <aside class="panel right">
@@ -88,10 +93,10 @@ select:focus,input:focus{border-color:#9ccfb5;box-shadow:0 0 0 2px #9ccfb522}
     <span><i class="dot" style="background:#a2a9a4"></i>高地</span><span><i class="dot" style="background:#2d9da5"></i>水面</span>
     <span><i class="dot" style="background:#d3e2db"></i>積雪</span><span><i class="dot" style="background:#78b7c2"></i>冰面</span>
    </div>
-   <p style="margin-top:20px"><span class="tag">技術說明</span> 這是地圖渲染驗證頁，不是另一套戰鬥程式。原版水面在 Babylon 中還依賴地形三角形做精確岸線裁切；這裡先以 PixiJS 2.5D 圖層呈現同一份 Game State，精細岸線仍屬後續移植項目。</p>
+   <p style="margin-top:20px"><span class="tag">技術說明</span> 這是地圖渲染驗證頁，不是另一套戰鬥程式。動態水紋、岩壁材質、風動樹冠與瀑布均屬 PixiJS 視覺演出；水量與氣候仍由原版核心決定。Babylon 的精確岸線三角形裁切尚未完全移植。</p>
   </aside>
  </main>
- <footer class="foot">PIXIjS Visual Prototype · 地圖取自現有 MapDatabase / MapGenerator · 水文與日月氣候使用原版 HydrologyEngine / EnvironmentEngine</footer>
+ <footer class="foot">PIXIjS TERRAIN ART PASS 02 · 地圖取自現有 MapDatabase / MapGenerator · 水文與日月氣候使用原版 HydrologyEngine / EnvironmentEngine</footer>
 </div>
 <script type="module" src="./map-view.js"></script>
 </body>

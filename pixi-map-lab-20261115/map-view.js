@@ -22,16 +22,17 @@ let app=null,PIXI=null,map=null,engineState=null,generated=null,graphics={},core
 let camera={zoom:1,x:0,y:0,panX:0,panY:0};
 let mapContainer=null,tilesLayer=null,fxWorld=null,pointerLayer=null,weatherLayer=null;
 let selected=null,hovered=null,gridVisible=false;
-let atlasTerrain=null,atlasProps=null,terrainFrames={},propFrames={};
+let atlasTerrain=null,atlasProps=null,terrainFrames={},propFrames={},cliffFrames=[[],[]],waterFrames=[],treeTrunkFrames={},treeCrownFrames={};
 let lastWeatherKey='',currentPhase=0,autoTimer=null,tickerTime=0,lastFxDraw=-1,lastEvents=[],busy=false;
 let pointerData=new Map(),gesture=null,activeDrag=false;
-let tilesList=[],propsList=[],flowList=[],weatherStreaks=[];
+let tilesList=[],propsList=[],flowList=[],waterfallList=[],treeSwayList=[],weatherStreaks=[];
 function status(txt,error=false){statusEl.textContent=txt;statusEl.classList.toggle('error',error);}
 
 async function loadScript(url){return new Promise((resolve,reject)=>{
  const s=document.createElement('script');s.src=url;s.async=true;s.onload=resolve;s.onerror=()=>{s.remove();reject(Error('無法載入 '+url));};document.head.appendChild(s);
 });}
 async function bootPixi(){
+ if(window.PIXI)return window.PIXI;
  const cdns=['https://cdn.jsdelivr.net/npm/pixi.js@8.23.0/dist/pixi.min.js','https://unpkg.com/pixi.js@8.23.0/dist/pixi.min.js'];
  for(const uri of cdns){try{await loadScript(uri);if(window.PIXI)return window.PIXI;}catch(e){}}
  throw Error('PixiJS CDN 無法載入。請用 Safari 開啟 GitHub Pages 網址，並確認網路連線。');
@@ -41,17 +42,26 @@ async function bootRules(){
  const paths=['terrain-database.js','environment-object-engine.js','map-database.js','hydrology-engine.js','mass-flow-engine.js','climate-engine.js','environment-resolver.js','map-generator.js','conductivity-engine.js','environment-engine.js'];
  for(let i=0;i<paths.length;i++){
   const p=paths[i];status(`載入原版規則模組 ${i+1}/${paths.length}：${p}`);
-  try{await import(`../js/${p}`);}catch(err){throw Error(`無法載入既有專案 ../js/${p}。請將整個 pixi-map-lab-20261115 資料夾放在專案根目錄。\n${err.message}`);}
+  try{await import(`../js/${p}`);}catch(err){throw Error(`無法載入既有專案 ../js/${p}。請將整個 pixi-map-lab-v2 資料夾放在專案根目錄。\n${err.message}`);}
  }
  if(!globalThis.MapGenerator||!globalThis.MapDatabase||!globalThis.HydrologyEngine||!globalThis.EnvironmentEngine||!globalThis.ClimateEngine){throw Error('原專案地形／水文／氣候核心未初始化完整。');}
 }
 const frame=(base,x,y,w,h)=>new PIXI.Texture({source:base.source,frame:new PIXI.Rectangle(x,y,w,h)});
 async function loadArt(){
- const [terrain,props]=await Promise.all([PIXI.Assets.load('./assets/terrain-atlas.png'),PIXI.Assets.load('./assets/props-atlas.png')]);
+ // All art is bundled inside the test folder. Only the Pixi runtime is loaded from CDN.
+ const [terrain,props,cliffs,water,trunks,crowns]=await Promise.all([
+  'terrain-atlas.png','props-atlas.png','cliff-segments.png','water-diamonds.png','tree-trunks.png','tree-crowns.png'
+ ].map(name=>PIXI.Assets.load('./assets/'+name)));
  atlasTerrain=terrain;atlasProps=props;
  for(const [i,key]of TERRAIN_KEYS.entries())terrainFrames[key]=Array.from({length:6},(_,j)=>frame(terrain,j*TILE_W,i*TILE_H,TILE_W,TILE_H));
  const names=['pine','oak','birch','dead','boulder','bush','pillar','ruins','blue_core','red_core','spring','flag'];
  names.forEach((key,j)=>propFrames[key]=frame(props,(j%4)*PROP_W,Math.floor(j/4)*PROP_H,PROP_W,PROP_H));
+ for(let dir=0;dir<2;dir++)cliffFrames[dir]=Array.from({length:6},(_,v)=>frame(cliffs,v*96,dir*82,96,82));
+ waterFrames=Array.from({length:6},(_,v)=>frame(water,v*96,0,96,48));
+ ['pine','oak','birch','dead'].forEach((name,i)=>{
+  treeTrunkFrames[name]=frame(trunks,i*112,0,112,150);
+  treeCrownFrames[name]=frame(crowns,i*112,0,112,150);
+ });
 }
 function initApp(){
  app=new PIXI.Application();return app.init({backgroundAlpha:0,antialias:false,resolution:Math.min(2,window.devicePixelRatio||1),resizeTo:stageEl,preference:'webgl'}).then(()=>{
@@ -90,7 +100,8 @@ function makeTileScene(){
  status(`載入成功｜${map.name}｜${map.width}×${map.height}｜原版地形・水文・天氣規則`);
 }
 const tileAt=(x,y)=>map?.tiles?.find(t=>t.x===x&&t.y===y)||null;
-const tileHeight=t=>num(t?.elevation);
+// WALL is a logical blocked cell; its 2.5D height is presentation-only.
+const tileHeight=t=>num(t?.elevation)+(t?.terrain==='WALL'?2.0:0);
 function makePoly(g,p,color,alpha=1){g.moveTo(p[0].x,p[0].y);for(let i=1;i<p.length;i++)g.lineTo(p[i].x,p[i].y);g.closePath();g.fill({color,alpha});return g;}
 function tilesKey(t){
  if(globalThis.ClimateEngine.isFrozen(t))return 'ICE';
@@ -99,53 +110,121 @@ function tilesKey(t){
  if(t.terrain==='WATER' && t.dryTerrain)return String(t.dryTerrain);
  return TERRAIN_KEYS.includes(t.terrain)?t.terrain:'PLAIN';
 }
-function drawSideFace(g,t,p,side,lowerH){
- const amount=Math.max(.15, (num(t.elevation)-lowerH)*ELEV);
- if(amount<=.16)return;
- const first=side==='east'?{x:p.x+HALF_W,y:p.y}:{x:p.x,y:p.y+HALF_H};
- const second=side==='east'?{x:p.x,y:p.y+HALF_H}:{x:p.x-HALF_W,y:p.y};
- const a=first,b=second,c={x:b.x,y:b.y+amount},d={x:a.x,y:a.y+amount};
- makePoly(g,[a,b,c,d],side==='east'?0x384a50:0x52625c);
- g.moveTo(a.x,a.y).lineTo(b.x,b.y).stroke({color:0xc2c0a1,width:1,alpha:.32});
- const rh=hash(t.x,t.y,side==='east'?14:15);
- for(let i=0;i<Math.min(4,Math.floor(amount/7)+1);i++){
-  const k=.2+i*.17, lx=a.x+(b.x-a.x)*k,ly=a.y+(b.y-a.y)*k+Math.min(amount*.4,4+i*4);
-  g.moveTo(Math.round(lx),Math.round(ly)).lineTo(Math.round(lx+(side==='east'?-6:6)),Math.round(ly+((rh+i)%3))).stroke({color:0x243941,width:1.1,alpha:.55});
+function addCliffFace(group,t,side,drop){
+ // Every visible face is stacked from illustrated rock strata, rather than a flat quad.
+ if(!(drop>.03))return;
+ const n=Math.floor(Math.max(0,drop)+.001);
+ const variant=hash(t.x,t.y,side==='east'?31:47)%6;
+ const dir=side==='east'?0:1;
+ for(let level=0;level<Math.min(11,n);level++){
+  const sprite=new PIXI.Sprite(cliffFrames[dir][(variant+level*3)%6]);
+  // The 96x82 transparent source contains the exact projected 48px inclined edge.
+  sprite.x=-HALF_W;sprite.y=-HALF_H+level*ELEV;
+  sprite.roundPixels=true;group.addChild(sprite);
  }
+ // Sub-tile slopes remain exact rather than snapped to full level elevations.
+ const fraction=drop-n;
+ if(fraction>.01){
+  const topOffset=n*ELEV,amount=fraction*ELEV;
+  const a=side==='east'?{x:HALF_W,y:topOffset}:{x:0,y:HALF_H+topOffset};
+  const b=side==='east'?{x:0,y:HALF_H+topOffset}:{x:-HALF_W,y:topOffset};
+  const face=new PIXI.Graphics();
+  makePoly(face,[a,b,{x:b.x,y:b.y+amount},{x:a.x,y:a.y+amount}],side==='east'?0x3a4544:0x5a6661);
+  group.addChild(face);
+ }
+ // The grassy/stone lip reads as a continuous raised landform.
+ const lip=new PIXI.Graphics();
+ if(side==='east')lip.moveTo(HALF_W,0).lineTo(0,HALF_H);
+ else lip.moveTo(0,HALF_H).lineTo(-HALF_W,0);
+ lip.stroke({color:t.terrain==='HIGH_GROUND'?0xa2a9a0:0x7a9c73,width:1.7,alpha:.95});
+ group.addChild(lip);
+}
+function addGroundDetails(group,t){
+ // Shallow scenic material detail, not walkability / terrain logic.
+ if(t.terrain==='WALL'||t.terrain==='WATER'||num(t.waterDepth)>.5)return;
+ const h=hash(t.x,t.y,99);const g=new PIXI.Graphics();
+ const vegetation=t.terrain==='FOREST'||t.terrain==='PLAIN';
+ const dry=t.terrain==='SAND'||t.terrain==='MUD';
+ for(let i=0;i<(vegetation?5:dry?2:3);i++){
+  const rx=((hash(t.x,t.y,i*11)%81)-40),ry=((hash(t.x,t.y,i*13+3)%37)-18);
+  if(Math.abs(rx)/48+Math.abs(ry)/24>.82)continue;
+  if(vegetation){
+   g.moveTo(rx,ry).lineTo(rx-2,ry-5).stroke({color:i%2?0xb9c68b:0x557b54,width:1,alpha:.86});
+   g.moveTo(rx+1,ry).lineTo(rx+2,ry-4).stroke({color:0x315b43,width:1,alpha:.72});
+   if(i===2||i===4){g.circle(rx+3,ry-5,1.3).fill({color:i===2?0xf2e2ac:0xd8c7dd,alpha:.92});}
+  }else{g.moveTo(rx-2,ry).lineTo(rx+3,ry-1).stroke({color:0x9aa8a2,width:1,alpha:.48});}
+ }
+ group.addChild(g);
 }
 function terrainTint(t){
  if(num(t.soilMoisture)>.28&&t.terrain==='PLAIN')return 0xe0f0e5;
  if(t.terrain==='HIGH_GROUND')return 0xe0e5ed;
  return 0xffffff;
 }
+function addTree(container,key,x,y,size,order){
+ const root=new PIXI.Container();root.position.set(x,y);root.sortableChildren=true;
+ const shadow=new PIXI.Graphics();shadow.ellipse(0,0,34*size,8*size).fill({color:0x081c25,alpha:.24});root.addChild(shadow);
+ const trunk=new PIXI.Sprite(treeTrunkFrames[key]);trunk.anchor.set(.5,.905);trunk.scale.set(size);trunk.zIndex=1;root.addChild(trunk);
+ const crownTex=treeCrownFrames[key];
+ if(crownTex&&key!=='dead'){
+  const canopy=new PIXI.Sprite(crownTex);
+  canopy.anchor.set(.5,.68);
+  canopy.scale.set(size);
+  canopy.position.set(0,-(0.905-.68)*150*size);
+  canopy.zIndex=2;root.addChild(canopy);
+  treeSwayList.push({canopy,trunk,baseY:canopy.y,size,phase:hash(x+order,y+5,71)%628/100,seed:hash(order,y,3)});
+ }
+ container.addChild(root);return root;
+}
 function addProp(container,key,x,y,size=1,order=0,tint=0xffffff){
+ if(treeTrunkFrames[key])return addTree(container,key,x,y,size,order);
  const tex=propFrames[key];if(!tex)return;
+ const shadow=new PIXI.Graphics();shadow.ellipse(x,y,Math.max(11,24*size),5*size).fill({color:0x071b24,alpha:.24});container.addChild(shadow);
  const sprite=new PIXI.Sprite(tex);sprite.anchor.set(.5,.905);sprite.position.set(x,y);sprite.scale.set(size);sprite.roundPixels=true;sprite.tint=tint;sprite.zIndex=order;
  container.addChild(sprite);return sprite;
 }
-function createWaterGraphics(t,top){
+function createWaterGraphics(t){
+ // This is a moving, clipped water surface. Hydrology is never changed here.
  const depth=num(t.waterDepth),hasStored=depth>globalThis.HydrologyEngine.EPSILON;
  const flowing=t.river===true&&(num(t.hydrologyOutflowRate)>0.0001||num(t.discharge)>0.0001||num(t.flowSpeed)>.001);
- const g=new PIXI.Graphics();
+ if(!hasStored&&!flowing)return null;
+ const offset=hasStored?depth*ELEV:0;
+ const surface=new PIXI.Container();surface.y=-offset;
+ const waterSprite=new PIXI.Sprite(waterFrames[hash(t.x,t.y,37)%6]);waterSprite.anchor.set(.5);waterSprite.alpha=hasStored?.91:.85;
+ const channelWidth=hasStored?1:.62;
+ waterSprite.scale.set(channelWidth,hasStored?1:.72);
+ if(depth>1.6)waterSprite.tint=0x76a1c9;
+ surface.addChild(waterSprite);
+ const splash=new PIXI.Graphics();surface.addChild(splash);
+ const shore=new PIXI.Graphics();
  if(hasStored){
-  const h=clamp(depth,0,5), y=-h*ELEV;
-  const points=[{x:0,y:-HALF_H+y},{x:HALF_W,y},{x:0,y:HALF_H+y},{x:-HALF_W,y}];
-  makePoly(g,points,depth>1.5?0x166480:0x298e9c,depth>1.5?.85:.64);
-  g.moveTo(0,-HALF_H+y).lineTo(HALF_W,y).stroke({color:0x98ebe0,width:1.5,alpha:.63});
-  g.moveTo(HALF_W,y).lineTo(0,HALF_H+y).stroke({color:0x58d1d7,width:1,alpha:.65});
- }else if(flowing){
-  // Q-only river transport is a separate canonical water state (not fake stored D).
-  const fx=num(t.flowX),fy=num(t.flowY);const goVertical=Math.abs(fy)>=Math.abs(fx);
-  const v=goVertical?[[0,-HALF_H*.80],[HALF_W*.45,0],[0,HALF_H*.78],[-HALF_W*.44,0]]:[[-HALF_W*.75,0],[0,-HALF_H*.45],[HALF_W*.72,0],[0,HALF_H*.45]];
-  makePoly(g,v.map(([x,y])=>({x,y})),0x298498,.75);
+  const top=tileAt(t.x,t.y-1),left=tileAt(t.x-1,t.y);
+  if(!top||num(top.waterDepth)<=.0001){shore.moveTo(0,-HALF_H).lineTo(-HALF_W,0).stroke({color:0xd9f1d8,width:1.2,alpha:.73});}
+  if(!left||num(left.waterDepth)<=.0001){shore.moveTo(-HALF_W,0).lineTo(0,HALF_H).stroke({color:0xc4e5d8,width:1.2,alpha:.61});}
  }
- if(hasStored||flowing){
-  const rand=hash(t.x,t.y,88);for(let i=0;i<3;i++){
-   const x=((rand>>>i*5)%48)-24, y=((rand>>>(i*5+2))%18)-9;
-   g.moveTo(x-5,y-depth*ELEV).lineTo(x+5,y-depth*ELEV-1).stroke({color:0xb2f6ed,width:1,alpha:.45});
-  }
+ surface.addChild(shore);
+ return {surface,splash,waterSprite,t,offset,channelWidth,hasStored,flowing,phase:hash(t.x,t.y,12)/4294967296*Math.PI*2};
+}
+function drawWaterfall(group,t,side,drop){
+ // Only draw falls where the original hydrology marks a cascade or downstream flow.
+ const fx=num(t.flowX),fy=num(t.flowY);
+ const downhill=side==='east'?tileAt(t.x+1,t.y):tileAt(t.x,t.y+1);
+ if(!downhill||drop<.9||!t.river)return;
+ const directed=side==='east'?fx>.08:fy>.08;
+ const explicitCascade=(num(t.hydrologyCascadeToX)===downhill.x&&num(t.hydrologyCascadeToY)===downhill.y&&t.hydrologyCascadeToX!=null);
+ if(!directed&&!explicitCascade)return;
+ const flow=Math.max(num(t.hydrologyOutflowRate),num(t.discharge));
+ if(flow<.0001)return;
+ const path=new PIXI.Graphics();const fallHeight=clamp(drop*ELEV,10,190);
+ const edge=side==='east'?{x:HALF_W*.52,y:HALF_H*.5}:{x:-HALF_W*.5,y:HALF_H*.5};
+ for(let i=0;i<4;i++){
+  const x=edge.x+i*3-5,y=edge.y+i*.6;
+  path.moveTo(x,y).bezierCurveTo(x+6,y+fallHeight*.30,x-5,y+fallHeight*.70,x+4,y+fallHeight)
+    .stroke({color:i%2?0xaaf5e6:0x3aabc5,width:i%2?1.8:3,alpha:i%2?.75:.6});
  }
- return g;
+ path.ellipse(edge.x+2,edge.y+fallHeight,15,4).fill({color:0xb8f8eb,alpha:.50});
+ group.addChild(path);
+ waterfallList.push({g:path,phase:hash(t.x,t.y,19)/4294967296*Math.PI*2});
 }
 function addSnowLayer(tileContainer,t){
  const snow=num(t.snowDepth),ice=num(t.iceThickness);
@@ -161,31 +240,32 @@ function renderScene(){
  tilesLayer.removeChildren().forEach(x=>x.destroy({children:true}));
  fxWorld.removeChildren().forEach(x=>x.destroy({children:true}));
  pointerLayer.removeChildren().forEach(x=>x.destroy({children:true}));
- tilesList=[];propsList=[];flowList=[];
+ tilesList=[];propsList=[];flowList=[];waterfallList=[];treeSwayList=[];
  const objects=new Map();
  for(const o of map.objects||[]){if(o.destroyed||o.carriedBy)continue;const key=`${o.x},${o.y}`;const list=objects.get(key)||[];list.push(o);objects.set(key,list);}
  const captures=new Map();for(const d of deploymentPoints)if(d?.capturable){const at=d.captureTiles?.[0]||d.area?.[0];if(at)captures.set(`${at.x},${at.y}`,d);}
  const items=[...map.tiles].sort((a,b)=>a.x+a.y-b.x-b.y||a.y-b.y);
  for(const t of items){
   const xyz=iso(t.x,t.y,tileHeight(t));const sort=t.x+t.y;
-  const group=new PIXI.Container();group.position.set(xyz.x,xyz.y);group.zIndex=sort*100+1;group.roundPixels=true;
-  const side=new PIXI.Graphics();
+  const group=new PIXI.Container();group.position.set(xyz.x,xyz.y);group.zIndex=sort*100+1;group.roundPixels=true;group.sortableChildren=true;
   const east=tileAt(t.x+1,t.y),south=tileAt(t.x,t.y+1);
-  const lowerEast=east?Math.min(num(t.elevation),num(east.elevation)):num(t.elevation)-2.3;
-  const lowerSouth=south?Math.min(num(t.elevation),num(south.elevation)):num(t.elevation)-2.3;
-  if(num(t.elevation)>lowerEast)drawSideFace(side,t,{x:0,y:0},'east',lowerEast);
-  if(num(t.elevation)>lowerSouth)drawSideFace(side,t,{x:0,y:0},'south',lowerSouth);
-  if(side.geometry)group.addChild(side);
+  const lowerEast=east?Math.min(tileHeight(t),tileHeight(east)):tileHeight(t)-2.2;
+  const lowerSouth=south?Math.min(tileHeight(t),tileHeight(south)):tileHeight(t)-2.2;
+  const dropEast=tileHeight(t)-lowerEast,dropSouth=tileHeight(t)-lowerSouth;
+  if(dropEast>.03)addCliffFace(group,t,'east',dropEast);
+  if(dropSouth>.03)addCliffFace(group,t,'south',dropSouth);
   const type=tilesKey(t), tex=terrainFrames[type]||terrainFrames.PLAIN;
-  const texTile=new PIXI.Sprite(tex[hash(t.x,t.y,5)%6]);texTile.anchor.set(.5);texTile.roundPixels=true;texTile.tint=terrainTint(t);group.addChild(texTile);
+  const texTile=new PIXI.Sprite(tex[hash(t.x,t.y,5)%6]);texTile.anchor.set(.5);texTile.roundPixels=true;texTile.tint=terrainTint(t);group.addChild(texTile);addGroundDetails(group,t);
   if(gridVisible){const g=new PIXI.Graphics();g.moveTo(0,-HALF_H).lineTo(HALF_W,0).lineTo(0,HALF_H).lineTo(-HALF_W,0).closePath().stroke({color:0xbfdac6,width:.75,alpha:.30});group.addChild(g);}
   if(num(t.waterDepth)>globalThis.HydrologyEngine.EPSILON||t.river){
-   const g=createWaterGraphics(t,xyz);group.addChild(g);flowList.push({t,graphics:g,phase:(hash(t.x,t.y,12)%23)/23});
+   const entry=createWaterGraphics(t);if(entry){group.addChild(entry.surface);flowList.push(entry);}
   }
+  if(dropEast>.9)drawWaterfall(group,t,'east',dropEast);
+  if(dropSouth>.9)drawWaterfall(group,t,'south',dropSouth);
   addSnowLayer(group,t);
   if(selected&&selected.x===t.x&&selected.y===t.y){const g=new PIXI.Graphics();highlightPolygon(g,0,0);group.addChild(g);}
   if(hovered&&hovered.x===t.x&&hovered.y===t.y){const g=new PIXI.Graphics();highlightPolygon(g,0,0,0xffd18f);group.addChild(g);}
-  tilesLayer.addChild(group);tilesList.push({t,p:xyz});
+  tilesLayer.addChild(group);tilesList.push({t,p:{x:xyz.x,y:xyz.y-(num(t.waterDepth)>.0001?num(t.waterDepth)*ELEV:0)}});
   const place=objects.get(`${t.x},${t.y}`)||[];
   let layer=sort*100+40;
   if(t.terrain==='WALL'&&!place.some(o=>o.blocksMovement)){
@@ -237,7 +317,7 @@ function fitMap(){
  const box=stageEl.getBoundingClientRect();
  if(box.width<100||box.height<100)return;
  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
- for(const t of map.tiles){const c=iso(t.x,t.y,num(t.elevation));minX=Math.min(minX,c.x-48);maxX=Math.max(maxX,c.x+48);minY=Math.min(minY,c.y-140);maxY=Math.max(maxY,c.y+120);}
+ for(const t of map.tiles){const c=iso(t.x,t.y,tileHeight(t));minX=Math.min(minX,c.x-48);maxX=Math.max(maxX,c.x+48);minY=Math.min(minY,c.y-140);maxY=Math.max(maxY,c.y+120);}
  const w=maxX-minX+30,h=maxY-minY+30;
  camera.zoom=clamp(Math.min((box.width-32)/w,(box.height-38)/h),.27,1.25);
  camera.panX=0;camera.panY=0;
@@ -272,12 +352,57 @@ function bindCanvasInput(){
  c.addEventListener('pointerup',release);c.addEventListener('pointercancel',release);
  c.addEventListener('wheel',e=>{e.preventDefault();const old=camera.zoom;camera.zoom=clamp(old*(e.deltaY>0?.9:1.1),.23,2.4);applyCam();},{passive:false});
  }
+let lastWaterFrame=-1,lastWindFetch=-1;
+let cachedWind={x:1,y:0,strength:0};
 function tick(ticker){
- tickerTime+=ticker.deltaMS/1000;
- weatherFx(ticker.deltaMS/1000);
- // Animated water is a visual interpolation of existing water volumes / Q.
- for(const item of flowList){const g=item.graphics;if(g?.destroyed)continue;const phase=tickerTime*1.4+item.phase*6.28;g.alpha=.92+.08*Math.sin(phase);}
+ const dt=Math.min(.05,ticker.deltaMS/1000);
+ tickerTime+=dt;
+ weatherFx(dt);
+ if(tickerTime-lastWindFetch>.16){cachedWind=globalThis.EnvironmentEngine?.windAt?.(engineState)||cachedWind;lastWindFetch=tickerTime;}
+ const wind=cachedWind;
+ const strength=clamp(num(wind.strength),0,8);
+ const windDir=Math.sign(num(wind.x)*.8+num(wind.y)*.4)||1;
+ // Crown and trunk are separately rigged.  Wind speed from canonical EnvironmentEngine.
+ for(const tree of treeSwayList){
+  const t=tickerTime,amp=(.012+strength*.025)*(tree.size||1);
+  const wave=Math.sin(t*(1.12+strength*.32)+tree.phase)*.72 + Math.sin(t*(2.15+strength*.41)+tree.phase*.59)*.28;
+  const sway=amp*wave*windDir;
+  tree.canopy.rotation=sway;
+  tree.canopy.skew.x=sway*.36;
+  tree.canopy.x=sway*34;
+  tree.canopy.y=tree.baseY+Math.sin(t*1.7+tree.phase)*strength*.12;
+  tree.trunk.skew.x=sway*.12;
  }
+ // PIXI.Graphics water wave geometry changes in real x/y, not opacity-only.
+ // Limit to 15Hz on mobile to avoid rebuilding the whole map every animation tick.
+ if(tickerTime-lastWaterFrame>.065){
+  lastWaterFrame=tickerTime;
+  for(const water of flowList){
+   if(water.surface.destroyed||water.splash.destroyed)continue;
+   const speed=Math.max(.4,num(water.t.flowSpeed)*.8)+strength*.12;
+   const wavePhase=tickerTime*(1.7+speed)+water.phase;
+   const g=water.splash;g.clear();
+   const bx=water.channelWidth;
+   for(let i=0;i<6;i++){
+    const yy=(i-2.5)*7+Math.sin(wavePhase+i*1.13)*(1.7+strength*.06);
+    const max=HALF_W*(1-Math.abs(yy)/HALF_H)*bx-3;
+    if(max<5)continue;
+    const baseX=Math.sin(wavePhase*.60+i*2.1)*max*.66;
+    const len=clamp(10+strength*.65+(i%3)*5,5,max*.9);
+    const x=clamp(baseX,-max+1,max-len);
+    const alpha=.34+(.15+.14*Math.sin(wavePhase+i))*water.waterSprite.alpha;
+    g.moveTo(x,yy).bezierCurveTo(x+len*.36,yy-1.2,x+len*.57,yy+1,x+len,yy-.7)
+       .stroke({color:i%2?0xe7fff2:0x9bfae8,width:i%3===0?2.5:1.7,alpha:Math.max(.19,alpha)});
+   }
+   // visible surface undulation; anchored to unmodified canonical D/Q height.
+   water.surface.y=-water.offset+Math.sin(wavePhase*.87)*(.32+Math.min(strength,4)*.11);
+  }
+ }
+ for(const fall of waterfallList){
+  if(fall.g.destroyed)continue;
+  fall.g.alpha=.78+.22*Math.sin(tickerTime*6+fall.phase);
+ }
+}
 function weatherFx(dt){
  if(!app||!engineState)return;
  // Rebuild precipitation graphics at 25 FPS, not on every device refresh.
@@ -293,7 +418,7 @@ function weatherFx(dt){
  }
  if(weather==='RAIN'||weather==='HEAVY_RAIN'||weather==='THUNDERSTORM'||weather==='TYPHOON'||weather==='SNOW'||weather==='BLIZZARD'){
   const snow=weather==='SNOW'||weather==='BLIZZARD';const count=snow?42:weather==='RAIN'?60:weather==='HEAVY_RAIN'?125:145;
-  const wind=env.windAt?.(engineState)||{x:1,strength:1};
+  const wind=cachedWind;
   const sx=wind.strength*(snow?2.5:3.5);
   for(let i=0;i<count;i++){
    const k=hash(i,91,7);const x=((k%997)/997*w+tickerTime*(snow?14+sx:65+sx*2)*(i%2?1:.65))%(w+60)-30;
@@ -332,6 +457,7 @@ function bindControls(){
  $('#fit').addEventListener('click',fitMap);
  $('#zoomIn').addEventListener('click',()=>{camera.zoom=clamp(camera.zoom*1.18,.24,2.4);applyCam();});
  $('#zoomOut').addEventListener('click',()=>{camera.zoom=clamp(camera.zoom/1.18,.24,2.4);applyCam();});
+ $('#fullMap').addEventListener('click',()=>{const box=document.querySelector('.stagepanel');const active=box.classList.toggle('map-fullscreen');$('#fullMap').textContent=active?'✕':'⛶';requestAnimationFrame(()=>{app?.renderer?.resize?.(stageEl.clientWidth,stageEl.clientHeight);fitMap();});});
  const ro=new ResizeObserver(()=>{if(app)fitMap();});ro.observe(stageEl);
  }
 async function main(){
@@ -339,6 +465,6 @@ async function main(){
   const [p]=await Promise.all([bootPixi(),bootRules()]);
   PIXI=p;await initApp();await loadArt();makeTileScene();
   $('#loading').classList.add('hidden');
- }catch(e){console.error(e);status(e.message,true);$('#loading').innerHTML=`<div class="fail"><b>載入失敗</b><p>${String(e.message).replace(/[<>]/g,'')}</p><p>此頁必須放在 <code>card-tactics-2/pixi-map-preview/index.html</code>，並透過 GitHub Pages 開啟。</p></div>`;}
+ }catch(e){console.error(e);status(e.message,true);$('#loading').innerHTML=`<div class="fail"><b>載入失敗</b><p>${String(e.message).replace(/[<>]/g,'')}</p><p>此頁必須放在 <code>card-tactics-2/pixi-map-lab-v2/index.html</code>，並透過 GitHub Pages 開啟。</p></div>`;}
 }
 main();
