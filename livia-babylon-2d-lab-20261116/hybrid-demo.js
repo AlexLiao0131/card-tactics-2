@@ -114,10 +114,13 @@ async function prepareLivia(){
  const textures=[];
  await Promise.all(paths.map(path=>new Promise((resolve,reject)=>{
   const tex=new BABYLON.Texture(
-   path,renderer.scene,false,false,BABYLON.Texture.NEAREST_SAMPLINGMODE,
+   path,renderer.scene,false,true,BABYLON.Texture.NEAREST_SAMPLINGMODE,
    ()=>resolve(),
    (message,exception)=>reject(new Error(`莉維亞貼圖載入失敗：${path}｜${message||exception?.message||'未知錯誤'}`))
   );
+  // Each of the 12 RGBA frames needs this flag; StandardMaterial alpha-test
+  // ignores the PNG alpha channel unless diffuseTexture.hasAlpha is true.
+  tex.hasAlpha=true;
   textures.push(tex);
   if(tex.isReady())resolve();
  })));
