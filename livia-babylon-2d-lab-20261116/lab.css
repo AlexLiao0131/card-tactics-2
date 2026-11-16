@@ -1,0 +1,16 @@
+/* Only layout glue for the visual-only test. All real battle chrome comes from ../css/app.css */
+#battleScreen.active { display:block; }
+#battleScreen .battle-right-rail #weatherIndicator { pointer-events:none; }
+#battleScreen .battle-right-rail #nextUnit { display:block; }
+#battleScreen #skillBar { --menu-x: 50vw; --menu-y: 48vh; }
+#battleScreen .battle-context-inspector .context-hud-slot { color:#e6d7b3; font-size:12px; }
+#battleScreen .map-info-shell .lab-field { display:grid; grid-template-columns:85px 1fr; align-items:center; gap:6px; margin:9px 0; font-size:12px; }
+#battleScreen .map-info-shell select,#battleScreen .map-info-shell button { min-width:0; max-width:100%; padding:7px 8px; font-size:12px; }
+#battleScreen .map-info-shell .lab-line { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+#battleScreen .map-info-shell .lab-note { line-height:1.6; font-size:11px; color:#b9c4d4; padding:6px 2px; }
+#battleScreen .battle-log .lab-error { color:#ffb6a7; white-space:pre-wrap; overflow-wrap:anywhere; }
+#battleScreen .battle-log .lab-msg { white-space:pre-wrap; overflow-wrap:anywhere; margin-bottom:6px; font-size:12px; }
+@media(max-width:600px){
+ #battleScreen #turnStatus { max-width:56vw; min-width:0; white-space:normal; }
+ #battleScreen #skillBar { max-height:240px; }
+}

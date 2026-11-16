@@ -4,14 +4,17 @@
  * Input actions here are visual demonstrations only, not gameplay commits.
  */
 const $=id=>document.getElementById(id);
-const status=$('status'),canvas=$('battleCanvas');
+const canvas=$('battleCanvas'),statusEl=$('turnStatus');
 const TILE_SIZE=2,ELEVATION_HEIGHT=.8;
 const FACING=['E','S','W','N'];
 const NAMES={E:'東',S:'南',W:'西',N:'北'};
 let renderer,map,environment,cores=[],livia,stageData,lastEvents=[],revision=0,busy=false,tilesByKey=new Map();
 let animation=null,pose='idle',frame=0,frameTime=0,attackEnd=0,moveQueue=[],moving=null;
 let faceIndex=0,lastFrame=performance.now();
-function setStatus(msg,error=false){status.textContent=msg;status.classList.toggle('error',error);}
+function setStatus(msg,error=false){
+ const first=String(msg).split('\n')[0];statusEl.textContent=first.length>110?first.slice(0,110)+'…':first;
+ if(error){appendLog('啟動或同步錯誤：'+msg,true);$('battleLogShell').classList.add('active');}
+}
 function tileAt(x,y){return map?.tiles?.find(tile=>tile.x===x&&tile.y===y)||null;}
 function canShowAt(tile){return tile&&tile.terrain!=='WALL'&&!((map.objects||[]).some(o=>!o.destroyed&&o.blocksMovement&&o.x===tile.x&&o.y===tile.y));}
 function groundY(tile){
@@ -31,7 +34,7 @@ async function bootCore(){
  if(!globalThis.HydrologyEngine||!globalThis.MapGenerator||!globalThis.EnvironmentEngine)throw Error('原版地圖與環境規則尚未就緒');
 }
 function initMap(){
- const mode=$('map').value;
+ const mode=new URLSearchParams(location.search).get('map')==='static'?'static':'generated';
  if(mode==='static'){
   map=MapDatabase.createMap('versus_core_field');
   cores=[];stageData={mode:'固定測試地圖'};
@@ -67,12 +70,10 @@ function snapshot(){
 }
 function diagnostics(){
  if(!renderer)return;
- const e=renderer.subsystemErrors;
- if(e?.size){
-  const brief=[...e.entries()].slice(0,3).map(([name,err])=>`${name}: ${String(err).split('\n')[0]}`).join('\n');
-  setStatus(`原版渲染器有 ${e.size} 個模組尚未成功同步：\n${brief}`,true);
- }else if(!status.classList.contains('error')){
-  setStatus(`Babylon 3D 場景就緒｜${map.width}×${map.height}｜2D 莉維亞獨立 Sprite。點地格或按「移動展示」檢查高低差。`);
+ const issues=renderer.subsystemErrors;
+ if(issues?.size){
+  const brief=[...issues.entries()].slice(0,4).map(([name,err])=>`${name}: ${String(err).split('\n')[0]}`).join('\n');
+  if(diagnostics.last!==brief){diagnostics.last=brief;setStatus(`原版渲染器同步問題：\n${brief}`,true);}
  }
 }
 function publish(){
@@ -81,12 +82,18 @@ function publish(){
  lastEvents=[];
  if(livia)placeLivia();
  diagnostics();
- const w=EnvironmentEngine.legacyWeather(environment);
- $('hudEnv').textContent=`${environment.timeOfDay==='DAY'?'☀ 白天':'☾ 夜晚'} · ${w}\n環境回合 ${environment.climate?.turn||0}`;
+ const weather=EnvironmentEngine.legacyWeather(environment);
+ const weatherLabels={CLEAR:'晴朗',FOG:'迷霧',RAIN:'雨',HEAVY_RAIN:'豪雨',THUNDERSTORM:'雷暴',TYPHOON:'颱風',SNOW:'降雪',BLIZZARD:'暴風雪',SCORCHING_SUN:'烈日'};
+ $('weatherIndicator').textContent=`${environment.timeOfDay==='DAY'?'☀':'☾'} ${weatherLabels[weather]||weather}`;
+ $('mapMeta').textContent=`${stageData?.mode||''}｜${map.width}×${map.height}｜環境回合 ${environment.climate?.turn||0}｜${environment.timeOfDay==='DAY'?'白天':'夜晚'}｜${weatherLabels[weather]||weather}`;
+ $('playerCoreHp').textContent=cores[0]?`${cores[0].hp}/${cores[0].maxHp}`:'—';
+ $('enemyCoreHp').textContent=cores[1]?`${cores[1].hp}/${cores[1].maxHp}`:'—';
+ if(cores.length)$('versusCoreHud').classList.add('available');
+ refreshEnvironmentControls();
 }
 async function prepareRenderer(){
  const {BabylonRenderer}=await import('../js/babylon-renderer.js');
- renderer=new BabylonRenderer(canvas,snapshot(),{onTilePicked:(x,y)=>startMoveTo(x,y)});
+ renderer=new BabylonRenderer(canvas,snapshot(),{onTilePicked:(x,y)=>onTileClicked(x,y)});
  globalThis.HybridLiviaDebug=Object.freeze({getRenderer:()=>renderer,getMap:()=>map,getClimate:()=>environment});
  renderer.sync(snapshot());
  const e=[...renderer.subsystemErrors.keys()];
@@ -146,7 +153,8 @@ function applySpriteTexture(){
  livia.material.diffuseTexture=tex;
 }
 function updatePose(){
- $('pose').textContent=`${pose==='idle'?'待機':pose==='walk'?'移動':'攻擊'} / 朝${NAMES[FACING[faceIndex]]}`;
+ const text=`莉維亞｜${pose==='idle'?'待機':pose==='walk'?'移動':'攻擊'}｜朝${NAMES[FACING[faceIndex]]}`;
+ $('contextHudSlot').textContent=text;
 }
 function autoWalk(){
  if(!livia||moving||moveQueue.length)return;
@@ -186,6 +194,7 @@ function updateSpriteFrame(){
  const delay=pose==='idle'?.26:pose==='walk'?.14:.17;
  if(frameTime>=delay){frameTime%=delay;frame=(frame+1)%4;applySpriteTexture();}
  placeLivia();
+ if(commandVisible&&Math.round(now/90)!==Math.round((now-dt*1000)/90))updateCommandAnchor();
 }
 function cycleFace(){faceIndex=(faceIndex+1)%4;placeLivia();updatePose();}
 async function advanceTurn(){
@@ -199,34 +208,133 @@ async function advanceTurn(){
  }catch(e){setStatus('原版環境回合失敗：'+(e.stack||e.message),true);}
  finally{busy=false;}
 }
+
+// This lab uses the actual BattleUI DOM, its CSS and the native battle camera.
+// Only the command CONTENT is visual-only and lives in the original #skillBar.
+let awaitingTile=false, commandVisible=false, selectedTile=null;
+const weatherName={CLEAR:'晴朗',FOG:'迷霧',RAIN:'雨',HEAVY_RAIN:'豪雨',THUNDERSTORM:'雷暴',TYPHOON:'颱風',SNOW:'降雪',BLIZZARD:'暴風雪',SCORCHING_SUN:'烈日'};
+function appendLog(msg,error=false){
+ const line=document.createElement('div');line.className=error?'lab-error':'lab-msg';line.textContent=String(msg);
+ $('battleLog').prepend(line);
+ while($('battleLog').children.length>50)$('battleLog').lastChild?.remove();
+}
+function openCommand(){
+ if(!livia)return;
+ commandVisible=true;
+ const bar=$('skillBar');bar.replaceChildren();
+ const h=document.createElement('strong');h.textContent='莉維亞';bar.appendChild(h);
+ const items=[['移動',()=>{awaitingTile=true;closeCommand();setStatus('移動：點選目的地格（僅視覺測試）');}],
+ ['攻擊',()=>{playAttack();closeCommand();setStatus('莉維亞｜攻擊展示');}],
+ ['待機',()=>{moving=null;livia.drawX=livia.x;livia.drawY=livia.y;setPose('idle');closeCommand();setStatus('莉維亞｜待機展示');}],
+ ['轉向',()=>{cycleFace();openCommand();}]];
+ for(const [name,action] of items){const b=document.createElement('button');b.type='button';b.textContent=name;b.addEventListener('click',action);bar.appendChild(b);}
+ updateCommandAnchor();
+}
+function closeCommand(){commandVisible=false;$('skillBar').replaceChildren();}
+function updateCommandAnchor(){
+ if(!livia||!renderer||!commandVisible)return;
+ const target=livia.mesh.position.clone();target.y+=.6;
+ const camera=renderer.camera.camera,scene=renderer.scene,engine=renderer.engine;
+ const projected=BABYLON.Vector3.Project(target,BABYLON.Matrix.Identity(),scene.getTransformMatrix(),camera.viewport.toGlobal(engine.getRenderWidth(),engine.getRenderHeight()));
+ const box=canvas.getBoundingClientRect();
+ $('skillBar').style.setProperty('--menu-x',`${box.left+projected.x*box.width/Math.max(1,engine.getRenderWidth())}px`);
+ $('skillBar').style.setProperty('--menu-y',`${box.top+projected.y*box.height/Math.max(1,engine.getRenderHeight())}px`);
+}
+function onTileClicked(x,y){
+ const tile=tileAt(x,y);if(!tile)return false;
+ if(awaitingTile){
+   awaitingTile=false;
+   if(!startMoveTo(x,y)){setStatus('此格無法做移動展示：障礙物或單位尚在移動');openCommand();return false;}
+   return true;
+ }
+ if(livia&&x===livia.x&&y===livia.y){openCommand();return true;}
+ selectedTile=tile;showTileInspection(tile);
+ closeCommand();
+ return true;
+}
+function showTileInspection(tile){
+ const text=[`格 (${tile.x}, ${tile.y})`, `地形 ${tile.terrain}`,`高度 ${tile.elevation??0}`,`水深 ${Number(tile.waterDepth||0).toFixed(3)}`,`積雪 ${Number(tile.snowDepth||0).toFixed(3)}`,`冰厚 ${Number(tile.iceThickness||0).toFixed(3)}`];
+ $('contextTileTitle').textContent=text[0];
+ $('contextTileMeta').textContent=`地形：${tile.terrain}｜高度：${tile.elevation??0}`;
+ $('contextTileStatus').textContent=`環境：${EnvironmentEngine.legacyWeather(environment)}`;
+ $('contextTileDetails').textContent=text.join('\n');
+ showInspectorTab('tile');$('battleContextInspector').classList.add('open');
+}
+function showUnitInspection(){
+ if(!livia)return;
+ $('contextHudSlot').textContent='莉維亞｜2D Sprite 視覺測試';
+ $('contextUnitStats').textContent='使用原版 3D 地圖，角色只測試動畫，不產生假造戰鬥數值。';
+ $('contextUnitPosition').textContent=`(${livia.x}, ${livia.y})｜${NAMES[FACING[faceIndex]]}｜${pose}`;
+ showInspectorTab('unit');$('battleContextInspector').classList.add('open');
+}
+function showInspectorTab(tab){
+ $('contextUnitPanel').style.display=tab==='unit'?'block':'none';
+ $('contextTilePanel').style.display=tab==='tile'?'block':'none';
+}
+function buildEnvironmentControls(){
+ const content=$('mapStageInfo');content.replaceChildren();
+ const instructions=document.createElement('div');instructions.className='lab-note';
+ instructions.textContent='視覺隔離測試｜操作沿用原版戰場。點莉維亞開啟原本技能選單，拖曳／雙指縮放地圖。天候與地形使用原版規則。';
+ content.appendChild(instructions);
+ const makeRow=(name,element)=>{const label=document.createElement('label');label.className='lab-field';label.textContent=name;label.appendChild(element);content.append(label);};
+ const weather=document.createElement('select');weather.id='labWeather';
+ for(const [value,name] of Object.entries(weatherName)){const opt=new Option(name,value);weather.add(opt);}
+ makeRow('天氣',weather);
+ const moon=document.createElement('select');moon.id='labMoon';
+ for(const [id,name] of [['FULL','滿月'],['PARTIAL','半月'],['NONE','無月']])moon.add(new Option(name,id));
+ makeRow('月相',moon);
+ const mapMode=document.createElement('select');mapMode.id='labMap';mapMode.add(new Option('原版隨機中型地圖','generated'));mapMode.add(new Option('原版固定測試地圖','static'));
+ makeRow('地圖',mapMode);
+ const line=document.createElement('div');line.className='lab-line';
+ const dayNight=document.createElement('button');dayNight.textContent='日夜切換';
+ dayNight.addEventListener('click',()=>{EnvironmentEngine.setTimeOfDay(environment,environment.timeOfDay==='DAY'?'NIGHT':'DAY');publish();});
+ line.appendChild(dayNight);content.appendChild(line);
+ weather.addEventListener('change',()=>{try{EnvironmentEngine.setWeather(environment,weather.value,map,{applyPulse:false});publish();}catch(e){setStatus('氣候切換失敗：'+String(e.message||e),true);}});
+ moon.addEventListener('change',()=>{EnvironmentEngine.setMoonlight(environment,moon.value);publish();});
+ mapMode.addEventListener('change',()=>{const url=new URL(location.href);url.searchParams.set('map',mapMode.value);location.assign(url.toString());});
+ refreshEnvironmentControls();
+}
+function refreshEnvironmentControls(){
+ if(!environment)return;
+ const value=EnvironmentEngine.legacyWeather(environment);
+ if($('labWeather'))$('labWeather').value=value;
+ if($('labMoon'))$('labMoon').value=environment.moonlight||'PARTIAL';
+ if($('labMap'))$('labMap').value=new URLSearchParams(location.search).get('map')==='static'?'static':'generated';
+}
 function wire(){
- $('idle').onclick=()=>{moving=null;if(livia){livia.drawX=livia.x;livia.drawY=livia.y;}setPose('idle')};
- $('walk').onclick=autoWalk;
- $('attack').onclick=playAttack;
- $('face').onclick=cycleFace;
+ $('battleBack').onclick=()=>location.assign('../');
+ $('resetMap').onclick=()=>location.reload();
  $('rotateLeft').onclick=()=>renderer?.rotate(-1);
  $('rotateRight').onclick=()=>renderer?.rotate(1);
- $('zoomIn').onclick=()=>renderer?.camera?.zoomBy(1.18);
- $('zoomOut').onclick=()=>renderer?.camera?.zoomBy(.85);
- $('dayNight').onclick=()=>{if(!environment)return;EnvironmentEngine.setTimeOfDay(environment,environment.timeOfDay==='DAY'?'NIGHT':'DAY');publish()};
- $('weather').onchange=()=>{
-  if(!environment)return;
-  try{EnvironmentEngine.setWeather(environment,$('weather').value,map,{duration:5,applyPulse:false});publish()}
-  catch(e){setStatus('天氣切換失敗：'+e.message,true)}
- };
- $('turn').onclick=advanceTurn;
- $('reset').onclick=()=>location.reload();
- $('map').onchange=()=>{const url=new URL(location.href);url.searchParams.set('map',$('map').value);location.assign(url.href);};
+ $('projectionToggle').onclick=()=>{renderer?.toggleProjection();$('projectionToggle').textContent=renderer?.camera?.projection==='ISO'?'正視圖':'斜視圖';};
+ $('resetView').onclick=()=>renderer?.resetView();
+ $('endTurn').onclick=advanceTurn;
+ $('nextUnit').onclick=()=>{awaitingTile=false;showUnitInspection();openCommand();};
+ $('mapToggle').onclick=()=>{$('mapInfoShell').classList.toggle('open');};
+ $('mapClose').onclick=()=>{$('mapInfoShell').classList.remove('open');};
+ $('logToggle').onclick=()=>{$('battleLogShell').classList.toggle('active');};
+ $('logClose').onclick=()=>{$('battleLogShell').classList.remove('active');};
+ $('contextClose').onclick=()=>{$('battleContextInspector').classList.remove('open');};
+ $('contextUnitTab').onclick=showUnitInspection;
+ $('contextTileTab').onclick=()=>{if(selectedTile)showTileInspection(selectedTile);};
+ document.querySelectorAll('#battleLogTabs [data-log-type]').forEach(btn=>btn.addEventListener('click',()=>{}));
+ window.addEventListener('cardtactics:battle-inspect-hold',ev=>{
+   const point=ev.detail;if(!point||!livia)return;
+   const tile=tileAt(point.x,point.y);
+   if(point.x===livia.x&&point.y===livia.y)showUnitInspection();else if(tile)showTileInspection(tile);
+ });
 }
 async function main(){
  try{
   if(!window.BABYLON)throw Error('Babylon.js CDN 沒有載入。請使用 Safari 開啟 GitHub Pages。');
   if(!BABYLON.MixMaterial)throw Error('原版地圖需要 Babylon Materials Library，CDN 載入失敗。');
-  const requested=new URLSearchParams(location.search).get('map');
-  if(requested==='static'||requested==='generated')$('map').value=requested;
-  wire();await bootCore();initMap();await prepareRenderer();await prepareLivia();
-  publish();
-  setStatus('原版 Babylon 3D 地圖 + 莉維亞 2D 角色已載入。可點擊地格測試定位。這是視覺隔離原型，沒有動到主遊戲。');
- }catch(error){console.error(error);setStatus(`啟動失敗：${error?.message||error}\n${String(error?.stack||'').slice(0,500)}`,true);}
+  if(!document.querySelector('#battleScreen.active > #battleCanvas'))throw Error('原版戰場結構未完整建立。');
+  wire();
+  await bootCore();initMap();buildEnvironmentControls();
+  await prepareRenderer();await prepareLivia();
+  publish();openCommand();
+  appendLog('莉維亞 2D × Babylon 3D 隔離測試啟動。正式戰鬥規則與 UI 原檔沒有被修改。');
+  setStatus('莉維亞｜待機｜點角色或使用原版指令選單；MAP 可切換天氣／月相');
+ }catch(error){console.error(error);setStatus(`啟動失敗：${error?.message||error}\n${String(error?.stack||'').slice(0,1000)}`,true);}
 }
 main();
