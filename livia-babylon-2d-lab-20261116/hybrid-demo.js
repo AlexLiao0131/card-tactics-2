@@ -108,9 +108,18 @@ function originTile(){
 async function prepareLivia(){
  // Authentic 2D sprite sheet from supplied Livia character reference.
  const paths=['idle','walk','attack'].flatMap(name=>Array.from({length:4},(_,i)=>`./assets/livia-${name}-${i}.png`));
- const textures=paths.map(path=>new BABYLON.Texture(path,renderer.scene,false,false,BABYLON.Texture.NEAREST_SAMPLINGMODE));
- await Promise.all(textures.map(tex=>new Promise((res,rej)=>{
-  if(tex.isReady())return res();tex.onLoadObservable.addOnce(res);tex.onErrorObservable.addOnce(()=>rej(Error('角色貼圖載入失敗')));
+ // BABYLON.Texture offers constructor onLoad/onError callbacks; it does NOT
+ // expose onErrorObservable (that is an InternalTexture API).  Keep the frame
+ // order deterministic and report the actual failing asset URL if one fails.
+ const textures=[];
+ await Promise.all(paths.map(path=>new Promise((resolve,reject)=>{
+  const tex=new BABYLON.Texture(
+   path,renderer.scene,false,false,BABYLON.Texture.NEAREST_SAMPLINGMODE,
+   ()=>resolve(),
+   (message,exception)=>reject(new Error(`莉維亞貼圖載入失敗：${path}｜${message||exception?.message||'未知錯誤'}`))
+  );
+  textures.push(tex);
+  if(tex.isReady())resolve();
  })));
  const material=new BABYLON.StandardMaterial('livia-sprite-material',renderer.scene);
  material.diffuseTexture=textures[0];
