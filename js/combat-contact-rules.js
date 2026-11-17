@@ -5,7 +5,7 @@ export const CombatContactRules=Object.freeze({
     return skill?.attackType==='INHERIT'?weapon?.attackType:skill?.attackType;
   },
   isPureMagic(actor,skill){return this.attackType(actor,skill)==='MAGIC' && Number(skill?.power||0)>0;},
-  canActiveEvade(actor,skill){return !this.isPureMagic(actor,skill);},
+  canActiveEvade(actor,skill){return true;},
   canGanfanDefend(attacker,defender,incoming){
     if(defender?.character?.id!=='livia'||!defender.alive||!attacker?.alive||!incoming)return false;
     const type=this.attackType(attacker,incoming);

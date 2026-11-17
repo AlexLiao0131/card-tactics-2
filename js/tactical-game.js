@@ -905,7 +905,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     const critical=estimate({forceHit:true,forceCrit:true});
     const hp=Math.max(0,Number(defender.hp||0)),maxHp=Math.max(1,Number(defender.character.combat?.hp||hp||1));
     const pct=(n)=>Math.max(0,Math.min(100,Math.round(n)));
-    const guaranteed=normal.guaranteedHit===true||globalThis.CombatContactRules?.isPureMagic?.(attacker,effective)===true;
+    const guaranteed=normal.guaranteedHit===true;
     const hit=guaranteed?100:pct(normal.hc),crit=pct(normal.cc);
     const type=normal.type;
     const extraNormal=BattleResolution.previewEnchantmentBonus(attacker,defender,effective)+BattleResolution.previewInherentBonus(attacker,defender,effective);
@@ -932,7 +932,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     });
     // ACTIVE_EVADE_PENALTY (=20) and graze are defined by BattleResolution.
     // Both outcomes must stay separate: full hits, half-damage grazes and misses.
-    const evadeFull=globalThis.CombatContactRules?.isPureMagic?.(attacker,effective)?100:pct(Math.max(0,normal.hc-20));
+    const evadeFull=pct(Math.max(0,normal.hc-20));
     const evadeGraze=evadeFull===100?0:pct(Math.max(0,normal.hc)-evadeFull);
     const evadeMiss=pct(100-evadeFull-evadeGraze);
     return{attackerId:attacker.id,defenderId:defender.id,hp,maxHp,hit,crit,
@@ -945,7 +945,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   // The battlefield UI only supplies the chosen target. All action routing,
   // including engagement confirmation and pre-attack relocation, belongs to
   // TacticalActionController.prepareAttack. Do not classify skill mechanics here.
-  function engagementOdds(attacker,defender,skill){if(!attacker?.character||!defender?.character||!skill)return null;const resolved=effectiveSkill(attacker,skill);const hit=Math.max(0,Math.min(100,Math.round(BattleEngine.hitChance(attacker.character,defender.character,resolved))));const actual=globalThis.CombatContactRules?.isPureMagic?.(attacker,resolved)?100:hit;return{hit:actual,evade:100-actual};}
+  function engagementOdds(attacker,defender,skill){if(!attacker?.character||!defender?.character||!skill)return null;const resolved=effectiveSkill(attacker,skill);const hit=Math.max(0,Math.min(100,Math.round(BattleEngine.hitChance(attacker.character,defender.character,resolved))));const actual=hit;return{hit:actual,evade:100-actual};}
   function engagementUnitPresentation(unit,attacker,defender,odds){const max=Math.max(1,Number(unit?.hallucination?unit.perceivedMaxHp??unit?.character?.combat?.hp??1:unit?.character?.combat?.hp||unit?.hp||1)),hp=Math.max(0,Number(unit?.hallucination?unit.perceivedHp??max:unit?.hp||0));return{id:unit.id,x:unit.x,y:unit.y,name:unit.character.name,shortName:shortName(unit.character.name),team:unit.team,hp,maxHp:max,hpPct:Math.max(0,Math.min(100,hp/max*100)),oddsLabel:!odds?"":unit===attacker?`命中率 ${odds.hit}%`:unit===defender?`迴避率 ${odds.evade}%`:""};}
   function engagementPresentation(){const attack=pendingEngagement||pendingEnemyAttack;if(!attack)return null;const {attacker,defender,skill}=attack;
     // Charge previews use the *planned* destination for hit/damage forecasts;
