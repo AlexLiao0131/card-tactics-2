@@ -1784,6 +1784,84 @@ export class UnitRenderer{
     return entry;
   }
 
+  /** Shared Babylon quadruped geometry for four-legged and aquatic animal forms.
+   *  Rendering only; no shape-specific movement or gameplay calculations.
+   */
+  createQuadruped(unit,definition){
+    const shape=definition?.quadruped||{},seal=shape.species==='SEAL';
+    const height=Math.max(.50,Number(definition.height||.98));
+    const scale=height/(seal?.82:.98),colors=shape.colors||{};
+    const root=new BABYLON.TransformNode(`unit-${unit.id}`,this.scene);
+    root.metadata={kind:'unit',unitId:unit.id,visualKind:'QUADRUPED'};
+    const meshes=[],quadParts={};
+    const mat=(id,c)=>this.figureMaterial(`animal-${id}`,c);
+    const fur=mat('fur',colors.fur||'#bf9b5e'),light=mat('light',colors.light||'#e3d3ad'),
+      dark=mat('mark',colors.mark||'#5a4129'),eye=mat('eye',colors.eye||'#bacad2'),
+      nose=mat('nose',colors.nose||'#292d34'),wet=mat('wet',colors.wet||'#77828c');
+    const part=(id,x,y,z)=>{
+      const node=new BABYLON.TransformNode(`animal-${id}-${unit.id}`,this.scene);
+      node.parent=root;node.position.set(x*scale,y*scale,z*scale);
+      node.metadata={kind:'unit-part-root',unitId:unit.id,quadBase:{position:node.position.clone(),rotation:node.rotation.clone(),scaling:node.scaling.clone()}};
+      quadParts[id]=node;return node;
+    };
+    part('body',0,.50,0);part('head',0,seal?.50:.69,seal?.43:.43);
+    for(const z of ['front','rear'])for(const side of ['l','r'])part(`${z}-${side}`,side==='l'?-0.22:0.22,.41,z==='front'?.30:-.34);
+    part('tail',0,.51,-.48);
+    const add=(id,node,material,pos,dimensions,rot=null)=>{
+      const mesh=BABYLON.MeshBuilder.CreateSphere(`${id}-${unit.id}`,{diameter:1,segments:8},this.scene);
+      mesh.parent=node;mesh.position.set(pos[0]*scale,pos[1]*scale,pos[2]*scale);
+      mesh.scaling.set(dimensions[0]*scale,dimensions[1]*scale,dimensions[2]*scale);
+      if(rot)mesh.rotation.set(...rot);mesh.material=material;mesh.isPickable=false;mesh.receiveShadows=true;
+      mesh.metadata={kind:'unit-part',unitId:unit.id,castShadow:true};meshes.push(mesh);return mesh;
+    };
+    if(seal){
+      add('seal-body',quadParts.body,wet,[0,0,0],[.80,.56,1.52]);
+      add('seal-belly',quadParts.body,light,[0,-.13,.10],[.69,.31,1.34]);
+      add('seal-neck',quadParts.body,fur,[0,.06,.42],[.67,.48,.52]);
+      add('seal-head',quadParts.head,fur,[0,0,0],[.60,.50,.58]);
+      add('seal-muzzle-left',quadParts.head,light,[-.14,-.14,.24],[.27,.20,.26]);
+      add('seal-muzzle-right',quadParts.head,light,[.14,-.14,.24],[.27,.20,.26]);
+      add('seal-nose',quadParts.head,nose,[0,-.09,.39],[.16,.13,.11]);
+      for(const sign of [-1,1]){
+        add(`seal-eye-${sign}`,quadParts.head,eye,[sign*.26,.13,.19],[.10,.105,.07]);
+        const front=quadParts[`front-${sign<0?'l':'r'}`];
+        add(`seal-flipper-${sign}`,front,fur,[sign*.17,-.16,.18],[.32,.11,.64],null);
+        const rear=quadParts[`rear-${sign<0?'l':'r'}`];
+        add(`seal-tailfin-${sign}`,rear,wet,[sign*.14,-.17,-.40],[.36,.10,.42]);
+        for(let i=-1;i<=1;i++){
+          const whisker=BABYLON.MeshBuilder.CreateLines(`seal-whisker-${sign}-${i}-${unit.id}`,{
+            points:[new BABYLON.Vector3(sign*.12*scale,-.15*scale,.33*scale),new BABYLON.Vector3(sign*.55*scale,(-.17+i*.05)*scale,.40*scale)]},this.scene);
+          whisker.parent=quadParts.head;whisker.color=new BABYLON.Color3(.78,.79,.76);whisker.isPickable=false;
+          meshes.push(whisker);
+        }
+      }
+    }else{
+      add('cat-body',quadParts.body,fur,[0,0,0],[.61,.48,1.25]);
+      add('cat-chest',quadParts.body,light,[0,-.01,.39],[.52,.54,.50]);
+      add('cat-neck',quadParts.body,fur,[0,.075,.42],[.40,.52,.36]);
+      add('cat-head',quadParts.head,fur,[0,0,0],[.46,.42,.50]);
+      add('cat-muzzle',quadParts.head,light,[0,-.12,.28],[.31,.19,.27]);
+      add('cat-nose',quadParts.head,nose,[0,-.12,.44],[.12,.09,.09]);
+      for(const sign of [-1,1]){
+        add(`cat-ear-${sign}`,quadParts.head,fur,[sign*.29,.30,-.07],[.19,.25,.14]);
+        add(`cat-eye-${sign}`,quadParts.head,eye,[sign*.18,.10,.31],[.105,.085,.04]);
+        for(const z of ['front','rear']){
+          const leg=quadParts[`${z}-${sign<0?'l':'r'}`];
+          add(`cat-leg-${z}-${sign}`,leg,fur,[0,-.16,0],[.22,.45,.22]);
+          add(`cat-paw-${z}-${sign}`,leg,light,[0,-.35,.075],[.26,.12,.33]);
+        }
+      }
+      for(let i=0;i<16;i++){
+        const z=-.40+(i%8)*.115,sign=i<8?-1:1;
+        const x=sign*(.27+((i*3)%4)*.017),y=.07+(i%3)*.05;
+        add(`cat-spot-${i}`,quadParts.body,dark,[x,y,z],[.095,.07,.09]);
+      }
+      for(let i=0;i<5;i++)add(`cat-tail-${i}`,quadParts.tail,i%2?fur:dark,
+        [0,.025+i*.024,-.12-i*.17],[.16,.14,.27],[i*.09,0,0]);
+    }
+    return{root,meshes,quadParts,kind:'QUADRUPED',height,lift:Number(definition.lift||0)};
+  }
+
   createBird(unit,definition,signature=this.visualSignature(unit,definition)){
     const bird=definition?.bird||{},colors=bird.colors||{};
     const height=Math.max(.35,Number(definition?.height||bird.height||.72)),scale=height/.72;
@@ -1954,7 +2032,9 @@ export class UnitRenderer{
         ?this.createFigure(unit,definition,signature)
         :kind==="BIRD"
           ?this.createBird(unit,definition,signature)
-          :this.createCapsule(unit);
+          :kind==="QUADRUPED"
+            ?this.createQuadruped(unit,definition)
+            :this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);
     const verticalCue=this.createVerticalCue(unit);
@@ -1966,7 +2046,8 @@ export class UnitRenderer{
     // Keep references on the existing entry; no secondary animation owner.
     entry.poseResetParts=[
       ...Object.values(entry.figureParts||{}).map(node=>({node,base:node?.metadata?.figureBase})),
-      ...Object.values(entry.birdParts||{}).map(node=>({node,base:node?.metadata?.birdBase}))
+      ...Object.values(entry.birdParts||{}).map(node=>({node,base:node?.metadata?.birdBase})),
+      ...Object.values(entry.quadParts||{}).map(node=>({node,base:node?.metadata?.quadBase}))
     ].filter(item=>item.node&&item.base);
     this.entries.set(unit.id,entry);
     this.meshes.set(unit.id,entry.root);
@@ -2489,6 +2570,15 @@ export class UnitRenderer{
     }
 
     const step=Math.sin(local*Math.PI*2);
+    if(entry.kind==='QUADRUPED'){
+      entry.root.position.y+=Math.abs(step)*.035;
+      for(const side of ['l','r'])for(const z of ['front','rear']){
+        const leg=entry.quadParts?.[`${z}-${side}`];
+        if(leg)leg.rotation.x+=Math.sin(local*Math.PI*2+(side==='l'?Math.PI:0)+(z==='rear'?Math.PI:0))*.40;
+      }
+      if(entry.quadParts?.tail)entry.quadParts.tail.rotation.x+=Math.sin(local*Math.PI*2)*.15;
+      return;
+    }
     if(entry.kind==="BIRD"){
       entry.root.position.y+=Math.abs(step)*.08;
       this.applyBirdPose(entry,"WALK",local,performance.now());
@@ -2532,6 +2622,21 @@ export class UnitRenderer{
       const t=clamp01(progress),ease=t*t*(3-2*t);
       entry.root.position.copyFrom(BABYLON.Vector3.Lerp(start,end,ease));
       entry.root.position.y+=Math.sin(Math.PI*t)*.42;
+    }
+    if(entry.kind==='QUADRUPED'){
+      const p=entry.quadParts||{},sway=Math.sin(now/290);
+      if(state==='IDLE'||state==='CAST'){
+        if(p.body)p.body.rotation.x+=sway*.035;
+        if(p.head)p.head.rotation.y+=Math.sin(now/530)*.045;
+        if(p.tail)p.tail.rotation.x+=Math.sin(now/430)*.15;
+        return;
+      }
+      if(state==='ATTACK'){
+        if(p.head)p.head.rotation.x-=Math.sin(Math.PI*clamp01(progress))*.42;
+        if(p.body)p.body.rotation.x+=Math.sin(Math.PI*clamp01(progress))*.18;
+        entry.root.position.y+=Math.sin(Math.PI*clamp01(progress))*.09;
+        return;
+      }
     }
     const weaponAction=this.figureAttackType(entry,event);
     if(entry.kind==="FIGURE"&&event?.skillId&&["SHOT","PIERCE","SLASH","STRIKE","VERDICT_SLASH"].includes(weaponAction)&&this.applyFigureAttack(entry,unit,event,progress))return;

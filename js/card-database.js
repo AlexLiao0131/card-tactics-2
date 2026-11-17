@@ -1,4 +1,5 @@
 export const CARDS={
+  avreshi_card:{id:"avreshi_card",name:"艾芙蕾希・月痕",type:"CHARACTER",characterId:"avreshi",loadoutId:"avreshi_default",faction:"ELVEN",unitType:"HERO",cost:6},
   magda_card:{id:'magda_card',name:'瑪格妲・瓦爾加',type:'CHARACTER',characterId:'magda',
     loadoutId:'magda_default',faction:'ARENA',unitType:'HERO',cost:6},
   livia_card:{id:"livia_card",name:"莉維亞",type:"CHARACTER",characterId:"livia",loadoutId:"livia_default",faction:"HUNTER",unitType:"HERO",cost:6},

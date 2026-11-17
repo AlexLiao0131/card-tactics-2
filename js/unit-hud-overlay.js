@@ -234,7 +234,9 @@ export class UnitHudOverlay{
     const statusKey=indicators.map(effect=>`${effect.id}:${effect.classification}:${effect.name}:${effect.remaining??""}`).join("|");
     const equipped=equipmentIcons(unit);
     const equipKey=equipped.map(item=>`${item.group}:${item.key}:${item.name}`).join("|");
-    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}`;
+    const moon=unit.characterId==='avreshi'?(this.environmentState||globalThis.CardTacticsRuntime?.getEnvironmentState?.()):null;
+    const moonState=moon?.timeOfDay==='NIGHT'?String(moon.moonlight||'NONE'):'DAY';
+    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}|${moonState}`;
     if(hud.key===key)return;
     hud.key=key;
     hud.name.textContent=String(unit.name||unit.id||"UNIT");
@@ -244,6 +246,16 @@ export class UnitHudOverlay{
     hud.manaRow.hidden=!showMana;hud.manaTrack.hidden=!showMana;
     if(showMana){hud.mana.textContent=`${Math.round(mana)}/${Math.round(maxMana)}`;hud.manaFill.style.width=`${Math.round(manaPct*10000)/100}%`;}
     hud.resourceBox.replaceChildren();
+    if(unit.characterId==='avreshi'){
+      const moon=this.environmentState||globalThis.CardTacticsRuntime?.getEnvironmentState?.();
+      const phase=moon?.timeOfDay!=='NIGHT'?'白天':moon?.moonlight==='FULL'?'滿月':moon?.moonlight==='PARTIAL'?'半月':'無月';
+      const lunar=createElement('div','unit-hud-resource');
+      lunar.dataset.resource='moon-phase';
+      lunar.textContent=`☾ 月神祝福｜${phase}`;
+      lunar.style.color='#e7edf5';
+      lunar.style.textShadow='0 0 4px #cbd7eb';
+      hud.resourceBox.appendChild(lunar);
+    }
     for(const[id,resource]of Object.entries(resources)){
       const value=Math.max(0,Number(resource?.value||0)),max=Math.max(0,Number(resource?.max||0));if(max<=0)continue;
       const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
@@ -363,6 +375,7 @@ export class UnitHudOverlay{
   }
 
   sync(state){
+    this.environmentState=state?.presentation?.environment||globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null;
     this.units=[...(state?.units||[])];
     const alive=new Set();
     for(const unit of this.units){

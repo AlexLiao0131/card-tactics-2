@@ -81,6 +81,7 @@
       return{own:null,other:null};
     }
     function finishFreeUtility(attacker){
+      commitPendingMove(attacker);
       ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setCommandPanelCollapsed?.(false);ctx.setMode("command");ctx.render();ctx.emitState?.();return true;
     }
     const CARRY_DIRECTIONS=Object.freeze([[1,0],[-1,0],[0,1],[0,-1]]);
@@ -919,6 +920,62 @@
       const {map,units}=state(),action=skill?.utilityAction;if(!action)return skillFailure(attacker,skill,"NO_UTILITY_ACTION",target);
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
       if(action.type==="ENCHANT_WEAPON")return beginEnchantment(attacker,skill);
+      if(action.type==="SHAPESHIFT"){
+        const runtime=globalThis.UnitRuntimeEngine;
+        if(!runtime?.canShiftForm?.(attacker,action.form))
+          return skillFailure(attacker,skill,"INVALID_FORM_SWITCH",target);
+        if(!ctx.consumeSkill(attacker,skill))
+          return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+        // Commit once: form changes never restore attack/movement or remove DOT.
+        if(!runtime.shiftForm(attacker,action.form))
+          throw new Error("FORM_VALIDATED_BUT_COMMIT_FAILED");
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
+        ctx.pushLog(`${attacker.character.name} 變身為「${runtime.formSpec(attacker)?.name||action.form}」。`,"BATTLE");
+        return finishFreeUtility(attacker);
+      }
+      if(action.type==="SHARE_VISION"){
+        if(!target?.alive||target.team!==attacker.team||target.id===attacker.id||
+           !TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState))
+          return skillFailure(attacker,skill,"INVALID_VISION_ALLY",target);
+        if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+        attacker.sharedVisionAllyId=target.id;
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 建立高空視野共享。`,"BATTLE");
+        return finishFreeUtility(attacker);
+      }
+      if(action.type==="DELIVER_CARGO"){
+        if(!target?.alive||target.team!==attacker.team||target.id===attacker.id||
+           Math.abs(target.x-attacker.x)+Math.abs(target.y-attacker.y)>1)
+          return skillFailure(attacker,skill,"INVALID_CARGO_TARGET",target);
+        const available=globalThis.ItemRuntimeEngine?.list?.(attacker)||[];
+        if(!available.length)return skillFailure(attacker,skill,"CARGO_EMPTY",target);
+        const transfer=globalThis.ItemRuntimeEngine?.transfer?.(attacker,target,available[0].payload?.id);
+        if(!transfer?.ok)return skillFailure(attacker,skill,transfer?.reason||"ITEM_TRANSFER_FAILED",target);
+        if(!ctx.consumeSkill(attacker,skill))throw Error("CARGO_COMMITTED_WITHOUT_SKILL_RESOURCE");
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        ctx.pushLog(`${attacker.character.name} 將道具交給 ${target.character.name}。`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+      if(action.type==="SEAL_SUBMERGE_PRESS"){
+        const tile=TacticalEngine.tile(map,target?.x,target?.y);
+        const body=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(target)||2);
+        const water=Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0);
+        if(!target?.alive||target.team===attacker.team||!tile||water<body||
+           Math.abs(target.x-attacker.x)+Math.abs(target.y-attacker.y)>2||
+           !TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState)||
+           globalThis.WaterInteractionEngine?.activeWaterRules?.(target)?.preventSinking||
+           target.character?.terrainTraits?.includes("AQUATIC")||
+           !globalThis.WaterInteractionEngine?.forceSubmerge)
+          return skillFailure(attacker,skill,"SUBMERGE_REQUIRES_DEEP_WATER",target);
+        // This is contact-based weight suppression, not a magic drowning hit.
+        // No instant HP damage, independent of enemy armor.
+        if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
+        const pressed=globalThis.WaterInteractionEngine.forceSubmerge(target,tile,{turns:1,impactDamage:0});
+        globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+        ctx.pushLog(pressed.applied?`${attacker.character.name} 壓住 ${target.character.name}，溺水將依環境回合結算。`:`${skill.name}：${pressed.reason||"水域壓制失敗"}`,"BATTLE");
+        return finishActiveSkill(attacker);
+      }
+
       if(action.type==="SWAP_ALLIES"){
         if(action.consumeTurn!==true||
            !TacticalEngine.canTarget(map,attacker,target,skill,state().environmentState)||
@@ -955,6 +1012,8 @@
         return finishActiveSkill(attacker);
       }
       if(action.type==="SET_VERTICAL_MODE"){
+        if(action.mode==="DIVING"&&attacker.carryingUnitId)return skillFailure(attacker,skill,"CANNOT_DIVE_WITH_PASSENGER",target);
+        if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
         ctx.consumeSkill(attacker,skill);ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${result.state.mode}。`,"SYSTEM");
@@ -1350,6 +1409,14 @@
         floodEvents.forEach(ctx.logEnvironmentEvent);
         ctx.resolveEnvironmentEvents?.(floodEvents,{reason:`${skill.name} 浪後淹水`});
         ctx.pushLog(`${attacker.character.name} 施放海嘯｜浪牆寬度 ${skill.tsunamiWave.width}、沿地形推進 ${tsunamiPlan.cells.length} 格。`,"BATTLE");
+        UnitRuntimeEngine.endBloodTransaction(attacker);
+        return finishActiveSkill(attacker);
+      }
+      if(skill.environmentSpell==='TORNADO'){
+        if(!environmentState){UnitRuntimeEngine.endBloodTransaction(attacker);return skillFailure(attacker,skill,"ENVIRONMENT_UNAVAILABLE",center);}
+        const event=EnvironmentEngine.createTornado(environmentState,center.x,center.y,{map});
+        ctx.logEnvironmentEvent?.(event);
+        ctx.resolveEnvironmentEvents?.([event],{reason:`${skill.name} 形成龍捲風`});
         UnitRuntimeEngine.endBloodTransaction(attacker);
         return finishActiveSkill(attacker);
       }

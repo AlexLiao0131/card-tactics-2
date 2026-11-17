@@ -4,6 +4,7 @@ export const CARD_GROUPS={
   ARENA:{id:"ARENA",name:"鬥技場",cards:["magda_card"]},
   MAGIC:{id:"MAGIC",name:"魔法",cards:["thunderstorm_card","typhoon_card","wildfire_card","tornado_card","whirlpool_card","miracle_card","fog_card","starfall_card","snow_card","blizzard_card","scorching_sun_card"]},
   ELF_EMPIRE:{id:"ELF_EMPIRE",name:"精靈帝國",cards:["reina_card","elf_shapeshifter_card","elf_ranger_card","elf_guard_card","elf_priest_card"]},
+  MOON_FOREST:{id:"MOON_FOREST",name:"月林祭司",cards:["avreshi_card"]},
   OPHI_SUPPLEMENT:{id:"OPHI_SUPPLEMENT",name:"奧菲補充包",cards:["ophi_card","colin_card","moon_goddess_blessing_card"]},
   CHURCH:{id:"CHURCH",name:"教會",cards:["church_templar_hero_card","church_apprentice_card","church_heavy_knight_card","church_templar_card","church_bishop_card","church_redemption_card","church_dispel_card","church_judgement_card","church_entrenchment_card"]},
   SAINT_SUPPLEMENT:{id:"SAINT_SUPPLEMENT",name:"聖女補充包",cards:["church_saint_card"]},

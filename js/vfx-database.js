@@ -37,7 +37,7 @@ const defs={
   'nature-growth':{
     roles:{ARC:['ophi_eagle_arc_shot'],BASIC:['ophi_elven_shot'],
       TRIPLE:['ophi_triple_shot'],BACK:['ophi_backstep_shot'],
-      WRATH:['ophi_forest_wrath'],SONG:['ophi_healing_song'],ENTANGLE:['ophi_forest_entangle']},
+      WRATH:['ophi_forest_wrath','avreshi_moonfire','avreshi_wrath','avreshi_starfall','avreshi_lightning'],SONG:['ophi_healing_song','avreshi_rejuvenation'],ENTANGLE:['ophi_forest_entangle']},
       events:['OPHI_FOREST_SOUL_COLLECT'],
     status:{SONG:'OPHI_HEALING_SONG',ENTANGLE:'FOREST_ENTANGLED'},legacy:'ophiNatureVfx'},
   // Shared effect behaviors, not per-character JS files. Existing canonical
@@ -51,14 +51,14 @@ const defs={
       GRACE:'GRACE',HP_LINK:'TEMPLAR_HP_LINK',HOLY_SHIELD:'HOLY_SHIELD'},
     legacy:'holyRitualVfx'},
   'aquatic-magic':{
-    roles:{THRUST:['nereia_trident_thrust'],THROW:['nereia_trident_throw'],
-      BULLET:['nereia_water_bullet'],WHIRLPOOL:['nereia_whirlpool'],
-      TSUNAMI:['nereia_tsunami'],DRAG:['nereia_deep_drag']},events:[],
+    roles:{THRUST:['nereia_trident_thrust','avreshi_spear_thrust','avreshi_pounce','avreshi_bite','avreshi_claw','avreshi_shred'],THROW:['nereia_trident_throw','avreshi_spear_throw'],
+      BULLET:['nereia_water_bullet'],WHIRLPOOL:['nereia_whirlpool','avreshi_whirlpool'],
+      TSUNAMI:['nereia_tsunami'],DRAG:['nereia_deep_drag','avreshi_press']},events:[],
     status:{WATER_SHIELD:'NEREIA_TSUNAMI_WATER_SHIELD'},legacy:'aquaticMagicVfx'},
   'blade-stealth':{
     roles:{DOUBLE:['cat_dual_slash'],BACKSTAB:['cat_backstab'],
       POISON_KNIFE:['cat_poison_knife'],SMOKE:['cat_smoke_bomb'],
-      STEAL:['cat_pickpocket'],HIDE:['cat_hide']},events:[],
+      STEAL:['cat_pickpocket'],HIDE:['cat_hide','avreshi_hide']},events:[],
     status:{POISON:'POISON',STEALTH:'STEALTH'},legacy:'bladeStealthVfx'},
   'blood-ritual':{
     roles:{RAZOR:['seraphina_rending_claw'],SHADOW:['seraphina_blood_drain'],

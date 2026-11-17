@@ -1,5 +1,33 @@
 export const VISUALS={
   characters:{
+    avreshi_human:{
+      portrait:"assets/images/cards/heroes/avreshi.jpg",
+      card:"assets/images/cards/heroes/avreshi.jpg",
+      battle:{kind:"FIGURE",baseFacing:"E",height:1.72,
+        figure:{style:"MOON_FOREST_PRIESTESS",pointedEars:true,longHair:true,braid:true,
+          midHair:true,fieldSpear:true,pendant:true,neckAccessory:true,
+          beltDetail:true,bracerDetail:true,bareArms:true,bareHands:true,
+          colors:{skin:"#edd3ae",hair:"#dec77d",hairDark:"#917245",cape:"#d6d1b3",capeDark:"#687a58",
+            shirt:"#ded0ac",pants:"#624c3d",leather:"#895f40",leatherDark:"#493822",boots:"#5a4634",
+            weapon:"#d8e7ee",metal:"#dce6e9",accent:"#d9e6e5",gold:"#d7d2b1",tabard:"#91a882"}},
+        animations:{IDLE:{duration:1150,loop:true,procedural:"BREATHE"},WALK:{duration:240,loop:true,procedural:"STEP"},
+          ATTACK:{duration:380,loop:false,procedural:"LUNGE"},CAST:{duration:520,loop:false,procedural:"CAST"},
+          HURT:{duration:250,loop:false,procedural:"RECOIL"},DEATH:{duration:700,loop:false,procedural:"FALL"}}}},
+    avreshi_raven:{battle:{kind:"BIRD",baseFacing:"E",height:.68,lift:.12,
+      bird:{style:"MOON_RAVEN",colors:{body:"#272e36",wing:"#0e1824",light:"#aabac7",head:"#293440",beak:"#626c73",eyes:"#dbe6ed",talons:"#48505b"}},
+      animations:{IDLE:{duration:900,loop:true,procedural:"FLAP"},WALK:{duration:220,loop:true,procedural:"FLAP"},
+        ATTACK:{duration:320,loop:false,procedural:"FLAP"},CAST:{duration:420,loop:false,procedural:"FLAP"},
+        HURT:{duration:230,loop:false,procedural:"RECOIL"},DEATH:{duration:650,loop:false,procedural:"FALL"}}}},
+    avreshi_cheetah:{battle:{kind:"QUADRUPED",baseFacing:"E",height:.98,
+      quadruped:{species:"CHEETAH",colors:{fur:"#d4ae6e",light:"#e9d7ac",mark:"#362b25",eye:"#d7e3d7",nose:"#2c2324"}},
+      animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},WALK:{duration:205,loop:true,procedural:"STEP"},
+        ATTACK:{duration:340,loop:false,procedural:"LUNGE"},HURT:{duration:240,loop:false,procedural:"RECOIL"},DEATH:{duration:690,loop:false,procedural:"FALL"}}}},
+    avreshi_seal:{battle:{kind:"QUADRUPED",baseFacing:"E",height:.82,
+      quadruped:{species:"SEAL",colors:{fur:"#65737b",light:"#bac5c6",mark:"#45545c",eye:"#f0f5ef",nose:"#303941",wet:"#627881"}},
+      animations:{IDLE:{duration:1200,loop:true,procedural:"BREATHE"},WALK:{duration:320,loop:true,procedural:"STEP"},
+        ATTACK:{duration:490,loop:false,procedural:"LUNGE"},CAST:{duration:490,loop:false,procedural:"CAST"},
+        HURT:{duration:270,loop:false,procedural:"RECOIL"},DEATH:{duration:750,loop:false,procedural:"FALL"}}}},
+
     imperial_swordsman_default:{
       expressions:{},
       battle:{
@@ -860,7 +888,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
-    magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
+    avreshi:"avreshi.jpg",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",
     seraphina:"seraphina.png",nereia:"nereia.png",

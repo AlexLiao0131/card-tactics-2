@@ -1,4 +1,8 @@
 export const EQUIPMENT={
+  avreshi_moon_spear:{id:"avreshi_moon_spear",name:"月林祭司長矛",kind:"WEAPON",weaponKind:"POLEARM",attackType:"PIERCE",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},
+  avreshi_claws:{id:"avreshi_claws",name:"月林獵豹利爪",kind:"WEAPON",weaponKind:"CLAWS",attackType:"SLASH",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},
+  avreshi_fangs:{id:"avreshi_fangs",name:"月林獵豹獠牙",kind:"WEAPON",weaponKind:"FANGS",attackType:"PIERCE",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},
+  avreshi_moon_hide:{id:"avreshi_moon_hide",name:"月林祭司獸皮祭衣",kind:"ARMOR",type:"LIGHT",types:["LIGHT"],element:"NONE",affixes:[]},
   magda_gladiator_greatsword:{id:'magda_gladiator_greatsword',name:'鬥士巨劍',kind:'WEAPON',weaponKind:'GREATSWORD',materialId:'COMMON_METAL',attackType:'SLASH',element:'NONE',affixes:[],
     weaponDefense:{id:'magda_greatsword_parry',name:'巨劍招架',baseline:'GREATSWORD'}},
   magda_arena_armor:{id:'magda_arena_armor',name:'獅紋競技場鎧甲',kind:'ARMOR',type:'MEDIUM',types:['MEDIUM'],element:'NONE',affixes:[]},

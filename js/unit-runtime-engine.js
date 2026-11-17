@@ -286,6 +286,59 @@ export function createUnitRuntimeEngine(){
     return(cores||[]).find(core=>core?.owner===opponent&&
       Number.isFinite(Number(core.x))&&Number.isFinite(Number(core.y)))||null;
   }
+  // One canonical form state on the same live unit. No extra form runtime or
+  // hero-local write path. All game modes, AI and menu validation use this owner.
+  const currentForm=unit=>unit?.character?.forms?.[unit?.character?.forms?.default]?.skillIds?(unit.currentForm||unit.character.forms.default):null;
+  const formSpec=(unit,id=currentForm(unit))=>unit?.character?.forms?.[id]||null;
+  function skillIdsForUnit(unit){return [...(unit?.character?.skills||[])];}
+  function canShiftForm(unit,form){
+    const target=formSpec(unit,form);
+    if(!unit?.alive||!target||unit.acted||currentForm(unit)===form)return false;
+    if(unit.carryingUnitId||unit.shieldRidingOn)return false;
+    // A loaded raven cannot discard its cargo by leaving its carrying body.
+    if(unit?.cargo?.length&&form!=='RAVEN')return false;
+    if(form==='RAVEN'&&unit?.inventory?.length>1)return false;
+    const mode=String(unit.verticalState?.mode||'GROUND').toUpperCase();
+    if(mode==='DIVING'&&form!=='SEAL')return false;
+    // Direct raven -> ground/water forms is legal. Form adoption resolves the
+    // new traversal mode at the SAME tile and keeps prior action expenditure.
+    const map=unit._runtimeMap, tile=map?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y);
+    if(!tile)return false;
+    if(form==='SEAL'&&mode==='DIVING'&&Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;
+    return true;
+  }
+  function shiftForm(unit,form,{emit=true}={}){
+    if(!canShiftForm(unit,form))return false;
+    const next=formSpec(unit,form),original=unit._originalFormProfile||{};
+    const before=currentForm(unit),char=unit.character;
+    char.skills=[...next.skillIds];
+    char.passives=[...next.passives];
+    char.terrainTraits=[...next.terrainTraits];
+    char.visualId=next.visualId;
+    char.combat.move=Number(original.move??char.combat.move)+Number(next.movementModifier||0);
+    char.verticalMobility=next.verticalMobility?clone(next.verticalMobility):(original.verticalMobility?clone(original.verticalMobility):null);
+    char.cargo=next.cargo?clone(next.cargo):(original.cargo?clone(original.cargo):null);
+    char.transport=next.transport?clone(next.transport):(original.transport?clone(original.transport):null);
+    char.inventorySlots=next.inventorySlots??original.inventorySlots;
+    unit.currentForm=form;
+    const tile=unit._runtimeMap?.tiles?.find(t=>t.x===unit.x&&t.y===unit.y);
+    const vertical=globalThis.VerticalMobilityEngine;
+    if(tile&&vertical?.setMode){
+      const mode=form==='RAVEN'?'FLYING':form==='SEAL'&&Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)>0?'SWIMMING':'GROUND';
+      vertical.setMode(unit,tile,mode);
+    }
+    if(form==='CHEETAH'){
+      if(unit._autoStealthEpoch!==(unit._formActionEpoch||0)){
+        unit._autoStealthEpoch=unit._formActionEpoch||0;
+        globalThis.EffectEngine?.applyStealth?.(unit,{detectionRange:1,source:unit});
+        globalThis.EffectEngine?.resolveProximityReveal?.(unit,knownUnits());
+      }
+    }else if(before==='CHEETAH')globalThis.EffectEngine?.breakStealth?.(unit,'FORM_CHANGE');
+    if(before==='RAVEN'&&form!=='RAVEN')delete unit.sharedVisionAllyId;
+    if(emit)globalThis.UnitAnimationEngine?.emitPresentation?.('UNIT_FORM_CHANGED',{
+      unitId:unit.id,characterId:unit.character.id,from:before,to:form,x:unit.x,y:unit.y});
+    return true;
+  }
   function createFromResolvedCharacter({id,team,character,x,y,map,cores=null}){
     if(!character)return null;
     const runtimeCharacter=clone(character);
@@ -301,6 +354,19 @@ export function createUnitRuntimeEngine(){
       ownerCharacterId:runtimeCharacter.ownerCharacterId||null,
       cargo:[],inventory:[],itemInteractionUsed:0,
       resources:{},skillResources:createSkillResources(),effects:[],grantedSkills:[],_runtimeMap:map};
+    if(runtimeCharacter.forms?.[runtimeCharacter.forms.default]?.skillIds){
+      const active=runtimeCharacter.forms[runtimeCharacter.forms.default];
+      unit._originalFormProfile={move:runtimeCharacter.combat.move,
+        verticalMobility:runtimeCharacter.verticalMobility?clone(runtimeCharacter.verticalMobility):null,
+        cargo:runtimeCharacter.cargo?clone(runtimeCharacter.cargo):null,transport:runtimeCharacter.transport?clone(runtimeCharacter.transport):null,
+        inventorySlots:runtimeCharacter.inventorySlots};
+      unit.currentForm=runtimeCharacter.forms.default;
+      unit._formActionEpoch=0;
+      runtimeCharacter.skills=[...active.skillIds];
+      runtimeCharacter.passives=[...active.passives];
+      runtimeCharacter.terrainTraits=[...active.terrainTraits];
+      runtimeCharacter.visualId=active.visualId;
+    }
     for(const passive of SkillDatabase.passiveList(runtimeCharacter?.passives||[])){
       for(const effect of passive.openingEffects||[])unit.effects.push(clone(effect));
     }
@@ -335,6 +401,7 @@ export function createUnitRuntimeEngine(){
   function turnActors(units,team){return living(units,team).filter(u=>u.participatesInTurn!==false)}
   function resetActions(units,team){reconcileCompanions(units);turnActors(units,team).forEach(u=>{
     u.moved=false;u.acted=false;u.waited=false;u.itemInteractionUsed=0;
+    if(currentForm(u))u._formActionEpoch=(u._formActionEpoch||0)+1;
     syncMana(u);syncResources(u,{applyRecovery:true});reconcileBlood(u);
     // Applied after this unit's previous action forfeits exactly ONE new
     // action opportunity, regardless of which team's round applied the stun.
@@ -354,6 +421,11 @@ export function createUnitRuntimeEngine(){
     return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
   }
   function canUseSkill(unit,skill,world=null){
+    if(currentForm(unit)&&skill?.id&&!skillIdsForUnit(unit).includes(skill.id))return false;
+    if(skill?.utilityAction?.type==='SHAPESHIFT'&&
+       !canShiftForm(unit,skill.utilityAction.form))return false;
+    if(unit?.character?.forms&&skill?.utilityAction?.type==='SET_VERTICAL_MODE'&&
+       skill.utilityAction.mode==='DIVING'&&unit.carryingUnitId)return false;
     if(unit?.shieldRidingOn&&skill?.utilityAction?.type==="SWAP_ALLIES")return false;
     if(ColinShieldMobilityEngine.shieldOccupied(unit)&&skill?.requiresEquipment==="colin_full_body_shield")return false;
     if(skill?.sanctuary){
@@ -417,9 +489,17 @@ export function createUnitRuntimeEngine(){
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
     return labels.length?labels.join(" / "):"無消耗";
   }
-  function applyResourceScaling(unit,skill){
+  function applyResourceScaling(unit,skill,environmentState=null){
+    // Month phase is ENVIRONMENT DATA, never a consumable resource.
+    // Preserve all existing resource-scaling logic below this phase multiplier.
     skill=skillForUnit(unit,skill);
     if(!skill||skill._resourceScaled)return skill;
+    const moon=environmentState||unit?._runtimeEnvironmentState||
+      globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null;
+    if(skill.moonPhaseBonus&&moon?.timeOfDay==='NIGHT'&&moon?.moonlight===skill.moonPhaseBonus){
+      const bonus=Number(skill.moonPhaseMultiplier||1.25);
+      skill={...skill,power:Number(skill.power||0)*bonus};
+    }
     let multiplier=1;
     const rageSnapshot=rageUser(unit)?rageValue(unit):null;
     if(rageSnapshot!==null&&skill?.attackType&&Number(skill.power||0)>0){
@@ -497,7 +577,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;
