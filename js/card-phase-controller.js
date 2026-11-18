@@ -1,3 +1,4 @@
+import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 (()=>{
 "use strict";
   const TARGETED_SPELL_EFFECTS=new Set(["AREA_FIRE","AREA_PUSH","AREA_HEAL","AREA_DAMAGE","AREA_RELATION","AREA_BUFF","DISPEL","HYDROLOGY_FLOOD","WHIRLPOOL"]);
@@ -101,29 +102,14 @@ function create(ctx){
   function resolveAreaDamageTile(card,effect,tile,s,environmentEvents){
     const u=ctx.unitAt(tile.x,tile.y);
     if(u&&Number(effect.damage||0)>0)ctx.damageUnitFlat(u,effect.damage||0,card.name);
-    const events=EnvironmentEngine.apply({map:s.map,state:s.environmentState,x:tile.x,y:tile.y,forces:effect.forces||[]})||[];
+    const events=AreaSpellMechanics.applyTerrainImpact({map:s.map,environmentState:s.environmentState,
+      affected:[tile],forces:effect.forces||[],logEnvironmentEvent:ctx.logEnvironmentEvent});
     environmentEvents.push(...events);
-    events.forEach(ctx.logEnvironmentEvent);
   }
   function finishAreaDamage(card,center,effect,environmentEvents){
-    const shockwave=effect.shockwave||null;
-    const innerRadius=Math.max(0,Number(effect.radius||0));
-    const shockwaveRadius=innerRadius+Math.max(0,Number(shockwave?.outerRadius||0));
-    if(shockwave&&shockwaveRadius>innerRadius){
-      const targets=[],seen=new Set();
-      for(const tile of ctx.aoeTiles(center,shockwaveRadius)){
-        const range=Math.abs(Number(tile.x)-Number(center.x))+Math.abs(Number(tile.y)-Number(center.y));
-        if(range<=innerRadius)continue;
-        const unit=ctx.unitAt(tile.x,tile.y);
-        if(!unit?.alive||seen.has(unit.id))continue;
-        seen.add(unit.id);targets.push(unit);
-      }
-      if(targets.length)ctx.pushLog(`${card.name} 的衝擊波掃過外圈｜${targets.length} 個目標。`,"BATTLE");
-      for(const unit of targets){
-        if(!unit.alive)continue;
-        ctx.applyForcedMovement(center,unit,Math.max(0,Number(shockwave.distance||0)),{name:`${card.name}衝擊波`,lift:Math.max(0,Number(shockwave.lift||0)),damage:Math.max(0,Number(shockwave.damage||0)),damageType:shockwave.damageType||"PHYSICAL",resistAxes:shockwave.resistAxes||null});
-      }
-    }
+    AreaSpellMechanics.resolveShockwave({center,innerRadius:Number(effect.radius||0),
+      shockwave:effect.shockwave||null,aoeTiles:ctx.aoeTiles,unitAt:ctx.unitAt,
+      applyForcedMovement:ctx.applyForcedMovement,name:card.name,pushLog:ctx.pushLog});
     ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${card.name} 引發環境連鎖`});
   }
   // Server-only synchronous path: same tile and shockwave reducers, no frames,
@@ -195,7 +181,10 @@ function create(ctx){
     if(effect.type==="AREA_FIRE"){
       const environmentEvents=[];affected.forEach(tile=>{const events=EnvironmentEngine.apply({map:s.map,state:s.environmentState,x:tile.x,y:tile.y,forces:effect.forces||["FIRE"]})||[];environmentEvents.push(...events);events.forEach(ctx.logEnvironmentEvent);});ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${card.name} 引發環境連鎖`});affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(u)ctx.applyEnvironmentHazardToUnit(u,{reason:"遭野火波及",waterTrigger:"CHECK",includeElectric:false,includeBoiling:false,includeFire:true});});
     }else if(effect.type==="AREA_PUSH"){
-      const events=affected.map(tile=>EnvironmentEngine.createTornado(s.environmentState,tile.x,tile.y,{map:s.map,duration:2,pushDistance:Number(effect.distance||2),lift:Number(effect.lift||3),damage:Number(effect.damage||20),fireDamage:Number(effect.fireTornadoDamage||45),resistAxes:effect.resistAxes||{horizontal:false,vertical:true}}));events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:`${card.name} 捲起實際水量`});if(events.some(e=>e.type==="FIRE_TORNADO_CREATED"))ctx.pushLog("🔥🌪 火焰與龍捲風結合，形成火龍捲！","SYSTEM");affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(!u)return;const active=EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y),wind=active.find(e=>e.type===EnvironmentEngine.EFFECT.FIRE_TORNADO)||active.find(e=>e.type===EnvironmentEngine.EFFECT.TORNADO),windElement=String(wind?.element||"AIR").toUpperCase();if(u.alive)ctx.applyForcedMovement(center,u,Number(wind?.pushDistance||effect.distance||2),{name:wind?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||windElement==="FIRE"?"火龍捲":windElement==="WATER"?"水龍捲":"龍捲風",lift:Number(wind?.lift||effect.lift||0),damage:Number(wind?.damage||effect.damage||0),damageType:wind?.damageType||"PHYSICAL",resistAxes:wind?.resistAxes||effect.resistAxes});});
+      AreaSpellMechanics.resolveAreaPush({map:s.map,environmentState:s.environmentState,
+        center,affected,effect,name:card.name,unitAt:ctx.unitAt,
+        applyForcedMovement:ctx.applyForcedMovement,logEnvironmentEvent:ctx.logEnvironmentEvent,
+        resolveEnvironmentEvents:ctx.resolveEnvironmentEvents,pushLog:ctx.pushLog});
     }else if(effect.type==="AREA_HEAL"){
       affected.forEach(tile=>{const u=ctx.unitAt(tile.x,tile.y);if(!u?.alive||u.team!==TEAM.PLAYER)return;const before=u.hp;u.hp=Math.min(u.character.combat.hp,u.hp+Number(effect.heal||0));ctx.pushLog(`${card.name} → ${u.character.name}｜回復 ${u.hp-before} HP｜HP ${u.hp}。`,"BATTLE");});
 

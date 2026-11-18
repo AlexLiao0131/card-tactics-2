@@ -657,7 +657,8 @@ export class EnvironmentRenderer{
             this.createMeteorStrike({x:event.targetX,y:event.targetY,sequence:event.sequence,
               fallDuration:presentation.fallDuration,impactDuration:presentation.impactDuration,
               innerRadius:Math.max(0,Number(druidSkill.radius||0)),
-              shockwaveRadius:Math.max(0,Number(druidSkill.radius||0)),lunar:true},state);
+              shockwaveRadius:Math.max(0,Number(druidSkill.radius||0))+
+                Math.max(0,Number(card?.effect?.shockwave?.outerRadius||0)),lunar:true},state);
           }
         }
         continue;

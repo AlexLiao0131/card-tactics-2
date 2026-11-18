@@ -1,3 +1,4 @@
+import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 (()=>{
   "use strict";
 
@@ -1414,9 +1415,18 @@
       }
       if(skill.environmentSpell==='TORNADO'){
         if(!environmentState){UnitRuntimeEngine.endBloodTransaction(attacker);return skillFailure(attacker,skill,"ENVIRONMENT_UNAVAILABLE",center);}
-        const event=EnvironmentEngine.createTornado(environmentState,center.x,center.y,{map});
-        ctx.logEnvironmentEvent?.(event);
-        ctx.resolveEnvironmentEvents?.([event],{reason:`${skill.name} 形成龍捲風`});
+        const cardEffect=CardDatabase.get('tornado_card')?.effect;
+        // One card-owned AREA_PUSH profile: identical five-cell footprint,
+        // cluster geometry, contact damage, air lift and horizontal displacement.
+        // The druid already spent MP above; never spend the card's crystals.
+        if(cardEffect?.type!=='AREA_PUSH'||Number(skill.radius)!==Number(cardEffect.radius))
+          throw Error('CANONICAL_TORNADO_CARD_EFFECT_MISMATCH');
+        const affected=ctx.aoeTiles(center,Number(cardEffect.radius));
+        const effect=AreaSpellMechanics.resolveAreaPush({map,environmentState,center,
+          affected,effect:cardEffect,name:skill.name,unitAt:ctx.unitAt,
+          applyForcedMovement:ctx.applyForcedMovement,logEnvironmentEvent:ctx.logEnvironmentEvent,
+          resolveEnvironmentEvents:ctx.resolveEnvironmentEvents,pushLog:ctx.pushLog});
+        ctx.pushLog(`${attacker.character.name} 施放${skill.name}｜與卡牌相同的 ${effect.affectedTiles} 格龍捲風｜接觸 ${effect.contacts} 名單位。`,"BATTLE");
         UnitRuntimeEngine.endBloodTransaction(attacker);
         return finishActiveSkill(attacker);
       }
@@ -1602,6 +1612,20 @@
         });
       }
       applyMapEffects(attacker,affected,skill);
+      // Card Starfall owns terrain forces + the independent outer shockwave.
+      // The druid's primary footprint and magic damage stay with SkillDatabase
+      // and the existing MAGIC_POWER reducer above (no extra fixed 100 hit).
+      if(skill.id==='avreshi_starfall'){
+        const cardEffect=CardDatabase.get('starfall_card')?.effect;
+        if(cardEffect?.type!=='AREA_DAMAGE'||!cardEffect.shockwave)
+          throw Error('CANONICAL_STARFALL_CARD_EFFECT_UNAVAILABLE');
+        const meteorEvents=AreaSpellMechanics.applyTerrainImpact({map,environmentState,
+          affected,forces:cardEffect.forces||[],logEnvironmentEvent:ctx.logEnvironmentEvent});
+        AreaSpellMechanics.resolveShockwave({center,innerRadius:Number(skill.radius),
+          shockwave:cardEffect.shockwave,aoeTiles:ctx.aoeTiles,unitAt:ctx.unitAt,
+          applyForcedMovement:ctx.applyForcedMovement,name:skill.name,pushLog:ctx.pushLog});
+        ctx.resolveEnvironmentEvents?.(meteorEvents,{reason:`${skill.name} 引發環境連鎖`});
+      }
       const environmentEvents=[];
       affected.forEach(tile=>{
         const events=environmentState&&skill.environmentForces
