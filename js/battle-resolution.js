@@ -442,8 +442,6 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       bloodRuntime?.beginBloodTransaction?.(a.actor);
       const spent=followup?{cost:0,resources:{}}:hooks.consumeSkill?.(a.actor,skill);
       if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
-      if(spent&&!followup&&skill?._lunarResolved===true)
-        bloodRuntime?.gainAstralPower?.(a.actor,skill,c.environmentState);
       // Consume analysis once at formal attack commitment, before accuracy,
       // defense, shield and critical calculations (also on a MISS).
       if(skill.analysisStatusId&&Number.isFinite(Number(skill.analysisPower))&&

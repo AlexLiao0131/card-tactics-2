@@ -1355,8 +1355,6 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       UnitRuntimeEngine.beginBloodTransaction(attacker);
       const spent=ctx.consumeSkill(attacker,skill);
       if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
-      if(skill._lunarResolved===true)
-        UnitRuntimeEngine.gainAstralPower(attacker,skill,environmentState);
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       // One bow enchant per committed fan attack; never one charge per victim.
       const fanEnchantment=skill.fanShot?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;

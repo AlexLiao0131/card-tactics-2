@@ -3,12 +3,6 @@ const POISON_THROW_TOTAL_DAMAGE=18; // Existing poison knife bonus, distributed 
 const POISON_THROW_DURATION=3;
 export const SKILLS={
   avreshi_moonfire:{id:"avreshi_moonfire",name:"月火",description:"以銀白月焰灼燒目標，造成自然魔法傷害並留下月火持續傷害；直接有效命中產生 12 星能，後續 DOT 不會重複累積。",category:"MAGIC",power:1,manaCost:16,range:{min:2,max:5},attackType:"MAGIC",element:"NATURE",target:"ENEMY",support:false,astralGain:12,astralGainTrigger:"HIT",statusEffects:[{type:"DAMAGE_OVER_TIME",id:"AVRESHI_MOONFIRE_DOT",name:"月火",classification:"NEGATIVE",duration:3,amount:12,chance:100}]},
-  avreshi_moon_cycle:{id:"avreshi_moon_cycle",name:"新月術",description:"月相術循環：新月→半月→滿月→新月；正式施放後推進，並產生星能。晴朗月夜依照世界月相獲得額外星能。",category:"MAGIC",power:.8,manaCost:14,range:{min:2,max:5},attackType:"MAGIC",element:"LIGHT",target:"ENEMY",support:false,
-    lunarCycle:[
-      {name:"新月術",power:.8,manaCost:14,astralGain:10,target:"ENEMY",description:"第一階段：新月攻擊，正式施放後產生 10 星能並進入半月術。"},
-      {name:"半月術",power:1.1,manaCost:20,astralGain:20,target:"ENEMY",description:"第二階段：半月攻擊，正式施放後產生 20 星能並進入滿月術。"},
-      {name:"滿月術",power:1.4,manaCost:28,astralGain:40,target:"TILE",targetType:"AOE",radius:1,areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},description:"第三階段：以月白光芒轟擊中心及四鄰敵人，正式施放後產生 40 星能並回到新月術。"}
-    ]},
   avreshi_tornado:{id:"avreshi_tornado",name:"龍捲風",description:"指定合法地格引導既有龍捲風環境力量，風壓、捲動和障礙物碰撞由原本環境引擎結算。",category:"MAGIC",power:0,manaCost:24,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:1,element:"WIND",support:false,environmentSpell:"TORNADO"},
   avreshi_lightning:{id:"avreshi_lightning",name:"落雷",description:"由天空引落雷電，觸發現有水域導電、濕地連鎖和敵我波及規則；直接有效命中產生 16 星能，傳導不重複累積。",category:"MAGIC",power:1.1,manaCost:22,range:{min:2,max:5},target:"ENEMY",attackType:"MAGIC",element:"THUNDER",support:false,environmentSpell:"LIGHTNING",astralGain:16,astralGainTrigger:"HIT"},
   avreshi_rejuvenation:{id:"avreshi_rejuvenation",name:"回春術",description:"對一名友軍施加持續回春，不會將治療轉化為護盾，也不解除中毒、流血與感染；對受傷友軍首次施加回春術產生 12 星能，刷新或 HOT 不重複累積。",category:"MAGIC",power:0,manaCost:22,range:{min:0,max:4},target:"ALLY",support:false,astralGain:12,astralGainTrigger:"EFFECTIVE_HEAL",effects:[{type:"HEAL_OVER_TIME",id:"AVRESHI_REJUVENATION",name:"回春",classification:"POSITIVE",duration:3,amount:20}]},
