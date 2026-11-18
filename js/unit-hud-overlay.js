@@ -1,4 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
+import {visualManagerFor} from "./vfx-manager.js";
 
 const clamp01=value=>Math.max(0,Math.min(1,Number(value||0)));
 // Temporary semantic pictograms. The status owner remains EffectEngine /
@@ -126,6 +127,7 @@ export class UnitHudOverlay{
     this.nodes=new Map();
     this.hudUnitId=null;
     this.floats=[];
+    this.floatMapId=null;
     this.inspectorUnitId=null;
     this.failedIcons=new Set();
 
@@ -347,6 +349,12 @@ export class UnitHudOverlay{
   presentEvents(events){
     const now=performance.now();
     const living=new Set(this.units.map(unit=>String(unit.id)));
+    // The authoritative event stream is ordered. Link an actual result to the
+    // committed attacking/casting action, NOT to an invented impact timer.
+    // Some AoE executors emit their resolved hit *before* the visual action;
+    // resolve associations across the WHOLE authoritative drain batch.
+    const actions=(events||[]).filter(event=>event?.type==='UNIT_ANIMATION'&&
+      event.skillId&&(event.state==='ATTACK'||event.state==='CAST'));
     for(const event of events||[]){
       if(event?.type!=="UNIT_FLOAT_TEXT"||!event.unitId)continue;
       // The snapshot is already filtered by TacticalEngine visibility.
@@ -365,16 +373,34 @@ export class UnitHudOverlay{
       const node=createElement("span",`unit-float-text unit-float-${kind}`);
       node.textContent=text;
       this.root.appendChild(node);
-      const stack=Math.min(3,this.floats.filter(item=>item.unitId===event.unitId&&now-item.start<260).length);
+      // DoT and autonomous environment changes are not part of a fresh cast;
+      // leave them immediate. Single-hit, ranged and AoE results share the
+      // official caster animation/VFX sequence from this same drain batch.
+      const animateResult=kind!=='dot'&&(event.skillId||outcomes[event.kind]);
+      const action=animateResult?actions.filter(candidate=>
+        event.skillId?candidate.skillId===event.skillId:
+          candidate.targetId!=null&&String(candidate.targetId)===String(event.unitId))
+        .sort((a,b)=>Math.abs(Number(a.sequence)-Number(event.sequence))-
+          Math.abs(Number(b.sequence)-Number(event.sequence)))[0]||null:null;
+      const stack=Math.min(3,this.floats.filter(item=>item.unitId===event.unitId&&
+        item.start!=null&&now-item.start<260).length);
+      node.hidden=!!action;
       this.floats.push({node,kind,unitId:event.unitId,x:event.x,y:event.y,
-        renderZ:event.renderZ,afterDeath:!!event.afterDeath,start:now,stack,
-        lifetime:kind==="status"?1400:kind==="critical"?1250:kind==="dot"?1350:1100});
+        renderZ:event.renderZ,afterDeath:!!event.afterDeath,start:action?null:now,
+        pendingAction:action||null,
+        stack,lifetime:kind==="status"?1400:kind==="critical"?1250:kind==="dot"?1350:1100});
     }
     // Bound DOM work under AoE and mass-status effects; never retain old nodes.
     while(this.floats.length>40)this.floats.shift().node.remove();
   }
 
   sync(state){
+    // Map resets must never release a delayed result into the next battle.
+    if(this.floatMapId!==null&&this.floatMapId!==state?.map?.id){
+      for(const item of this.floats)item.node.remove();
+      this.floats=[];
+    }
+    this.floatMapId=state?.map?.id??null;
     this.environmentState=state?.presentation?.environment||globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null;
     this.units=[...(state?.units||[])];
     const alive=new Set();
@@ -410,13 +436,33 @@ export class UnitHudOverlay{
     const offsetX=canvasRect.left-rootRect.left;
     const offsetY=canvasRect.top-rootRect.top;
     const now=performance.now(),retained=[];
+    const visual=visualManagerFor(this.scene);
     for(const item of this.floats){
+      if(item.pendingAction){
+        if(visual?.visualPending(item.pendingAction)){
+          item.node.hidden=true;
+          retained.push(item);
+          continue;
+        }
+        item.pendingAction=null;
+        item.start=now;
+      }
       const elapsed=now-item.start;
       if(elapsed>=item.lifetime){item.node.remove();continue;}
       const progress=Math.max(0,elapsed/item.lifetime);
-      const world=new BABYLON.Vector3(Number(item.x)*TILE_SIZE,
-        Number(item.renderZ||0)*ELEVATION_HEIGHT+UNIT_VISUAL_HEIGHT+.73,
-        Number(item.y)*TILE_SIZE);
+      // A moving/knocked-back target's text uses the same interpolated mesh
+      // pose as the visible figure; defeated units retain the event position.
+      const entry=visual?.units?.entries?.get(String(item.unitId))||
+        visual?.units?.entries?.get(item.unitId);
+      const pose=entry?.root&&!entry.root.isDisposed?.()
+        ?entry.root.getAbsolutePosition?.()||entry.root.position:null;
+      const world=pose
+        ?new BABYLON.Vector3(pose.x,
+            pose.y+(entry.kind==='CAPSULE'?Number(entry.height||0)/2:
+              Number(entry.height||UNIT_VISUAL_HEIGHT))+.73,pose.z)
+        :new BABYLON.Vector3(Number(item.x)*TILE_SIZE,
+            Number(item.renderZ||0)*ELEVATION_HEIGHT+UNIT_VISUAL_HEIGHT+.73,
+            Number(item.y)*TILE_SIZE);
       const projected=BABYLON.Vector3.Project(world,BABYLON.Matrix.Identity(),transform,viewport);
       if(projected.z<0||projected.z>1){item.node.hidden=true;retained.push(item);continue;}
       const lateral=item.kind==="magic-damage"||item.kind==="magic-critical"?18:item.kind==="physical-damage"||item.kind==="physical-critical"?-18:0;const x=offsetX+projected.x*scaleX+lateral,y=offsetY+projected.y*scaleY;
@@ -430,6 +476,7 @@ export class UnitHudOverlay{
 
   diagnostics(){return{count:this.nodes.size,expandedUnitId:this.hudUnitId,activeFloats:this.floats.length};}
   dispose(){
+    for(const item of this.floats)item.node.remove();
     this.releaseInspectorHud();
     this.root.remove();this.nodes.clear();this.units=[];this.hudUnitId=null;this.inspectorUnitId=null;this.floats=[];this.failedIcons.clear();
   }

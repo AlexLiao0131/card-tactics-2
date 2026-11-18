@@ -25,6 +25,83 @@ import {ShieldGuardVfx} from './shield-guard-vfx.js';
 import {LiviaDualityVfx} from './livia-duality-vfx.js';
 import {PhysicalImpactVfx} from './physical-impact-vfx.js';
 
+/** The Babylon scene is the identity of one visual playback session.
+ * No game-state writer, global unit position cache, or secondary frame loop. */
+const liveManagers=new WeakMap();
+export const visualManagerFor=scene=>liveManagers.get(scene)||null;
+
+const UNIT_AURA_MODULES=new Set([
+  'nature-growth','blood-ritual','holy-ritual','aquatic-magic',
+  'blade-stealth','livia-duality','dimensional'
+]);
+
+/** Resolve a visible character's ACTUAL interpolated Babylon root. The
+ * authoritative snapshot coordinates are destinations and must NOT position
+ * a body-bound aura while UnitRenderer is still crossing tiles. */
+export function attachAurasToRenderedUnits(instances,unitRenderer){
+  const entries=unitRenderer?.entries;
+  if(!entries)return 0;
+  const entryFor=id=>entries.get(String(id))||entries.get(id);
+  const follow=(root,id,height)=>{
+    const entry=entryFor(id);
+    if(!root?.position||!entry?.root||entry.root.isDisposed?.())return false;
+    const position=entry.root.getAbsolutePosition?.()||entry.root.position;
+    if(!position)return false;
+    root.position.copyFrom(position);
+    // CAPSULE roots are centered; FIGURE/BIRD/QUADRUPED roots stand on ground.
+    root.position.y+=(entry.kind==='CAPSULE'?-Number(entry.height||0)/2:0)+height;
+    return true;
+  };
+  let moved=0;
+  for(const [module,handler] of instances||[]){
+    if(UNIT_AURA_MODULES.has(module)){
+      for(const [key,fx] of handler?.auras||[]){
+        if(String(key).startsWith('SOURCE:')||fx?.soulSource)continue;
+        const candidates=module==='livia-duality'||module==='dimensional'
+          ?[String(key)]:[String(key).split(':').at(-1),String(key)];
+        const unitId=candidates.find(id=>entryFor(id));
+        if(unitId==null)continue;
+        const node=fx?.root||fx;
+        const offset=module==='livia-duality'?.12:module==='dimensional'?.35:
+          Number(fx?.above??.75);
+        if(follow(node,unitId,offset))moved++;
+      }
+    }
+    // Cassandra's analysis glyphs have a distinct map, not an aura record.
+    if(module==='arcane')for(const [unitId,glyph] of handler?.analysisGlyphs||[])
+      if(follow(glyph?.root,unitId,1.58))moved++;
+    // The enchantment module already follows the real weapon pivot itself;
+    // never overwrite that precise pose with the generic body origin.
+  }
+  return moved;
+}
+
+/** A float tied to an official action must wait for its actual Babylon
+ * playback; no speculative millisecond/skill damage timers are involved. */
+export function actionVisualsPending(unitRenderer,instances,action){
+  if(!action||!Number.isSafeInteger(action.sequence))return false;
+  const same=e=>e?.type==='UNIT_ANIMATION'&&e.sequence===action.sequence&&
+    String(e.unitId)===String(action.unitId)&&e.skillId===action.skillId;
+  for(const queue of unitRenderer?.animationQueues?.values?.()||[])
+    if(queue.some(same))return true;
+  for(const animation of unitRenderer?.activeAnimations?.values?.()||[])
+    if(same(animation?.event))return true;
+  // Some official projectile and impact modules predate the common fx.event
+  // receipt. Their active objects still identify the original actor, or are
+  // restricted to the skill's routed presentation module. Never guess a delay.
+  const routed=new Set(vfxRoutesForEvent(action));
+  for(const [module,handler] of instances||[]){
+    for(const fx of handler?.active||[]){
+      if(same(fx?.event))return true;
+      if(fx?.event?.sequence!=null)continue; // a different official action
+      const actor=fx?.sourceId??fx?.actorId??null;
+      if(actor!=null&&String(actor)===String(action.unitId))return true;
+      if(actor==null&&routed.has(module))return true;
+    }
+  }
+  return false;
+}
+
 const factories=Object.freeze({
   'livia-duality':(scene,ctx)=>new LiviaDualityVfx(scene,{units:ctx.units}),
   'shield-guard':scene=>new ShieldGuardVfx(scene),
@@ -70,10 +147,12 @@ export class VfxManager{
       this.instances.set(module,factory(scene,ctx));
       this.seen.set(module,new Set());
     }
+    liveManagers.set(scene,this);
     // Every behavior already registered its own scene-disposal hook above.
     // Release central references AFTER those hooks without disposing twice.
     scene.onDisposeObservable?.addOnce?.(()=>{
       this.disposed=true;
+      if(liveManagers.get(scene)===this)liveManagers.delete(scene);
       this.instances.clear();this.seen.clear();this.errors.clear();
     });
   }
@@ -122,7 +201,16 @@ export class VfxManager{
       try{handler.updateFrame(now)}
       catch(error){this.errors.set(module,`FRAME:${String(error?.message||error)}`)}
     }
+    // UnitRenderer.updateFrame ran immediately before this manager. One shared
+    // late pose pass keeps ALL body-bound effects with that rendered frame.
+    try{
+      attachAurasToRenderedUnits(this.instances,this.units);
+      this.errors.delete('body-attachment');
+    }catch(error){
+      this.errors.set('body-attachment',String(error?.message||error));
+    }
   }
+  visualPending(action){return actionVisualsPending(this.units,this.instances,action)}
   diagnostics(){
     return{
       instances:this.instances.size,
@@ -141,6 +229,7 @@ export class VfxManager{
   dispose(){
     if(this.disposed)return;
     this.disposed=true;
+    if(liveManagers.get(this.scene)===this)liveManagers.delete(this.scene);
     for(const handler of this.instances.values())handler.dispose?.();
     this.instances.clear();this.seen.clear();this.errors.clear();
   }
