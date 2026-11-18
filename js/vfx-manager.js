@@ -7,7 +7,7 @@
  * Adding a skill that reuses an effect role: edit vfx-database.js only.
  * Adding a genuinely new geometry type: register one new behavior factory here.
  */
-import {VfxDatabase} from './vfx-database.js';
+import {VfxDatabase} from './vfx-database.js?rev=20261118-avreshi-vfx-2';
 import {isBowProjectileEvent,ArrowProjectileVfx} from './arrow-projectile-vfx.js';
 import {FireBowExplosionVfx} from './fire-bow-explosion-vfx.js';
 import {HolyBladeVfx} from './holy-blade-vfx.js';
@@ -24,7 +24,7 @@ import {SwordsmanshipVfx} from './swordsmanship-vfx.js';
 import {ShieldGuardVfx} from './shield-guard-vfx.js';
 import {LiviaDualityVfx} from './livia-duality-vfx.js';
 import {PhysicalImpactVfx} from './physical-impact-vfx.js';
-import {WildMagicVfx} from './wild-magic-vfx.js';
+import {WildMagicVfx} from './wild-magic-vfx.js?rev=20261118-avreshi-vfx-2';
 
 /** The Babylon scene is the identity of one visual playback session.
  * No game-state writer, global unit position cache, or secondary frame loop. */
@@ -180,6 +180,15 @@ export class VfxManager{
         groups.get(module).push({event,key});
       }
     }
+    const druidActions=(Array.isArray(events)?events:[]).filter(event=>
+      event?.type==='UNIT_ANIMATION'&&String(event.skillId||'').startsWith('avreshi_'));
+    if(druidActions.length)for(const action of druidActions){
+      globalThis.CardTacticsDiagnostics?.push?.('AVRESHI_VFX_DISPATCH',{
+        skillId:action.skillId,sequence:action.sequence,unitId:action.unitId,
+        targetX:action.targetX,targetY:action.targetY,
+        routes:vfxRoutesForEvent(action),visualBuild:'20261118-avreshi-vfx-2'
+      });
+    }
     const failures=[];
     for(const [module,handler] of this.instances){
       const pending=groups.get(module);
@@ -215,6 +224,7 @@ export class VfxManager{
   visualPending(action){return actionVisualsPending(this.units,this.instances,action)}
   diagnostics(){
     return{
+      visualBuild:'20261118-avreshi-vfx-2',
       instances:this.instances.size,
       active:Object.fromEntries([...this.instances].map(([key,handler])=>[key,handler.diagnostics?.()||{}])),
       errors:Object.fromEntries(this.errors),

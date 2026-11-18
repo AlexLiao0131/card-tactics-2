@@ -2,7 +2,7 @@ import { BattleCamera } from "./battle-camera.js";
 import { TerrainRenderer } from "./terrain-renderer.js";
 import { WaterRenderer } from "./water-renderer.js";
 import { UnitRenderer } from "./unit-renderer.js";
-import { VfxManager } from "./vfx-manager.js";
+import { VfxManager } from "./vfx-manager.js?rev=20261118-avreshi-vfx-2";
 
 
 
@@ -15,7 +15,7 @@ import { VfxManager } from "./vfx-manager.js";
 import { UnitHudOverlay } from "./unit-hud-overlay.js";
 import { ObjectiveRenderer } from "./objective-renderer.js";
 import { MapObjectRenderer } from "./map-object-renderer.js";
-import { EnvironmentRenderer } from "./environment-renderer.js";
+import { EnvironmentRenderer } from "./environment-renderer.js?rev=20261118-avreshi-vfx-2";
 import { HighlightRenderer } from "./highlight-renderer.js";
 import { GridPicker } from "./grid-picker.js";
 import { BattleInputController } from "./battle-input-controller.js";

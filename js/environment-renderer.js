@@ -492,10 +492,30 @@ export class EnvironmentRenderer{
     const body=BABYLON.MeshBuilder.CreateTube(`weather-lightning-body-${event.sequence||0}`,{path:points,radius:.055,tessellation:6,cap:BABYLON.Mesh.CAP_ALL},this.scene);
     body.material=this.materials.lightningBolt;body.isPickable=false;body.visibility=.98;
     const branchPoints=[points[6],new BABYLON.Vector3(points[6].x+.34,targetY+1.65,points[6].z-.22),new BABYLON.Vector3(points[6].x+.55,targetY+1.18,points[6].z-.33)];const branch=BABYLON.MeshBuilder.CreateLines(`weather-lightning-branch-${state?.revision||0}-${x}-${y}`,{points:branchPoints},this.scene);branch.color=new BABYLON.Color3(.58,.82,1);branch.alpha=.72;branch.isPickable=false;
-    this.lightningBursts.push({meshes:[bolt,branch,body],age:0,duration:.62,flashes:[
-      {start:0,end:.055,power:2.75,alpha:1},
-      {start:.095,end:.145,power:1.55,alpha:.72},
-      {start:.195,end:.285,power:2.35,alpha:.94}
+    // Weather flashes retain the original short profile. A deliberate spell
+    // needs a visible strike AND impact after the flash, on the same renderer.
+    const spell=event.skillId==='avreshi_lightning';
+    const duration=spell?1.22:.62;
+    let impact=null;
+    if(spell){
+      impact=BABYLON.MeshBuilder.CreateTorus(`avreshi-lightning-ground-${event.sequence||0}`,
+        {diameter:1.20,thickness:.10,tessellation:28},this.scene);
+      impact.rotation.x=Math.PI/2;impact.position.set(wx,targetY+.07,wz);
+      impact.material=this.materials.lightningBolt;impact.isPickable=false;impact.visibility=0;
+      // Roots and points of the electrical fan share the existing lightning
+      // material; they are visual-only and do not alter water conduction.
+      const fan=BABYLON.MeshBuilder.CreateLines(`avreshi-lightning-ground-fan-${event.sequence||0}`,
+        {points:[new BABYLON.Vector3(wx-.6,targetY+.055,wz+.22),
+          new BABYLON.Vector3(wx,targetY+.06,wz),
+          new BABYLON.Vector3(wx+.52,targetY+.055,wz-.30)]},this.scene);
+      fan.color=new BABYLON.Color3(.74,.90,1);fan.isPickable=false;
+      impact.metadata={fan};
+    }
+    this.lightningBursts.push({meshes:[bolt,branch,body,...(impact?[impact,impact.metadata.fan]:[])],
+      impact,age:0,duration,spell,flashes:[
+      {start:0,end:.07,power:2.75,alpha:1},
+      {start:.11,end:.19,power:1.55,alpha:.72},
+      {start:.23,end:.34,power:2.35,alpha:.94}
     ]});this.lightningFlash.intensity=Math.max(this.lightningFlash.intensity,2.75);
   }
 
@@ -529,6 +549,15 @@ export class EnvironmentRenderer{
     const root=this.root(`meteor-fall-${event.sequence||state?.revision||0}`);root.position.copyFrom(start);root.metadata={castShadow:false,presentationType:"METEOR_STRIKE"};
     const body=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-body-${event.sequence||0}`,{type:2,size:.72},this.scene),material('meteorRock','lunarMeteorRock'));body.metadata={castShadow:false};
     body.scaling.set(1.18,1.02,1.24);
+    // The unchanged Starfall card keeps its fiery meteor. Only the druid's
+    // moon-aspected reuse adds a rotating celestial crown to the SAME body.
+    let moonHalo=null;
+    if(lunar){
+      moonHalo=this.addMesh(root,BABYLON.MeshBuilder.CreateTorus(
+        `avreshi-starfall-orbit-${event.sequence||0}`,{diameter:1.85,thickness:.075,tessellation:30},
+        this.scene),this.materials.lunarShockwave);
+      moonHalo.rotation.x=Math.PI/2;moonHalo.visibility=.88;
+    }
     const tails=[];
     for(let i=0;i<4;i++){
       const tail=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`meteor-tail-${event.sequence||0}-${i}`,{diameter:.72-i*.10,segments:7},this.scene),material('meteorHot','lunarMeteorHot'));
@@ -538,6 +567,14 @@ export class EnvironmentRenderer{
     const impactRoot=this.root(`meteor-impact-${event.sequence||state?.revision||0}`);impactRoot.position.copyFrom(target);impactRoot.metadata={castShadow:false,presentationType:"METEOR_IMPACT"};
     const blast=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-blast-${event.sequence||0}`,{diameter:1,segments:9},this.scene),material('meteorBlast','lunarMeteorBlast'));blast.position.y=.20;blast.visibility=0;blast.metadata={castShadow:false};
     const ring=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateTorus(`meteor-wave-${event.sequence||0}`,{diameter:1,thickness:.075,tessellation:28},this.scene),material('shockwave','lunarShockwave'));ring.position.y=.055;ring.visibility=0;ring.metadata={castShadow:false};
+    let moonImpactRing=null;
+    if(lunar){
+      moonImpactRing=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateTorus(
+        `avreshi-starfall-celestial-impact-${event.sequence||0}`,{diameter:1.7,
+          thickness:.095,tessellation:32},this.scene),this.materials.lunarMeteorBlast);
+      moonImpactRing.rotation.x=Math.PI/2;moonImpactRing.position.y=.088;
+      moonImpactRing.visibility=0;
+    }
     const dust=[];
     for(let i=0;i<8;i++){
       const puff=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-dust-${event.sequence||0}-${i}`,{diameter:.42+(i%3)*.08,segments:5},this.scene),material('meteorDust','lunarMeteorDust'));
@@ -552,7 +589,7 @@ export class EnvironmentRenderer{
     const now=globalThis.performance?.now?.()??Date.now(),startedAt=Number(event?.startedAt),age=Number.isFinite(startedAt)?Math.max(0,(now-startedAt)/1000):0;
     // Compile transparent blast/dust shaders during descent, not on impact.
     for(const mesh of [blast,ring,dust[0],debris[0]])mesh?.material?.forceCompilationAsync?.(mesh).catch(error=>console.warn("Impact material warmup",error));
-    this.meteorBursts.push({event,root,body,tails,impactRoot,blast,ring,dust,debris,flash,start,target,trailDirection,age,startedAt:Number.isFinite(startedAt)?startedAt:now,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
+    this.meteorBursts.push({event,root,body,tails,moonHalo,impactRoot,blast,ring,moonImpactRing,dust,debris,flash,start,target,trailDirection,age,startedAt:Number.isFinite(startedAt)?startedAt:now,fallDuration,impactDuration,innerRadius,shockwaveRadius,impacted:false});
   }
 
   updateMeteor(dt){
@@ -564,15 +601,21 @@ export class EnvironmentRenderer{
         const p=clamp(entry.age/entry.fallDuration,0,1),q=p*p;
         entry.root.position.copyFrom(BABYLON.Vector3.Lerp(entry.start,entry.target,q));
         entry.body.rotation.x+=dt*5.2;entry.body.rotation.y+=dt*7.4;entry.body.rotation.z+=dt*3.6;
+        if(entry.moonHalo){entry.moonHalo.rotation.y+=dt*3.4;
+          entry.moonHalo.visibility=.75+.18*Math.sin(entry.age*9); }
         const pulse=.92+.10*Math.sin(entry.age*26);entry.body.scaling.set(1.18*pulse,1.02*pulse,1.24*pulse);
         for(let i=0;i<entry.tails.length;i++)entry.tails[i].visibility=(.76-i*.11)*(.72+.28*Math.sin(entry.age*19+i));
         keep.push(entry);continue;
       }
 
-      if(!entry.impacted){entry.impacted=true;entry.impactStartedAt=now;entry.root.setEnabled(false);entry.blast.visibility=1;entry.ring.visibility=1;for(const puff of entry.dust)puff.visibility=.72;for(const chip of entry.debris)chip.visibility=1;entry.flash.intensity=4.2;}
+      if(!entry.impacted){entry.impacted=true;entry.impactStartedAt=now;entry.root.setEnabled(false);entry.blast.visibility=1;entry.ring.visibility=1;
+        if(entry.moonImpactRing)entry.moonImpactRing.visibility=1;
+        for(const puff of entry.dust)puff.visibility=.72;for(const chip of entry.debris)chip.visibility=1;entry.flash.intensity=4.2;}
       const t=clamp((now-entry.impactStartedAt)/(entry.impactDuration*1000),0,1),ease=1-Math.pow(1-t,3);
       const blastScale=.35+Math.max(1,entry.innerRadius+.65)*TILE_SIZE*1.15*ease;entry.blast.scaling.setAll(blastScale);entry.blast.visibility=(1-t)*.88;
       const waveDiameter=Math.max(TILE_SIZE*1.4,(entry.shockwaveRadius*2+1)*TILE_SIZE);entry.ring.scaling.setAll(.35+waveDiameter*ease);entry.ring.visibility=(1-t)*.82;
+      if(entry.moonImpactRing){entry.moonImpactRing.scaling.setAll(.45+waveDiameter*.70*ease);
+        entry.moonImpactRing.visibility=(1-t)*.90;entry.moonImpactRing.rotation.y+=dt*2.6;}
       const seconds=t*entry.impactDuration;
       for(const puff of entry.dust){const a=puff.metadata.angle,r=puff.metadata.reach*TILE_SIZE*(.25+ease*1.65);puff.position.set(Math.cos(a)*r,.10+ease*.72,Math.sin(a)*r);puff.scaling.setAll(.55+ease*1.05);puff.visibility=(1-t)*.66;}
       for(const chip of entry.debris){const a=chip.metadata.angle,speed=chip.metadata.speed,lift=chip.metadata.lift,r=speed*seconds;chip.position.set(Math.cos(a)*r,.14+lift*seconds-2.4*seconds*seconds,Math.sin(a)*r);chip.rotation.x+=dt*8;chip.rotation.y+=dt*11;chip.visibility=1-t;}
@@ -596,8 +639,14 @@ export class EnvironmentRenderer{
         this.seenPresentationSequences.add(token);
         while(this.seenPresentationSequences.size>64)
           this.seenPresentationSequences.delete(this.seenPresentationSequences.values().next().value);
+        globalThis.CardTacticsDiagnostics?.push?.('AVRESHI_ENVIRONMENT_VFX',{
+          skillId:event.skillId,sequence:event.sequence,
+          targetX:event.targetX,targetY:event.targetY,
+          casterVisible:true
+        });
         if(event.skillId==='avreshi_lightning'){
-          this.createLightningBurst({x:event.targetX,y:event.targetY,sequence:event.sequence},state);
+          this.createLightningBurst({x:event.targetX,y:event.targetY,sequence:event.sequence,
+            skillId:event.skillId},state);
         }else{
           const card=globalThis.CardDatabase?.get?.('starfall_card');
           const presentation=card?.effect?.presentation;
@@ -629,7 +678,17 @@ export class EnvironmentRenderer{
         screenFlash=Math.max(screenFlash,Number(flash.power||0)*(.50+.50*pulse));
         boltAlpha=Math.max(boltAlpha,Number(flash.alpha||1)*(.58+.42*pulse));
       }
-      for(const mesh of burst.meshes){mesh.alpha=clamp(boltAlpha,0,1);mesh.visibility=clamp(boltAlpha,0,1);}
+      for(const mesh of burst.meshes){
+        if(mesh===burst.impact||mesh===burst.impact?.metadata?.fan)continue;
+        const visible=burst.spell?Math.max(boltAlpha,(1-p)*.68):boltAlpha;
+        mesh.alpha=clamp(visible,0,1);mesh.visibility=clamp(visible,0,1);
+      }
+      if(burst.impact){
+        const ring=burst.impact,impact=clamp((p-.17)/.25,0,1);
+        ring.scaling.setAll(.40+impact*2.35);
+        ring.visibility=impact*(1-clamp((p-.76)/.24,0,1))*.93;
+        const fan=ring.metadata.fan;fan.visibility=ring.visibility*.80;fan.alpha=ring.visibility;
+      }
       if(p>=1){for(const mesh of burst.meshes)mesh.dispose();}else keep.push(burst);
     }
     this.lightningBursts=keep;
