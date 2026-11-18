@@ -506,25 +506,41 @@ export class EnvironmentRenderer{
 
   createMeteorStrike(event,state){
     const x=Number(event?.x),y=Number(event?.y);if(!Number.isFinite(x)||!Number.isFinite(y))return;
+    // The druid uses the EXACT original meteor geometry and fall/impact
+    // timeline, but moon-white materials instead of the fire-card palette.
+    const lunar=event?.lunar===true;
+    if(lunar&&!this.materials.lunarMeteorRock){
+      this.materials.lunarMeteorRock=this.mat('meteor-moon-rock',
+        new BABYLON.Color3(.38,.51,.72),1,new BABYLON.Color3(.17,.27,.49));
+      this.materials.lunarMeteorHot=this.mat('meteor-moon-trail',
+        new BABYLON.Color3(.75,.88,1),.82,new BABYLON.Color3(.57,.78,1));
+      this.materials.lunarMeteorBlast=this.mat('meteor-moon-blast',
+        new BABYLON.Color3(.94,.97,1),.74,new BABYLON.Color3(.71,.84,1));
+      this.materials.lunarShockwave=this.mat('meteor-moon-wave',
+        new BABYLON.Color3(.70,.84,1),.62,new BABYLON.Color3(.42,.67,1));
+      this.materials.lunarMeteorDust=this.mat('meteor-moon-dust',
+        new BABYLON.Color3(.58,.69,.84),.60);
+    }
+    const material=(normal,moon)=>this.materials[lunar?moon:normal];
     const fallDuration=Math.max(.2,Number(event.fallDuration||650)/1000),impactDuration=Math.max(.25,Number(event.impactDuration||700)/1000);
     const innerRadius=Math.max(0,Number(event.innerRadius||0)),shockwaveRadius=Math.max(innerRadius,Number(event.shockwaveRadius||innerRadius));
     const target=new BABYLON.Vector3(x*TILE_SIZE,this.meteorTargetY(state,x,y),y*TILE_SIZE),angle=hash01(`meteor:${event.sequence||0}:${x}:${y}`)*Math.PI*2;
     const start=new BABYLON.Vector3(target.x+Math.cos(angle)*3.2,target.y+8.4,target.z+Math.sin(angle)*3.2),trailDirection=start.subtract(target).normalize();
     const root=this.root(`meteor-fall-${event.sequence||state?.revision||0}`);root.position.copyFrom(start);root.metadata={castShadow:false,presentationType:"METEOR_STRIKE"};
-    const body=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-body-${event.sequence||0}`,{type:2,size:.72},this.scene),this.materials.meteorRock);body.metadata={castShadow:false};
+    const body=this.addMesh(root,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-body-${event.sequence||0}`,{type:2,size:.72},this.scene),material('meteorRock','lunarMeteorRock'));body.metadata={castShadow:false};
     body.scaling.set(1.18,1.02,1.24);
     const tails=[];
     for(let i=0;i<4;i++){
-      const tail=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`meteor-tail-${event.sequence||0}-${i}`,{diameter:.72-i*.10,segments:7},this.scene),this.materials.meteorHot);
+      const tail=this.addMesh(root,BABYLON.MeshBuilder.CreateSphere(`meteor-tail-${event.sequence||0}-${i}`,{diameter:.72-i*.10,segments:7},this.scene),material('meteorHot','lunarMeteorHot'));
       tail.position.copyFrom(trailDirection.scale(.55*(i+1)));tail.scaling.set(1.18,.84,1.18);tail.visibility=.78-i*.12;tail.metadata={castShadow:false};tails.push(tail);
     }
 
     const impactRoot=this.root(`meteor-impact-${event.sequence||state?.revision||0}`);impactRoot.position.copyFrom(target);impactRoot.metadata={castShadow:false,presentationType:"METEOR_IMPACT"};
-    const blast=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-blast-${event.sequence||0}`,{diameter:1,segments:9},this.scene),this.materials.meteorBlast);blast.position.y=.20;blast.visibility=0;blast.metadata={castShadow:false};
-    const ring=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateTorus(`meteor-wave-${event.sequence||0}`,{diameter:1,thickness:.075,tessellation:28},this.scene),this.materials.shockwave);ring.position.y=.055;ring.visibility=0;ring.metadata={castShadow:false};
+    const blast=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-blast-${event.sequence||0}`,{diameter:1,segments:9},this.scene),material('meteorBlast','lunarMeteorBlast'));blast.position.y=.20;blast.visibility=0;blast.metadata={castShadow:false};
+    const ring=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateTorus(`meteor-wave-${event.sequence||0}`,{diameter:1,thickness:.075,tessellation:28},this.scene),material('shockwave','lunarShockwave'));ring.position.y=.055;ring.visibility=0;ring.metadata={castShadow:false};
     const dust=[];
     for(let i=0;i<8;i++){
-      const puff=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-dust-${event.sequence||0}-${i}`,{diameter:.42+(i%3)*.08,segments:5},this.scene),this.materials.meteorDust);
+      const puff=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreateSphere(`meteor-dust-${event.sequence||0}-${i}`,{diameter:.42+(i%3)*.08,segments:5},this.scene),material('meteorDust','lunarMeteorDust'));
       const a=i*Math.PI/4+hash01(`meteor-dust:${event.sequence||0}:${i}`)*.35;puff.metadata={castShadow:false,angle:a,reach:.55+(i%4)*.13};puff.visibility=0;dust.push(puff);
     }
     const debris=[];
@@ -532,7 +548,7 @@ export class EnvironmentRenderer{
       const chip=this.addMesh(impactRoot,BABYLON.MeshBuilder.CreatePolyhedron(`meteor-debris-${event.sequence||0}-${i}`,{type:2,size:.09+(i%3)*.025},this.scene),this.materials.fragments);
       const a=i*Math.PI/4+hash01(`meteor-chip:${event.sequence||0}:${i}`)*.42;chip.metadata={castShadow:false,angle:a,speed:1.15+(i%4)*.18,lift:1.5+(i%3)*.28};chip.visibility=0;debris.push(chip);
     }
-    const flash=new BABYLON.PointLight(`meteor-flash-${event.sequence||0}`,target.clone(),this.scene);flash.diffuse=new BABYLON.Color3(1,.42,.08);flash.specular=new BABYLON.Color3(.32,.10,.015);flash.range=Math.max(3,(shockwaveRadius+1)*TILE_SIZE*1.8);flash.intensity=0;
+    const flash=new BABYLON.PointLight(`meteor-flash-${event.sequence||0}`,target.clone(),this.scene);flash.diffuse=lunar?new BABYLON.Color3(.78,.90,1):new BABYLON.Color3(1,.42,.08);flash.specular=lunar?new BABYLON.Color3(.30,.45,.70):new BABYLON.Color3(.32,.10,.015);flash.range=Math.max(3,(shockwaveRadius+1)*TILE_SIZE*1.8);flash.intensity=0;
     const now=globalThis.performance?.now?.()??Date.now(),startedAt=Number(event?.startedAt),age=Number.isFinite(startedAt)?Math.max(0,(now-startedAt)/1000):0;
     // Compile transparent blast/dust shaders during descent, not on impact.
     for(const mesh of [blast,ring,dust[0],debris[0]])mesh?.material?.forceCompilationAsync?.(mesh).catch(error=>console.warn("Impact material warmup",error));
@@ -568,6 +584,35 @@ export class EnvironmentRenderer{
 
   syncPresentationEvents(events,state){
     for(const event of events||[]){
+      // Shared environment spell visuals, not duplicate bespoke Babylon VFX.
+      // These are authorized UNIT_ANIMATION coordinates from the established
+      // single-player / PvP presentation stream; no gameplay mutations.
+      if(event?.type==='UNIT_ANIMATION'&&
+        (event.skillId==='avreshi_starfall'||event.skillId==='avreshi_lightning')&&
+        Number.isFinite(event.targetX)&&Number.isFinite(event.targetY)&&
+        (state?.units||[]).some(unit=>String(unit.id)===String(event.unitId))){
+        const token=`${state?.map?.id??''}:${event.sequence}:${event.unitId}:${event.skillId}`;
+        if(this.seenPresentationSequences.has(token))continue;
+        this.seenPresentationSequences.add(token);
+        while(this.seenPresentationSequences.size>64)
+          this.seenPresentationSequences.delete(this.seenPresentationSequences.values().next().value);
+        if(event.skillId==='avreshi_lightning'){
+          this.createLightningBurst({x:event.targetX,y:event.targetY,sequence:event.sequence},state);
+        }else{
+          const card=globalThis.CardDatabase?.get?.('starfall_card');
+          const presentation=card?.effect?.presentation;
+          const druidSkill=globalThis.SkillDatabase?.get?.('avreshi_starfall');
+          // Every visual duration is inherited from the existing Starfall card,
+          // not hard-coded a second time. Missing definitions fail closed.
+          if(presentation?.type==='METEOR_STRIKE'&&druidSkill){
+            this.createMeteorStrike({x:event.targetX,y:event.targetY,sequence:event.sequence,
+              fallDuration:presentation.fallDuration,impactDuration:presentation.impactDuration,
+              innerRadius:Math.max(0,Number(druidSkill.radius||0)),
+              shockwaveRadius:Math.max(0,Number(druidSkill.radius||0)),lunar:true},state);
+          }
+        }
+        continue;
+      }
       if(event?.type==="LIGHTNING_STRIKE"){const token=String(event.sequence??`${state?.revision||0}:${event.x}:${event.y}:${event.unitId||event.unit?.id||""}`);if(token===this.lastLightningToken)continue;this.lastLightningToken=token;this.createLightningBurst(event,state);continue;}
       if(event?.type==="METEOR_STRIKE"){const token=String(event.sequence??`${state?.revision||0}:${event.x}:${event.y}`);if(this.seenPresentationSequences.has(token))continue;this.seenPresentationSequences.add(token);while(this.seenPresentationSequences.size>64)this.seenPresentationSequences.delete(this.seenPresentationSequences.values().next().value);this.createMeteorStrike(event,state);}
     }

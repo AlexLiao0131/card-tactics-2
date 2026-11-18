@@ -24,6 +24,7 @@ import {SwordsmanshipVfx} from './swordsmanship-vfx.js';
 import {ShieldGuardVfx} from './shield-guard-vfx.js';
 import {LiviaDualityVfx} from './livia-duality-vfx.js';
 import {PhysicalImpactVfx} from './physical-impact-vfx.js';
+import {WildMagicVfx} from './wild-magic-vfx.js';
 
 /** The Babylon scene is the identity of one visual playback session.
  * No game-state writer, global unit position cache, or secondary frame loop. */
@@ -32,7 +33,7 @@ export const visualManagerFor=scene=>liveManagers.get(scene)||null;
 
 const UNIT_AURA_MODULES=new Set([
   'nature-growth','blood-ritual','holy-ritual','aquatic-magic',
-  'blade-stealth','livia-duality','dimensional'
+  'blade-stealth','livia-duality','dimensional','wild-magic'
 ]);
 
 /** Resolve a visible character's ACTUAL interpolated Babylon root. The
@@ -118,7 +119,8 @@ const factories=Object.freeze({
   'blood-ritual':scene=>new BloodRitualVfx(scene),
   'holy-ritual':scene=>new HolyRitualVfx(scene),
   'aquatic-magic':scene=>new AquaticMagicVfx(scene),
-  'blade-stealth':scene=>new BladeStealthVfx(scene)
+  'blade-stealth':scene=>new BladeStealthVfx(scene),
+  'wild-magic':(scene,ctx)=>new WildMagicVfx(scene,{units:ctx.units})
 });
 
 export function vfxRoutesForEvent(event){
