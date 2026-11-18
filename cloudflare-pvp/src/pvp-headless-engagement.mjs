@@ -44,7 +44,7 @@ export function isCanonicalDirectAttackSkill(skill){
     skill.target==='ENEMY'&&(!skill.targetType||skill.targetType==='SINGLE')&&
     (!!skill.weapon||skill.id==='ophi_forest_wrath'&&skill.attackType==='MAGIC'||
      skill.category==='MAGIC'&&skill.attackType==='MAGIC'&&
-       (skill.astralGainTrigger==='HIT'||Array.isArray(skill.lunarCycle)))&&
+       skill.astralGainTrigger==='HIT')&&
     Number(skill.power)>0&&!!skill.attackType&&
     !skill.utilityAction&&!skill.approach&&!skill.moveToTarget&&!skill.bloodShadow&&
     !skill.channel&&!skill.effects&&!skill.relationEffects&&!skill.bloodBurst&&
