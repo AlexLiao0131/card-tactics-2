@@ -44,27 +44,18 @@ test('real lunar illumination applies only at night and falls under cloud cover'
   assert.equal(E.moonExposure(w),.8);
   assert.equal(E.setMoonPhase(w,'INVALID'),false);
 });
-test('astral power, three-phase casts, moonlight acceleration, starfall gate',()=>{
+test('only approved skills generate astral power, moonlight accelerates and starfall pays once',()=>{
   const unit=caster(),env=E.create({timeOfDay:'NIGHT',moonPhase:'FULL'});
   assert.equal(ResourceEngine.value(unit,'astralPower'),0);
   assert.equal(UnitRuntimeEngine.canUseSkill(unit,SKILLS.avreshi_starfall),false);
   assert.equal(SKILLS.avreshi_starfall.resourceCosts.astralPower,60);
-  const expected=['新月術','半月術','滿月術'];
-  const gains=[15,30,60];
-  for(let i=0;i<3;i++){
-    const s=UnitRuntimeEngine.skillForUnit(unit,SKILLS.avreshi_moon_cycle);
-    assert.equal(s.name,expected[i]);
-    assert.equal(UnitRuntimeEngine.canUseSkill(unit,s),true);
-    assert.ok(UnitRuntimeEngine.consumeSkill(unit,s));
-    const before=ResourceEngine.value(unit,'astralPower');
-    assert.equal(UnitRuntimeEngine.gainAstralPower(unit,s,env),Math.min(100-before,gains[i]));
-    assert.equal(unit.lunarCycleIndex,(i+1)%3);
-  }
-  assert.equal(UnitRuntimeEngine.skillForUnit(unit,SKILLS.avreshi_moon_cycle).name,'新月術');
-  assert.equal(ResourceEngine.value(unit,'astralPower'),100);
+  assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_moonfire,env),18);
+  assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_lightning,env),24);
+  assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_rejuvenation,env),18);
+  assert.equal(ResourceEngine.value(unit,'astralPower'),60);
   assert.equal(UnitRuntimeEngine.canUseSkill(unit,SKILLS.avreshi_starfall),true);
   assert.ok(UnitRuntimeEngine.consumeSkill(unit,SKILLS.avreshi_starfall));
-  assert.equal(ResourceEngine.value(unit,'astralPower'),40);
+  assert.equal(ResourceEngine.value(unit,'astralPower'),0);
   env.timeOfDay='DAY';
   assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_moonfire,env),12);
   env.timeOfDay='NIGHT';
@@ -76,6 +67,9 @@ test('all approved generators and removal of obsolete wrath skill',()=>{
   assert.equal(SKILLS.avreshi_rejuvenation.astralGainTrigger,'EFFECTIVE_HEAL');
   assert.equal(SKILLS.avreshi_moonfire.statusEffects[0].astralGain,undefined);
   assert.equal(Object.hasOwn(SKILLS,'avreshi_wrath'),false);
+  assert.equal(Object.hasOwn(SKILLS,'avreshi_moon_cycle'),false);
   assert.equal(CHARACTERS.avreshi.forms.HUMAN.skillIds.includes('avreshi_wrath'),false);
+  assert.equal(CHARACTERS.avreshi.forms.HUMAN.skillIds.includes('avreshi_moon_cycle'),false);
   assert.equal(LOADOUTS.avreshi_default.skillIds.includes('avreshi_wrath'),false);
+  assert.equal(LOADOUTS.avreshi_default.skillIds.includes('avreshi_moon_cycle'),false);
 });
