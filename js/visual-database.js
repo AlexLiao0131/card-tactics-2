@@ -1,8 +1,8 @@
 export const VISUALS={
   characters:{
     avreshi_human:{
-      portrait:"assets/images/cards/heroes/avreshi.jpg",
-      card:"assets/images/cards/heroes/avreshi.jpg",
+      portrait:"assets/images/cards/heroes/avreshi.png",
+      card:"assets/images/cards/heroes/avreshi.png",
       battle:{kind:"FIGURE",baseFacing:"E",height:1.72,
         figure:{style:"MOON_FOREST_PRIESTESS",pointedEars:true,longHair:true,braid:true,
           midHair:true,fieldSpear:true,bow:false,quiver:false,sideSword:false,
@@ -891,7 +891,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
-    avreshi:"avreshi.jpg",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
+    avreshi:"avreshi.png",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",
     seraphina:"seraphina.png",nereia:"nereia.png",
