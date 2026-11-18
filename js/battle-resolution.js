@@ -407,6 +407,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       const ix=queue.findIndex(a=>a.role==="COUNTER"&&a.actor.id===c.originalTarget.id&&a.skill?.ganfan);
       if(ix>=0)queue.splice(ix,1); // Defensive Ganfan never executes a free ordinary counter.
     }
+    // One Astral grant per committed primary cast, regardless of multihits,
+    // followups, DOT or secondary lightning environment contacts.
+    let astralHitGranted=false;
     let ganfanFirstStrikeCommitted=false,ganfanParryResolved=false,defensiveGanfanChecked=false;
     let evasiveCounterChecked=false,evasiveCounterSucceeded=true;
     // Backward shooting is an attack ability, not an initiator-only movement.
@@ -439,6 +442,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       bloodRuntime?.beginBloodTransaction?.(a.actor);
       const spent=followup?{cost:0,resources:{}}:hooks.consumeSkill?.(a.actor,skill);
       if(spent===null){bloodRuntime?.endBloodTransaction?.(a.actor);continue;}
+      if(spent&&!followup&&skill?._lunarResolved===true)
+        bloodRuntime?.gainAstralPower?.(a.actor,skill,c.environmentState);
       // Consume analysis once at formal attack commitment, before accuracy,
       // defense, shield and critical calculations (also on a MISS).
       if(skill.analysisStatusId&&Number.isFinite(Number(skill.analysisPower))&&
@@ -671,6 +676,13 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const markTarget=(c.interception&&!action.misfire&&a.role==="INITIATOR"?c.originalTarget:action.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
         if(result.hit){
+          if(isPrimary&&!followup&&!astralHitGranted&&!action.misfire&&
+             skill?.astralGainTrigger==="HIT"){
+            const credited=runtime?.gainAstralPower?.(action.actor,skill,c.environmentState);
+            astralHitGranted=true;
+            if(credited>0)globalThis.UnitAnimationEngine?.emitPresentation?.("RESOURCE_GAINED",{
+              unitId:action.actor.id,resource:"astralPower",amount:credited,x:action.actor.x,y:action.actor.y});
+          }
           if(!followup&&Number(skill.holyPowerOnHit||0)>0)
             bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
           if(!a.vengeanceMultiplier&&sealMultiplier>1)globalThis.EffectEngine?.consumeVengeance?.(a.actor,action.target);

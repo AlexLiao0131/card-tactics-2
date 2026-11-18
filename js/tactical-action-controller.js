@@ -1355,6 +1355,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       UnitRuntimeEngine.beginBloodTransaction(attacker);
       const spent=ctx.consumeSkill(attacker,skill);
       if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
+      if(skill._lunarResolved===true)
+        UnitRuntimeEngine.gainAstralPower(attacker,skill,environmentState);
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       // One bow enchant per committed fan attack; never one charge per victim.
       const fanEnchantment=skill.fanShot?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
@@ -1733,6 +1735,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"ACTION");
       skill=ctx.effectiveSkill(attacker,skill);
+      const astralHealEligible=skill?.astralGainTrigger==="EFFECTIVE_HEAL"&&
+        target?.alive===true&&Number(target.hp||0)<Number(target.character?.combat?.hp||0)&&
+        !globalThis.EffectEngine?.state?.(target)?.some(e=>e.id==="AVRESHI_REJUVENATION");
       if(skill.bloodBurst){
         const centers=EffectEngine.bloodBurstCenters(attacker,state().units,skill,{map:state().map,environmentState:state().environmentState});
         if(!centers.length)return skillFailure(attacker,skill,"NO_BLEEDING_ENEMIES",target);
@@ -1798,6 +1803,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       }else if(Array.isArray(skill.effects)){
         for(const effect of skill.effects){const selected=effect.type==="DISPEL_POSITIVE"?{...effect,buffId}:effect;const r=EffectEngine.apply({source:attacker,target,effect:selected});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,selected,r);}
       }
+      // Successful fresh HoT application on an injured ally only: future
+      // ticks and reapplications of an existing HoT never award Astral Power.
+      if(astralHealEligible&&results.some(r=>r?.applied===true))
+        UnitRuntimeEngine.gainAstralPower(attacker,skill,state().environmentState);
       applyPassiveSkillTriggers(attacker,target,skill);
       const refunded=UnitRuntimeEngine.criticalManaRefund(attacker,skill,spent,healedCrit);
       if(refunded>0)ctx.pushLog(`${attacker.character.name}｜${skill.name} 治療暴擊，聖痕返還 ${refunded} MP。`,"BATTLE");

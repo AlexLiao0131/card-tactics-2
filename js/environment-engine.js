@@ -232,17 +232,68 @@ export const EnvironmentEngine=(()=>{
     syncLegacyWeather(state);return touched;
   }
   const MOONLIGHT=Object.freeze({FULL:"FULL",PARTIAL:"PARTIAL",NONE:"NONE"});
+  // World moon phases belong to the canonical environment clock, never to a hero.
+  // Legacy FULL/PARTIAL/NONE remains a derived compatibility channel for FOV.
+  const MOON_PHASES=Object.freeze([
+    Object.freeze({id:"NEW",name:"新月",illumination:0}),
+    Object.freeze({id:"WAXING_CRESCENT",name:"眉月",illumination:.15}),
+    Object.freeze({id:"FIRST_QUARTER",name:"上弦月",illumination:.5}),
+    Object.freeze({id:"WAXING_GIBBOUS",name:"盈凸月",illumination:.8}),
+    Object.freeze({id:"FULL",name:"滿月",illumination:1}),
+    Object.freeze({id:"WANING_GIBBOUS",name:"虧凸月",illumination:.8}),
+    Object.freeze({id:"LAST_QUARTER",name:"下弦月",illumination:.5}),
+    Object.freeze({id:"WANING_CRESCENT",name:"殘月",illumination:.15})
+  ]);
+  const MOON_PHASE_INTERVAL=DAY_NIGHT_INTERVAL*2; // one complete day/night pair
+  const moonIndex=value=>{
+    const key=String(value||"").toUpperCase();
+    const normalized=key==="NONE"?"NEW":key==="PARTIAL"?"FIRST_QUARTER":key;
+    const i=MOON_PHASES.findIndex(phase=>phase.id===normalized);
+    return i<0?2:i;
+  };
+  const moonlightForPhase=value=>{
+    const strength=MOON_PHASES[moonIndex(value)].illumination;
+    return strength>=.9?MOONLIGHT.FULL:strength<=.01?MOONLIGHT.NONE:MOONLIGHT.PARTIAL;
+  };
   function normalizeMoonlight(value){const key=String(value||"PARTIAL").toUpperCase();return MOONLIGHT[key]||MOONLIGHT.PARTIAL;}
-  function create({timeOfDay="DAY",moonlight="PARTIAL",weather="CLEAR",weatherTurns=null,climate=null,wind=null,windX=null,windY=null,windStrength=null,temperature=null}={}){
+  function setMoonPhase(state,value){
+    if(!state)return false;
+    const key=String(value||"").toUpperCase();
+    if(!MOON_PHASES.some(p=>p.id===key)&&!MOONLIGHT[key])return false;
+    state.moonPhase=MOON_PHASES[moonIndex(key)].id;
+    state.moonlight=moonlightForPhase(state.moonPhase);
+    return true;
+  }
+  function moonExposure(state){
+    if(!state||state.timeOfDay!=="NIGHT")return 0;
+    const light=MOON_PHASES[moonIndex(state.moonPhase)].illumination;
+    if(!light)return 0;
+    const weather=legacyWeatherRaw(state);
+    const cloudTransmission={CLEAR:1,SCORCHING_SUN:1,SNOW:.65,RAIN:.55,FOG:.25,HEAVY_RAIN:.18,THUNDERSTORM:.08,TYPHOON:.06,BLIZZARD:.06};
+    return Math.max(0,Math.min(1,light*(cloudTransmission[weather]??1)));
+  }
+  function moonPhaseState(state){
+    const phase=MOON_PHASES[moonIndex(state?.moonPhase)];
+    return {...phase,phaseIndex:moonIndex(phase.id),moonlight:moonlightForPhase(phase.id),
+      exposure:moonExposure(state),cycleInterval:MOON_PHASE_INTERVAL};
+  }
+  function create({timeOfDay="DAY",moonlight="PARTIAL",moonPhase=null,weather="CLEAR",weatherTurns=null,climate=null,wind=null,windX=null,windY=null,windStrength=null,temperature=null}={}){
     const legacy=climateFromWeather(weather,weatherTurns),baseClimate=climate&&typeof climate==="object"?JSON.parse(JSON.stringify(climate)):legacy;
     const resolvedWind=normalizeWind(wind||baseClimate.wind||{x:windX,y:windY,strength:windStrength});
-    const state={timeOfDay,moonlight:normalizeMoonlight(moonlight),weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind},naturalWeather:WEATHER.CLEAR,cardClimateOverride:null};
+    const state={timeOfDay,moonPhase:MOON_PHASES[moonIndex(moonPhase||moonlight)].id,moonlight:moonlightForPhase(moonPhase||moonlight),weather:WEATHER.CLEAR,weatherTurnsRemaining:null,wind:resolvedWind,effects:new Map(),destroyedObjects:new Set(),tornadoSerial:0,climate:{turn:0,...baseClimate,wind:resolvedWind},naturalWeather:WEATHER.CLEAR,cardClimateOverride:null};
     if(temperature!=null&&Number.isFinite(Number(temperature)))state.climate.temperature=Number(temperature);
     ensureClimate(state);state.naturalWeather=legacyWeatherRaw(state);return state;
   }
   function setTimeOfDay(state,timeOfDay){state.timeOfDay=timeOfDay==="NIGHT"?"NIGHT":"DAY";}
-  function setMoonlight(state,moonlight){if(!state)return false;state.moonlight=normalizeMoonlight(moonlight);return true;}
+  function setMoonlight(state,moonlight){return setMoonPhase(state,moonlight);}
   function advanceNaturalCycles(map,state,turn,events){
+    if(turn>0&&turn%MOON_PHASE_INTERVAL===0){
+      const before=state.moonPhase;
+      state.moonPhase=MOON_PHASES[(moonIndex(before)+1)%MOON_PHASES.length].id;
+      state.moonlight=moonlightForPhase(state.moonPhase);
+      events.push({type:"MOON_PHASE_CHANGED",from:before,moonPhase:state.moonPhase,
+        moonlight:state.moonlight,environmentTurn:turn});
+    }
     if(turn>0&&turn%DAY_NIGHT_INTERVAL===0){
       setTimeOfDay(state,state.timeOfDay==="DAY"?"NIGHT":"DAY");
       events.push({type:"DAY_NIGHT_CHANGED",timeOfDay:state.timeOfDay,environmentTurn:turn});
@@ -1072,6 +1123,6 @@ export const EnvironmentEngine=(()=>{
     return range;
   }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,normalizeMoonlight,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,planTsunami,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,MOON_PHASES,MOON_PHASE_INTERVAL,normalizeMoonlight,moonPhaseState,moonExposure,setMoonPhase,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,planTsunami,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

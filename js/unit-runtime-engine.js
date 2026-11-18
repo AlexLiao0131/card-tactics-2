@@ -185,7 +185,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);UnitTraitEngine.initialize(unit);
     return Object.fromEntries(Object.entries(ResourceEngine.snapshot(unit)).map(([key,state])=>[key,{...state,label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="rage"?{color:"#c53838"}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="astralPower"?{color:"#8a9cdb",lunarCycleIndex:Number(unit.lunarCycleIndex||0)}:key==="rage"?{color:"#c53838"}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
@@ -217,10 +217,28 @@ export function createUnitRuntimeEngine(){
   }
   function isBloodMemory(unit,skill){return bloodUser(unit)&&!!skill?.id&&(unit.grantedSkills||[]).some(g=>g.skillId===skill.id&&g.bloodMemory===true)}
   function bloodMemoryCost(skill){return manaCost(skill)+Object.values(resourceCosts(skill)).reduce((sum,v)=>sum+v,0)}
+  function astralPowerUser(unit){return !!unit?.character?.resourceRules?.astralPower;}
+  function astralPowerValue(unit){return astralPowerUser(unit)?ResourceEngine.value(unit,"astralPower"):null;}
+  function gainAstralPower(unit,skill,environmentState=null){
+    if(!astralPowerUser(unit)||!unit?.alive||Number(skill?.astralGain||0)<=0)return 0;
+    const environment=environmentState||unit?._runtimeEnvironmentState||
+      globalThis.CardTacticsRuntime?.getEnvironmentState?.()||null;
+    const exposure=Number(globalThis.EnvironmentEngine?.moonExposure?.(environment)||0);
+    const ratio=Number(ResourceEngine.RESOURCE_PROFILES?.astralPower?.moonlightResonanceMaxRatio||0);
+    const raw=Math.max(0,Number(skill.astralGain||0));
+    const gained=Math.round(raw*(1+Math.max(0,Math.min(1,exposure))*ratio));
+    return ResourceEngine.change(unit,"astralPower",gained);
+  }
   function skillForUnit(unit,skill){
     const reactionCounter=skill?._reactionCounter===true;
     const source=skill;
     skill=UnitTraitEngine.transformedSkill(unit,skill);
+    if(skill?.lunarCycle?.length&&!skill._lunarResolved){
+      const index=Math.max(0,Math.floor(Number(unit?.lunarCycleIndex||0)))%skill.lunarCycle.length;
+      const variant=skill.lunarCycle[index];
+      skill={...skill,...variant,id:skill.id,lunarCycle:skill.lunarCycle,
+        _lunarResolved:true,lunarCycleStep:index};
+    }
     // Reaction selection is anchored to the attacker, not a free-aim tile.
     // Keep the official transformed name and power while adapting the form to
     // the single attacker that can legally be countered.
@@ -475,6 +493,13 @@ export function createUnitRuntimeEngine(){
       const value=forestSoulValue(unit);
       if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
     }
+    // One authoritative phase advance on a formally paid lunar spell.
+    // The combat/map executor awards power with its explicit world state,
+    // so PvP never relies on a browser-only global environment fallback.
+    if(skill._lunarResolved===true&&Array.isArray(skill.lunarCycle)){
+      const current=Number(skill.lunarCycleStep||0);
+      unit.lunarCycleIndex=(current+1)%skill.lunarCycle.length;
+    }
     UnitTraitEngine.afterCommittedSkill(unit,skill);
     return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
   }
@@ -577,7 +602,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,astralPowerUser,astralPowerValue,gainAstralPower,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

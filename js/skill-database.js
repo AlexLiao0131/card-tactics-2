@@ -2,12 +2,17 @@ const BLEEDING_STATUS=Object.freeze({type:"DAMAGE_OVER_TIME",id:"BLEEDING",name:
 const POISON_THROW_TOTAL_DAMAGE=18; // Existing poison knife bonus, distributed over its newly specified 3 ticks.
 const POISON_THROW_DURATION=3;
 export const SKILLS={
-  avreshi_moonfire:{id:"avreshi_moonfire",name:"月火",description:"以銀白月焰灼燒目標，造成自然魔法傷害並留下月火持續傷害；只有滿月夜晚獲得月相增幅。",category:"MAGIC",power:1,manaCost:16,range:{min:2,max:5},attackType:"MAGIC",element:"NATURE",target:"ENEMY",support:false,moonPhaseBonus:"FULL",statusEffects:[{type:"DAMAGE_OVER_TIME",id:"AVRESHI_MOONFIRE_DOT",name:"月火",classification:"NEGATIVE",duration:3,amount:12,chance:100}]},
-  avreshi_wrath:{id:"avreshi_wrath",name:"憤怒",description:"向單一敵人釋放直接自然法術，半月夜晚受到月神祝福而增加傷害；不消耗或生成憤怒資源。",category:"MAGIC",power:1.1,manaCost:14,range:{min:1,max:5},attackType:"MAGIC",element:"NATURE",target:"ENEMY",support:false,moonPhaseBonus:"PARTIAL"},
+  avreshi_moonfire:{id:"avreshi_moonfire",name:"月火",description:"以銀白月焰灼燒目標，造成自然魔法傷害並留下月火持續傷害；直接有效命中產生 12 星能，後續 DOT 不會重複累積。",category:"MAGIC",power:1,manaCost:16,range:{min:2,max:5},attackType:"MAGIC",element:"NATURE",target:"ENEMY",support:false,astralGain:12,astralGainTrigger:"HIT",statusEffects:[{type:"DAMAGE_OVER_TIME",id:"AVRESHI_MOONFIRE_DOT",name:"月火",classification:"NEGATIVE",duration:3,amount:12,chance:100}]},
+  avreshi_moon_cycle:{id:"avreshi_moon_cycle",name:"新月術",description:"月相術循環：新月→半月→滿月→新月；正式施放後推進，並產生星能。晴朗月夜依照世界月相獲得額外星能。",category:"MAGIC",power:.8,manaCost:14,range:{min:2,max:5},attackType:"MAGIC",element:"LIGHT",target:"ENEMY",support:false,
+    lunarCycle:[
+      {name:"新月術",power:.8,manaCost:14,astralGain:10,target:"ENEMY",description:"第一階段：新月攻擊，正式施放後產生 10 星能並進入半月術。"},
+      {name:"半月術",power:1.1,manaCost:20,astralGain:20,target:"ENEMY",description:"第二階段：半月攻擊，正式施放後產生 20 星能並進入滿月術。"},
+      {name:"滿月術",power:1.4,manaCost:28,astralGain:40,target:"TILE",targetType:"AOE",radius:1,areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},description:"第三階段：以月白光芒轟擊中心及四鄰敵人，正式施放後產生 40 星能並回到新月術。"}
+    ]},
   avreshi_tornado:{id:"avreshi_tornado",name:"龍捲風",description:"指定合法地格引導既有龍捲風環境力量，風壓、捲動和障礙物碰撞由原本環境引擎結算。",category:"MAGIC",power:0,manaCost:24,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:1,element:"WIND",support:false,environmentSpell:"TORNADO"},
-  avreshi_lightning:{id:"avreshi_lightning",name:"落雷",description:"由天空引落雷電，觸發現有水域導電、濕地連鎖和敵我波及規則。",category:"MAGIC",power:1.1,manaCost:22,range:{min:2,max:5},target:"ENEMY",attackType:"MAGIC",element:"THUNDER",support:false,environmentSpell:"LIGHTNING"},
-  avreshi_rejuvenation:{id:"avreshi_rejuvenation",name:"回春術",description:"對一名友軍施加持續回春，不會將治療轉化為護盾，也不解除中毒、流血與感染。",category:"MAGIC",power:0,manaCost:22,range:{min:0,max:4},target:"ALLY",support:false,effects:[{type:"HEAL_OVER_TIME",id:"AVRESHI_REJUVENATION",name:"回春",classification:"POSITIVE",duration:3,amount:20}]},
-  avreshi_starfall:{id:"avreshi_starfall",name:"星隕",description:"以月白星辰墜落指定區域，中心與四鄰格造成星辰魔法傷害；額外沿用卡牌星隕的地形衝擊與外圈震波擊退、擊飛。",category:"MAGIC",power:1.6,manaCost:32,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:1,attackType:"MAGIC",element:"LIGHT",areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},support:false},
+  avreshi_lightning:{id:"avreshi_lightning",name:"落雷",description:"由天空引落雷電，觸發現有水域導電、濕地連鎖和敵我波及規則；直接有效命中產生 16 星能，傳導不重複累積。",category:"MAGIC",power:1.1,manaCost:22,range:{min:2,max:5},target:"ENEMY",attackType:"MAGIC",element:"THUNDER",support:false,environmentSpell:"LIGHTNING",astralGain:16,astralGainTrigger:"HIT"},
+  avreshi_rejuvenation:{id:"avreshi_rejuvenation",name:"回春術",description:"對一名友軍施加持續回春，不會將治療轉化為護盾，也不解除中毒、流血與感染；對受傷友軍首次施加回春術產生 12 星能，刷新或 HOT 不重複累積。",category:"MAGIC",power:0,manaCost:22,range:{min:0,max:4},target:"ALLY",support:false,astralGain:12,astralGainTrigger:"EFFECTIVE_HEAL",effects:[{type:"HEAL_OVER_TIME",id:"AVRESHI_REJUVENATION",name:"回春",classification:"POSITIVE",duration:3,amount:20}]},
+  avreshi_starfall:{id:"avreshi_starfall",name:"星隕",description:"以月白星辰墜落指定區域，中心與四鄰格造成星辰魔法傷害；額外沿用卡牌星隕的地形衝擊與外圈震波擊退、擊飛；正式施放消耗 60 星能及原有 MP。",category:"MAGIC",power:1.6,manaCost:32,resourceCosts:{astralPower:60},range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:1,attackType:"MAGIC",element:"LIGHT",areaDamage:{mode:"MAGIC_POWER",relation:"ENEMY",hitRule:"AREA_CONTACT"},support:false},
   avreshi_spear_thrust:{id:"avreshi_spear_thrust",name:"突刺",description:"以持有的長矛突刺射程內敵人，造成物理穿刺傷害；以正式自然附傷組件結算第二段魔法傷害。",category:"ATTACK",weapon:"spear",power:1,range:{min:1,max:2},attackType:"PIERCE",element:"INHERIT",target:"ENEMY",support:true,avreshiBasicAttack:true},
   avreshi_spear_throw:{id:"avreshi_spear_throw",name:"躑矛",description:"投出長矛對遠距離目標造成物理穿刺；長矛由現有飛射與武器掛點顯示；不產生永久卸裝。",category:"ATTACK",weapon:"spear",power:1,manaCost:10,range:{min:2,max:4},attackClass:"RANGED",attackType:"PIERCE",element:"INHERIT",target:"ENEMY",support:false},
   avreshi_pounce:{id:"avreshi_pounce",name:"撲咬",description:"獵豹衝刺接近指定敵人並咬擊；需合法接近路徑與空地落點。",category:"ATTACK",weapon:"bite",power:1.05,manaCost:12,range:{min:2,max:4},attackType:"PIERCE",target:"ENEMY",support:false,approach:{type:"CHARGE",stopDistance:1},avreshiInfection:true,statusEffects:[{type:"DAMAGE_OVER_TIME",id:"AVRESHI_WOUND_INFECTION",name:"傷口感染",classification:"NEGATIVE",duration:3,amount:10,chance:30}]},
@@ -243,7 +248,7 @@ export const SkillDatabase=(()=>{
     const costs=[];
     if(Number(active.manaCost)>0)costs.push(`魔力 ${active.manaCost}`);
     if(active.rageSpendAll)costs.push('全部憤怒');
-    for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${{holyPower:"聖能",faith:"信仰",blood:"血能",sanity:"Sanity"}[key]||key} ${value}`);
+    for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${{holyPower:"聖能",faith:"信仰",blood:"血能",sanity:"Sanity",astralPower:"星能"}[key]||key} ${value}`);
     const mechanics=[];
     if(range)mechanics.push(`射程 ${range.min}–${range.max}`);
     if(relation)mechanics.push(`目標 ${relation}`);

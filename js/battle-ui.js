@@ -53,6 +53,11 @@ export function presentBattleOverview({snapshot,cores=snapshot?.cores||[],stage=
 
 }
 
+const WORLD_MOON_LABELS=Object.freeze({
+    NEW:["🌑","新月"],WAXING_CRESCENT:["🌒","眉月"],FIRST_QUARTER:["🌓","上弦月"],
+    WAXING_GIBBOUS:["🌔","盈凸月"],FULL:["🌕","滿月"],WANING_GIBBOUS:["🌖","虧凸月"],
+    LAST_QUARTER:["🌗","下弦月"],WANING_CRESCENT:["🌘","殘月"]
+});
 export function presentBattleWeather(snapshot){
     const node=q("weatherIndicator");if(!node)return;
     const env=snapshot?.presentation?.environment||{};
@@ -60,8 +65,9 @@ export function presentBattleWeather(snapshot){
     const [icon,label]=WEATHER_LABEL[weather]||["◌",weather];
     const remaining=env.weatherTurnsRemaining;
     const suffix=weather==="CLEAR"||remaining==null?"":Number(remaining)>0?` ${Number(remaining)}T`:" 即將結束";
-    node.textContent=`${icon} ${label}${suffix}`;
-    node.title=`目前天氣：${label}${weather==="CLEAR"||remaining==null?"":Number(remaining)>0?`｜剩餘 ${Number(remaining)} 回合`:"｜即將結束"}${env.timeOfDay==="NIGHT"?"｜夜間":""}`;
+    const [moonIcon,moonName]=WORLD_MOON_LABELS[String(env.moonPhase||"FIRST_QUARTER").toUpperCase()]||WORLD_MOON_LABELS.FIRST_QUARTER;
+    node.textContent=`${icon} ${label}${suffix}｜${moonIcon}${moonName}`;
+    node.title=`目前天氣：${label}${weather==="CLEAR"||remaining==null?"":Number(remaining)>0?`｜剩餘 ${Number(remaining)} 回合`:"｜即將結束"}${env.timeOfDay==="NIGHT"?"｜夜間":"｜白天"}｜世界月相：${moonName}`;
     node.setAttribute("aria-label",node.title);
     node.style.pointerEvents="none";
     node.style.cursor="default";

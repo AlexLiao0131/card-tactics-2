@@ -1,7 +1,7 @@
 (()=>{
 "use strict";
 
-const MOON_OPTIONS=[["FULL","滿月／有月光"],["PARTIAL","微弱月光"],["NONE","無月光"]];
+const MOON_OPTIONS=[["NEW","新月"],["WAXING_CRESCENT","眉月"],["FIRST_QUARTER","上弦月"],["WAXING_GIBBOUS","盈凸月"],["FULL","滿月"],["WANING_GIBBOUS","虧凸月"],["LAST_QUARTER","下弦月"],["WANING_CRESCENT","殘月"]];
 const WEATHER_OPTIONS=[["SCORCHING_SUN","烈日"],["CLEAR","晴朗"],["FOG","迷霧"],["RAIN","雨"],["HEAVY_RAIN","豪大雨"],["THUNDERSTORM","雷雨"],["TYPHOON","颱風"],["SNOW","降雪"],["BLIZZARD","暴風雪"]];
 const WIND_OPTIONS=[["CALM","無風"],["N","北向"],["NE","東北向"],["E","東向"],["SE","東南向"],["S","南向"],["SW","西南向"],["W","西向"],["NW","西北向"]];
 const FORCE_OPTIONS=[["FIRE","火"],["HEAVY_FIRE","高熱"],["EXPLOSION","爆炸"],["WIND","風"],["THUNDER","雷"],["IMPACT","衝擊"],["AVALANCHE_TRIGGER","雪崩觸發"]];
@@ -446,7 +446,7 @@ function mount(){
    status("已記錄渲染狀態、Revision 對照與最近重建／異常事件。",true);
  };
  const cardSelect=$("testCard");for(const card of cards()){const kind=card.type==="CHARACTER"?"角色":"法術";cardSelect.insertAdjacentHTML("beforeend",option(card.id,`[${kind}] ${card.name}｜${card.id}`));}
- function syncEnvironmentControls(){const data=runtime()?.state?.(),wind=data?.wind;if(!wind)return;if(data?.moonlight)$("testMoonlight").value=data.moonlight;if(data?.timeOfDay)$("testTimeOfDay").value=data.timeOfDay;const direction=String(wind.direction||(wind.calm?"CALM":"CALM")).toUpperCase();if([...$("testWindDirection").options].some(o=>o.value===direction))$("testWindDirection").value=direction;$("testWindStrength").value=direction==="CALM"?0:Number(wind.strength||0)}
+ function syncEnvironmentControls(){const data=runtime()?.state?.(),wind=data?.wind;if(!wind)return;if(data?.moonPhase||data?.moonlight)$("testMoonlight").value=data.moonPhase||data.moonlight;if(data?.timeOfDay)$("testTimeOfDay").value=data.timeOfDay;const direction=String(wind.direction||(wind.calm?"CALM":"CALM")).toUpperCase();if([...$("testWindDirection").options].some(o=>o.value===direction))$("testWindDirection").value=direction;$("testWindStrength").value=direction==="CALM"?0:Number(wind.strength||0)}
  function refreshUnits(){const debug=runtime(),data=debug?.state?.(),select=$("testUnit"),previous=select.value;select.innerHTML="";for(const unit of data?.units||[]){const team=unit.team==="P"?"我":unit.team==="E"?"敵":"中";select.insertAdjacentHTML("beforeend",option(unit.id,`[${team}] ${unit.name} (${unit.x},${unit.y})${unit.stealthed?"｜潛行":""}`));}if([...select.options].some(o=>o.value===previous))select.value=previous;syncMoveCoords()}
  function selectedUnit(){return runtime()?.state?.()?.units?.find(unit=>unit.id===$("testUnit").value)||null}
  function liveSelectedUnit(){return globalThis.UnitRuntimeEngine?.getLiveUnit?.($("testUnit").value)||null}

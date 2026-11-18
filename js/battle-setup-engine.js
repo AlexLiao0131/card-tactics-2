@@ -92,16 +92,17 @@ export const BattleSetupEngine=(()=>{
     const wind=EnvironmentEngine.normalizeWind?.(explicit||climate.wind||{x:source.windX??generatedDir.x,y:source.windY??generatedDir.y,strength:Math.max(Number(source.windStrength??0),generatedStrength)})||{x:generatedDir.x,y:generatedDir.y,strength:generatedStrength};
     climate.wind={...wind};
 
-    // Moon phase is a single seeded atmospheric property of this battle, not a
-    // second weather engine. Explicit stage settings always take precedence.
+    // One seeded world moon cycle; an explicit stage moonPhase/moonlight wins.
     const moonSeed=hashSeed(`${battleSeed}|${stage?.id||"stage"}|MOONLIGHT`);
     const moonRoll=createRandom(moonSeed)();
-    const moonlight=EnvironmentEngine.normalizeMoonlight?.(source.moonlight||(moonRoll<.30?"FULL":moonRoll<.75?"PARTIAL":"NONE"))||"PARTIAL";
-    const environment={...source,climate,wind,moonlight};
+    const phases=EnvironmentEngine.MOON_PHASES;
+    const moonPhase=source.moonPhase||source.moonlight||phases[Math.floor(moonRoll*phases.length)].id;
+    const environment={...source,climate,wind,moonPhase};
     delete environment.weather;delete environment.weatherTurns;delete environment.windX;delete environment.windY;delete environment.windStrength;
     const preview=EnvironmentEngine.create(environment),snapshot=EnvironmentEngine.climateSnapshot(preview),weather=snapshot.legacyWeather,weatherTurns=preview.weatherTurnsRemaining;
 
-    return{environment,meta:{weather,weatherTurns,weatherSeed:climateSeed,battleSeed,climateSeed,fogSeed,windSeed,moonSeed,moonlight,wind:{...wind},climate:snapshot,selectedPreset:selectedPreset?.weather||null,selectedPrecipitation:selectedPrecipitation?{...selectedPrecipitation}:null}};
+    return{environment,meta:{weather,weatherTurns,weatherSeed:climateSeed,battleSeed,climateSeed,fogSeed,windSeed,moonSeed,
+      moonPhase:preview.moonPhase,moonlight:preview.moonlight,wind:{...wind},climate:snapshot,selectedPreset:selectedPreset?.weather||null,selectedPrecipitation:selectedPrecipitation?{...selectedPrecipitation}:null}};
   }
 
   function create({stageId,battleSetup,TEAM,random=Math.random}){

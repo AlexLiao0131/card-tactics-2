@@ -72,6 +72,31 @@ const LIGHTING_PROFILES=Object.freeze({
   })
 });
 
+// Rendered only when the published moon phase, weather or day/night sky changes.
+// The terminator samples one spherical cross-section per pixel column; no
+// per-frame mesh, second scene light or client-side moon simulation.
+function paintWorldMoon(context,phaseId,visibility,blend){
+  const phases=["NEW","WAXING_CRESCENT","FIRST_QUARTER","WAXING_GIBBOUS","FULL",
+    "WANING_GIBBOUS","LAST_QUARTER","WANING_CRESCENT"];
+  const ix=phases.indexOf(phaseId),phase=ix<0?2:ix;
+  const brightness=[0,.15,.5,.8,1,.8,.5,.15][phase];
+  if(!brightness||blend<=.01||visibility<=.01)return;
+  const cx=193,cy=54,r=16,alpha=Math.max(0,Math.min(1,blend*visibility));
+  context.save();context.globalAlpha=alpha;
+  context.fillStyle="rgba(208,218,239,.13)";
+  context.beginPath();context.arc(cx,cy,r+2,0,Math.PI*2);context.fill();
+  context.fillStyle="rgba(46,55,73,.75)";
+  context.beginPath();context.arc(cx,cy,r,0,Math.PI*2);context.fill();
+  const waxing=phase>=1&&phase<=4;
+  context.fillStyle="rgb(235,237,242)";
+  for(let y=-r;y<=r;y+=.5){
+    const rim=Math.sqrt(Math.max(0,r*r-y*y));
+    const terminator=(waxing?1-2*brightness:2*brightness-1)*rim;
+    if(waxing)context.fillRect(cx+terminator,cy+y,rim-terminator,.7);
+    else context.fillRect(cx-rim,cy+y,terminator+rim,.7);
+  }
+  context.restore();
+}
 function skyCss(color,alpha=1){
   const c=(color||[0,0,0]).map(value=>Math.round(Math.max(0,Math.min(1,Number(value||0)))*255));
   return`rgba(${c[0]},${c[1]},${c[2]},${Math.max(0,Math.min(1,Number(alpha||0)))})`;
@@ -309,7 +334,9 @@ export class BabylonRenderer{
     const day=SKY_PROFILES.DAY[weather]||SKY_PROFILES.DAY.CLEAR;
     const night=SKY_PROFILES.NIGHT[weather]||SKY_PROFILES.NIGHT.CLEAR;
     const moonlight=String(environment.moonlight||"PARTIAL").toUpperCase();
-    const skyStrength=moonlight==="FULL"?1.18:moonlight==="NONE"?.58:1;
+    const moonPhase=String(environment.moonPhase||"FIRST_QUARTER").toUpperCase();
+    const moonExposure=Number(environment.moonExposure??.5);
+    const skyStrength=.58+Math.max(0,Math.min(1,moonExposure))*.60;
     const nightSky={...night,zenith:night.zenith.map(v=>Math.min(1,v*skyStrength)),upper:night.upper.map(v=>Math.min(1,v*skyStrength)),horizon:night.horizon.map(v=>Math.min(1,v*skyStrength))};
     const profile={
       zenith:mixSkyColor(day.zenith,nightSky.zenith,blend),
@@ -320,12 +347,12 @@ export class BabylonRenderer{
       stars:mixSkyNumber(day.stars||0,night.stars||0,blend)
     };
     const targetTimeOfDay=this.visualDayNightTarget>=.5?"NIGHT":"DAY";
-    return{weather,moonlight,targetTimeOfDay,blend,profile};
+    return{weather,moonlight,moonPhase,moonExposure,targetTimeOfDay,blend,profile};
   }
 
   syncSky(state,force=false){
     if(!this.skyTexture)return;
-    const {weather,moonlight,targetTimeOfDay,blend,profile}=this.skyProfile(state),signature=`${weather}:${moonlight}:${blend.toFixed(3)}`;
+    const {weather,moonlight,moonPhase,moonExposure,targetTimeOfDay,blend,profile}=this.skyProfile(state),signature=`${weather}:${moonlight}:${moonPhase}:${moonExposure.toFixed(3)}:${blend.toFixed(3)}`;
     if(!force&&signature===this.skySignature)return;
     this.skySignature=signature;
 
@@ -349,6 +376,11 @@ export class BabylonRenderer{
     gradient.addColorStop(1,skyCss(deep));
     context.globalAlpha=1;context.fillStyle=gradient;context.fillRect(0,0,width,height);
     this.scene.clearColor=new BABYLON.Color4(deep[0],deep[1],deep[2],1);
+
+    // The real world phase is painted behind clouds, before their weather layer.
+    const moonWeatherVisibility=moonExposure>0?moonExposure/Math.max(.01,
+      [0,.15,.5,.8,1,.8,.5,.15][Math.max(0,["NEW","WAXING_CRESCENT","FIRST_QUARTER","WAXING_GIBBOUS","FULL","WANING_GIBBOUS","LAST_QUARTER","WANING_CRESCENT"].indexOf(moonPhase))]):0;
+    paintWorldMoon(context,moonPhase,moonWeatherVisibility,blend);
 
     // Clouds stay above the horizon. Coverage/colour now blend with day/night so
     // they do not pop when the Environment state switches.
@@ -421,6 +453,13 @@ export class BabylonRenderer{
     // presentation interpolates between the already-defined DAY/NIGHT profiles.
     const moonlight=String(environment.moonlight||"PARTIAL").toUpperCase();
     const profile=this.lightingProfile(weather,blend,moonlight);
+    const visibleMoon=Number(environment.moonExposure);
+    if(Number.isFinite(visibleMoon)){
+      // Moon light scales continuously with phase and sky transmission;
+      // the original day/night light owners and weather base remain intact.
+      const transmitted=Math.max(0,Math.min(1,visibleMoon));
+      profile.sunIntensity*=.30+1.25*transmitted;
+    }
     const color=value=>new BABYLON.Color3(...value);
 
     this.scene.ambientColor=color(profile.ambient).scale(profile.ambientScale);

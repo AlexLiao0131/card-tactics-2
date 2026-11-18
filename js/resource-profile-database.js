@@ -1,6 +1,8 @@
 /** Declarative resource profiles. Character identity never owns an executor.
  * These values are the existing authored balance and skill variants, not logic. */
 export const RESOURCE_PROFILES=Object.freeze({
+  astralPower:Object.freeze({label:"星能",max:100,initial:0,naturalRecovery:0,
+    moonlightResonanceMaxRatio:.5}),
   rage:Object.freeze({label:'憤怒',max:100,initial:0,naturalRecovery:0,
     // First-playtest values live HERE; no hero-specific second resource store.
     damagePerPoint:8,slashBonus:8,killBonus:15,controlResistance:40,
