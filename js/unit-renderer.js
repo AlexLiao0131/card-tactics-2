@@ -26,6 +26,10 @@ export class UnitRenderer{
     this.meshes=new Map();
     this.animationQueues=new Map();
     this.activeAnimations=new Map();
+    // Temporary silver-white shape-change presentation. Lifetime is bounded;
+    // the canonical form and movement always belong to UnitRuntimeEngine.
+    this.formMorphs=new Map();
+    this.formMorphReceipts=new Set();
     this.animationDebug=true;
     this.figureMaterials=new Map();
     // Own the immutable per-appearance mesh layouts in the existing renderer.
@@ -89,7 +93,8 @@ export class UnitRenderer{
       Number(definition?.lift||0),
       Number(unit?.collisionHeight||0),
       JSON.stringify(definition?.figure||{}),
-      JSON.stringify(definition?.bird||{})
+      JSON.stringify(definition?.bird||{}),
+      JSON.stringify(definition?.quadruped||{})
     ].join("|");
   }
 
@@ -750,6 +755,39 @@ export class UnitRenderer{
         sphere(`figure-elf-hair-gem-${tag}`,.043,material.gem,[side*.17,1.69,.09],[.65,.8,.40],7,"head");
       }
       box("figure-elf-braided-clasp",[.085,.042,.055],material.gold,[.19,1.01,.105],[0,0,.18],"braid");
+    }
+
+    if(figure.moonPriestessAttire){
+      // Data-driven forest-priestess costume, attached to the EXISTING
+      // articulated head/body/arms. No per-hero mesh engine or detached prop.
+      for(const side of [-1,1]){
+        const tag=side<0?'l':'r',arm=side<0?'leftArm':'rightArm';
+        sphere(`figure-moon-shoulder-pelt-${tag}`,.28,material.leather,
+          [side*.29,1.32,-.016],[1.22,.72,1.30],8,arm);
+        sphere(`figure-moon-shoulder-fur-${tag}`,.22,material.tabard,
+          [side*.34,1.28,.078],[.94,.52,.90],7,arm);
+        for(let k=0;k<4;k++)sphere(`figure-moon-pelt-spot-${tag}-${k}`,.065,material.dark,
+          [side*(.26+(k%2)*.065),1.33-Math.floor(k/2)*.07,.175],
+          [.90,.48,.31],5,arm);
+        for(let j=0;j<3;j++){
+          const x=side*(.17+j*.065),y=1.77+j*.075;
+          box(`figure-moon-crest-feather-${tag}-${j}`,[.032,.21,.024],
+            j%2?material.gold:material.pearl,[x,y,-.015],
+            [0,0,side*(.20+j*.14)],'head');
+        }
+      }
+      // A slim luminous lunar tiara around the forehead, not a halo.
+      const moonBand=BABYLON.MeshBuilder.CreateTorus(`figure-moon-circlet-${unit.id}`,
+        {diameter:.37*scale,thickness:.017*scale,tessellation:20},this.scene);
+      finish(moonBand,material.gold,[0,1.665,.005],[Math.PI/2,0,0],null,{part:'head'});
+      sphere('figure-moon-forehead-stone',.068,material.pearl,[0,1.665,.163],
+        [.72,1,.50],8,'head');
+      for(const side of [-1,1]){
+        box(`figure-moon-belt-leaf-${side}`,[.12,.29,.032],material.tabard,
+          [side*.18,.74,.20],[.12,0,side*.13],'skirt');
+        sphere(`figure-moon-belt-bead-${side}`,.048,material.gold,
+          [side*.18,.86,.23],[.75,.80,.45],6,'body');
+      }
     }
 
     if(figure.hairRibbon){
@@ -1670,6 +1708,17 @@ export class UnitRenderer{
         1,0,5, 2,1,5, 3,2,5, 0,3,5
       ],material.weapon,"leftWeapon");
       cylinder("figure-field-spear-shaft-cap",.085,.078,.078,material.steelDark,[x,.190,z],null,7,"leftWeapon");
+      if(figure.moonPriestessAttire){
+        const gemY=1.965;
+        sphere('figure-moon-spear-pearl',.075,material.pearl,[x,gemY,z+.07],[.70,1.12,.55],8,'leftWeapon');
+        for(const side of [-1,1]){
+          box(`figure-moon-spear-feather-${side}`,[.038,.25,.025],
+            side<0?material.tabard:material.pearl,[x+side*.095,1.89,z+.02],
+            [0,0,side*.34],'leftWeapon');
+        }
+        cylinder('figure-moon-spear-silver-collar',.075,.11,.08,material.pearl,
+          [x,1.950,z],null,10,'leftWeapon');
+      }
       // Positive grip in front of the wrapped haft, the forearm owns it.
       for(let finger=0;finger<3;finger++){
         box(`figure-field-spear-knuckle-${finger}`,[.028,.047,.028],material.leatherDark,
@@ -1819,13 +1868,16 @@ export class UnitRenderer{
       add('seal-belly',quadParts.body,light,[0,-.13,.10],[.69,.31,1.34]);
       add('seal-neck',quadParts.body,fur,[0,.06,.42],[.67,.48,.52]);
       add('seal-head',quadParts.head,fur,[0,0,0],[.60,.50,.58]);
+      add('seal-forehead',quadParts.head,wet,[0,.17,.05],[.50,.20,.42]);
+      add('seal-lower-jaw',quadParts.head,light,[0,-.20,.19],[.44,.16,.34]);
       add('seal-muzzle-left',quadParts.head,light,[-.14,-.14,.24],[.27,.20,.26]);
       add('seal-muzzle-right',quadParts.head,light,[.14,-.14,.24],[.27,.20,.26]);
       add('seal-nose',quadParts.head,nose,[0,-.09,.39],[.16,.13,.11]);
       for(const sign of [-1,1]){
         add(`seal-eye-${sign}`,quadParts.head,eye,[sign*.26,.13,.19],[.10,.105,.07]);
         const front=quadParts[`front-${sign<0?'l':'r'}`];
-        add(`seal-flipper-${sign}`,front,fur,[sign*.17,-.16,.18],[.32,.11,.64],null);
+        add(`seal-flipper-${sign}`,front,fur,[sign*.17,-.16,.18],[.32,.11,.64],[0,sign*.23,sign*.12]);
+        add(`seal-flipper-tip-${sign}`,front,wet,[sign*.23,-.19,.45],[.34,.075,.34]);
         const rear=quadParts[`rear-${sign<0?'l':'r'}`];
         add(`seal-tailfin-${sign}`,rear,wet,[sign*.14,-.17,-.40],[.36,.10,.42]);
         for(let i=-1;i<=1;i++){
@@ -1840,14 +1892,20 @@ export class UnitRenderer{
       add('cat-chest',quadParts.body,light,[0,-.01,.39],[.52,.54,.50]);
       add('cat-neck',quadParts.body,fur,[0,.075,.42],[.40,.52,.36]);
       add('cat-head',quadParts.head,fur,[0,0,0],[.46,.42,.50]);
+      add('cat-brow',quadParts.head,fur,[0,.15,.20],[.41,.17,.36]);
+      add('cat-jaw',quadParts.head,light,[0,-.22,.23],[.34,.12,.31]);
       add('cat-muzzle',quadParts.head,light,[0,-.12,.28],[.31,.19,.27]);
       add('cat-nose',quadParts.head,nose,[0,-.12,.44],[.12,.09,.09]);
       for(const sign of [-1,1]){
         add(`cat-ear-${sign}`,quadParts.head,fur,[sign*.29,.30,-.07],[.19,.25,.14]);
         add(`cat-eye-${sign}`,quadParts.head,eye,[sign*.18,.10,.31],[.105,.085,.04]);
+        add(`cat-tear-${sign}`,quadParts.head,dark,[sign*.195,-.035,.34],[.046,.18,.036],
+          [0,0,sign*.10]);
+        add(`cat-cheek-mark-${sign}`,quadParts.head,dark,[sign*.24,-.10,.19],[.095,.07,.06]);
         for(const z of ['front','rear']){
           const leg=quadParts[`${z}-${sign<0?'l':'r'}`];
           add(`cat-leg-${z}-${sign}`,leg,fur,[0,-.16,0],[.22,.45,.22]);
+          add(`cat-foreleg-mark-${z}-${sign}`,leg,dark,[sign*.08,-.14,.09],[.050,.115,.065]);
           add(`cat-paw-${z}-${sign}`,leg,light,[0,-.35,.075],[.26,.12,.33]);
         }
       }
@@ -1895,11 +1953,12 @@ export class UnitRenderer{
       mesh.metadata={kind:"unit-part",unitId:unit.id,birdPart:part,castShadow:true};meshes.push(mesh);return mesh;
     };
     const sphere=(name,d,mat,part,pos,scaling)=>finish(BABYLON.MeshBuilder.CreateSphere(`${name}-${unit.id}`,{diameter:d*scale,segments:6},this.scene),mat,part,pos,null,scaling);
+    const raven=bird.species==="RAVEN"||bird.style==="MOON_RAVEN";
     sphere("bird-body",.34,bodyMat,"body",[0,.32,0],[1,1.05,1.25]);
     sphere("bird-chest",.22,lightMat,"body",[0,.34,.12],[.82,1.05,.72]);
     sphere("bird-head",.20,headMat,"head",[0,.50,.11],[1,.95,1]);
     sphere("bird-neck",.19,headMat,"body",[0,.405,.055],[1.02,1.15,.92]);
-    const beak=BABYLON.MeshBuilder.CreateCylinder(`bird-beak-${unit.id}`,{height:.16*scale,diameterTop:0,diameterBottom:.09*scale,tessellation:6},this.scene);
+    const beak=BABYLON.MeshBuilder.CreateCylinder(`bird-beak-${unit.id}`,{height:(raven?.20:.16)*scale,diameterTop:0,diameterBottom:(raven?.115:.09)*scale,tessellation:6},this.scene);
     finish(beak,beakMat,"head",[0,.48,.245],[Math.PI/2,0,0]);
     sphere("bird-eye-l",.035,eyeMat,"head",[-.065,.525,.18],[.7,.7,.55]);sphere("bird-eye-r",.035,eyeMat,"head",[.065,.525,.18],[.7,.7,.55]);
     const wing=(name,part,sign)=>{
@@ -1913,9 +1972,17 @@ export class UnitRenderer{
       const mesh=BABYLON.MeshBuilder.CreateBox(`${name}-${unit.id}`,{width:.075*scale,height:.018*scale,depth:length*scale},this.scene);
       finish(mesh,wingMat,part,[sign*(.18+Math.abs(z)*.16),y,z],[0,sign*rot,sign*.08]);
     };
-    for(let i=0;i<4;i++){
+    for(let i=0;i<(raven?6:4);i++){
       feather(`bird-primary-l-${i}`,"leftWing",-1,.34-i*.010,-.10-i*.055,.25+i*.035,.12+i*.05);
       feather(`bird-primary-r-${i}`,"rightWing",1,.34-i*.010,-.10-i*.055,.25+i*.035,.12+i*.05);
+    }
+    if(raven){
+      for(let i=-2;i<=2;i++){
+        const feather=BABYLON.MeshBuilder.CreateBox(`bird-raven-ruff-${i}-${unit.id}`,
+          {width:.065*scale,height:.017*scale,depth:.20*scale},this.scene);
+        finish(feather,wingMat,"head",[i*.056,.395,.01],[.30,i*.10,0]);
+      }
+      sphere('bird-raven-nape',.135,headMat,'head',[0,.455,-.04],[1,1,.68]);
     }
 
     for(let i=-1;i<=1;i++){
@@ -2057,6 +2124,8 @@ export class UnitRenderer{
   }
 
   disposeEntry(id){
+    const morph=this.formMorphs.get(String(id));
+    if(morph){morph.dispose();this.formMorphs.delete(String(id));}
     // Presentation ownership includes queued actions, even when the unit has
     // never had a drawable entry (e.g. an enemy hidden by fog/night).
     this.animationQueues.delete(id);
@@ -2859,6 +2928,51 @@ export class UnitRenderer{
     }
   }
 
+  startFormMorph(entry,event){
+    if(!entry?.root||!event?.unitId)return false;
+    const id=String(event.unitId),old=this.formMorphs.get(id);
+    old?.dispose();
+    // Use Babylon mesh primitives, no canvas sprite, HTML overlay or fake
+    // character movement. Moonlight is SILVER WHITE regardless of the moon phase.
+    const material=this.figureMaterial('holy-form-moonlight','#e8f3fb');
+    material.alpha=.74;
+    material.disableLighting=true;
+    material.emissiveColor=this.figureColor('#c0dae8').scale(.85);
+    const root=new BABYLON.TransformNode(`form-moonlight-${id}`,this.scene);
+    root.parent=entry.root;
+    root.position.set(0,.22,0);
+    const ring=BABYLON.MeshBuilder.CreateTorus(`form-moon-ring-${id}`,{
+      diameter:1.20,thickness:.045,tessellation:24},this.scene);
+    ring.parent=root;ring.material=material;ring.isPickable=false;
+    const sparks=[];
+    for(let k=0;k<6;k++){
+      const spark=BABYLON.MeshBuilder.CreateSphere(`form-moon-spark-${id}-${k}`,
+        {diameter:.065,segments:5},this.scene);
+      spark.parent=root;spark.material=material;spark.isPickable=false;
+      sparks.push(spark);
+    }
+    const dispose=()=>root.dispose(false,false);
+    this.formMorphs.set(id,{root,ring,sparks,dispose,startedAt:performance.now()});
+    return true;
+  }
+
+  updateFormMorphs(now){
+    for(const [id,morph] of this.formMorphs){
+      const t=Math.max(0,(now-morph.startedAt)/680);
+      if(t>=1){morph.dispose();this.formMorphs.delete(id);continue;}
+      const fade=(1-t);
+      morph.ring.scaling.setAll(.55+t*1.15);
+      morph.ring.visibility=fade*.82;
+      morph.ring.rotation.y=t*Math.PI*.65;
+      for(let k=0;k<morph.sparks.length;k++){
+        const a=k*Math.PI/3+t*1.65;
+        morph.sparks[k].position.set(Math.cos(a)*(.26+t*.39),
+          .18+t*.96+(k%2)*.11,Math.sin(a)*(.26+t*.39));
+        morph.sparks[k].visibility=fade;
+      }
+    }
+  }
+
   updateFrame(now=performance.now()){
     // Deleting a finished DEATH entry during Map iteration is safe and avoids
     // allocating a fresh array of all visible units every rendered frame.
@@ -2885,6 +2999,7 @@ export class UnitRenderer{
       this.updateAnimationBadge(entry,unit,state);
     }
     this.syncShieldPassengers();
+    this.updateFormMorphs(now);
   }
 
   // Rim/reflective readability only: no individual PointLight, so unit count
@@ -2966,6 +3081,21 @@ export class UnitRenderer{
       if(visible.has(String(id))||this.hasDeathPending(id))continue;
       this.disposeEntry(id);
     }
+    // The gameplay transition is already committed. Draw only one bounded
+    // morph pulse on the NEW shape, never keep an old humanoid ghost behind.
+    for(const event of events||[]){
+      if(event?.type!=='UNIT_FORM_CHANGED'||!event.unitId)continue;
+      const id=String(event.unitId),sequence=Number(event.sequence);
+      const key=Number.isSafeInteger(sequence)?`${id}:${sequence}`:null;
+      if(key&&this.formMorphReceipts.has(key))continue;
+      const entry=this.entries.get(id);
+      if(!entry)continue;
+      if(event.to&&entry.lastUnit?.currentForm&&
+         String(entry.lastUnit.currentForm)!==String(event.to))continue;
+      if(key){this.formMorphReceipts.add(key);
+        while(this.formMorphReceipts.size>256)this.formMorphReceipts.delete(this.formMorphReceipts.values().next().value);}
+      this.startFormMorph(entry,event);
+    }
     this.syncNightReadability(state);
     // The one BabylonRenderer render loop advances unit poses immediately
     // before scene.render(). Running updateFrame() inside sync() duplicated
@@ -2988,6 +3118,10 @@ export class UnitRenderer{
       activeAnimations:this.activeAnimations.size,
       queuedAnimations:[...this.animationQueues.values()].reduce((n,q)=>n+q.length,0),
       animationDebug:this.animationDebug,
+      activeFormMorphs:this.formMorphs.size,
+      visualKinds:Object.fromEntries([...this.entries.values()].reduce((map,entry)=>{
+        map.set(entry.kind,(map.get(entry.kind)||0)+1);return map;
+      },new Map())),
       figureGeometry:{...this.figureBuildStats,cachedAppearances:this.figureTemplates.size,
         averageEntryBuildMs:this.figureBuildStats.entriesCreated
           ?this.figureBuildStats.entryBuildMs/this.figureBuildStats.entriesCreated:0},
