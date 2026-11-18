@@ -1847,9 +1847,12 @@ export class UnitRenderer{
     const fur=mat('fur',colors.fur||'#bf9b5e'),light=mat('light',colors.light||'#e3d3ad'),
       dark=mat('mark',colors.mark||'#5a4129'),eye=mat('eye',colors.eye||'#bacad2'),
       nose=mat('nose',colors.nose||'#292d34'),wet=mat('wet',colors.wet||'#77828c');
-    const part=(id,x,y,z)=>{
+    // All moving joints share one canonical Babylon hierarchy. A paw pivots
+    // under its upper leg, while the jaw pivots under the head; neither is a
+    // separate actor or a mesh whose position is guessed from world coords.
+    const part=(id,x,y,z,parent=root)=>{
       const node=new BABYLON.TransformNode(`animal-${id}-${unit.id}`,this.scene);
-      node.parent=root;node.position.set(x*scale,y*scale,z*scale);
+      node.parent=parent;node.position.set(x*scale,y*scale,z*scale);
       node.metadata={kind:'unit-part-root',unitId:unit.id,quadBase:{position:node.position.clone(),rotation:node.rotation.clone(),scaling:node.scaling.clone()}};
       quadParts[id]=node;return node;
     };
@@ -1891,9 +1894,10 @@ export class UnitRenderer{
       add('cat-body',quadParts.body,fur,[0,0,0],[.61,.48,1.25]);
       add('cat-chest',quadParts.body,light,[0,-.01,.39],[.52,.54,.50]);
       add('cat-neck',quadParts.body,fur,[0,.075,.42],[.40,.52,.36]);
+      part('jaw',0,-.17,.19,quadParts.head);
       add('cat-head',quadParts.head,fur,[0,0,0],[.46,.42,.50]);
       add('cat-brow',quadParts.head,fur,[0,.15,.20],[.41,.17,.36]);
-      add('cat-jaw',quadParts.head,light,[0,-.22,.23],[.34,.12,.31]);
+      add('cat-jaw',quadParts.jaw,light,[0,-.05,.04],[.34,.12,.31]);
       add('cat-muzzle',quadParts.head,light,[0,-.12,.28],[.31,.19,.27]);
       add('cat-nose',quadParts.head,nose,[0,-.12,.44],[.12,.09,.09]);
       for(const sign of [-1,1]){
@@ -1904,9 +1908,13 @@ export class UnitRenderer{
         add(`cat-cheek-mark-${sign}`,quadParts.head,dark,[sign*.24,-.10,.19],[.095,.07,.06]);
         for(const z of ['front','rear']){
           const leg=quadParts[`${z}-${sign<0?'l':'r'}`];
-          add(`cat-leg-${z}-${sign}`,leg,fur,[0,-.16,0],[.22,.45,.22]);
+          // The paws must not be rigidly welded to the thigh: the original
+          // model rotated one capsule and therefore slid without footfall.
+          const ankle=part(`${z}-${sign<0?'l':'r'}-paw`,0,-.26,0,leg);
+          add(`cat-leg-${z}-${sign}`,leg,fur,[0,-.14,0],[.22,.39,.22]);
           add(`cat-foreleg-mark-${z}-${sign}`,leg,dark,[sign*.08,-.14,.09],[.050,.115,.065]);
-          add(`cat-paw-${z}-${sign}`,leg,light,[0,-.35,.075],[.26,.12,.33]);
+          add(`cat-shin-${z}-${sign}`,ankle,fur,[0,.035,.01],[.18,.27,.18]);
+          add(`cat-paw-${z}-${sign}`,ankle,light,[0,-.09,.075],[.26,.12,.33]);
         }
       }
       for(let i=0;i<16;i++){
@@ -2604,6 +2612,16 @@ export class UnitRenderer{
     if(leap){
       // The unit is in flight, not taking WALK steps on an invisible floor.
       // Pose uses the existing FIGURE articulated pivots; no Magda-only mesh.
+      if(entry.kind==='QUADRUPED'){
+        const air=Math.sin(Math.PI*clamp01(progress));
+        for(const side of ['l','r']){
+          const fore=entry.quadParts?.[`front-${side}`];
+          const hind=entry.quadParts?.[`rear-${side}`];
+          if(fore)fore.rotation.x-=air*.82;
+          if(hind)hind.rotation.x+=air*.62;
+        }
+        if(entry.quadParts?.head)entry.quadParts.head.rotation.x-=air*.15;
+      }
       if(entry.kind==='FIGURE'){
         const parts=entry.figureParts||{},air=Math.sin(Math.PI*clamp01(progress));
         if(parts.leftLeg)parts.leftLeg.rotation.x+=air*.35;
@@ -2640,12 +2658,10 @@ export class UnitRenderer{
 
     const step=Math.sin(local*Math.PI*2);
     if(entry.kind==='QUADRUPED'){
-      entry.root.position.y+=Math.abs(step)*.035;
-      for(const side of ['l','r'])for(const z of ['front','rear']){
-        const leg=entry.quadParts?.[`${z}-${side}`];
-        if(leg)leg.rotation.x+=Math.sin(local*Math.PI*2+(side==='l'?Math.PI:0)+(z==='rear'?Math.PI:0))*.40;
-      }
-      if(entry.quadParts?.tail)entry.quadParts.tail.rotation.x+=Math.sin(local*Math.PI*2)*.15;
+      // WALK events contain real traveled positions. The visual gait is
+      // evaluated from distance traveled within each tile, never wall clock,
+      // so a frozen/canceled displacement cannot keep running in place.
+      this.applyQuadrupedGait(entry,local,{moving:true,leap:false});
       return;
     }
     if(entry.kind==="BIRD"){
@@ -2678,6 +2694,110 @@ export class UnitRenderer{
     entry.root.rotation.z=step*.11;
   }
 
+  /** Readable four-beat animal locomotion, shared by cheetah and seal.
+   *  Paw joints are children of the limb pivots and every transform is restored
+   *  by resetPose() before the next frame. Only presentation transforms change.
+   */
+  applyQuadrupedGait(entry,phase,{moving=true}={}){
+    if(entry?.kind!=='QUADRUPED'||!entry.quadParts)return;
+    const parts=entry.quadParts,seal=entry.definition?.quadruped?.species==='SEAL';
+    const t=clamp01(phase)*Math.PI*2;
+    if(seal){
+      // Seals propel on land with alternating foreflipper plants and a body
+      // undulation. They should not trot on their rear tailfins like a cat.
+      const wave=Math.sin(t),bounce=Math.abs(wave);
+      if(parts.body)parts.body.rotation.x+=wave*.12;
+      if(parts.head)parts.head.rotation.x-=wave*.065;
+      if(parts.tail)parts.tail.rotation.y+=wave*.25;
+      for(const side of ['l','r']){
+        const sign=side==='l'?-1:1,front=parts[`front-${side}`],rear=parts[`rear-${side}`];
+        if(front){front.rotation.z+=sign*(.14+.32*Math.sin(t+(sign<0?0:Math.PI)));front.rotation.x+=.18*Math.cos(t+(sign<0?0:Math.PI));}
+        if(rear)rear.rotation.y+=sign*.22*Math.sin(t);
+      }
+      if(moving)entry.root.position.y+=bounce*.045;
+      return;
+    }
+    // Diagonal partners share the same plant/flight phase. The opposite pair
+    // swings by PI; the lower ankle flexes only while the paw is airborne.
+    const stride=Math.sin(t);
+    for(const side of ['l','r'])for(const location of ['front','rear']){
+      const diagonal=(side==='l')===(location==='front');
+      const offset=diagonal?0:Math.PI;
+      const cycle=t+offset,swing=Math.sin(cycle),lift=Math.max(0,Math.cos(cycle));
+      const upper=parts[`${location}-${side}`],paw=parts[`${location}-${side}-paw`];
+      if(upper){upper.rotation.x+=swing*(location==='front'?.72:.62);upper.rotation.z+=Math.sin(cycle)*.055;}
+      if(paw){paw.rotation.x-=swing*.34+lift*.36;paw.position.y+=lift*.080;}
+    }
+    if(parts.body){parts.body.rotation.x+=Math.sin(t*2)*.047;parts.body.rotation.z+=stride*.026;}
+    if(parts.head)parts.head.rotation.x-=Math.sin(t*2)*.045;
+    if(parts.tail){parts.tail.rotation.y+=Math.sin(t*.85)*.24;parts.tail.rotation.x+=Math.sin(t*2)*.085;}
+    if(moving)entry.root.position.y+=Math.abs(Math.sin(t))*.063;
+  }
+
+  /** One official ATTACK event drives the real animal joints. The existing
+   *  WildMagicVfx owns claws/teeth marks; it never impersonates body motion.
+   */
+  applyQuadrupedAttack(entry,event,progress){
+    if(entry?.kind!=='QUADRUPED'||!entry.quadParts)return;
+    const p=entry.quadParts,t=clamp01(progress),pulse=Math.sin(Math.PI*t),
+      skill=String(event?.skillId||''),seal=entry.definition?.quadruped?.species==='SEAL';
+    const direction=FACING_VECTOR[normalizeFacing(event?.facing??entry.lastUnit?.facing)]||FACING_VECTOR.S;
+    const advance=distance=>{
+      entry.root.position.x+=direction.x*distance;
+      entry.root.position.z+=direction.z*distance;
+    };
+    if(seal){
+      if(p.body)p.body.rotation.x+=pulse*.28;
+      if(p.head)p.head.rotation.x-=pulse*.42;
+      for(const side of ['l','r']){
+        if(p[`front-${side}`])p[`front-${side}`].rotation.x-=pulse*.35;
+      }
+      advance(pulse*.19);
+      return;
+    }
+    const frontL=p['front-l'],frontR=p['front-r'],rearL=p['rear-l'],rearR=p['rear-r'];
+    // Identified by the authored skill ID, not by arbitrary event ordering.
+    if(skill==='avreshi_pounce'){
+      const flight=Math.sin(Math.PI*t),launch=Math.max(0,Math.sin(Math.PI*clamp01((t-.10)/.73)));
+      if(p.body)p.body.rotation.x-=flight*.23;
+      if(p.head)p.head.rotation.x-=launch*.18;
+      for(const paw of [frontL,frontR])if(paw)paw.rotation.x-=flight*1.00;
+      for(const paw of [rearL,rearR])if(paw)paw.rotation.x+=flight*.74;
+      for(const id of ['front-l-paw','front-r-paw'])if(p[id])p[id].rotation.x-=flight*.42;
+      if(p.jaw)p.jaw.rotation.x+=Math.sin(Math.PI*clamp01((t-.40)/.46))*.60;
+      entry.root.position.y+=flight*.28;
+      advance(launch*.70);
+    }else if(skill==='avreshi_bite'){
+      const snap=Math.sin(Math.PI*clamp01((t-.24)/.55));
+      if(p.body)p.body.rotation.x+=pulse*.10;
+      if(p.head){p.head.rotation.x+=Math.sin(Math.PI*clamp01(t/.30))*.22-snap*.50;p.head.position.z+=snap*.09;}
+      if(p.jaw)p.jaw.rotation.x+=Math.sin(Math.PI*clamp01(t/.42))*.96-snap*.62;
+      for(const paw of [frontL,frontR])if(paw)paw.rotation.x-=pulse*.26;
+      advance(snap*.34);
+    }else if(skill==='avreshi_shred'){
+      const sequence=Math.sin(t*Math.PI*6)*pulse;
+      if(frontL)frontL.rotation.x-=Math.max(0,sequence)*1.16;
+      if(frontR)frontR.rotation.x-=Math.max(0,-sequence)*1.16;
+      for(const side of ['l','r']){
+        const ankle=p[`front-${side}-paw`];if(ankle)ankle.rotation.x-=Math.abs(sequence)*.45;
+      }
+      if(p.body)p.body.rotation.y+=sequence*.24;
+      if(p.head)p.head.rotation.y-=sequence*.18;
+      advance(pulse*.28);
+    }else{
+      // CLAW, or a generic ordinary animal attack: one visibly reaching
+      // foreleg while the opposite leg plants and the body follows through.
+      const slash=Math.sin(Math.PI*clamp01((t-.14)/.68));
+      if(frontL)frontL.rotation.x-=slash*1.20;
+      if(frontR)frontR.rotation.x+=slash*.26;
+      if(p['front-l-paw'])p['front-l-paw'].rotation.x-=slash*.48;
+      if(p.body)p.body.rotation.y-=slash*.19;
+      if(p.head)p.head.rotation.y+=slash*.10;
+      advance(slash*.31);
+    }
+    if(p.tail)p.tail.rotation.y+=Math.sin(t*Math.PI*2)*.28;
+  }
+
   applyProcedural(entry,unit,state,progress,now,event,definition){
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
@@ -2700,10 +2820,22 @@ export class UnitRenderer{
         if(p.tail)p.tail.rotation.x+=Math.sin(now/430)*.15;
         return;
       }
+      if(state==='WALK'){
+        // Non-path WALK previews must still articulate all four limbs rather
+        // than falling through to the generic bob-only humanoid animation.
+        this.applyQuadrupedGait(entry,progress,{moving:true});
+        return;
+      }
       if(state==='ATTACK'){
-        if(p.head)p.head.rotation.x-=Math.sin(Math.PI*clamp01(progress))*.42;
-        if(p.body)p.body.rotation.x+=Math.sin(Math.PI*clamp01(progress))*.18;
-        entry.root.position.y+=Math.sin(Math.PI*clamp01(progress))*.09;
+        this.applyQuadrupedAttack(entry,event,progress);
+        return;
+      }
+      if(state==='HURT'){
+        const recoil=Math.sin(Math.PI*clamp01(progress));
+        if(p.body)p.body.rotation.x-=recoil*.24;
+        if(p.head)p.head.rotation.x+=recoil*.32;
+        if(p.tail)p.tail.rotation.y+=recoil*.32;
+        entry.root.position.y-=recoil*.04;
         return;
       }
     }

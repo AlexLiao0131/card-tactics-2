@@ -22,7 +22,9 @@ export const VISUALS={
     avreshi_cheetah:{battle:{kind:"QUADRUPED",baseFacing:"E",height:.98,
       quadruped:{species:"CHEETAH",colors:{fur:"#d4ae6e",light:"#e9d7ac",mark:"#362b25",eye:"#d7e3d7",nose:"#2c2324"}},
       animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},WALK:{duration:205,loop:true,procedural:"STEP"},
-        ATTACK:{duration:340,loop:false,procedural:"LUNGE"},HURT:{duration:240,loop:false,procedural:"RECOIL"},DEATH:{duration:690,loop:false,procedural:"FALL"}}}},
+        // Let the authored limb/teeth strikes read on screen; 340ms previously
+        // ended while the existing bite/claw/shred VFX were still playing.
+        ATTACK:{duration:760,loop:false,procedural:"LUNGE"},HURT:{duration:240,loop:false,procedural:"RECOIL"},DEATH:{duration:690,loop:false,procedural:"FALL"}}}},
     avreshi_seal:{battle:{kind:"QUADRUPED",baseFacing:"E",height:.82,
       quadruped:{species:"SEAL",colors:{fur:"#65737b",light:"#bac5c6",mark:"#45545c",eye:"#f0f5ef",nose:"#303941",wet:"#627881"}},
       animations:{IDLE:{duration:1200,loop:true,procedural:"BREATHE"},WALK:{duration:320,loop:true,procedural:"STEP"},
