@@ -57,28 +57,46 @@ test('moonfire really uses a sky-to-ground vertical beam, not a natural projecti
  const {v,fx,s}=draw('avreshi_moonfire');
  assert.equal(fx.kind,'MOONBEAM');
  assert.equal(fx.root.position.x,6);assert.equal(fx.root.position.z,4);
- assert.ok(fx.beamShell.name.includes('sky-pillar'));
- assert.equal(fx.skyRing.position.y,7.5);
+ assert.ok(fx.beamShell.name.includes('sky-column'));
+ assert.equal(fx.skyRing.position.y,8.2);
  const now=fx.started;
  v.updateFrame(now+75);const small=fx.beamShell.scaling.y;
  v.updateFrame(now+400);const full=fx.beamShell.scaling.y;
  assert.ok(full>small,`beam descends from sky: ${small} to ${full}`);
- assert.ok(fx.beamShell.position.y+full/2>=7.49,'top remains fixed at the sky opening');
- assert.ok(s.nodes.some(x=>x.name.includes('moonfire-target-seal')));
+ assert.ok(fx.beamShell.position.y+full/2>=8.19,'top remains fixed at the sky opening');
+ assert.ok(s.nodes.some(x=>x.name.includes('moonfire-ground-impact')));
 });
 
-test('wrath, leaf rejuvenation, spear and wildcat marks use visibly different geometry',()=>{
+test('wrath, moonbloom rejuvenation, spear and feline marks use different geometry',()=>{
  assert.equal(draw('avreshi_wrath').fx.thorns.length,9);
+ assert.equal(draw('avreshi_wrath').fx.roots.length,6);
+ assert.equal(draw('avreshi_wrath').fx.fissures.length,5);
  assert.equal(draw('avreshi_claw').fx.slashes.length,3);
  assert.equal(draw('avreshi_shred').fx.slashes.length,7);
  assert.equal(draw('avreshi_bite').fx.fangs.length,4);
  assert.equal(draw('avreshi_bite').fx.jaws.length,2);
  assert.equal(draw('avreshi_pounce').fx.jaws.length,2);
  assert.ok(draw('avreshi_pounce').fx.pounceRing);
- assert.equal(draw('avreshi_rejuvenation').fx.leaves.length,8);
+ assert.equal(draw('avreshi_rejuvenation').fx.petals.length,8);
+ assert.equal(draw('avreshi_rejuvenation').fx.stems.length,3);
  assert.ok(draw('avreshi_spear_throw').fx.shaft);
  assert.ok(draw('avreshi_spear_thrust').fx.thrust);
- assert.equal(draw('avreshi_hide').fx.hideLeaves.length,6);
+ assert.equal(draw('avreshi_hide').fx.hidePaws.length,3);
+ assert.equal(draw('avreshi_hide').fx.hideToes.length,9);
+});
+
+test('Ophi forest-song geometry cannot masquerade as Druid moonbloom, wrath or feline stealth',()=>{
+ const wrath=draw('avreshi_wrath');
+ assert.ok(wrath.s.nodes.some(n=>n.name.includes('wrath-earth-fissure')));
+ assert.ok(wrath.s.nodes.some(n=>n.name.includes('wrath-rising-root')));
+ assert.ok(!wrath.s.nodes.some(n=>/forest-wrath-missile|wrath-force-core|wrath-nature-front/.test(n.name)));
+ const healing=draw('avreshi_rejuvenation');
+ assert.ok(healing.s.nodes.some(n=>n.name.includes('moonbloom-petal')));
+ assert.ok(healing.s.nodes.some(n=>n.name.includes('moonbloom-healing-vine')));
+ assert.ok(!healing.s.nodes.some(n=>/song-note|healing-song|rejuvenation-sylvan-circle|rejuvenation-life-spark/.test(n.name)));
+ const feline=draw('avreshi_hide');
+ assert.ok(feline.s.nodes.some(n=>n.name.includes('feline-stealth-footprint')));
+ assert.ok(!feline.s.nodes.some(n=>/feline-silent-leaf|feline-camouflage-leaf-vortex/.test(n.name)));
 });
 
 test('rejuvenation status creates a live-following aura and is removed on cleanse/expiry',()=>{
@@ -153,6 +171,8 @@ test('canonical falling meteor creates the original geometry with a moon-white p
  assert.equal(gl.meteorBursts.length,1);
  const result=gl.meteorBursts[0];
  assert.equal(result.body.material,gl.materials.lunarMeteorRock);
+ assert.ok(result.moonHalo,'lunar meteor orbits the original falling rock');
+ assert.ok(result.moonImpactRing,'moon impact is visible independently of ordinary fiery starfall');
  assert.equal(result.blast.material,gl.materials.lunarMeteorBlast);
  assert.equal(result.tails.length,4);
  assert.equal(result.debris.length,8);
@@ -162,4 +182,69 @@ test('canonical falling meteor creates the original geometry with a moon-white p
  // Ordinary starfall continues using its ORIGINAL fiery materials.
  create.call(gl,{...ev,lunar:false,sequence:302},snap(),()=>.31,2,BABYLON);
  assert.equal(gl.meteorBursts[1].body.material,gl.materials.meteorRock);
+ assert.equal(gl.meteorBursts[1].moonHalo,null);
+ assert.equal(gl.meteorBursts[1].moonImpactRing,null);
+});
+
+test('fresh Babylon module graph loads the new Moonmark VFX, not cached legacy hero effects',()=>{
+ const main=readFileSync(new URL('../../js/babylon-renderer.js',import.meta.url),'utf8');
+ const manager=readFileSync(new URL('../../js/vfx-manager.js',import.meta.url),'utf8');
+ const druid=readFileSync(new URL('../../js/wild-magic-vfx.js',import.meta.url),'utf8');
+ const rev='20261118-avreshi-vfx-2';
+ assert.ok(main.includes(`./vfx-manager.js?rev=${rev}`));
+ assert.ok(main.includes(`./environment-renderer.js?rev=${rev}`));
+ assert.ok(manager.includes(`./wild-magic-vfx.js?rev=${rev}`));
+ assert.ok(manager.includes(`./vfx-database.js?rev=${rev}`));
+ assert.ok(druid.includes(`./vfx-database.js?rev=${rev}`));
+});
+
+test('real existing lightning geometry builds a persistent, visible spell strike with ground contact',()=>{
+ const src=readFileSync(new URL('../../js/environment-renderer.js',import.meta.url),'utf8');
+ const method=(name,args)=>{
+   const marker=`  ${name}(${args}){`,start=src.indexOf(marker);
+   assert.ok(start>=0,`${name} found`);
+   const brace=src.indexOf('{',start);let depth=0,end=-1;
+   for(let i=brace;i<src.length;i++){
+     if(src[i]==='{')depth++;
+     else if(src[i]==='}'&&--depth===0){end=i;break;}
+   }
+   assert.ok(end>brace);return src.slice(brace+1,end);
+ };
+ const create=new Function('event','state','BABYLON','TILE_SIZE','hash01',method('createLightningBurst','event,state'));
+ const update=new Function('dt','clamp',method('updateLightning','dt'));
+ const s=scene();BABYLON.Mesh={CAP_ALL:1};
+ const lines=(name,opts,s)=>{const shape=new TransformNode(name,s);shape.geometry='LINES';return shape;};
+ BABYLON.MeshBuilder.CreateLines=lines;
+ const holder={scene:s,lightningBursts:[],lightningFlash:{intensity:0},
+   materials:{lightningBolt:new StandardMaterial('lightning-bolt',s)},lightningTargetY:()=>0};
+ create.call(holder,{x:3,y:2,sequence:711,skillId:'avreshi_lightning'},snap(),BABYLON,2,()=>.44);
+ assert.equal(holder.lightningBursts.length,1);
+ const burst=holder.lightningBursts[0];
+ assert.equal(burst.duration,1.22);
+ assert.equal(burst.spell,true);
+ assert.ok(burst.impact);
+ assert.ok(burst.meshes.some(m=>m.name.includes('lightning-body')));
+ assert.ok(burst.meshes.some(m=>m.name.includes('ground-fan')));
+ update.call(holder,.42,(v,lo,hi)=>Math.max(lo,Math.min(hi,v)));
+ assert.ok(burst.impact.visibility>.1,'spell ground strike must remain visible after first flash');
+ update.call(holder,.85,(v,lo,hi)=>Math.max(lo,Math.min(hi,v)));
+ assert.equal(holder.lightningBursts.length,0);
+ assert.ok(burst.meshes.every(m=>m.disposed),'all lightning geometry must be cleaned up');
+});
+
+test('starfall and lightning dispatch from authentic unit-animation-shaped events exactly once',()=>{
+ const src=readFileSync(new URL('../../js/environment-renderer.js',import.meta.url),'utf8');
+ const dispatch=classMethod(src,'syncPresentationEvents');
+ const calls=[],environment={seenPresentationSequences:new Set(),lastLightningToken:'',
+   createMeteorStrike:(e,s)=>calls.push({kind:'meteor',event:e}),
+   createLightningBurst:(e,s)=>calls.push({kind:'lightning',event:e})};
+ const skill=(id,seq)=>({type:'UNIT_ANIMATION',sequence:seq,
+   state:'CAST',duration:520,unitId:'av',visualId:'avreshi_human',
+   characterId:'avreshi',x:1,y:1,z:0,
+   skillId:id,targetId:id==='avreshi_starfall'?null:'enemy',targetX:3,targetY:2});
+ const events=[skill('avreshi_starfall',311),skill('avreshi_lightning',312)];
+ dispatch.call(environment,events,snap());dispatch.call(environment,events,snap());
+ assert.deepEqual(calls.map(c=>c.kind),['meteor','lightning']);
+ assert.equal(calls[0].event.lunar,true);
+ assert.equal(calls[1].event.skillId,'avreshi_lightning');
 });
