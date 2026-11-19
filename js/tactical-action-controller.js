@@ -1454,7 +1454,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const enchantment=skill.shape==="LINE"?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
       const enchantImpacts=[];
       const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):
-        skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):ctx.aoeTiles(center,skill.radius||0);
+        skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):
+        skill.areaDamage?.footprint==="ADJACENT_8"
+          ?ctx.aoeTiles(center,Number(skill.radius||0)*2).filter(tile=>
+            Math.max(Math.abs(tile.x-center.x),Math.abs(tile.y-center.y))<=Number(skill.radius||0))
+          :ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);
@@ -1488,7 +1492,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         });
         if(enchantImpacts.length)resolveEnchantmentImpacts(enchantImpacts);
       }
-      if(['MAGIC_POWER','PHYSICAL_VOLLEY','PHYSICAL_IMPACT'].includes(skill.areaDamage?.mode)){
+      if(['MAGIC_POWER','PHYSICAL_VOLLEY','PHYSICAL_IMPACT','PHYSICAL_SWEEP'].includes(skill.areaDamage?.mode)){
         let friendlyHpLoss=0;
         // One actual outcome for each unit in the canonical footprint. The
         // Babylon arrow count is presentation-only and never implies damage.
@@ -1569,6 +1573,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
             // This is a BLOCK result, never an invented zero-damage hit.
             summary.blocked++;
             globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"BLOCK");
+          }
+          if(hpLoss>0&&occupant.hp>0&&Array.isArray(skill.statusEffects)){
+            for(const status of skill.statusEffects){
+              const chance=Math.max(0,Math.min(100,Number(status.chance??100)));
+              if(ctx.random()*100>=chance)continue;
+              const {chance:ignoredChance,...effect}=status;
+              const applied=EffectEngine.apply({source:attacker,target:occupant,effect});
+              if(applied?.applied)ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 附加 ${effect.name||effect.id} ${effect.duration||0} 回合。`,"BATTLE");
+            }
           }
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${hpLoss} HP 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}

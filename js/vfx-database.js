@@ -69,7 +69,7 @@ const defs={
       METEOR:['avreshi_starfall'],REJUVENATION:['avreshi_rejuvenation'],
       SPEAR_THRUST:['avreshi_spear_thrust'],SPEAR_THROW:['avreshi_spear_throw'],
       POUNCE:['avreshi_pounce'],BITE:['avreshi_bite'],
-      CLAW:['avreshi_claw'],SHRED:['avreshi_shred'],HIDE:['avreshi_hide']},
+      CLAW:['avreshi_claw'],SHRED:['avreshi_shred','avreshi_swipe'],HIDE:['avreshi_hide']},
     events:[],status:{REJUVENATION:'AVRESHI_REJUVENATION'},legacy:'wildMagicVfx'},
   'blood-ritual':{
     roles:{RAZOR:['seraphina_rending_claw'],SHADOW:['seraphina_blood_drain'],

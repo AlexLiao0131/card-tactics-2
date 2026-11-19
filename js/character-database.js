@@ -33,7 +33,7 @@ avreshi:{id:"avreshi",name:"艾芙蕾希・月痕",title:"月林祭司",race:"EL
   forms:{default:"HUMAN",available:["HUMAN","CHEETAH","SEAL","RAVEN"],
     HUMAN:{name:"人形態",visualId:"avreshi_human",skillIds:['avreshi_moonfire', 'avreshi_tornado', 'avreshi_lightning', 'avreshi_rejuvenation', 'avreshi_starfall', 'avreshi_spear_throw', 'avreshi_spear_thrust', 'avreshi_to_human', 'avreshi_to_cheetah', 'avreshi_to_seal', 'avreshi_to_raven'],
       terrainTraits:["FOREST_WALK","MOUNTAIN_WALK"],passives:["ELVEN_PATHFINDER","AVRESHI_NATURE_STRIKE"],movementMode:"GROUND"},
-    CHEETAH:{name:"獵豹形態",visualId:"avreshi_cheetah",skillIds:['avreshi_pounce', 'avreshi_bite', 'avreshi_claw', 'avreshi_shred', 'avreshi_hide', 'avreshi_to_human', 'avreshi_to_cheetah', 'avreshi_to_seal', 'avreshi_to_raven'],
+    CHEETAH:{name:"獵豹形態",visualId:"avreshi_cheetah",skillIds:['avreshi_pounce', 'avreshi_bite', 'avreshi_claw', 'avreshi_shred', 'avreshi_swipe', 'avreshi_hide', 'avreshi_to_human', 'avreshi_to_cheetah', 'avreshi_to_seal', 'avreshi_to_raven'],
       terrainTraits:["FOREST_WALK"],passives:["AVRESHI_NATURE_STRIKE","FELINE_NIGHT_VISION","AVRESHI_WOUND_INFECTION"],
       movementMode:"GROUND",movementModifier:1,autostealth:true},
     SEAL:{name:"海豹形態",visualId:"avreshi_seal",skillIds:['avreshi_dive', 'avreshi_surface', 'avreshi_carry', 'avreshi_release', 'avreshi_whirlpool', 'avreshi_press', 'avreshi_to_human', 'avreshi_to_cheetah', 'avreshi_to_seal', 'avreshi_to_raven'],
