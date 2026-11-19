@@ -29,8 +29,8 @@ test('揮擊按原有爪擊威力、撕碎 MP、撕咬流血結算',()=>{
   assert.equal(swipe.manaCost,SKILLS.avreshi_shred.manaCost);
   assert.equal(swipe.weapon,'claw');
   assert.deepEqual(swipe.range,{min:0,max:0});
-  assert.equal(swipe.target,'TILE');
-  assert.equal(swipe.targetType,'AOE');
+  assert.equal(swipe.target,'SELF');
+  assert.equal(swipe.targetType,'SINGLE');
   assert.equal(swipe.radius,1);
   assert.deepEqual(swipe.areaDamage,{mode:'PHYSICAL_SWEEP',relation:'ENEMY',footprint:'ADJACENT_8',hitRule:'STANDARD'});
   assert.deepEqual(swipe.statusEffects[0],SKILLS.avreshi_bite.statusEffects[0]);
@@ -82,4 +82,19 @@ test('正式範圍傷害在有效扣血後才施加流血，且不波及隊友�
   assert.match(raw,/if\(relation==="ENEMY"&&occupant\.team===attacker\.team&&!sanityMisfire\)return;/);
   assert.match(raw,/if\(hpLoss>0&&occupant\.hp>0&&Array\.isArray\(skill\.statusEffects\)\)/);
   assert.match(raw,/EffectEngine\.apply\(\{source:attacker,target:occupant,effect\}\)/);
+  assert.match(raw,/skill\.target==="SELF"&&skill\.areaDamage\?\.mode==="PHYSICAL_SWEEP"/);
+  assert.match(raw,/return executeMapSkill\(attacker,\{x:attacker\.x,y:attacker\.y\},skill\)/);
+  assert.match(raw,/attacker\.acted=true;attacker\.waited=true;/);
+
+});
+
+
+test('PVP 地圖技能能力檢查不引用未定義的揮擊區域變數，避免中斷整個戰棋選單',()=>{
+  const raw=readFileSync(resolve(here,'../src/pvp-headless-map-skills.mjs'),'utf8');
+  const body=raw.split('export function isCanonicalSpatialTransitSkill(skill){')[1]
+    ?.split('export function isCanonicalLineTransitSkill')[0];
+  assert.ok(body);
+  const fn=vm.runInNewContext('function isCanonicalSpatialTransitSkill(skill){'+body+'; isCanonicalSpatialTransitSkill');
+  assert.equal(fn(swipe),false);
+  assert.equal(fn({category:'MAGIC',target:'TILE',targetType:'AOE',radius:0,range:{min:0,max:0},power:0}),false);
 });
