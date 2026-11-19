@@ -65,6 +65,51 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       GEMINI_REQUEST_TIMEOUT_MS.ENEMY_DECISION;
   let geminiSession=null,geminiSerial=0;
   const matchId=()=>"match_"+Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,"0")).join("");
+  // The existing Gemini Worker accepts at most 48 KiB per request. The full
+  // playable card pool can exceed that as new heroes and passives are added.
+  // Keep EVERY legal card, skill and passive, plus their IDs, costs, stats and
+  // combat fields. Only shrink optional natural-language descriptions when the
+  // serialized ENEMY_DECK request actually needs it. No parallel card database.
+  function compactGeminiDeckEnvelope(envelope,byteLimit){
+    const encoder=new TextEncoder(),measure=body=>encoder.encode(body).length;
+    const original=JSON.stringify(envelope);
+    if(measure(original)<=byteLimit)return{body:original,bytes:measure(original),tier:0};
+    if(envelope?.phase!=="ENEMY_DECK"||!Array.isArray(envelope.cards))
+      return{body:null,bytes:measure(original),tier:-1};
+    const tiers=[
+      {mechanic:80,passiveDescription:100,passiveRules:180,tags:4},
+      {mechanic:65,passiveDescription:80,passiveRules:130,tags:3},
+      {mechanic:50,passiveDescription:60,passiveRules:100,tags:3},
+      {mechanic:36,passiveDescription:44,passiveRules:70,tags:2},
+      {mechanic:24,passiveDescription:30,passiveRules:42,tags:1},
+      {mechanic:0,passiveDescription:0,passiveRules:0,tags:0}
+    ];
+    const short=(value,max)=>String(value??"").replace(/\s+/g," ").trim().slice(0,max);
+    let lastBytes=measure(original);
+    for(let i=0;i<tiers.length;i++){
+      const tier=tiers[i];
+      const cards=envelope.cards.map(card=>({
+        ...card,
+        ...(Array.isArray(card.skills)?{skills:card.skills.map(skill=>{
+          const {mechanic,tags,...core}=skill;
+          const note=tier.mechanic>0?short(mechanic,tier.mechanic):"";
+          const keptTags=Array.isArray(tags)?tags.slice(0,tier.tags):[];
+          return{...core,...(note?{mechanic:note}:{}),...(keptTags.length?{tags:keptTags}:{})};
+        })}:{}),
+        ...(Array.isArray(card.passives)?{passives:card.passives.map(passive=>{
+          const {description,rules,...core}=passive;
+          const note=tier.passiveDescription>0?short(description,tier.passiveDescription):"";
+          const rule=tier.passiveRules>0?short(rules,tier.passiveRules):"";
+          return{...core,...(note?{description:note}:{}),...(rule?{rules:rule}:{})};
+        })}:{})
+      }));
+      const body=JSON.stringify({...envelope,cards}),bytes=measure(body);
+      if(bytes<=byteLimit)return{body,bytes,tier:i+1};
+      lastBytes=bytes;
+    }
+    // Never silently remove legal cards or skills to force a smaller payload.
+    return{body:null,bytes:lastBytes,tier:-1};
+  }
   async function geminiRequest(endpoint,payload){
     const session=geminiSession;
     if(!session?.token)return null;
@@ -76,16 +121,34 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     session.inflight??=new Set();
     session.inflight.add(controller);
     try{
-      const response=await fetch(`${GEMINI_WORKER}${endpoint}`,{
-        method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.token}`},
-        body:JSON.stringify({...payload,battle_id:session.battleId,revision:requestSerial}),signal:controller.signal
-      });
-      let data=null;
-      try{data=await response.json();}catch{throw Error(`HTTP_${response.status}_INVALID_JSON`);}
-      if(geminiSession!==session)return null;
-      if(!response.ok)throw Error(String(data?.error||`HTTP_${response.status}`));
-      if(data?.battle_id!==session.battleId||data?.revision!==requestSerial)throw Error("RESPONSE_MISMATCH");
-      return data;
+      const deckPrepare=endpoint==="/v1/prepare"&&payload?.phase==="ENEMY_DECK";
+      // The historical Worker limit is 48 KiB; keep a 2 KiB safety margin.
+      // If a deployed Worker uses a smaller cap, HTTP 413 triggers an immediate
+      // stricter retry without reselecting cards or changing request identity.
+      const budgets=deckPrepare?[46*1024,40*1024,28*1024]:[null];
+      const envelope={...payload,battle_id:session.battleId,revision:requestSerial};
+      for(let attempt=0;attempt<budgets.length;attempt++){
+        const fitted=deckPrepare?compactGeminiDeckEnvelope(envelope,budgets[attempt]):
+          {body:JSON.stringify(envelope),bytes:null,tier:0};
+        if(!fitted.body)throw Error("GEMINI_DECK_PAYLOAD_TOO_LARGE");
+        if(deckPrepare)globalThis.CardTacticsDiagnostics?.push?.("GEMINI_PREPARE_PAYLOAD",{
+          cards:payload.cards.length,bytes:fitted.bytes,detailTier:fitted.tier,
+          retry:attempt
+        });
+        const response=await fetch(`${GEMINI_WORKER}${endpoint}`,{
+          method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.token}`},
+          body:fitted.body,signal:controller.signal
+        });
+        if(deckPrepare&&response.status===413&&attempt+1<budgets.length)continue;
+        if(response.status===413)throw Error("GEMINI_WORKER_PAYLOAD_LIMIT");
+        let data=null;
+        try{data=await response.json();}catch{throw Error(`HTTP_${response.status}_INVALID_JSON`);}
+        if(geminiSession!==session)return null;
+        if(!response.ok)throw Error(String(data?.error||`HTTP_${response.status}`));
+        if(data?.battle_id!==session.battleId||data?.revision!==requestSerial)throw Error("RESPONSE_MISMATCH");
+        return data;
+      }
+      throw Error("GEMINI_WORKER_PAYLOAD_LIMIT");
     }catch(error){
       if(session===geminiSession){
         session.lastError=error?.name==="AbortError"?"REQUEST_TIMEOUT":
@@ -183,6 +246,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
         RATE_LIMITER_NOT_CONFIGURED:"Cloudflare 未建立 AI_RATE_LIMITER 限流綁定，請核對 wrangler.toml 與部署設定。",
         REQUEST_LIMIT:"Cloudflare 限流已達上限，請稍後再試。",
         MODEL_QUOTA:"Google Gemini API 已超過目前配額，請確認 AI Studio 的使用額度。",
+        GEMINI_DECK_PAYLOAD_TOO_LARGE:"Gemini 卡池資料量超過安全傳輸上限；已保留完整卡池，請同步調整 Gemini Worker 的請求上限。",
+        GEMINI_WORKER_PAYLOAD_LIMIT:"Gemini Worker 拒絕過大的整備資料（HTTP 413），已自動精簡重試；請檢查 Worker 的接收上限。",
         MODEL_UNAVAILABLE:"Google Gemini API 呼叫失敗，請檢查模型可用性與 Cloudflare 的 Worker 日誌。",
         INVALID_MODEL_RESPONSE:"Gemini 沒有回傳有效資料，可以再試一次。",
         INVALID_DECK:"Gemini 回傳的牌組不合法，可以再試一次。",
