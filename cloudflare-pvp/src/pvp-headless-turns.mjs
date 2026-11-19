@@ -1,4 +1,4 @@
-import {beginPlayerRoundSequence} from '../../js/battle-round-sequence.js';
+import {beginPlayerRoundSequence,tickRoundStatusEffects} from '../../js/battle-round-sequence.js';
 /**
  * Experimental headless turn orchestration. Calls the existing CardPhaseEngine,
  * UnitRuntimeEngine, EffectEngine, StageEngine and BattleEnvironmentController.
@@ -43,7 +43,7 @@ export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd,{onRou
     logRoundStart:()=>callbacks.pushLog(`Round ${game.round}｜我方回合開始。`,'SYSTEM'),
     environmentAvailable:()=>!!game.environmentState,
     applyEnvironmentHazards:()=>environment.applyEnvironmentHazards({reason:'回合開始仍處於燃燒區'}),
-    tickEffects:()=>game.units.filter(u=>u.alive).forEach(u=>engine.effect.tick(u,{units:game.units})),
+    tickEffects:()=>tickRoundStatusEffects({units:game.units,effectEngine:engine.effect,onDefeated:callbacks.handleDefeated}),
     tickSanctuaries:()=>fields.tickSanctuaries('P'),
     stageRoundStart:()=>callbacks.stageEvent({type:'ROUND_START',round:game.round,team:'PLAYER'}),
     tickEnvironment:()=>EnvironmentEngine.tick(game.environmentState),
