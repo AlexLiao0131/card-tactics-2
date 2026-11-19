@@ -115,14 +115,27 @@ export function isCanonicalImmediateMapSkill(skill){
       skill.range.min>=1&&skill.range.max>=skill.range.min&&
       Number(skill.resourceCosts?.rage)>0&&!skill.utilityAction;
 
-  if(!skill||!['MAGIC','SPECIAL'].includes(skill.category)||
+  const physicalSweep=skill?.areaDamage?.mode==='PHYSICAL_SWEEP'&&
+    skill.category==='ATTACK'&&skill.attackType==='SLASH'&&!!skill.weapon&&
+    skill.areaDamage.relation==='ENEMY'&&
+    skill.areaDamage.footprint==='ADJACENT_8'&&
+    skill.areaDamage.hitRule==='STANDARD'&&
+    Number(skill.range?.min)===0&&Number(skill.range?.max)===0&&
+    Number(skill.radius)===1&&Number(skill.power)>0;
+  const sweepBleed=physicalSweep&&Array.isArray(skill.statusEffects)&&
+    skill.statusEffects.length===1&&skill.statusEffects[0]?.type==='DAMAGE_OVER_TIME'&&
+    skill.statusEffects[0]?.id==='BLEEDING'&&
+    Number(skill.statusEffects[0]?.chance)===100&&
+    Number(skill.statusEffects[0]?.duration)>0&&
+    Number(skill.statusEffects[0]?.amount)>0;
+  if(!skill||(physicalSweep&&!sweepBleed)||(!['MAGIC','SPECIAL'].includes(skill.category)&&!physicalSweep)||
      skill.target!=='TILE'||skill.targetType!=='AOE'||
      !Number.isFinite(Number(skill.radius))||Number(skill.radius)<0||
      skill.shape||skill.moveToTarget||skill.utilityAction||
      skill.sanctuary||skill.smokeField||skill.channel||skill.bloodShadow||
      skill.bloodBurst||skill.trapPlacement||skill.terrainTargeting||
      skill.environmentTarget||skill.waterContact||skill.approach||
-     skill.variants?.length||skill.statusEffects?.length||
+     skill.variants?.length||(skill.statusEffects?.length&&!sweepBleed)||
      skill.postEffects?.length||skill.afterUseEffects?.length||
      skill.effects?.length)return false;
   const forestBloom=skill.id==='ophi_forest_wrath'&&
@@ -137,12 +150,12 @@ export function isCanonicalImmediateMapSkill(skill){
   const physicalVolley=skill.areaDamage?.mode==='PHYSICAL_VOLLEY'&&
     skill.fanShot?.length>0&&skill.attackType==='SHOT'&&skill.weapon&&
     skill.id==='ophi_multishot'&&skill.areaDamage?.relation==='ENEMY';
-  if(skill.areaDamage&&skill.areaDamage.mode!=='MAGIC_POWER'&&!physicalVolley)return false;
+  if(skill.areaDamage&&skill.areaDamage.mode!=='MAGIC_POWER'&&!physicalVolley&&!physicalSweep)return false;
   if(skill.environmentForces&&!Array.isArray(skill.environmentForces))return false;
   if(Array.isArray(skill.environmentForces)&&
      !skill.environmentForces.every(f=>Object.values(EnvironmentEngine.FORCE).includes(f)))
     return false;
-  const damages=(skill.areaDamage?.mode==='MAGIC_POWER'||physicalVolley)&&
+  const damages=(skill.areaDamage?.mode==='MAGIC_POWER'||physicalVolley||physicalSweep)&&
     Number.isFinite(Number(skill.power))&&Number(skill.power)>0;
   const floods=Number.isFinite(Number(skill.hydrologyFlood?.surfaceRise))&&
     Number(skill.hydrologyFlood.surfaceRise)>0;
