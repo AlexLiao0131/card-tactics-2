@@ -129,7 +129,8 @@ export function isCanonicalImmediateMapSkill(skill){
     Number(skill.statusEffects[0]?.duration)>0&&
     Number(skill.statusEffects[0]?.amount)>0;
   if(!skill||(physicalSweep&&!sweepBleed)||(!['MAGIC','SPECIAL'].includes(skill.category)&&!physicalSweep)||
-     skill.target!=='TILE'||skill.targetType!=='AOE'||
+     !(physicalSweep?skill.target==='SELF'&&skill.targetType==='SINGLE':
+       skill.target==='TILE'&&skill.targetType==='AOE')||
      !Number.isFinite(Number(skill.radius))||Number(skill.radius)<0||
      skill.shape||skill.moveToTarget||skill.utilityAction||
      skill.sanctuary||skill.smokeField||skill.channel||skill.bloodShadow||
