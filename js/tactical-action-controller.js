@@ -1279,6 +1279,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       // Canonical action gate: stale UI button clicks may never cast after commit.
       if(!attacker?.alive||attacker.acted||attacker.waited)return false;
       const {map,environmentState}=state();
+      // A self-centered sweep has no legal remote aim. Reject stale/forged
+      // coordinates even when called through the authoritative PvP bridge.
+      if(skill?.target==="SELF"&&skill.areaDamage?.mode==="PHYSICAL_SWEEP"&&
+          (center?.x!==attacker.x||center?.y!==attacker.y))
+        return skillFailure(attacker,skill,"SELF_CENTER_ONLY",center);
       if(skill?.purifiedSlash)return executeLiviaPurifiedSlash(attacker,center,skill);
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
       if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
@@ -1577,7 +1582,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(hpLoss>0&&occupant.hp>0&&Array.isArray(skill.statusEffects)){
             for(const status of skill.statusEffects){
               const chance=Math.max(0,Math.min(100,Number(status.chance??100)));
-              if(ctx.random()*100>=chance)continue;
+              // Offline battles have no injected RNG callback; PvP does.
+              // A 100% bleed never needs a random roll.
+              if(chance<100&&(typeof ctx.random==="function"?ctx.random():Math.random())*100>=chance)continue;
               const {chance:ignoredChance,...effect}=status;
               const applied=EffectEngine.apply({source:attacker,target:occupant,effect});
               if(applied?.applied)ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 附加 ${effect.name||effect.id} ${effect.duration||0} 回合。`,"BATTLE");
@@ -1766,16 +1773,16 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
             // critical, defense and shield formulas, but never turn a valid
             // detonation into a MISS because of ordinary attack accuracy.
             const roll=BattleEngine.calculate(attacker.character,victim.character,skill,{distance:Math.abs(attacker.x-victim.x)+Math.abs(attacker.y-victim.y),random:ctx.random,forceHit:true});
-            const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker});
+            const outcome=EffectEngine.applyDamage(victim,Math.round(roll.damage*mult),{source:attacker,damageType:"MAGIC"});
             total+=outcome.hpLoss;hits++;
-            if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true,components:{physical:outcome.hpLoss,magic:0},criticalComponents:{physical:roll.crit===true,magic:false},element:skill.element,skillId:skill.id});
+            if(outcome.hpLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(victim,{damage:outcome.hpLoss,critical:roll.crit===true,components:{physical:0,magic:outcome.hpLoss},criticalComponents:{physical:false,magic:roll.crit===true},element:skill.element,skillId:skill.id});
             if(victim.hp<=0){victim.alive=false;ctx.handleDefeated(victim,attacker,skill);}
           }
         }
         UnitRuntimeEngine.endBloodTransaction(attacker);
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"AOE",
           burstCenters:centers.map(center=>({unitId:center.id,x:center.x,y:center.y}))});
-        ctx.pushLog(`${attacker.character.name} 血爆｜${centers.length} 個流血爆點｜命中 ${hits} 次｜實際HP傷害 ${total}。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 血爆・暗屬性魔法｜${centers.length} 個流血爆點｜命中 ${hits} 次｜實際HP傷害 ${total}。`,"BATTLE");
         return finishActiveSkill(attacker);
       }
       UnitRuntimeEngine.beginBloodTransaction(attacker);
@@ -1865,6 +1872,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     function prepareAttack(attacker,defender,skill,{confirmOrdinaryAttack=false}={}){
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
+      // Self-centered physical sweeps commit on skill selection, just like
+      // Blood Burst. A TILE/AOE aiming mode must never be entered here.
+      if(skill.target==="SELF"&&skill.areaDamage?.mode==="PHYSICAL_SWEEP"&&
+          skill.areaDamage.footprint==="ADJACENT_8")
+        return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
       if((skill.sanctuary||skill.smokeField)&&skill.target==="SELF")return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
       const approachPath=skill.approach?planApproachForSkill(attacker,defender,skill):null;
       if(skill.approach&&!approachPath){
