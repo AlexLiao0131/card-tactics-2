@@ -224,7 +224,18 @@ async function start(){
   find('labHide').onclick=()=>setPanelVisible(false);
   toggle.onclick=()=>setPanelVisible(true);
   $('resetMap').onclick=()=>{game.resetBattle();refreshUnits(false);info('固定測試場已重置。');};
-  window.addEventListener('cardtactics:state',()=>refreshUnits());
+  // A free-spawn arena intentionally has no automatic defeat condition. Warn
+  // instead of leaving players to mistake an empty controlled roster for a hang.
+  let hadPlayerUnit=false,reportedPlayerWipe=false;
+  window.addEventListener('cardtactics:state',()=>{
+    refreshUnits();
+    const playerAlive=liveUnits().some(unit=>unit.team==='P');
+    if(playerAlive){hadPlayerUnit=true;reportedPlayerWipe=false;}
+    else if(hadPlayerUnit&&!reportedPlayerWipe){
+      reportedPlayerWipe=true;
+      info('我方最後一名測試角色已陣亡（可能是流血／中毒等持續傷害）。BattleTest 不會自動結束：請召喚新的我方角色，或重設戰場。',true);
+    }
+  });
   refreshUnits(false);
   info(`測試場載入完成｜${LAB_WIDTH} × ${LAB_HEIGHT}｜角色卡 ${allCards.length} 張。可直接召喚並使用原戰棋選單測試。`);
 }

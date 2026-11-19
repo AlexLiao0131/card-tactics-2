@@ -38,3 +38,26 @@ export function beginPlayerRoundSequence(steps){
   steps.beginCardPhase();
   return true;
 }
+
+/**
+ * Complete fatal status ticks through the SAME death lifecycle used by attacks.
+ * EffectEngine owns HP and DOT; round sequencing owns the transition from
+ * zero HP to one death notification. Never grant a second DOT damage instance.
+ * Used by both browser BattleTest/normal/Gemini and authoritative PvP.
+ */
+export function tickRoundStatusEffects({units,effectEngine,onDefeated}){
+  if(typeof effectEngine?.tick!=='function')return [];
+  const roster=units||[],deaths=[];
+  for(const unit of roster.filter(unit=>unit?.alive)){
+    const pending=(unit.effects||[]).filter(e=>e.type==='DAMAGE_OVER_TIME');
+    const events=effectEngine.tick(unit,{units:roster})||[];
+    if(unit.alive||Number(unit.hp)>0)continue;
+    // The effect may expire inside tick(), so retain the original source ID.
+    const lethal=[...events].reverse().find(e=>e.type==='DAMAGE_OVER_TIME'&&Number(e.amount)>0);
+    const cause=pending.find(e=>e.id===lethal?.effectId)||null;
+    const source=cause?.sourceUnitId?roster.find(u=>u.id===cause.sourceUnitId)||null:null;
+    if(typeof onDefeated==='function')onDefeated(unit,source,cause||{type:'DAMAGE_OVER_TIME',id:lethal?.effectId||null});
+    deaths.push(unit.id);
+  }
+  return deaths;
+}

@@ -1,7 +1,7 @@
 import {BattleRoundRuleEngine} from './battle-round-rule-engine.js';
 import {BattlefieldFieldEngine} from './battlefield-field-engine.js';
 import {NeutralActorEngine} from './neutral-actor-engine.js';
-import {beginPlayerRoundSequence} from './battle-round-sequence.js';
+import {beginPlayerRoundSequence,tickRoundStatusEffects} from './battle-round-sequence.js';
 import {createBattleEngagementPlayback} from './battle-engagement-playback.js';
 import {AngelWingBarrierEngine} from './angel-wing-barrier-engine.js';
 import { TILE_SIZE,ELEVATION_HEIGHT,UNIT_VISUAL_HEIGHT } from "./coordinate-system.js";
@@ -557,7 +557,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       logRoundStart:()=>pushLog(`Round ${round}｜我方回合開始。`,"SYSTEM"),
       environmentAvailable:()=>!!environmentState,
       applyEnvironmentHazards:()=>applyEnvironmentHazards({reason:"回合開始仍處於燃燒區"}),
-      tickEffects:()=>{if(window.EffectEngine)units.filter(u=>u.alive).forEach(u=>EffectEngine.tick(u,{units}));},
+      tickEffects:()=>tickRoundStatusEffects({units,effectEngine:window.EffectEngine,onDefeated:handleDefeated}),
       tickSanctuaries:()=>tickSanctuaries(TEAM.PLAYER),
       stageRoundStart:()=>stageEvent({type:"ROUND_START",round,team:"PLAYER"}),
       tickEnvironment:()=>EnvironmentEngine.tick(environmentState),
