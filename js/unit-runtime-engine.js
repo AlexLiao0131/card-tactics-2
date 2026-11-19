@@ -202,14 +202,40 @@ export function createUnitRuntimeEngine(){
     else if(amount<=0&&!(unit._bloodTransactionDepth>0))unit._bloodAwakened=false;
     if(was!==!!unit._bloodAwakened)globalThis.EffectEngine?.syncModifiers?.(unit);
   }
+  // Positive blood credits come from the single EffectEngine.applyDamage owner:
+  // direct HP loss is credited 1:1; bleeding HP loss is already halved there.
+  // Scale exactly once here (30% direct, 15% bleeding) and cap ALL contacts of
+  // one official skill transaction together. Negative costs/shield spends pass
+  // through unchanged. No per-target or client-side blood accounting is added.
   function changeBlood(unit,delta){
-    if(!bloodUser(unit))return 0;
-    const changed=ResourceEngine.change(unit,'blood',delta);
+    if(!bloodUser(unit)||!Number.isFinite(Number(delta)))return 0;
+    const value=Number(delta);
+    let adjusted=value;
+    if(value>0){
+      const rules=extraResourceRules(unit).blood||{};
+      const ratio=Math.max(0,Number(rules.damageCreditMultiplier||0));
+      const limit=Math.max(0,Math.floor(Number(rules.skillGainCap||0)));
+      const credited=Math.max(0,Math.round(value*ratio));
+      const earned=unit._bloodTransactionDepth>0?Math.max(0,Number(unit._bloodTransactionEarned||0)):0;
+      adjusted=Math.min(credited,Math.max(0,limit-earned));
+    }
+    const changed=ResourceEngine.change(unit,'blood',adjusted);
+    if(changed>0&&unit._bloodTransactionDepth>0)
+      unit._bloodTransactionEarned=Math.max(0,Number(unit._bloodTransactionEarned||0))+changed;
     reconcileBlood(unit);
     return changed;
   }
-  function beginBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=(unit._bloodTransactionDepth||0)+1}
-  function endBloodTransaction(unit){if(!bloodUser(unit))return;unit._bloodTransactionDepth=Math.max(0,(unit._bloodTransactionDepth||0)-1);reconcileBlood(unit)}
+  function beginBloodTransaction(unit){
+    if(!bloodUser(unit))return;
+    if(!(unit._bloodTransactionDepth>0))unit._bloodTransactionEarned=0;
+    unit._bloodTransactionDepth=(unit._bloodTransactionDepth||0)+1;
+  }
+  function endBloodTransaction(unit){
+    if(!bloodUser(unit))return;
+    unit._bloodTransactionDepth=Math.max(0,(unit._bloodTransactionDepth||0)-1);
+    if(unit._bloodTransactionDepth===0)delete unit._bloodTransactionEarned;
+    reconcileBlood(unit);
+  }
   function attackEnhancement(unit,skill){
     if(!bloodUser(unit)||!unit._bloodAwakened||!skill||!(skill.attackType||skill.category==="ATTACK"))return 1;
     const spent=Math.min(15,bloodValue(unit));changeBlood(unit,-spent);
@@ -354,6 +380,13 @@ export function createUnitRuntimeEngine(){
   function createFromResolvedCharacter({id,team,character,x,y,map,cores=null}){
     if(!character)return null;
     const runtimeCharacter=clone(character);
+    // Declarative permanent passive, applied to runtime base combat ONCE.
+    // All forms share the same combat; EffectEngine later snapshots this base.
+    // Never multiply after an EffectEngine.syncModifiers refresh, or DEF stacks.
+    const defenseRatio=SkillDatabase.passiveList(runtimeCharacter.forms?.[runtimeCharacter.forms.default]?.passives
+      ||runtimeCharacter.passives||[]).reduce((ratio,passive)=>
+      ratio*(1+Math.max(0,Number(passive.physicalDefenseBonusRatio||0))),1);
+    if(defenseRatio!==1)runtimeCharacter.combat.def=Math.round(Number(runtimeCharacter.combat.def||0)*defenseRatio);
     const unit={id,team,character:runtimeCharacter,x,y,z:Number(TacticalEngine.elevation(TacticalEngine.tile(map,x,y))||0),
       hp:runtimeCharacter.combat.hp,alive:true,moved:false,acted:false,waited:false,
       unitRole:runtimeCharacter.unitRole||"UNIT",
