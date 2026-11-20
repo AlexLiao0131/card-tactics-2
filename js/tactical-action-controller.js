@@ -412,6 +412,18 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       ctx.damageCore(target.core.owner,Math.round((raw+bonus+inherentBonus)*bloodMult),`${unit.character.name}【${skill.name}】`);
       const coreDamage=Math.max(0,coreHpBefore-Number(target.core?.hp||0));
       if(coreDamage>0&&Number(skill.holyPowerOnHit||0)>0)UnitRuntimeEngine.changeHolyPower(unit,skill.holyPowerOnHit);
+      // Core damage uses the canonical Core reducer, not BattleResolution's
+      // unit-target hit loop. Credit the same approved HIT-triggered Astral
+      // generator once when the spell actually damages the opposing Core.
+      if(coreDamage>0&&skill.astralGainTrigger==='HIT'){
+        const credited=UnitRuntimeEngine.gainAstralPower(unit,skill,environmentState);
+        if(credited>0){
+          globalThis.UnitAnimationEngine?.emitPresentation?.('RESOURCE_GAINED',{
+            unitId:unit.id,resource:'astralPower',amount:credited,x:unit.x,y:unit.y});
+          const stored=UnitRuntimeEngine.resourceSnapshot(unit).astralPower;
+          ctx.pushLog(`${unit.character.name}｜${skill.name} 命中據點，星能 +${credited}｜${stored?.value??0}/${stored?.max??'?'}`, 'BATTLE');
+        }
+      }
       if(UnitRuntimeEngine.bloodUser(unit))UnitRuntimeEngine.changeBlood(unit,coreDamage);
       UnitRuntimeEngine.endBloodTransaction(unit);
       if(enchantment)resolveEnchantmentImpact({actor:unit,skill,enchantment,target,result:{hit:true}});

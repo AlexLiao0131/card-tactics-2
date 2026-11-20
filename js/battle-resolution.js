@@ -407,9 +407,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       const ix=queue.findIndex(a=>a.role==="COUNTER"&&a.actor.id===c.originalTarget.id&&a.skill?.ganfan);
       if(ix>=0)queue.splice(ix,1); // Defensive Ganfan never executes a free ordinary counter.
     }
-    // One Astral grant per committed primary cast, regardless of multihits,
-    // followups, DOT or secondary lightning environment contacts.
-    let astralHitGranted=false;
+    // Every committed attack (including counters) can earn its OWN one-time
+    // Astral credit on actual contact. The action ID, not the engagement ID,
+    // prevents duplicate credits from multi-hit sequences. DOT and lightning
+    // environment propagation remain outside the attack credit owner.
+    const astralHitGranted=new Set();
     let ganfanFirstStrikeCommitted=false,ganfanParryResolved=false,defensiveGanfanChecked=false;
     let evasiveCounterChecked=false,evasiveCounterSucceeded=true;
     // Backward shooting is an attack ability, not an initiator-only movement.
@@ -620,7 +622,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           hpBefore/Math.max(1,Number(action.target.character?.combat?.hp||hpBefore))<=
             (Number(skill.rageSnapshot||0)/Math.max(1,Number(action.actor.resources?.rage?.max||100)))*
               Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.executeMaxHpRatio||0);
-        let absorbed=0,physLoss=0,magicLoss=0;
+        let absorbed=0,physLoss=0,magicLoss=0,astralGained=0;
         if(original.hit){
           // One attack event: each damage type passes through the official shield/immunity engine.
           const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
@@ -674,12 +676,12 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const markTarget=(c.interception&&!action.misfire&&a.role==="INITIATOR"?c.originalTarget:action.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
         if(result.hit){
-          if(isPrimary&&!followup&&!astralHitGranted&&!action.misfire&&
+          if(!followup&&!astralHitGranted.has(a.id)&&!action.misfire&&
              skill?.astralGainTrigger==="HIT"){
-            const credited=runtime?.gainAstralPower?.(action.actor,skill,c.environmentState);
-            astralHitGranted=true;
-            if(credited>0)globalThis.UnitAnimationEngine?.emitPresentation?.("RESOURCE_GAINED",{
-              unitId:action.actor.id,resource:"astralPower",amount:credited,x:action.actor.x,y:action.actor.y});
+            astralGained=Number(runtime?.gainAstralPower?.(action.actor,skill,c.environmentState)||0);
+            astralHitGranted.add(a.id);
+            if(astralGained>0)globalThis.UnitAnimationEngine?.emitPresentation?.("RESOURCE_GAINED",{
+              unitId:action.actor.id,resource:"astralPower",amount:astralGained,x:action.actor.x,y:action.actor.y});
           }
           if(!followup&&Number(skill.holyPowerOnHit||0)>0)
             bloodRuntime?.changeHolyPower?.(a.actor,skill.holyPowerOnHit);
@@ -698,7 +700,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
         if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
         const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
-        const e={...action,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
+        const e={...action,astralGained,refundedMana:refund,enchantment:resolved.enchantment||null,resolved:{...resolved,result},result,hpAfter:action.target.hp,
           vengeanceMultiplier:sealMultiplier};
         e.statusEffects=applyStatuses(e);
         // Mana drain reads the target's real remaining MP and only follows
