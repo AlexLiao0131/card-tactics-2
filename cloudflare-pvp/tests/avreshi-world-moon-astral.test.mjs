@@ -48,14 +48,14 @@ test('only approved skills generate astral power, moonlight accelerates and star
   const unit=caster(),env=E.create({timeOfDay:'NIGHT',moonPhase:'FULL'});
   assert.equal(ResourceEngine.value(unit,'astralPower'),0);
   assert.equal(UnitRuntimeEngine.canUseSkill(unit,SKILLS.avreshi_starfall),false);
-  assert.equal(SKILLS.avreshi_starfall.resourceCosts.astralPower,60);
+  assert.equal(SKILLS.avreshi_starfall.resourceCosts.astralPower,40);
   assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_moonfire,env),18);
   assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_lightning,env),24);
   assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_rejuvenation,env),18);
   assert.equal(ResourceEngine.value(unit,'astralPower'),60);
   assert.equal(UnitRuntimeEngine.canUseSkill(unit,SKILLS.avreshi_starfall),true);
   assert.ok(UnitRuntimeEngine.consumeSkill(unit,SKILLS.avreshi_starfall));
-  assert.equal(ResourceEngine.value(unit,'astralPower'),0);
+  assert.equal(ResourceEngine.value(unit,'astralPower'),20);
   env.timeOfDay='DAY';
   assert.equal(UnitRuntimeEngine.gainAstralPower(unit,SKILLS.avreshi_moonfire,env),12);
   env.timeOfDay='NIGHT';
