@@ -79,6 +79,22 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     return{map,units,environmentState,initiator,target:effectiveTarget,originalTarget,guardian,interception:guardian?resolvedInterception:null,skill,reaction,participants,actions:[primary,...actions]}
   }
   const actionSpeed=a=>BattleEngine.actionSpeed(a.actor.character,a.skill,a.target?.character||null);
+  // The defender's original facing belongs to Game State. Snapshot the contact
+  // arc BEFORE either actor turns to execute a strike or counter. SIDE only
+  // halves the defender's *positive* AGI speed advantage; authored skill,
+  // equipment and passive speed modifiers retain their existing authority.
+  // No new flat speed constants or per-character exceptions.
+  function positionInitiative(attacker,defender){
+    // Legacy test rigs may stub only targeting and facing updates; actual
+    // gameplay always supplies TacticalEngine.relativeArc and BATTLE_RULES.
+    const arc=TacticalEngine.relativeArc?.(defender,attacker)||'FRONT';
+    const attackerAgi=Number(attacker?.character?.attributes?.agi||0);
+    const defenderAgi=Number(defender?.character?.attributes?.agi||0);
+    const step=Number(globalThis.BATTLE_RULES?.combatParams?.agiSpeedStep||0);
+    const advantage=Math.max(0,defenderAgi-attackerAgi)*step;
+    return{arc,counterSpeedPenalty:arc==='SIDE'?advantage/2:0,
+      backFirst:arc==='BACK'};
+  }
   // Duel eligibility is a read-only predicate on the SAME authoritative roster
   // for browser and Worker. Neither mode assigns a synthetic speed value.
   function duelRules(actor,skill){
@@ -96,9 +112,23 @@ export function createBattleResolution({random=()=>Math.random()}={}){
        unit.team===actor.team&&distance(unit,target)===1));
   }
   function buildQueue(c){
+    // Intercepting guardians already turn toward the threat. Their committed
+    // guard must not inherit an arc from the original protected target.
+    const position=c.interception||!isSingleTarget(c.skill)?null:
+      positionInitiative(c.initiator,c.originalTarget);
     return c.actions.filter(a=>a.actor?.alive&&a.target?.alive&&a.skill)
-      .map((a,index)=>({...a,index,spd:actionSpeed(a),duelFirst:hasDuel(c,a.actor,a.target,a.skill)&&duelRules(a.actor,a.skill)?.initiative==="FIRST"}))
-      .sort((a,b)=>Number(b.duelFirst)-Number(a.duelFirst)||b.spd-a.spd||a.index-b.index);
+      .map((a,index)=>{
+        const defendingCounter=position&&a.role==='COUNTER'&&
+          a.actor.id===c.originalTarget?.id&&a.target.id===c.initiator?.id;
+        return{...a,index,spd:actionSpeed(a)-(defendingCounter?position.counterSpeedPenalty:0),
+          backFirst:!!position?.backFirst&&a.role==='INITIATOR'&&a.actor.id===c.initiator?.id,
+          duelFirst:hasDuel(c,a.actor,a.target,a.skill)&&duelRules(a.actor,a.skill)?.initiative==="FIRST"};
+      })
+      // Authored FIRST/duel rules outrank positioning. Otherwise a legal rear
+      // strike acts first; SIDE is a partial reactive-speed penalty, not a free
+      // attack, extra hit, guaranteed crit or cancellation of the counter.
+      .sort((a,b)=>Number(b.duelFirst)-Number(a.duelFirst)||
+        Number(b.backFirst)-Number(a.backFirst)||b.spd-a.spd||a.index-b.index);
   }
   function automaticDefenseCounter(c,defender,attacker,hooks){
     const passive=SkillDatabase.passiveList(defender.character?.passives||[])
@@ -807,7 +837,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       chooseAutonomousBattleReaction({map:options.map,units:options.units||[],
         attacker:options.initiator,defender:options.target,skill:options.skill,
         environmentState:options.environmentState||null,
-        resolution:{prepareSingleTargetReaction,createReaction,actionSpeed,guardCandidates,createGuardInterception},
+        resolution:{prepareSingleTargetReaction,createReaction,actionSpeed,positionInitiative,
+          guardCandidates,createGuardInterception},
         canUseSkill:hooks.canUseSkill||(()=>true),eligibleCounterSkill:s=>s.ganfan==null}):null;
     const reaction=options.reaction||autonomous?.reaction||null;
     const interception=options.interception||autonomous?.interception||null;
@@ -816,7 +847,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       actions.push(createCounterAction(options.target,options.initiator,reaction.skill));
     return execute(createContext({...options,reaction,interception,actions}),hooks);
   }
-  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
+  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,positionInitiative,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 }
 export const BattleResolution=createBattleResolution();
 globalThis.BattleResolution=BattleResolution;

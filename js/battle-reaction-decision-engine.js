@@ -32,12 +32,15 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
   const counters=options.counterSkills.filter(counter=>
     eligibleCounterSkill(counter) &&
     TacticalEngine.canTarget(map,defender,attacker,counter,environmentState));
-  // Compare ONLY the existing official BattleEngine action-speed calculation.
-  // No PVP-specific stats, probabilities, or artificial scoring constants.
+  // The autonomous reaction must read the SAME pre-contact arc and counter
+  // speed penalty used by BattleResolution.buildQueue, never a parallel AI
+  // initiative rule. Human PvP choices remain untouched.
+  const position=resolution.positionInitiative?.(attacker,defender)||
+    {arc:'FRONT',counterSpeedPenalty:0,backFirst:false};
   const speedOf=(actor,target,ability)=>resolution.actionSpeed({actor,target,skill:ability});
   const attackerSpeed=speedOf(attacker,defender,skill);
   const orderedCounters=counters.map((counter,index)=>({counter,index,
-    speed:speedOf(defender,attacker,counter)}))
+    speed:speedOf(defender,attacker,counter)-position.counterSpeedPenalty}))
     .sort((a,b)=>b.speed-a.speed||a.index-b.index);
   const counter=orderedCounters[0]||null;
 
@@ -55,7 +58,17 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
       kind:'GUARD'};
   }
 
-  if(counter && counter.speed>=attackerSpeed)
+  // Respect authored FIRST/duel priorities using the official queue itself.
+  // Equal-speed counters keep the existing autonomous policy on frontal/side
+  // contact; a rear ambush no longer masquerades as counter-first on a tie.
+  const officialQueue=counter&&resolution.buildQueue?.({map,units,
+    initiator:attacker,originalTarget:defender,target:defender,skill,
+    interception:null,actions:[
+      {id:'primary',role:'INITIATOR',actor:attacker,target:defender,skill},
+      {id:'counter',role:'COUNTER',actor:defender,target:attacker,skill:counter.counter}
+    ]});
+  const counterHasPriority=officialQueue?.[0]?.role==='COUNTER';
+  if(counter && (counterHasPriority || (!position.backFirst && counter.speed>=attackerSpeed)))
     return {reaction:resolution.createReaction('COUNTER',{skill:counter.counter}),
       interception:null,kind:'COUNTER'};
 
