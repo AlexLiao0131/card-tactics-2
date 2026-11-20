@@ -3,23 +3,47 @@ export const BattleEngine=(()=>{
   const R=BATTLE_RULES,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),match=(t,a,b)=>t[a]?.[b]??0,aff=(o,a)=>o?.affixes?.includes(a)??false;
   const MELEE_WEAPON_KINDS=new Set(["SWORD","RAPIER","POLEARM","TRIDENT","HAMMER","KNIFE","CLAW","GREATSWORD","AXE","MACE"]);
   /**
-   * Attribute-driven projection of the existing, explicitly authored base profile.
-   * A zero-new-coefficient migration: the original base profile is unchanged
-   * when attributes are unchanged; changes scale only the stat assigned to each
-   * of the already agreed six dimensions. This is NOT an archetype/level formula
-   * and must be replaced only when its actual approved coefficients are supplied.
-   * Pure, side-effect-free, and shared by player, AI and PvP through Game State.
+   * One canonical base-stat formula (not a reconstruction of historical
+   * approved coefficients): ordinary least squares calibrated on the 37
+   * independent characters in main as of 2026-11-20. This module owns both
+   * class conversion and runtime 6D adjustment. Base numbers are deterministic.
+   * Character statAdjustments are one-time deviations from existing roster
+   * values, needed to migrate without changing any existing combat baseline.
+   * New units require archetype or explicit statProfile; adjustments optional.
    */
-  function deriveCombatFromAttributes(baseCombat={},baseAttributes={},attributes={}){
-    const keyToAttribute={hp:'vit',atk:'str',matk:'int',def:'vit',mdef:'wil'};
-    const projected={...baseCombat};
-    for(const [key,ability] of Object.entries(keyToAttribute)){
-      const original=Number(baseCombat[key]),before=Number(baseAttributes[ability]),after=Number(attributes[ability]);
-      if(!Number.isFinite(original)||!Number.isFinite(before)||before<=0||!Number.isFinite(after))continue;
-      const floor=key==='hp'?1:0;
-      projected[key]=Math.max(floor,Math.round(original*Math.max(0,after)/before));
+  const STAT_PRIMARY=Object.freeze({"hp":"vit","atk":"str","matk":"int","def":"vit","mdef":"wil"});
+  const STAT_SLOPES=Object.freeze({"hp":5.328984,"atk":3.744007,"matk":4.776911,"def":2.683319,"mdef":4.060483});
+  const STAT_PROFILES=Object.freeze({
+    BOSS:Object.freeze({"hp":269.407265,"atk":31.839892,"matk":3.784712,"def":20.383584,"mdef":15.2742}),
+    CASTER:Object.freeze({"hp":147.055449,"atk":15.678935,"matk":11.83483,"def":13.787688,"mdef":17.29386}),
+    MELEE:Object.freeze({"hp":177.351464,"atk":31.147898,"matk":-3.00858,"def":29.229369,"mdef":5.872485}),
+    RANGED:Object.freeze({"hp":144.209955,"atk":26.674163,"matk":-3.955871,"def":18.743085,"mdef":6.257497}),
+    SCOUT:Object.freeze({"hp":47.368125,"atk":-22.464043,"matk":-19.107644,"def":6.533451,"mdef":4.395166}),
+    SKIRMISHER:Object.freeze({"hp":160.558711,"atk":30.863864,"matk":-2.099843,"def":22.775199,"mdef":7.183475}),
+    TANK:Object.freeze({"hp":199.334945,"atk":27.063095,"matk":3.920126,"def":40.071898,"mdef":13.335088})
+  });
+  const ARCHETYPE_STAT_PROFILES=Object.freeze({GLADIATOR:"MELEE",RANGED:"RANGED",MELEE:"MELEE",MAGE:"CASTER",DEFENDER:"TANK",MOBILE:"MELEE",DRUID_SHAPESHIFTER:"CASTER",RANGER_CAPTAIN:"RANGED",SHAPESHIFTER:"CASTER",HEALER:"CASTER",COMPANION_SCOUT:"SCOUT",TEMPLAR_HERO:"TANK",SAINT:"CASTER",BLOOD_DUELIST_EVASION_TANK:"SKIRMISHER",AQUATIC_DEFENDER:"TANK",STEALTH_THIEF:"SKIRMISHER",FLYING_ARCHER_SUPPORT:"RANGED",DIMENSION_MAGE:"CASTER"});
+  function resolveStatProfile(character={}){
+    if(character?.statProfile!=null){
+      if(!STAT_PROFILES[character.statProfile])throw new Error('UNKNOWN_STAT_PROFILE:'+character.statProfile);
+      return character.statProfile;
     }
-    return projected;
+    const id=String(character?.archetype||'').toUpperCase();
+    if(id&&!ARCHETYPE_STAT_PROFILES[id])throw new Error('UNMAPPED_STAT_ARCHETYPE:'+id);
+    return ARCHETYPE_STAT_PROFILES[id]||'MELEE';
+  }
+  function deriveCombatFromAttributes(baseCombat={},baseAttributes={},attributes={},character={}){
+    const profile=STAT_PROFILES[resolveStatProfile(character)];
+    const result={...baseCombat};
+    for(const [stat,primary] of Object.entries(STAT_PRIMARY)){
+      const value=Number(attributes?.[primary]??baseAttributes?.[primary]);
+      if(!Number.isFinite(value)||value<0)throw new Error('INVALID_SIXDIM:'+primary);
+      const extra=Number(character?.statAdjustments?.[stat]??0);
+      if(!Number.isFinite(extra))throw new Error('INVALID_STAT_ADJUSTMENT:'+stat);
+      const base=Math.round(profile[stat]+STAT_SLOPES[stat]*value);
+      result[stat]=Math.max(stat==='hp'?1:0,base+extra);
+    }
+    return result;
   }
   function getSkill(c,id){if(!c.skills.includes(id))return null;return SkillDatabase.get(id)}
   function armorTypes(d){return Array.isArray(d?.armor?.types)&&d.armor.types.length?d.armor.types:[d?.armor?.type??"NONE"]}
@@ -95,7 +119,7 @@ export const BattleEngine=(()=>{
     const critRoll=hit&&!opt.forceCrit&&!opt.disableCrit?(typeof opt.random==="function"?opt.random():Math.random())*100:null,crit=hit&&(opt.forceCrit?true:(!opt.disableCrit&&critRoll<cc)),damageTakenM=s?.pureHoly?1:Number(d?.modifiers?.damageTakenMultiplier??1)*passiveTaken.multiplier,damage=hit?Math.round(raw*m*traitM*damageTakenM*(crit?1.5:1)):0;
     return{weapon:w,type,el,basePt,pt,rawEt,et,ignoreElementResistance,tierRaw,tier,m,ignore,armorDisadvIgnored,artifactParry:parry,offenseStat,defenseStat,off,def,raw,hc,cc,spd,traitMultiplier:traitM,attackClass:passiveTaken.attackClass,passiveDamageTakenMultiplier:passiveTaken.multiplier,passiveDamageTakenRules:passiveTaken.applied,damageTakenMultiplier:damageTakenM,accuracy:accuracy(a,s),evasion:evasion(d),hitRoll,critRoll,guaranteedHit:guaranteed,hit,crit,damage,hpAfter:Math.max(0,d.combat.hp-damage)}
   }
-  return{getSkill,calculate,elementalEnchantmentDamage,deriveCombatFromAttributes,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,attackAccuracyRating,defenseEvasionRating,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
+  return{getSkill,calculate,elementalEnchantmentDamage,deriveCombatFromAttributes,resolveStatProfile,STAT_PROFILES,STAT_SLOPES,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,attackAccuracyRating,defenseEvasionRating,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
 })();
 globalThis.BATTLE_RULES=BATTLE_RULES;
 globalThis.BattleEngine=BattleEngine;

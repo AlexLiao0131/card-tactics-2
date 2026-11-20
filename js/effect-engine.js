@@ -264,17 +264,35 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     }
     // Project an attribute change ONCE from the immutable base. The flat
     // combat modifiers already applied above remain additive, never compounded.
+    const baseline=globalThis.BattleEngine?.deriveCombatFromAttributes?.(
+      unit._effectBaseCombat,unit._effectBaseAttributes,unit._effectBaseAttributes,unit.character);
     const projected=globalThis.BattleEngine?.deriveCombatFromAttributes?.(
-      unit._effectBaseCombat,unit._effectBaseAttributes,unit.character.attributes);
-    if(projected){
-      for(const key of ["atk","matk","def","mdef"])
-        if(Number.isFinite(Number(projected[key]))&&Number.isFinite(Number(unit._effectBaseCombat[key])))
-          unit.character.combat[key]+=Number(projected[key])-Number(unit._effectBaseCombat[key]);
-      if(Number.isFinite(Number(projected.hp))){
-        unit.character.combat.hp=Number(projected.hp);
-        // A VIT buff never heals an injured unit; a reduction clamps HP.
-        if(Number.isFinite(Number(unit.hp)))unit.hp=Math.min(Math.max(0,Number(unit.hp)),Number(projected.hp));
+      unit._effectBaseCombat,unit._effectBaseAttributes,unit.character.attributes,unit.character);
+    if(projected&&baseline){
+      // UnitRuntimeEngine applies permanent physical-defense passives exactly
+      // once before _effectBaseCombat is captured. On a VIT change, recalculate
+      // the resulting passive DEF from the new base instead of only adding
+      // an unscaled VIT delta to the already-boosted defense.
+      const initialPassives=unit.character.forms?.[unit.character.forms.default]?.passives
+        ||unit.character.passives||[];
+      const permanentDefenseRatio=(globalThis.SkillDatabase?.passiveList?.(initialPassives)||[])
+        .reduce((ratio,passive)=>ratio*(1+Math.max(0,Number(passive.physicalDefenseBonusRatio||0))),1);
+      const baseDefense=Number(unit._effectBaseCombat.def||0);
+      const ratioApplied=permanentDefenseRatio!==1
+        &&baseDefense===Math.round(Number(baseline.def)*permanentDefenseRatio);
+      for(const key of ["atk","matk","def","mdef"]){
+        let increase=Number(projected[key])-Number(baseline[key]);
+        if(key==='def'&&ratioApplied)increase=
+          Math.round(Number(projected.def)*permanentDefenseRatio)
+          -Math.round(Number(baseline.def)*permanentDefenseRatio);
+        unit.character.combat[key]+=increase;
       }
+      const nextMaxHp=Math.max(1,Number(unit._effectBaseCombat.hp||1)
+        +Number(projected.hp)-Number(baseline.hp));
+      unit.character.combat.hp=nextMaxHp;
+      // Keep current HP; VIT adjustments must not heal for free.
+      if(Number.isFinite(Number(unit.hp)))
+        unit.hp=Math.min(Math.max(0,Number(unit.hp)),nextMaxHp);
     }
     // Shape-changing characters use their original walk range plus only the
     // active form's declared modifier, even after a buff/dispelling refresh.
