@@ -241,7 +241,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     unit.character.combat=clone(unit._effectBaseCombat);
     unit.character.attributes=clone(unit._effectBaseAttributes);
     unit.character.modifiers=clone(unit._effectBaseModifiers);
-    let damageTakenMultiplier=1,guardMultiplier=1;
+    let damageTakenMultiplier=1,guardMultiplier=1,moveEffectDelta=0;
     for(const e of state(unit)){
       // Once the physical shield becomes a boat/sled/passenger platform it
       // cannot simultaneously provide the full-shield defensive stance buff.
@@ -250,7 +250,10 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(unit.character.attributes,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))unit.character.attributes[k]=Number(unit.character.attributes[k]||0)+Number(v||0);
       const m=e.modifiers||{};
-      for(const key of ["atk","matk","def","mdef","move"])if(m[key]!=null)unit.character.combat[key]=Number(unit.character.combat[key]||0)+Number(m[key]);
+      for(const key of ["atk","matk","def","mdef","move"])if(m[key]!=null){
+        unit.character.combat[key]=Number(unit.character.combat[key]||0)+Number(m[key]);
+        if(key==="move")moveEffectDelta+=Number(m[key]);
+      }
       for(const key of ["accuracy","evasion","crit","speed"])if(m[key]!=null)unit.character.modifiers[key]=Number(unit.character.modifiers[key]||0)+Number(m[key]);
       if(m.damageTakenMultiplier!=null)damageTakenMultiplier*=Number(m.damageTakenMultiplier);
       if(m.guardMultiplier!=null)guardMultiplier*=Number(m.guardMultiplier);
@@ -259,6 +262,25 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       const restored=SkillDatabase.getPassive("PATIENT")?.bloodRestoration?.values||{};
       for(const [key,value] of Object.entries(restored))unit.character.attributes[key]=Number(value);
     }
+    // Project an attribute change ONCE from the immutable base. The flat
+    // combat modifiers already applied above remain additive, never compounded.
+    const projected=globalThis.BattleEngine?.deriveCombatFromAttributes?.(
+      unit._effectBaseCombat,unit._effectBaseAttributes,unit.character.attributes);
+    if(projected){
+      for(const key of ["atk","matk","def","mdef"])
+        if(Number.isFinite(Number(projected[key]))&&Number.isFinite(Number(unit._effectBaseCombat[key])))
+          unit.character.combat[key]+=Number(projected[key])-Number(unit._effectBaseCombat[key]);
+      if(Number.isFinite(Number(projected.hp))){
+        unit.character.combat.hp=Number(projected.hp);
+        // A VIT buff never heals an injured unit; a reduction clamps HP.
+        if(Number.isFinite(Number(unit.hp)))unit.hp=Math.min(Math.max(0,Number(unit.hp)),Number(projected.hp));
+      }
+    }
+    // Shape-changing characters use their original walk range plus only the
+    // active form's declared modifier, even after a buff/dispelling refresh.
+    const form=unit.character?.forms?.[unit.currentForm];
+    if(form&&Number.isFinite(Number(unit._originalFormProfile?.move)))
+      unit.character.combat.move=Number(unit._originalFormProfile.move)+Number(form.movementModifier||0)+moveEffectDelta;
     unit.character.combat.mdef+=Number(globalThis.UnitRuntimeEngine?.humidityMdefBonus?.(unit)||0);
     const completeBonus=globalThis.UnitTraitEngine?.statBonus?.(unit)||0;
     if(completeBonus>0)for(const key of ["atk","matk","def","mdef"])

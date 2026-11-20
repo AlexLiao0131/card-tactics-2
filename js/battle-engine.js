@@ -2,6 +2,25 @@ export const BATTLE_RULES={mult:{[-2]:.70,[-1]:.85,0:1,1:1.15,2:1.30},physical:{
 export const BattleEngine=(()=>{
   const R=BATTLE_RULES,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),match=(t,a,b)=>t[a]?.[b]??0,aff=(o,a)=>o?.affixes?.includes(a)??false;
   const MELEE_WEAPON_KINDS=new Set(["SWORD","RAPIER","POLEARM","TRIDENT","HAMMER","KNIFE","CLAW","GREATSWORD","AXE","MACE"]);
+  /**
+   * Attribute-driven projection of the existing, explicitly authored base profile.
+   * A zero-new-coefficient migration: the original base profile is unchanged
+   * when attributes are unchanged; changes scale only the stat assigned to each
+   * of the already agreed six dimensions. This is NOT an archetype/level formula
+   * and must be replaced only when its actual approved coefficients are supplied.
+   * Pure, side-effect-free, and shared by player, AI and PvP through Game State.
+   */
+  function deriveCombatFromAttributes(baseCombat={},baseAttributes={},attributes={}){
+    const keyToAttribute={hp:'vit',atk:'str',matk:'int',def:'vit',mdef:'wil'};
+    const projected={...baseCombat};
+    for(const [key,ability] of Object.entries(keyToAttribute)){
+      const original=Number(baseCombat[key]),before=Number(baseAttributes[ability]),after=Number(attributes[ability]);
+      if(!Number.isFinite(original)||!Number.isFinite(before)||before<=0||!Number.isFinite(after))continue;
+      const floor=key==='hp'?1:0;
+      projected[key]=Math.max(floor,Math.round(original*Math.max(0,after)/before));
+    }
+    return projected;
+  }
   function getSkill(c,id){if(!c.skills.includes(id))return null;return SkillDatabase.get(id)}
   function armorTypes(d){return Array.isArray(d?.armor?.types)&&d.armor.types.length?d.armor.types:[d?.armor?.type??"NONE"]}
   function physicalMatch(type,d){return armorTypes(d).map(x=>match(R.physical,type,x)).reduce((a,b)=>a+b,0)}
@@ -10,7 +29,11 @@ export const BattleEngine=(()=>{
   function skillMod(s,k){return Number(s?.modifiers?.[k]??0)}
   function accuracy(c,s){return sumMod(c,"accuracy")+skillMod(s,"accuracy")}
   function evasion(c){return sumMod(c,"evasion")}
-  function hitChance(a,d,s){const q=R.combatParams;return clamp(q.baseHit+(a.attributes.agi-d.attributes.agi)*q.agiHitStep+accuracy(a,s)-evasion(d),q.minHit,q.maxHit)}
+  // Explicit relative-AGI ratings. Keep accuracy/evasion as modifier-only APIs
+  // for existing inspector/HUD consumers; combat odds do not change.
+  function attackAccuracyRating(c,s){return R.combatParams.baseHit+Number(c.attributes.agi)*R.combatParams.agiHitStep+accuracy(c,s)}
+  function defenseEvasionRating(c){return Number(c.attributes.agi)*R.combatParams.agiHitStep+evasion(c)}
+  function hitChance(a,d,s){const q=R.combatParams;return clamp(attackAccuracyRating(a,s)-defenseEvasionRating(d),q.minHit,q.maxHit)}
   function critChance(a,s){const q=R.combatParams;return clamp(q.baseCrit+a.attributes.luk*q.lukCritStep+sumMod(a,"crit")+skillMod(s,"crit"),0,100)}
   function passives(c){return globalThis.SkillDatabase?.passiveList?.(c?.passives)||[]}
   function hasWeaponKind(c,kind){const wanted=String(kind||"").toUpperCase();return !!wanted&&Object.values(c?.weapons||{}).some(w=>String(w?.weaponKind||"").toUpperCase()===wanted)}
@@ -72,7 +95,7 @@ export const BattleEngine=(()=>{
     const critRoll=hit&&!opt.forceCrit&&!opt.disableCrit?(typeof opt.random==="function"?opt.random():Math.random())*100:null,crit=hit&&(opt.forceCrit?true:(!opt.disableCrit&&critRoll<cc)),damageTakenM=s?.pureHoly?1:Number(d?.modifiers?.damageTakenMultiplier??1)*passiveTaken.multiplier,damage=hit?Math.round(raw*m*traitM*damageTakenM*(crit?1.5:1)):0;
     return{weapon:w,type,el,basePt,pt,rawEt,et,ignoreElementResistance,tierRaw,tier,m,ignore,armorDisadvIgnored,artifactParry:parry,offenseStat,defenseStat,off,def,raw,hc,cc,spd,traitMultiplier:traitM,attackClass:passiveTaken.attackClass,passiveDamageTakenMultiplier:passiveTaken.multiplier,passiveDamageTakenRules:passiveTaken.applied,damageTakenMultiplier:damageTakenM,accuracy:accuracy(a,s),evasion:evasion(d),hitRoll,critRoll,guaranteedHit:guaranteed,hit,crit,damage,hpAfter:Math.max(0,d.combat.hp-damage)}
   }
-  return{getSkill,calculate,elementalEnchantmentDamage,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
+  return{getSkill,calculate,elementalEnchantmentDamage,deriveCombatFromAttributes,armorTypes,physicalMatch,hitChance,critChance,actionSpeed,accuracy,evasion,attackAccuracyRating,defenseEvasionRating,traitMultiplier,attackClass,passiveDamageTakenMultiplier}
 })();
 globalThis.BATTLE_RULES=BATTLE_RULES;
 globalThis.BattleEngine=BattleEngine;
