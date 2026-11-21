@@ -35,11 +35,11 @@ const makeScene=()=>({nodes:new Set(),materials:new Set(),onDisposeObservable:{a
 const snapshot={map:{id:'alchemist-test',tiles:[{x:1,y:1,elevation:0},{x:2,y:2,elevation:0},{x:3,y:2,elevation:0},{x:4,y:2,elevation:0}]},round:1,units:[{id:'alchemist-1',x:1,y:1,alive:true,effects:[]}]};
 const event=(skillId,sequence=1,rest={})=>({type:'UNIT_ANIMATION',unitId:'alchemist-1',skillId,
   x:1,y:1,targetX:3,targetY:2,sequence,...rest});
-const base=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_hard_shell_potion','alchemy_explosion'];
+const base=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_hard_shell_potion','alchemy_explosion','alchemy_swiftness_potion','alchemy_underwater_breathing_potion'];
 const terrains=['WATER_TO_LAND','FLOOD','FREEZE','MUD','SHATTER','WALL','CLIFF'];
 const affinities=['NONE','NATURE','WATER','ICE','FIRE','THUNDER','HOLY','DARK','STONE'];
 
-test('all six alchemy skills route into the EXISTING shared arcane VFX handler',()=>{
+test('all eight alchemy skills route into the EXISTING shared arcane VFX handler',()=>{
   for(const id of [...base,'alchemy_world_transmutation']){
     assert.ok(VfxDatabase.routeSkill(id).includes('arcane'),id);
     assert.equal(VfxDatabase.roleFor('arcane',id)?.startsWith('ALCHEMY_'),true,id);
@@ -50,7 +50,7 @@ test('all six alchemy skills route into the EXISTING shared arcane VFX handler',
   assert.equal(isAlchemySpellPresentationEvent(event('cassandra_magic_bolt')),false);
 });
 
-test('all five spells and nine material affinities create actual Babylon meshes, progress and clean up',()=>{
+test('all seven basic spells and nine possible visual affinities create actual Babylon meshes, progress and clean up',()=>{
   const scene=makeScene(),vfx=new ArcaneSigilVfx(scene);
   let sequence=0;
   for(const id of base)for(const affinity of affinities){
@@ -135,12 +135,14 @@ test('original Cassandra four-skill Babylon pipeline remains functional',()=>{
   vfx.dispose();assert.equal(scene.nodes.size,0);assert.equal(scene.materials.size,0);
 });
 
-test('mana crystal, healing, power, shell potion, explosion and rune-only ultimate are visually distinct',()=>{
+test('all seven basic alchemy recipes and rune-only ultimate are visually distinct',()=>{
   const scene=makeScene(),vfx=new ArcaneSigilVfx(scene);
   const expected=[
     ['alchemy_mana_stone','alchemy-mana-cut-crystal','alchemy-mana-restoration-crystal'],
     ['alchemy_healing_potion','alchemy-glass-vial','alchemy-healing-cross'],
     ['alchemy_power_potion','alchemy-glass-vial','alchemy-power-arrow'],
+    ['alchemy_swiftness_potion','alchemy-glass-vial','alchemy-swiftness-sprint-arrow'],
+    ['alchemy_underwater_breathing_potion','alchemy-glass-vial','alchemy-underwater-breathing-bubble'],
     ['alchemy_hard_shell_potion','alchemy-glass-vial','alchemy-shell-hex-facet'],
     ['alchemy_explosion','alchemy-glass-vial','alchemy-volumetric-explosion-core'],
     ['alchemy_world_transmutation','alchemy-world-transmutation-focus','alchemy-world-synthesis-ring']
