@@ -32,6 +32,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     const MAP_TRANSIT_ACTIONS=new Set(["TELEPORT_TO_TILE","WORMHOLE_TRANSIT"]);
 
     function state(){return ctx.actionState();}
+    // Authoritative active-action gate. UI target previews are never a substitute
+    // for checking the live actor again at the actual combat commit entry.
+    function canCommitActiveAction(unit){return !!unit?.alive&&unit.acted!==true&&unit.waited!==true;}
 
     // Report only real execution rejections (never range previews / target lists).
     // UnitRuntimeEngine remains the sole resource/turn-rule authority.
@@ -679,10 +682,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           target:center,result:{hit:true},terrainImpact:true,volley:true});
       }
       if(impacts.length)resolveEnchantmentImpacts(impacts);
-      for(const {unit} of contributors){unit.moved=true;unit.acted=true;unit.waited=true;}
+      // Every assisting bow user commits an attack. The commander must finish
+      // through the SAME official active-skill transaction as every other
+      // map/single-target skill (clears pending move, selection and action).
+      for(const {unit} of contributors){
+        if(unit.id===commander.id)continue;
+        unit.moved=true;unit.acted=true;unit.waited=true;
+      }
       ctx.pushLog(`${commander.character.name}｜集團齊射 ${contributors.length} 名弓手、範圍 ${impacted.length} 格、命中 ${hits.length} 名目標。`,"BATTLE");
-      ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("inspect");
-      if(!ctx.checkMatchEnd?.())ctx.maybeAutoEndPlayerTurn?.();ctx.render();return true;
+      return finishActiveSkill(commander);
     }
     // The official TILE/AOE leap supports either an empty landing or a visible
     // enemy as an aim point. Clicking an enemy picks ONE nearby empty landing;
@@ -1390,7 +1398,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 
     function executeMapSkill(attacker,center,skill){
       // Canonical action gate: stale UI button clicks may never cast after commit.
-      if(!attacker?.alive||attacker.acted||attacker.waited)return false;
+      if(!canCommitActiveAction(attacker))return false;
       const {map,environmentState}=state();
       // A self-centered sweep has no legal remote aim. Reject stale/forged
       // coordinates even when called through the authoritative PvP bridge.
@@ -1888,6 +1896,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     }
 
     function executeEffectSkill(attacker,target,skill,{buffId=null}={}){
+      if(!canCommitActiveAction(attacker))return false;
       if(!globalThis.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
       // Alchemy must not burn an ingredient and charge a full rune through a
       // formally useless recover-HP/MP cast. Other buffs may be refreshed.
@@ -2033,6 +2042,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return finishActiveSkill(attacker);
     }
     function prepareAttack(attacker,defender,skill,{confirmOrdinaryAttack=false}={}){
+      if(!canCommitActiveAction(attacker))return false;
       const {map,units}=state();
       if(!ctx.canUseSkill(attacker,skill)){skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",defender);return;}
       // Self-centered physical sweeps commit on skill selection, just like
@@ -2118,12 +2128,14 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 
     function confirmEngagement(){
       const pendingEngagement=ctx.getPendingEngagement();
-      if(!pendingEngagement)return;
+      if(!pendingEngagement)return false;
       const {attacker,defender,skill}=pendingEngagement;
+      if(!canCommitActiveAction(attacker))return false;
       executeEngagement(attacker,defender,skill,selectedSupportActions());
     }
 
     function executeEngagement(attacker,defender,skill,actions,reaction=null){
+      if(!canCommitActiveAction(attacker))return false;
       const {map,units}=state();
       // A charge is a single committed action. Never move on the target preview
       // or while the player is still selecting support/confirming the attack.
