@@ -109,3 +109,20 @@ test('ultimate refuses additional MP, materials or duplicate scalar-resource cos
  }
  assert.equal(ResourceEngine.value(u,'alchemyRune'),3);
 });
+
+test('live roster exposes only alchemy variants payable from current inventory',()=>{
+ const u=alchemist(),parent={...base,id:'alchemy_inventory_choices',materialCost:undefined,variants:[
+  {id:'NORMAL',name:'普通',materialCost:{kind:'MINERAL',quality:'NORMAL',affinity:'NONE',amount:1}},
+  {id:'HIGH_FIRE',name:'火',materialCost:{kind:'MINERAL',quality:'HIGH',affinity:'FIRE',amount:1}},
+  {id:'HIGH_ICE',name:'冰',materialCost:{kind:'MINERAL',quality:'HIGH',affinity:'ICE',amount:1}}
+ ]};
+ const ids=()=>runtime.skillForUnit(u,parent).variants.map(v=>v.id);
+ assert.deepEqual(ids(),[]);assert.equal(runtime.canUseSkill(u,parent),false);
+ ResourceEngine.changeMaterial(u,{kind:'MINERAL',amount:1});
+ assert.deepEqual(ids(),['NORMAL']);assert.equal(runtime.canUseSkill(u,parent),true);
+ ResourceEngine.changeMaterial(u,{kind:'MINERAL',quality:'HIGH',affinity:'FIRE',amount:1});
+ assert.deepEqual(ids(),['NORMAL','HIGH_FIRE']);
+ assert.equal(runtime.canUseSkill(u,{...parent,...parent.variants[2],variants:undefined,variantId:'HIGH_ICE'}),false);
+ const normal={...parent,...parent.variants[0],variants:undefined,variantId:'NORMAL'};
+ assert.ok(runtime.consumeSkill(u,normal));assert.deepEqual(ids(),['HIGH_FIRE']);
+});

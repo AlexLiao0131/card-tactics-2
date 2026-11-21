@@ -85,13 +85,14 @@ test('committing an undoable move makes its gains irreversible by rollback',()=>
  assert.equal(ResourceEngine.materialCount(u,'HERB'),1);
 });
 test('PvP step-by-step moves share one round transaction; new round clears old undo journal',()=>{
- const m=mapWith([{id:'b1',type:'BUSH',x:0,y:0,blocksMovement:false},{id:'b2',type:'BUSH',x:1,y:0,blocksMovement:false}]),u=unit();
- collect(m,u,0,0,{},1);collect(m,u,1,0,{},1);
+ const m=mapWith([{id:'b1',type:'BUSH',x:0,y:0,blocksMovement:false},{id:'b2',type:'BUSH',x:2,y:0,blocksMovement:false}],
+  [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:0},{x:2,y:0,terrain:'PLAIN',elevation:0}]),u=unit();
+ collect(m,u,0,0,{},1);collect(m,u,2,0,{},1);
  assert.equal(u._alchemyHarvestUndo.length,2);
  assert.equal(harvest.rollbackAlchemyHarvest(u,m),2);
  assert.equal(ResourceEngine.materialCount(u,'HERB'),0);
  collect(m,u,0,0,{},1);harvest.commitAlchemyHarvest(u);
- collect(m,u,1,0,{},2);
+ collect(m,u,2,0,{},2);
  assert.equal(u._alchemyHarvestUndo.length,1);
  assert.equal(harvest.rollbackAlchemyHarvest(u,m),1);
  assert.equal(ResourceEngine.materialCount(u,'HERB'),1);
@@ -116,4 +117,17 @@ test('latest real elemental event wins while still active; expired marks cannot 
  assert.equal(harvest.alchemyAffinity(m,env,{x:0,y:0,kind:'WOOD'}),'FIRE');
  env.effects['0,0']=[];
  assert.equal(harvest.alchemyAffinity(m,env,{x:0,y:0,kind:'WOOD'}),'NATURE');
+});
+
+test('legal riverbank collects real adjacent riverbed crystal sand without wading or touching river water',()=>{
+ const tiles=[{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:0,river:true,waterDepth:3}];
+ const m=mapWith([],tiles),u=unit();const before=JSON.stringify(m.tiles);
+ assert.equal(collect(m,u).length,1);
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),1);
+ assert.equal(JSON.stringify(m.tiles),before);
+ assert.deepEqual(collect(m,u),[]);
+ const blocked=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'WALL',elevation:0,river:true,waterDepth:3}]);
+ assert.deepEqual(collect(blocked,unit()),[]);
+ const cliff=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:-4,river:true,waterDepth:3}]);
+ assert.deepEqual(collect(cliff,unit()),[]);
 });

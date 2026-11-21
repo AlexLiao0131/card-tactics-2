@@ -64,3 +64,40 @@ test('water converted to land displaces rather than erases its volume',()=>{
  const final=h.map.tiles.reduce((s,t)=>s+t.waterDepth,0);
  assert.ok(Math.abs(final-initial)<1e-9);assert.equal(h.at(3,3).terrain,'PLAIN');assert.equal(h.at(3,3).waterDepth,0);
 });
+
+test('wet non-source water beneath a 3-cell row can raise an actual visible cliff with water conservation',()=>{
+ const h=battle('CLIFF');
+ for(const x of [2,3,4])h.at(x,3).waterDepth=x===3?2.5:1;
+ const before=h.map.tiles.reduce((s,t)=>s+Number(t.waterDepth||0),0);
+ assert.ok(h.controller.mapTargetTiles(h.caster,h.skill).some(t=>t.x===3&&t.y===3));
+ assert.equal(h.controller.executeMapSkill(h.caster,h.aim,h.skill),true);
+ const after=h.map.tiles.reduce((s,t)=>s+Number(t.waterDepth||0),0);
+ assert.ok(Math.abs(before-after)<1e-9,`water conserved ${before} -> ${after}`);
+ assert.equal(h.at(3,3).terrain,'HIGH_GROUND');
+ assert.equal(h.at(3,3).waterDepth,0);
+ assert.ok(h.at(3,3).elevation>2.5,'raised ground emerges above previous water surface');
+ assert.equal(h.consumed(),1);
+});
+test('real river water can be reshaped only away from protected hydrology endpoints',()=>{
+ const h=battle('CLIFF');
+ for(const x of [2,3,4]){h.at(x,3).waterDepth=1;h.at(x,3).river=true;}
+ assert.equal(h.controller.executeMapSkill(h.caster,h.aim,h.skill),true);
+ for(const x of [2,3,4])assert.equal(h.at(x,3).terrain,'HIGH_GROUND');
+ const blocked=battle('CLIFF');
+ blocked.at(3,3).river=true;blocked.at(3,3).waterDepth=1;
+ blocked.at(3,3).hydrologySource=true;
+ assert.equal(blocked.controller.mapTargetTiles(blocked.caster,blocked.skill).some(t=>t.x===3&&t.y===3),false);
+ assert.equal(blocked.controller.executeMapSkill(blocked.caster,blocked.aim,blocked.skill),false);
+ assert.equal(blocked.consumed(),0);
+});
+test('a 3-cell cliff never replaces a Core, capture zone, spring, or occupied square',()=>{
+ for(const change of [
+  h=>{h.at(2,3).captureZone=true},
+  h=>{h.at(4,3).core=true},
+  h=>{h.at(3,3).hydrologyDrain=true}
+ ]){
+  const h=battle('CLIFF');change(h);
+  assert.equal(h.controller.executeMapSkill(h.caster,h.aim,h.skill),false);
+  assert.equal(h.consumed(),0);
+ }
+});
