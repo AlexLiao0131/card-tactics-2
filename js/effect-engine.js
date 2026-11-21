@@ -33,6 +33,35 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(!unit.grantedSkills)unit.grantedSkills=[];
     return unit.effects;
   }
+  // Fire potion is a normal, dispellable two-turn alchemy BUFF; it never
+  // creates a second defense meter or bypasses the authoritative effect list.
+  function activeFirePotion(unit){return state(unit).some(e=>e?.type==='BUFF'&&
+    e?.id==='ALCH_ARMOR_FIRE'&&e.fireWard===true&&
+    (e.remaining==null||Number(e.remaining)>0));}
+  function isBurnStatus(e){
+    if(e?.type!=='DAMAGE_OVER_TIME')return false;
+    const id=String(e.id||'').toUpperCase();
+    return id==='BURN'||id.endsWith('_BURN')||e.element==='FIRE';
+  }
+  // Alchemical elemental wards are ordinary dispellable BUFF effects. They do
+  // not create parallel resistance meters or apply to untyped magic attacks.
+  function activeAlchemyBuffs(target){return state(target).filter(e=>e?.type==='BUFF'&&
+    e.classification==='POSITIVE'&&(e.remaining==null||Number(e.remaining)>0));}
+  function matchesNamedStatus(effect,id){
+    const name=String(id||'').toUpperCase(),eid=String(effect?.id||'').toUpperCase(),
+      type=String(effect?.type||'').toUpperCase();
+    return name==='BURN'?isBurnStatus(effect):name===eid||name===type;
+  }
+  function elementalWard(target,damageType){
+    const kind=String(damageType||'').toUpperCase();
+    return activeAlchemyBuffs(target).find(e=>Array.isArray(e.elementWards)&&
+      e.elementWards.includes(kind))||null;
+  }
+  function negativeStatusWard(target,effect){
+    if(effect?.classification!=='NEGATIVE')return null;
+    return activeAlchemyBuffs(target).find(e=>Array.isArray(e.statusWards)&&
+      e.statusWards.some(id=>matchesNamedStatus(effect,id)))||null;
+  }
   function maxHp(unit){return Math.max(1,Number(unit?.character?.combat?.hp||unit?.hp||1));}
   function heal(unit,amount){const before=unit.hp;unit.hp=Math.min(maxHp(unit),unit.hp+Math.max(0,Math.round(Number(amount||0))));return unit.hp-before;}
   function saintHealing({source,target,amount,overflowShield=null,skill=null,critical=false}={}){
@@ -108,6 +137,13 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const hpBefore=Math.max(0,Number(target?.hp||0));
     if(!target||!target.alive)return{damage:0,absorbed:0,bloodAbsorbed:0,hpLoss:0};
     if(isInvulnerable(target))return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),invulnerable:true};
+    // Environmental fire uses an explicit FIRE damage type. The potion blocks
+    // fire contact without affecting unrelated physical, ice or thunder hits.
+    if(damageType==='FIRE'&&kind!=='INTERNAL'&&activeFirePotion(target))
+      return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),fireWard:true};
+    const elementalProtection=kind!=='INTERNAL'?elementalWard(target,damageType):null;
+    if(elementalProtection)return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),
+      bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),elementWard:elementalProtection.id};
     if(damageType==="MAGIC"&&kind!=="INTERNAL"&&underSanctuary(target))
       return{damage:0,absorbed:Math.max(0,Math.round(Number(amount||0))),bloodAbsorbed:0,hpLoss:0,shieldHp:shieldHp(target),sanctuaryImmune:true};
     const cloak=damageType==="MAGIC"&&kind!=="INTERNAL"
@@ -217,9 +253,11 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     }
     return{incomingWater:incoming,evaporatedWater:evaporated,remainingWater:remaining,extinguished};
   }
-  function removeNegative(target){
+  function removeNegative(target,statusIds=null){
     const before=state(target).length;
-    target.effects=target.effects.filter(e=>e.classification!=="NEGATIVE");
+    const filtered=Array.isArray(statusIds)?statusIds.map(id=>String(id).toUpperCase()):null;
+    target.effects=target.effects.filter(e=>e.classification!=="NEGATIVE"||
+      (filtered&&!filtered.some(id=>matchesNamedStatus(e,id))));
     return before-target.effects.length;
   }
   function consumeNegativeEffectGuard(target,effect){
@@ -401,6 +439,11 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   function apply({source,target,effect,chooseSkill}={}){
     if(!target||!effect)return{applied:false,reason:"INVALID_TARGET"};
     if(effect.targetFilter&&!targetMatches(source,target,effect.targetFilter))return{applied:false,reason:"TARGET_FILTER"};
+    // Must precede command resistance / consumable Grace so warded ignition
+    // cannot burn a charge of another ally's protection.
+    if(isBurnStatus(effect)&&activeFirePotion(target))return{applied:false,reason:'FIRE_WARD'};
+    const statusWard=negativeStatusWard(target,effect);
+    if(statusWard)return{applied:false,reason:'ALCHEMY_STATUS_WARD',blockedBy:statusWard.id};
     // One roll per incoming effect, never once per damage component or tick.
     // Resistance is checked before consumable status wards so a successful
     // commander save does not waste a Saint's GRACE charge.
@@ -442,7 +485,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE"){let m=1;for(const [trait,value] of Object.entries(effect.traitMultipliers||{}))if(hasTrait(target,trait))m*=Number(value||1);const amount=damage(target,Number(effect.amount||0)*m,{source,charge:"DIRECT",damageType:effect.type==="MAGIC_DAMAGE"?"MAGIC":"PHYSICAL"});if(amount>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:amount,components:{physical:effect.type==="MAGIC_DAMAGE"?0:amount},element:effect.element||null});return{applied:true,type:effect.type,amount,multiplier:m};}
     if(effect.type==="DISPEL_POSITIVE")return dispelPositive(source,target,effect.buffId);
     if(effect.type==="DISPEL"){
-      const removed=removeNegative(target);
+      const removed=removeNegative(target,effect.statusIds);
       if(removed)syncModifiers(target);
       const recovery=effect.restoreResource;
       const restoredResource=recovery?.key?
@@ -454,6 +497,12 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(effect.type==="VENGEANCE_SEAL")return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     if(effect.type==="BUFF"||effect.type==="ATTRIBUTE_OVERRIDE"||effect.type==="ATTRIBUTE_MODIFIER"){
       if(effect.cleanseNegative)removeNegative(target);
+      // Applying fireward extinguishes existing burning; poison/bleeding are not
+      // affected. Use the same authoritative DOT list and modifier refresh.
+      if(effect.fireWard===true){
+        target.effects=state(target).filter(existing=>!isBurnStatus(existing));
+        syncModifiers(target);
+      }
       return{applied:true,type:effect.type,effect:addEffect(target,effect,source)};
     }
     if(effect.type==="DRAIN"){

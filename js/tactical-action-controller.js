@@ -815,6 +815,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           const deltaElevation=Math.max(2,Math.ceil(depth)+1);
           events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation,source}));
           const previous=t.terrain;t.terrain='HIGH_GROUND';t.dryTerrain='HIGH_GROUND';
+          // An alchemically raised cliff is genuine terrain, but is NOT a
+          // naturally deposited mineral vein. Never farm it for free materials.
+          t.alchemyTransmuted=t.alchemyTransmuted===true||previous!=='HIGH_GROUND';
           if(previous!=='HIGH_GROUND')emitted('TERRAIN_CHANGED',t,{from:previous,to:t.terrain});
         }
       }else if(plan.type==='WATER_TO_LAND'){

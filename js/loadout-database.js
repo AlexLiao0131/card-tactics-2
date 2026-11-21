@@ -2,7 +2,7 @@ export const LOADOUTS={
   alchemist_default:{id:'alchemist_default',characterId:'alchemist',armorId:'mage_cloth',
     weaponIds:{staff:'imperial_staff'},skillIds:[
       'alchemist_staff_strike','alchemy_mana_stone','alchemy_healing_potion',
-      'alchemy_power_potion','alchemy_armor','alchemy_explosion','alchemy_world_transmutation']},
+      'alchemy_power_potion','alchemy_hard_shell_potion','alchemy_explosion','alchemy_world_transmutation']},
   avreshi_default:{id:"avreshi_default",characterId:"avreshi",armorId:"avreshi_moon_hide",weaponIds:{spear:"avreshi_moon_spear",claw:"avreshi_claws",bite:"avreshi_fangs"},skillIds:['avreshi_moonfire', 'avreshi_tornado', 'avreshi_lightning', 'avreshi_rejuvenation', 'avreshi_starfall', 'avreshi_spear_throw', 'avreshi_spear_thrust', 'avreshi_pounce', 'avreshi_bite', 'avreshi_claw', 'avreshi_shred', 'avreshi_swipe', 'avreshi_hide', 'avreshi_dive', 'avreshi_surface', 'avreshi_carry', 'avreshi_release', 'avreshi_whirlpool', 'avreshi_press', 'avreshi_share_vision', 'avreshi_item_delivery', 'avreshi_to_human', 'avreshi_to_cheetah', 'avreshi_to_seal', 'avreshi_to_raven']},
   magda_default:{id:'magda_default',characterId:'magda',armorId:'magda_arena_armor',
     weaponIds:{greatsword:'magda_gladiator_greatsword'},

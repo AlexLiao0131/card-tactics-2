@@ -1,4 +1,4 @@
-import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-vfx-1';
+import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-shell-1';
 /**
  * Cassandra's shared Babylon-only spell presentation.
  *
@@ -266,8 +266,8 @@ export class ArcaneSigilVfx{
       const cork=this.mesh(prop,'alchemy-vial-stopper','CreateCylinder',
         {height:.10,diameterTop:.19,diameterBottom:.15,tessellation:10},'alchemyMetal');
       cork.position.y=.42;
-      if(kind==='ALCHEMY_ARMOR'){
-        const band=this.rune(prop,'alchemy-vial-armor-band',.43,mat,8);
+      if(kind==='ALCHEMY_SHELL'){
+        const band=this.rune(prop,'alchemy-vial-shell-band',.43,mat,8);
         band.rotation.x=PI/2;
       }
     }
@@ -279,7 +279,7 @@ export class ArcaneSigilVfx{
     const n=kind==='ALCHEMY_BLAST'?14:9;
     for(let i=0;i<n;i++){
       const material=i%4===0?'alchemyWhite':mat;
-      const shape=(kind==='ALCHEMY_ARMOR'||kind==='ALCHEMY_BLAST'||
+      const shape=(kind==='ALCHEMY_SHELL'||kind==='ALCHEMY_BLAST'||
         ['STONE','THUNDER','HOLY'].includes(affinity))?'CreateBox':
         ['ICE','FIRE','NATURE'].includes(affinity)?'CreateCylinder':'CreateSphere';
       const args=shape==='CreateBox'?{width:.09,height:.28,depth:.085}:
@@ -310,11 +310,12 @@ export class ArcaneSigilVfx{
           {height:.47,diameterTop:0,diameterBottom:.19,tessellation:4},mat);
         fx.hitForms.push(arrow);
       }
-    }else if(kind==='ALCHEMY_ARMOR'){
+    }else if(kind==='ALCHEMY_SHELL'){
       for(let i=0;i<5;i++){
-        const plate=this.mesh(impact,`alchemy-armor-floating-plate-${i}`,'CreateBox',
-          {width:.23,height:.59,depth:.075},i===0?'alchemyWhite':mat);
-        fx.hitForms.push(plate);
+        const facet=this.mesh(impact,`alchemy-shell-hex-facet-${i}`,'CreateCylinder',
+          {height:.12,diameter:.35,tessellation:6},i===0?'alchemyWhite':mat);
+        facet.rotation.x=PI/2;
+        fx.hitForms.push(facet);
       }
     }else if(kind==='ALCHEMY_BLAST'){
       const core=this.sphere(impact,'alchemy-volumetric-explosion-core',.83,mat);
@@ -422,7 +423,7 @@ export class ArcaneSigilVfx{
         else {m.position.set(Math.cos(a)*.52,burst*(.06+i*.09),Math.sin(a)*.52);m.rotation.z=a;}
       }else if(f.kind==='ALCHEMY_POWER'){
         m.position.set(Math.cos(a)*(.25+burst*.35),burst*(.08+i*.21),Math.sin(a)*(.25+burst*.35));
-      }else if(f.kind==='ALCHEMY_ARMOR'){
+      }else if(f.kind==='ALCHEMY_SHELL'){
         m.position.set(Math.cos(a)*(.65-burst*.09),.38+Math.sin(a*2)*.16,
           Math.sin(a)*(.65-burst*.09));m.rotation.y=a;
       }else if(f.kind==='ALCHEMY_BLAST'){

@@ -30,7 +30,7 @@ const defs={
     roles:{ANALYZE:['cassandra_magic_bolt'],MANA_BURN:['cassandra_fire_burst'],
       DISPEL:['cassandra_frost'],DISSOLVE:['cassandra_dissolve'],
       ALCHEMY_MANA:['alchemy_mana_stone'],ALCHEMY_HEAL:['alchemy_healing_potion'],
-      ALCHEMY_POWER:['alchemy_power_potion'],ALCHEMY_ARMOR:['alchemy_armor'],
+      ALCHEMY_POWER:['alchemy_power_potion'],ALCHEMY_SHELL:['alchemy_hard_shell_potion'],
       ALCHEMY_BLAST:['alchemy_explosion'],ALCHEMY_TERRAIN:['alchemy_world_transmutation']},events:[],
     status:{ANALYSIS:'CASSANDRA_ANALYSIS'},legacy:'cassandraArcaneVfx'},
   'shadow-elemental':{

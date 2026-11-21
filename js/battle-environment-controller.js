@@ -113,11 +113,26 @@ function harvestCandidates(map,x,y){
   for(const [dx,dy] of ALCHEMY_DIRECTIONS){
     const sx=x+dx,sy=y+dy,neighbor=at(sx,sy);
     if(!neighbor)continue;
-    // Only truly adjacent solid objects may be sampled. Do not collect across
-    // a wall, a cliff or an illegal movement-height difference.
+    // Exposed native bedrock is a real geological source, not an extra rock
+    // object. A unit may sample the face from the foot of a cliff even when
+    // that upper tile is too high to traverse. Object/plant collection still
+    // obeys the ordinary <=1 elevation rule below.
     const adjacent=dx!==0||dy!==0;
-    if(adjacent&&(neighbor.terrain==='WALL'||
-       Math.abs(Number(neighbor.elevation||0)-Number(origin.elevation||0))>1.0001))continue;
+    const heightDelta=Number(neighbor.elevation||0)-Number(origin.elevation||0);
+    // Riverbed sediment is already a distinct one-time CRYSTAL_SAND source;
+    // never double-dip a single river cell as both sand and bedrock.
+    const rockStratum=neighbor.terrain==='HIGH_GROUND'&&neighbor.river!==true;
+    const naturalRock=rockStratum&&neighbor.alchemyTransmuted!==true&&
+      neighbor.captureZone!==true&&!neighbor.core&&neighbor.terrain!=='WALL';
+    if(naturalRock&&(!adjacent||heightDelta>=-1.0001)){
+      // One bedrock ID for both plateau and exposed cliff face: walking from
+      // the foot to the top can NEVER harvest the same rock twice.
+      add(`BEDROCK:${sx},${sy}`,'MINERAL',neighbor,
+        adjacent&&heightDelta>1.0001?'CLIFF_FACE':'BEDROCK');
+    }
+    // Solid objects beyond a cliff or wall are not in reach. Rock-face
+    // sampling above is the sole exception, and never traverses the cliff.
+    if(adjacent&&(neighbor.terrain==='WALL'||Math.abs(heightDelta)>1.0001))continue;
     for(const o of globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,sx,sy)||[]){
       if(!o||o.destroyed||o.carriedBy||!o.id)continue;
       const kind=ALCHEMY_SOURCE[String(o.type||'').toUpperCase()];
@@ -253,10 +268,10 @@ function create(ctx){
  function applyElectricHazard(unit,effects,reason){
   const electric=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.ELECTRIFIED);if(!electric||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,electric))return 0;const hitIds=Array.isArray(electric.damagedUnitIds)?electric.damagedUnitIds:(electric.damagedUnitIds=[]);if(hitIds.includes(String(unit.id)))return 0;hitIds.push(String(unit.id));const damage=Math.max(0,Number(electric.damage||EnvironmentEngine.HAZARD?.ELECTRIC_DAMAGE||0));if(damage<=0)return 0;
   const protection=globalThis.ItemRuntimeEngine?.resolveTrigger?.(unit,"ELECTRIC_DAMAGE",{damage,reason,electric});if(protection?.preventDamage){ctx.pushLog(`${unit.character.name}｜${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 雷電傷害。`,"SYSTEM");return 0;}
-  const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜水體雷電傳導 ${dealt} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被水體雷電傳導擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"ELECTRIFIED",source:"ENVIRONMENT",origin:electric.origin||null});}return dealt;
+  const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"THUNDER"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜水體雷電傳導 ${dealt} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被水體雷電傳導擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"ELECTRIFIED",source:"ENVIRONMENT",origin:electric.origin||null});}return dealt;
  }
  function applyBoilingHazard(unit,effects,reason){if(!unit?.alive)return 0;const s=state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!HydrologyEngine.isWater(tile))return 0;const boiling=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BOILING);if(!boiling||!effectContacts(unit,tile,boiling))return 0;const damage=Math.max(0,Number(boiling.damage||EnvironmentEngine.HAZARD?.BOILING_DAMAGE||0));if(damage<=0)return 0;const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜沸騰水域 ${dealt} 火焰傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被沸騰水域煮倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BOILING",source:"ENVIRONMENT",heat:boiling.heat||1});}return dealt;}
- function applyFireHazard(unit,effects,reason){const burning=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING);if(!burning||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,burning))return 0;const damage=Math.max(0,Number(burning.damage||EnvironmentEngine.HAZARD?.BURNING_DAMAGE||0));if(damage<=0)return 0;const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜燃燒傷害 ${dealt}｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被環境火焰擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BURNING",source:"ENVIRONMENT"});}return dealt;}
+ function applyFireHazard(unit,effects,reason){const burning=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING);if(!burning||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,burning))return 0;const damage=Math.max(0,Number(burning.damage||EnvironmentEngine.HAZARD?.BURNING_DAMAGE||0));if(damage<=0)return 0;const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"FIRE"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜燃燒傷害 ${dealt}｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被環境火焰擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BURNING",source:"ENVIRONMENT"});}return dealt;}
  // Reactions are applied through the same EffectEngine BURN status and the
  // EnvironmentEngine fire-heat budget, whether the contact came from weather,
  // true water depth, or a skill. Only the Hydrology layer owns surface water.
@@ -338,10 +353,11 @@ function create(ctx){
     (effect.onlyEnemies!==true||effect.sourceTeam!==unit.team));
   if(!vortex)globalThis.EffectEngine?.removeEffectById?.(unit,"WHIRLPOOL_TRAPPED");ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const spotted=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];spotted.filter(({observer})=>observer.team===ctx.TEAM?.PLAYER).forEach(({observer,target})=>ctx.pushLog(`${observer.character.name} 近身察覺 ${target.character.name}，但目標仍處於潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
  function publishAlchemyHarvest(unit,x,y,kind){
-   const s=state(),name={HERB:'草本',WOOD:'木質',MINERAL:'礦質',CRYSTAL_SAND:'河床晶砂'};
+   const s=state(),name={HERB:'草本',WOOD:'木質',MINERAL:'礦質',CRYSTAL_SAND:'河床晶砂'},
+     sourceName={OBJECT:'環境物件',BEDROCK:'天然岩盤',CLIFF_FACE:'崖壁',RIVERBED:'河床',RIVERBANK:'河岸沉積'};
    for(const found of collectAlchemyOnStep({map:s.map,environmentState:s.environmentState,unit,x,y,kind,round:s.round})){
-     const label=`${name[found.kind]||found.kind} +1${found.quality==='HIGH'?`、高品質${name[found.kind]||found.kind}・${found.affinity} +1`:''}`;
-     ctx.pushLog(`${unit.character.name} 採集｜${label}。`,'BATTLE');
+     const label=`${name[found.kind]||found.kind} +1${found.quality==='HIGH'?`、高品質${name[found.kind]||found.kind}・${ALCHEMY_AFFINITY_NAMES[found.affinity]||found.affinity} +1`:''}`;
+     ctx.pushLog(`${unit.character.name} 採集（${sourceName[found.sourceType]||'合法來源'}）｜${label}。`,'BATTLE');
      globalThis.UnitAnimationEngine?.emitPresentation?.(found.type,found);
      globalThis.UnitAnimationEngine?.emitPresentation?.('UNIT_FLOAT_TEXT',{
        unitId:unit.id,x:unit.x,y:unit.y,renderZ:Number(unit.z||0),
@@ -571,7 +587,7 @@ function create(ctx){
     const names=(event.riskReasons||[]).map(r=>r==="METAL"?"金屬裝備":r==="WATER"?"水域":"樹木／森林"),damage=Number(event.damage||0);
     const protection=globalThis.ItemRuntimeEngine?.resolveTrigger?.(unit,"LIGHTNING_DAMAGE",{damage,event});
     if(protection?.preventDamage)ctx.pushLog(`⚡ ${unit.character.name} 的 ${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 落雷傷害。`,"SYSTEM");
-    else{const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL"})?.hpLoss??damage;ctx.pushLog(`⚡ 落雷擊中 ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}${names.length?`｜高風險：${names.join("＋")}`:""}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.handleDefeated(unit,null,{type:"LIGHTNING"});}}
+    else{const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"THUNDER"})?.hpLoss??damage;ctx.pushLog(`⚡ 落雷擊中 ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}${names.length?`｜高風險：${names.join("＋")}`:""}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.handleDefeated(unit,null,{type:"LIGHTNING"});}}
     if(EnvironmentEngine.isConductive(s.map,s.environmentState,event.x,event.y)){const conduction=[];EnvironmentEngine.conductThunder(s.map,s.environmentState,event.x,event.y,conduction,{damagedUnitIds:[unit.id]});conduction.forEach(logEnvironmentEvent);resolveEnvironmentEvents(conduction,{reason:"雷雨落雷引發水體傳導"});}
   }
  }
