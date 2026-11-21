@@ -259,6 +259,13 @@ export function createUnitRuntimeEngine(){
     const reactionCounter=skill?._reactionCounter===true;
     const source=skill;
     skill=UnitTraitEngine.transformedSkill(unit,skill);
+    // The live battle menu must list only the specific alchemy recipes that
+    // this unit actually owns. The canonical SkillDatabase remains complete;
+    // the authority still validates material costs again at commit time.
+    if(skill?.alchemyCast?.mode==='BASIC'&&!skill.variantId&&Array.isArray(skill.variants)){
+      skill={...skill,variants:skill.variants.filter(variant=>
+        variant.materialCost&&ResourceEngine.hasMaterial(unit,variant.materialCost))};
+    }
     // Reaction selection is anchored to the attacker, not a free-aim tile.
     // Keep the official transformed name and power while adapting the form to
     // the single attacker that can legally be countered.
@@ -577,7 +584,7 @@ export function createUnitRuntimeEngine(){
   }
   function resourceLabel(unit,skill){
     if(skill?.alchemyCast?.mode==='BASIC'&&Array.isArray(skill.variants)&&!skill.variantId)
-      return '選擇普通／高品質素材';
+      return skillForUnit(unit,skill).variants.length?'從庫存選擇素材':'缺少對應採集素材';
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);

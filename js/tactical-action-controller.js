@@ -745,11 +745,25 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       }
       if(type==='WALL')return stable(tile)&&tile.terrain!=='WALL'?{type,tiles:[tile]}:null;
       if(type==='CLIFF'){
-        // The row is a clearly visible 3-cell footprint through the aimed cell;
-        // orientation follows the dominant caster-to-target axis.
+        // A cliff rises from actual terrain, INCLUDING the bottom of a water
+        // column. Never use the unrelated dry-only WALL/MUD predicate.
+        // The authored river channel may be reshaped, but genuine sources,
+        // drains, Core/capture sites and occupied cells stay protected.
         const horizontal=Math.abs(attacker.x-tile.x)>=Math.abs(attacker.y-tile.y);
         const row=[-1,0,1].map(i=>map.tiles.find(t=>t.x===tile.x+(horizontal?i:0)&&t.y===tile.y+(horizontal?0:i)));
-        if(row.every(t=>stable(t)&&t.terrain!=='WALL'))return{type,tiles:row};
+        const cliffProtected=t=>!t||t.terrain==='WALL'||occupied(t)||structure(t)||
+          t.captureZone||t.core||t.hydrologySource||t.hydrologyDrain||t.hydrologyAuthoredSource;
+        if(!row.every(t=>!cliffProtected(t)))return null;
+        const footprint=new Set(row.map(t=>`${t.x},${t.y}`));
+        const wetVolume=row.reduce((sum,t)=>sum+Math.max(0,Number(t.waterDepth||0)-
+          Number(globalThis.HydrologyEngine?.frozenDepth?.(t)||0)),0);
+        // Liquid displaced by the uplift must have real adjoining cells to
+        // receive it. Source/drain protection also applies to receivers.
+        const receivers=map.tiles.filter(t=>!footprint.has(`${t.x},${t.y}`)&&
+          row.some(u=>Math.abs(t.x-u.x)+Math.abs(t.y-u.y)===1)&&
+          !cliffProtected(t)).sort((a,b)=>a.y-b.y||a.x-b.x);
+        if(wetVolume>0&&!receivers.length)return null;
+        return{type,tiles:row,receivers};
       }
       return null;
     }
@@ -778,9 +792,29 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         const t=plan.tiles[0],before=t.terrain;t.terrain='WALL';
         emitted('TERRAIN_CHANGED',t,{from:before,to:'WALL'});
       }else if(plan.type==='CLIFF'){
+        // Record the actual water column BEFORE editing any tile. Raise the
+        // bed enough to emerge above that existing surface, rather than only
+        // painting HIGH_GROUND under a visually unchanged water sheet.
+        const beforeDepths=plan.tiles.map(t=>Math.max(0,Number(t.waterDepth||0)));
+        let displaced=0;
         for(const t of plan.tiles){
-          events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation:2,source}));
-          const previous=t.terrain;t.terrain='HIGH_GROUND';
+          const frozen=Math.max(0,Number(HydrologyEngine.frozenDepth?.(t)||0));
+          const liquid=Math.max(0,Number(t.waterDepth||0)-frozen);
+          if(liquid<=0)continue;
+          displaced+=liquid;
+          HydrologyEngine.setWaterDepth(t,frozen,events,source);
+        }
+        if(displaced>0){
+          const each=displaced/plan.receivers.length;
+          for(const receiver of plan.receivers)HydrologyEngine.addWater(receiver,each,events);
+        }
+        for(let i=0;i<plan.tiles.length;i++){
+          const t=plan.tiles[i],depth=beforeDepths[i];
+          // Keep the existing +2 land-cliff height; deeper water requires
+          // more rock mass to emerge, derived from its REAL pre-cast depth.
+          const deltaElevation=Math.max(2,Math.ceil(depth)+1);
+          events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation,source}));
+          const previous=t.terrain;t.terrain='HIGH_GROUND';t.dryTerrain='HIGH_GROUND';
           if(previous!=='HIGH_GROUND')emitted('TERRAIN_CHANGED',t,{from:previous,to:t.terrain});
         }
       }else if(plan.type==='WATER_TO_LAND'){

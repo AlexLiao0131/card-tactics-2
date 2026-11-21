@@ -97,16 +97,22 @@ function harvestCandidates(map,x,y){
       if(!o||o.destroyed||o.carriedBy||!o.id)continue;
       const kind=ALCHEMY_SOURCE[String(o.type||'').toUpperCase()];
       if(!kind)continue;
-      if(adjacent&&o.blocksMovement!==true)continue;
+      // Every actually reachable adjoining source can be sampled. Forest trees
+      // and bushes are NON-BLOCKING in EnvironmentObjectEngine: checking for
+      // blocksMovement===true here silently discarded almost all resources.
+      // The wall/cliff gate above still disallows harvesting across obstacles.
       if(!adjacent&&o.blocksMovement===true)continue;
       const id=`OBJECT:${o.id}`;
       if(seen.has(id))continue;seen.add(id);out.push({id,kind,x:sx,y:sy});
     }
+    // River sediment is sampled from the bed while standing on a legal
+    // neighboring bank or ford. Deep water need not be occupied by the unit;
+    // the same adjacency cliff/wall check above protects unreachable beds.
+    if(neighbor.river===true){
+      const id=`RIVERBED:${sx},${sy}`;
+      if(!seen.has(id)){seen.add(id);out.push({id,kind:'CRYSTAL_SAND',x:sx,y:sy});}
+    }
   }
-  // The authored riverbed, not any arbitrary water-filled tile, is a source.
-  // Every bed cell has one persistent map-scoped source ID.
-  if(origin.river===true){const id=`RIVERBED:${x},${y}`;
-    if(!seen.has(id))out.push({id,kind:'CRYSTAL_SAND',x,y});}
   return out;
 }
 function alchemyAffinity(map,environmentState,source){
@@ -293,20 +299,31 @@ function create(ctx){
     effect.type===EnvironmentEngine.EFFECT.WHIRLPOOL&&
     (effect.onlyEnemies!==true||effect.sourceTeam!==unit.team));
   if(!vortex)globalThis.EffectEngine?.removeEffectById?.(unit,"WHIRLPOOL_TRAPPED");ctx.stageEvent({type:"ENTER_TILE",unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y,z:Number(unit.z??(TacticalEngine.elevation(TacticalEngine.tile(s.map,unit.x,unit.y))||0)),team:teamLabel(unit.team)});const spotted=globalThis.EffectEngine?.resolveProximityReveal?.(unit,s.units)||[];spotted.filter(({observer})=>observer.team===ctx.TEAM?.PLAYER).forEach(({observer,target})=>ctx.pushLog(`${observer.character.name} 近身察覺 ${target.character.name}，但目標仍處於潛行。`,"DETAIL"));const tile=TacticalEngine.tile(s.map,unit.x,unit.y),trap=globalThis.EnvironmentEngine?.effectAt?.(s.environmentState,unit.x,unit.y)?.find?.(effect=>effect.type===EnvironmentEngine.EFFECT.TRAP);if(trap&&profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.SURFACE||"SURFACE",trap)){const triggered=EnvironmentEngine.triggerTrap?.(s.environmentState,unit.x,unit.y,unit);if(triggered){ctx.pushLog(`${unit.character.name} 觸發「${triggered.trap?.name||"陷阱"}」。`,"BATTLE");ctx.damageUnitFlat(unit,triggered.damage,triggered.trap?.name||"陷阱");if(!unit.alive)return;}}applyEnvironmentHazardToUnit(unit,{reason:"踏入環境區",waterTrigger:"ENTER"});if(unit.alive&&!unit._currentResolving)applyCurrentToUnit(unit,{reason:"溪流"});}
+ function publishAlchemyHarvest(unit,x,y,kind){
+   const s=state(),name={HERB:'草本',WOOD:'木質',MINERAL:'礦質',CRYSTAL_SAND:'河床晶砂'};
+   for(const found of collectAlchemyOnStep({map:s.map,environmentState:s.environmentState,unit,x,y,kind,round:s.round})){
+     const label=`${name[found.kind]||found.kind} +1${found.quality==='HIGH'?`、高品質${name[found.kind]||found.kind}・${found.affinity} +1`:''}`;
+     ctx.pushLog(`${unit.character.name} 採集｜${label}。`,'BATTLE');
+     globalThis.UnitAnimationEngine?.emitPresentation?.(found.type,found);
+     globalThis.UnitAnimationEngine?.emitPresentation?.('UNIT_FLOAT_TEXT',{
+       unitId:unit.id,x:unit.x,y:unit.y,renderZ:Number(unit.z||0),
+       kind:'STATUS',value:`採集 ${label}`});
+   }
+ }
  function traverseUnitPath(unit,path,{kind="UNIT"}={}){
   const s=state();
   if((path||[]).length&&globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(unit)){ctx.pushLog(`${unit.character.name} 被堆積物困住，無法移動。`,"BATTLE");return{completed:false,reason:"BURIED"};}
   if((path||[]).length&&globalThis.BurialEngine?.state?.(unit)){ctx.pushLog(`${unit.character.name} 從堆積物中掙脫並開始移動。`,"DETAIL");BurialEngine.clear(unit);}
+  // Starting a legal movement can sample the starting tile and its legal
+  // neighbors too. This is a committed movement event, never a map preview.
+  if(kind==='UNIT'&&(path||[]).length)publishAlchemyHarvest(unit,unit.x,unit.y,kind);
   let previous={x:unit.x,y:unit.y};
   for(const tile of path||[]){
     const incoming={dx:Math.sign(tile.x-previous.x),dy:Math.sign(tile.y-previous.y)};
     unit.x=tile.x;unit.y=tile.y;unit.z=Number(tile.elevation||0);enterTile(unit);
     if(!unit.alive)return{completed:false,reason:"DEFEATED"};
     if(unit.x!==tile.x||unit.y!==tile.y)return{completed:false,reason:"CURRENT"};
-    for(const found of collectAlchemyOnStep({map:s.map,environmentState:s.environmentState,unit,x:tile.x,y:tile.y,kind,round:s.round})){
-      ctx.pushLog(`${unit.character.name} 採集 ${found.kind} ×1${found.quality==='HIGH'?`，額外獲得高品質 ${found.affinity} 素材 ×1`:''}。`,"DETAIL");
-      globalThis.UnitAnimationEngine?.emitPresentation?.(found.type,found);
-    }
+    publishAlchemyHarvest(unit,tile.x,tile.y,kind);
     const interaction=EnvironmentEngine.pathInteraction({state:s.environmentState,x:tile.x,y:tile.y,kind}),forced=interaction.effects?.find(e=>e.type==="FORCED_MOVE");
     if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE");applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
     const friction=Number(globalThis.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);

@@ -221,6 +221,8 @@ export class UnitHudOverlay{
     const pct=clamp01(hp/maxHp);
     const mana=Math.max(0,Number(unit.mana||0)),maxMana=Math.max(0,Number(unit.maxMana||0)),manaPct=maxMana>0?clamp01(mana/maxMana):0;
     const resources=unit.resources||{},resourceKey=Object.entries(resources).map(([id,r])=>`${id}:${r.value}/${r.max}`).join("|");
+    const materials=unit.materials||{},materialKey=Object.entries(materials).filter(([,n])=>Number(n)>0)
+      .sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}:${v}`).join('|');
     const picture=globalThis.VisualDatabase?.characterHudPortrait?.(unit.characterId)||null;
     if(hud.portraitPath!==picture){
       hud.portraitPath=picture;
@@ -238,7 +240,7 @@ export class UnitHudOverlay{
     const equipKey=equipped.map(item=>`${item.group}:${item.key}:${item.name}`).join("|");
     const moon=unit.characterId==='avreshi'?(this.environmentState||globalThis.CardTacticsRuntime?.getEnvironmentState?.()):null;
     const moonState=moon?.timeOfDay==='NIGHT'?String(moon.moonlight||'NONE'):'DAY';
-    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}|${moonState}`;
+    const key=`${unit.name}|${hp}|${maxHp}|${mana}|${maxMana}|${resourceKey}|${materialKey}|${equipKey}|${statusKey}|${unit.team}|${unit.finished?1:0}|${moonState}`;
     if(hud.key===key)return;
     hud.key=key;
     hud.name.textContent=String(unit.name||unit.id||"UNIT");
@@ -295,6 +297,29 @@ export class UnitHudOverlay{
         track.appendChild(fill);wrap.append(label,track);
       }
       hud.resourceBox.appendChild(wrap);
+    }
+    // Material stock is NOT a scalar resource bar. A live, read-only inventory
+    // comes from the same authoritative snapshot used by offline and PvP HUDs.
+    // Never use ItemDatabase consumables or assume empty inventory is full.
+    if(unit.characterId==='alchemist'){
+      const names={HERB:'草本',WOOD:'木質',MINERAL:'礦質',CRYSTAL_SAND:'晶砂'},
+        affinityNames={NATURE:'自然',WATER:'水',ICE:'冰',FIRE:'火',THUNDER:'雷',HOLY:'神聖',DARK:'闇',STONE:'岩'};
+      const box=createElement('div','unit-hud-alchemy-materials');
+      box.dataset.resource='alchemy-materials';
+      box.style.cssText='display:grid;gap:3px;min-width:0;padding:6px 0;font-size:12px;line-height:1.4;';
+      const heading=createElement('strong','unit-hud-alchemy-materials-title');
+      heading.textContent='採集素材庫';box.appendChild(heading);
+      for(const kind of Object.keys(names)){
+        const normal=Math.max(0,Number(materials[`${kind}:NORMAL:NONE`]||0));
+        const highs=Object.entries(materials).filter(([key,n])=>key.startsWith(`${kind}:HIGH:`)&&Number(n)>0)
+          .sort(([a],[b])=>a.localeCompare(b));
+        const line=createElement('div','unit-hud-alchemy-material-row');
+        const detail=highs.map(([key,n])=>`${affinityNames[key.split(':')[2]]||key.split(':')[2]} ${Number(n)}`).join('、');
+        line.textContent=`${names[kind]}｜普通 ${normal}${detail?`｜高品質 ${detail}`:''}`;
+        if(highs.length)line.style.color='#b6e4ba';
+        box.appendChild(line);
+      }
+      hud.resourceBox.appendChild(box);
     }
     hud.equipment.replaceChildren();
     for(const [group,label] of [["weapon","武器"],["armor","護甲"],["other","裝備"]]){
