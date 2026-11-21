@@ -1,4 +1,6 @@
 export const CARDS={
+  alchemist_card:{id:'alchemist_card',name:'梅莉安・羅森菲爾',type:'CHARACTER',characterId:'alchemist',
+    loadoutId:'alchemist_default',faction:'ALCHEMY',unitType:'HERO',cost:6,pack:'ALCHEMY_SUPPLEMENT'},
   avreshi_card:{id:"avreshi_card",name:"艾芙蕾希・月痕",type:"CHARACTER",characterId:"avreshi",loadoutId:"avreshi_default",faction:"ELVEN",unitType:"HERO",cost:6},
   magda_card:{id:'magda_card',name:'瑪格妲・瓦爾加',type:'CHARACTER',characterId:'magda',
     loadoutId:'magda_default',faction:'ARENA',unitType:'HERO',cost:6},

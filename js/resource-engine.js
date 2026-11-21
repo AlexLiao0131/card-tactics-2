@@ -89,11 +89,45 @@ function changeMana(unit,delta){
   unit.mana=clamp(before+Number(delta),0,unit.maxMana);
   return unit.mana-before;
 }
+// Materials belong to the same authoritative unit as MP and special resources.
+// They are a typed inventory, NOT scalar special-resource bars or ItemDatabase consumables.
+const MATERIAL_KINDS=Object.freeze(['HERB','WOOD','MINERAL','CRYSTAL_SAND']);
+const MATERIAL_AFFINITIES=Object.freeze(['NONE','NATURE','WATER','ICE','FIRE','THUNDER','HOLY','DARK','STONE']);
+function materialKey(kind,quality='NORMAL',affinity='NONE'){
+  const k=String(kind||'').toUpperCase(),q=String(quality||'NORMAL').toUpperCase(),a=String(affinity||'NONE').toUpperCase();
+  if(!MATERIAL_KINDS.includes(k)||!['NORMAL','HIGH'].includes(q)||!MATERIAL_AFFINITIES.includes(a))return null;
+  if((q==='NORMAL'&&a!=='NONE')||(q==='HIGH'&&a==='NONE'))return null;
+  return `${k}:${q}:${a}`;
+}
+function materialInventory(unit){
+  if(!unit)return null;
+  if(!unit.materialInventory||typeof unit.materialInventory!=='object'||Array.isArray(unit.materialInventory))unit.materialInventory={};
+  return unit.materialInventory;
+}
+function materialCount(unit,kind,quality='NORMAL',affinity='NONE'){
+  const key=materialKey(kind,quality,affinity);
+  return key?Math.max(0,Math.floor(Number(materialInventory(unit)?.[key]||0))):0;
+}
+function changeMaterial(unit,{kind,quality='NORMAL',affinity='NONE',amount}={}){
+  const key=materialKey(kind,quality,affinity),count=Number(amount);
+  if(!key||!unit||!Number.isSafeInteger(count)||count===0)return false;
+  const inventory=materialInventory(unit),old=materialCount(unit,kind,quality,affinity);
+  if(count<0&&old < -count)return false;
+  const next=old+count;
+  if(!Number.isSafeInteger(next)||next<0)return false;
+  if(next===0)delete inventory[key];else inventory[key]=next;
+  return true;
+}
+function hasMaterial(unit,{kind,quality='NORMAL',affinity='NONE',amount=1}={}){
+  return Number.isSafeInteger(amount)&&amount>0&&materialCount(unit,kind,quality,affinity)>=amount;
+}
+function materialSnapshot(unit){return {...(materialInventory(unit)||{})};}
 function snapshot(unit){
   sync(unit);
   return Object.fromEntries(Object.entries(unit?.resources||{}).map(([key,s])=>
     [key,{value:numeric(s.value),max:numeric(s.max),label:String(s.label||key)}]));
 }
 export const ResourceEngine=Object.freeze({RESOURCE_PROFILES,RESOURCE_MANA,resourceRules,resourceLabel,syncOne,sync,set,change,value,recover,
-  manaMaxFromAttributes,manaMax,syncMana,changeMana,snapshot});
+  manaMaxFromAttributes,manaMax,syncMana,changeMana,snapshot,
+  MATERIAL_KINDS,MATERIAL_AFFINITIES,materialKey,materialInventory,materialCount,changeMaterial,hasMaterial,materialSnapshot});
 globalThis.ResourceEngine=ResourceEngine;

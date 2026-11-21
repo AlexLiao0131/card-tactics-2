@@ -455,6 +455,32 @@ export function createUnitRuntimeEngine(){
     }
   })}
   function allFinished(units,team){reconcileCompanions(units);const actors=turnActors(units,team);return actors.length>0&&actors.every(u=>u.acted)}
+  // A BASIC alchemy skill chooses precisely one inventory item. The item is
+  // either NORMAL/NONE or HIGH with a single already-attached affinity.
+  // No source can demand an additional, independent elemental ingredient.
+  function alchemyRecipe(unit,skill){
+    const mode=skill?.alchemyCast?.mode;
+    if(!mode)return null;
+    if(unit?.character?.alchemyHarvest!==true||!extraResourceRules(unit).alchemyRune)
+      return {valid:false,mode};
+    // The ultimate only pays the single rune; no material or MP is legal.
+    const extras=Object.keys(resourceCosts(skill));
+    if(Number(skill.manaCost||0)!==0||extras.length)return {valid:false,mode};
+    if(mode==='TERRAIN')return {valid:!skill.materialCost,mode,runeCost:3};
+    if(mode!=='BASIC'||!skill.materialCost)return {valid:false,mode};
+    const cost=skill.materialCost;
+    const quantity=Number(cost.amount);
+    if(!Number.isSafeInteger(quantity)||quantity<1||!ResourceEngine.materialKey(cost.kind,cost.quality,cost.affinity))
+      return {valid:false,mode};
+    return{valid:true,mode,material:{kind:cost.kind,quality:cost.quality,affinity:cost.affinity,amount:quantity}};
+  }
+  function alchemyAffordable(unit,skill){
+    if(!skill?.alchemyCast)return true;
+    const recipe=alchemyRecipe(unit,skill);
+    if(!recipe?.valid)return false;
+    if(recipe.mode==='TERRAIN')return Number(ResourceEngine.value(unit,'alchemyRune')||0)>=recipe.runeCost;
+    return ResourceEngine.hasMaterial(unit,recipe.material);
+  }
   function resourceFor(unit,skill){
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
@@ -463,9 +489,19 @@ export function createUnitRuntimeEngine(){
     if(skill?.rageSpendAll&&rageUser(unit))extras.rage=rageValue(unit);
     const soulCast=forestSoulCastChoice(unit,skill);
     if(soulCast?.mode==="SOUL")extras.forestSoul=soulCast.cost;
-    return{type:Object.keys(extras).length?"MULTI":"MANA",cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}]))};
+    const recipe=alchemyRecipe(unit,skill);
+    if(recipe?.valid&&recipe.mode==='TERRAIN')extras.alchemyRune=3;
+    return{type:Object.keys(extras).length||recipe?.material?'MULTI':'MANA',cost:skillManaCost(unit,skill),remaining:Math.max(0,Number(unit?.mana||0)),max:Number(unit?.maxMana||0),resources:Object.fromEntries(Object.entries(extras).map(([key,cost])=>[key,{cost,remaining:Number(unit.resources?.[key]?.value||0),max:Number(unit.resources?.[key]?.max||0)}])),
+      ...(recipe?.material?{material:{...recipe.material,remaining:ResourceEngine.materialCount(unit,recipe.material.kind,recipe.material.quality,recipe.material.affinity)}}:{})};
   }
   function canUseSkill(unit,skill,world=null){
+    // The parent menu item is available when ANY explicitly selected material
+    // variant is payable. The parent itself is not a free, castable variant.
+    if(skill?.alchemyCast?.mode==='BASIC'&&Array.isArray(skill.variants)&&
+       !skill.variantId&&skill.variants.length){
+      return skill.variants.some(variant=>canUseSkill(unit,
+        {...skill,...variant,id:skill.id,variants:undefined,variantId:variant.id},world));
+    }
     if(currentForm(unit)&&skill?.id&&!skillIdsForUnit(unit).includes(skill.id))return false;
     if(skill?.utilityAction?.type==='SHAPESHIFT'&&
        !canShiftForm(unit,skill.utilityAction.form))return false;
@@ -492,16 +528,26 @@ export function createUnitRuntimeEngine(){
     if(req.water===true){const runtimeMap=unit?._runtimeMap||globalThis.CardTacticsRuntime?.getBattleMap?.(),tile=runtimeMap?.tiles?.find(t=>t.x===unit?.x&&t.y===unit?.y);if(!tile||Number(globalThis.HydrologyEngine?.waterDepth?.(tile)||0)<=0)return false;}
     syncMana(unit);syncResources(unit);
     if(skill?.forestSoulCast&&forestSoulUser(unit)&&!forestSoulCastChoice(unit,skill))return false;
+    if(!alchemyAffordable(unit,skill))return false;
     if(unit.mana<skillManaCost(unit,skill))return false;
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key];if(!rule)return false;if(rule.allowOverdraft!==true&&Number(unit.resources?.[key]?.value||0)<cost)return false;}
     return true;
   }
   function consumeSkill(unit,skill,world=null){
+    // Never auto-select the ordinary variant or silently use a rare material.
+    if(skill?.alchemyCast?.mode==='BASIC'&&Array.isArray(skill.variants)&&!skill.variantId)return null;
     if(!canUseSkill(unit,skill,world))return null;
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     const soulCast=forestSoulCastChoice(unit,skill);
     const rageBefore=rageValue(unit);
+    const recipe=alchemyRecipe(unit,skill);
+    // Spend material before all scalar resources. canUseSkill prevalidated
+    // the whole transaction, and no renderer or skill preview can spend it.
+    if(recipe?.valid&&recipe.mode==='BASIC'&&
+       !ResourceEngine.changeMaterial(unit,{...recipe.material,amount:-recipe.material.amount}))return null;
+    if(recipe?.valid&&recipe.mode==='TERRAIN'&&
+       ResourceEngine.change(unit,'alchemyRune',-recipe.runeCost)!==-recipe.runeCost)return null;
     const mana=skillManaCost(unit,skill);ResourceEngine.changeMana(unit,-mana);
     const spent={};
     if(soulCast?.mode==="SOUL"){
@@ -520,10 +566,18 @@ export function createUnitRuntimeEngine(){
       const value=forestSoulValue(unit);
       if(value>0){changeResource(unit,"forestSoul",-value);spent.forestSoul={cost:value,remaining:0,max:unit.resources.forestSoul.max};}
     }
+    // This is one committed cast, not one charge per target, damage tick or
+    // presentation callback. The single rune is a 0/3..3/3 scalar resource;
+    // its HUD mask travels from left to right instead of showing three runes.
+    if(recipe?.valid&&recipe.mode==='BASIC')changeResource(unit,'alchemyRune',1);
+    if(recipe?.valid&&recipe.mode==='TERRAIN')spent.alchemyRune={cost:3,remaining:ResourceEngine.value(unit,'alchemyRune'),max:3};
     UnitTraitEngine.afterCommittedSkill(unit,skill);
-    return{type:Object.keys(spent).length?"MULTI":"MANA",cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent};
+    return{type:Object.keys(spent).length||recipe?.material?'MULTI':'MANA',cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent,
+      ...(recipe?.material?{material:{...recipe.material,spent:recipe.material.amount}}:{})};
   }
   function resourceLabel(unit,skill){
+    if(skill?.alchemyCast?.mode==='BASIC'&&Array.isArray(skill.variants)&&!skill.variantId)
+      return '選擇普通／高品質素材';
     skill=skillForUnit(unit,skill);
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};
     syncMana(unit);syncResources(unit);const labels=[],mana=skillManaCost(unit,skill);
@@ -532,6 +586,13 @@ export function createUnitRuntimeEngine(){
     if(mana>0)labels.push(`MP ${mana}`);
     if(skill?.rageSpendAll)labels.push(`全部憤怒 ${rageValue(unit)}`);
     for(const[key,cost]of Object.entries(resourceCosts(skill))){const rule=extraResourceRules(unit)[key]||{},prefix=String(rule.costMode||"").toUpperCase()==="DRAIN"?"-":"";labels.push(`${resourceLabelFor(key,rule)} ${prefix}${cost}`);}
+    const recipe=alchemyRecipe(unit,skill);
+    if(recipe?.valid&&recipe.mode==='TERRAIN')labels.push('煉成紋路 3/3');
+    if(recipe?.material){
+      const item=recipe.material,quality=item.quality==='HIGH'?'高品質':'普通';
+      const name={HERB:'草本',WOOD:'木質',MINERAL:'礦質',CRYSTAL_SAND:'晶砂'}[item.kind]||item.kind;
+      labels.push(`${quality}${name}${item.quality==='HIGH'?`・${item.affinity}`:''} ×${item.amount}`);
+    }
     return labels.length?labels.join(" / "):"無消耗";
   }
   function applyResourceScaling(unit,skill,environmentState=null){
@@ -622,7 +683,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,astralPowerUser,astralPowerValue,gainAstralPower,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,alchemyRecipe,alchemyAffordable,astralPowerUser,astralPowerValue,gainAstralPower,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;

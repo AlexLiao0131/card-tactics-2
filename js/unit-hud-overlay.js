@@ -263,7 +263,26 @@ export class UnitHudOverlay{
       const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
       label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;
       wrap.dataset.resource=id;
-      if(id==="holyPower"){
+      if(id==="alchemyRune"){
+        // ONE abdominal rune. The same picture is clipped from left to right
+        // at 0%, 1/3, 2/3 and 100%, never rendered as three separate icons.
+        const outer=createElement('div','unit-hud-alchemy-rune');
+        outer.setAttribute('role','img');
+        outer.setAttribute('aria-label',`單一煉成符文由左至右充能 ${value}/${max}`);
+        outer.style.cssText='width:124px;height:80px;position:relative;overflow:hidden;';
+        const uri=new URL('assets/ui/alchemy_rune.png',document.baseURI).href;
+        const picture=()=>{
+          const img=createElement('img','unit-hud-alchemy-rune-image');
+          img.src=uri;img.alt='';img.setAttribute('aria-hidden','true');
+          img.style.cssText='position:absolute;top:0;left:0;width:124px;height:80px;object-fit:contain;pointer-events:none;';
+          return img;
+        };
+        const dim=picture();dim.style.opacity='.2';dim.style.filter='grayscale(.8)';
+        const revealed=createElement('div','unit-hud-alchemy-rune-charged');
+        revealed.style.cssText=`position:absolute;left:0;top:0;height:80px;overflow:hidden;width:${Math.round(clamp01(value/max)*100)}%;`;
+        const lit=picture();lit.style.filter='drop-shadow(0 0 3px #ef72b8)';
+        revealed.appendChild(lit);outer.append(dim,revealed);wrap.append(label,outer);
+      }else if(id==="holyPower"){
         const orbs=createElement("div","unit-hud-holy-orbs");
         for(let i=0;i<max;i++){
           const orb=createElement("span",`unit-hud-holy-orb${i<value?" is-charged":""}`);

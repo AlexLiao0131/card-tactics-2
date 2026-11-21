@@ -1,4 +1,5 @@
 export const CARD_GROUPS={
+  ALCHEMY_SUPPLEMENT:{id:'ALCHEMY_SUPPLEMENT',name:'煉金術士補充包',cards:['alchemist_card']},
   LIVIA_SUPPLEMENT:{id:"LIVIA_SUPPLEMENT",name:"莉維亞補充包",cards:["livia_card","kahn_card","cassandra_card","bear_trap_card","avalanche_card","cassandra_blessing_card"]},
   IMPERIAL:{id:"IMPERIAL",name:"帝國",cards:["leon_card","imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card"]},
   ARENA:{id:"ARENA",name:"鬥技場",cards:["magda_card"]},
@@ -16,6 +17,8 @@ export const CARD_GROUPS={
   OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
 };
 export const PACK_PRODUCTS={
+  ALCHEMY_FIXED:{id:'ALCHEMY_FIXED',name:'煉金術士補充包',kind:'SUPPLEMENT',season:'PERMANENT',
+    description:'固定內容：梅莉安・羅森菲爾，3V 旅行煉金術士 HERO。',cards:['alchemist_card']},
   IMPERIAL_SEASON_TEST:{id:"IMPERIAL_SEASON_TEST",name:"帝國陣營包",kind:"FACTION",season:"TEST_SEASON",description:"15 張測試包｜7 基礎士兵・3 中階士兵・3 陣營戰術／魔法・2 高階抽選｜HERO Bonus 0.5%",slots:{basic:7,mid:3,factionSpell:3,advancedRolls:2},advancedChance:.25,heroBonusChance:.005,pools:{basic:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card"],mid:["imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"],advanced:["imperial_cavalry_card"],factionSpell:[],hero:["leon_card"]},fallback:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"]},
   ELF_EMPIRE_SEASON_TEST:{id:"ELF_EMPIRE_SEASON_TEST",name:"精靈帝國陣營包",kind:"FACTION",season:"TEST_SEASON",description:"15 張測試包｜精靈帝國普通部隊為主｜HERO Bonus 0.5%｜陣營魔法牌待正式內容加入後自動進入對應池。",slots:{basic:7,mid:3,factionSpell:3,advancedRolls:2},advancedChance:.25,heroBonusChance:.005,pools:{basic:["elf_ranger_card","elf_guard_card"],mid:["elf_priest_card","elf_shapeshifter_card","elf_guard_card"],advanced:["elf_shapeshifter_card"],factionSpell:[],hero:["reina_card"]},fallback:["elf_ranger_card","elf_guard_card","elf_priest_card","elf_shapeshifter_card"]},
   CHURCH_SEASON_TEST:{id:"CHURCH_SEASON_TEST",name:"教會陣營包",kind:"FACTION",season:"TEST_SEASON",description:"15 張測試包｜騎士學徒・重裝騎士・聖殿騎士・主教＋教會專屬魔法｜HERO Bonus 0.5%",slots:{basic:7,mid:3,factionSpell:3,advancedRolls:2},advancedChance:.25,heroBonusChance:.005,pools:{basic:["church_apprentice_card"],mid:["church_heavy_knight_card","church_bishop_card"],advanced:["church_templar_card"],factionSpell:["church_redemption_card","church_dispel_card","church_judgement_card","church_entrenchment_card"],hero:["church_templar_hero_card"]},fallback:["church_apprentice_card","church_heavy_knight_card","church_bishop_card","church_templar_card","church_dispel_card","church_judgement_card","church_entrenchment_card"]},

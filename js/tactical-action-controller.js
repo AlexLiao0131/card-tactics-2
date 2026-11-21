@@ -6,6 +6,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
   // This is the same movement-undo rule, not a second network movement engine.
   function restorePendingMove(unit,origin,{units=null,map=null}={}){
     if(!unit||!origin||origin.unitId!==unit.id||unit.acted||!unit.moved)return false;
+    globalThis.BattleEnvironmentController?.rollbackAlchemyHarvest?.(unit,map);
     unit.x=origin.x;unit.y=origin.y;unit.z=origin.z;
     if(origin.facing)unit.facing=origin.facing;
     unit.moved=false;
@@ -367,12 +368,18 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     }
 
     function beginPendingMove(unit){
+      if(unit?.character?.alchemyHarvest===true&&unit._alchemyHarvestUndo==null)unit._alchemyHarvestUndo=[];
       const rider=state().units.find(u=>u.id===unit.shieldPassengerId);
       pendingMove={unitId:unit.id,x:unit.x,y:unit.y,z:unit.z,facing:unit.facing,
         passengerId:rider?.id||null,passengerMoved:!!rider?.moved,
         passengerRideMoved:!!rider?.shieldRideMoved};
     }
-    function commitPendingMove(unit){if(pendingMove?.unitId===unit?.id)pendingMove=null;}
+    function commitPendingMove(unit){
+      if(pendingMove?.unitId===unit?.id){
+        globalThis.BattleEnvironmentController?.commitAlchemyHarvest?.(unit);
+        pendingMove=null;
+      }
+    }
 
     function approachTargetForAttack(unit,target,skill){
       const plan=attackPlanForTarget(unit,target,skill);
@@ -701,8 +708,100 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return candidates[0]||null;
     }
 
+    // Shared terrain transmutation is a normal canonical map-targeted skill.
+    // The exact legality plan is reused for preview and commit; never debit
+    // a full rune for an impossible transform, and never mutate visual-only tiles.
+    function alchemyTerrainPlan(attacker,center,skill){
+      const {map,units}=state(),type=String(skill?.alchemyTerrain||'');
+      const tile=map?.tiles?.find(t=>t.x===center?.x&&t.y===center?.y);
+      if(!tile||attacker?.character?.alchemyHarvest!==true||!type)return null;
+      const occupied=t=>(units||[]).some(u=>u?.alive&&u.occupiesTile!==false&&u.x===t.x&&u.y===t.y);
+      const structure=t=>(map.objects||[]).some(o=>!o.destroyed&&o.x===t.x&&o.y===t.y&&
+        (o.blocksMovement||o.type==='CORE'||o.type==='SPRING'));
+      const reserved=t=>t.captureZone||t.core||t.hydrologySource||t.hydrologyDrain||t.hydrologyAuthoredSource||t.river||t.ford;
+      const dry=t=>Number(t?.waterDepth||0)<=0;
+      const stable=t=>t&&!reserved(t)&&dry(t)&&!occupied(t)&&!structure(t);
+      const wet=Number(tile.waterDepth||0)>0;
+      if(type==='FLOOD'||type==='FREEZE')return wet?{type,tiles:[tile]}:null;
+      if(type==='WATER_TO_LAND'){
+        if(!wet||reserved(tile)||occupied(tile)||structure(tile))return null;
+        const neighbors=map.tiles.filter(t=>Math.abs(t.x-tile.x)+Math.abs(t.y-tile.y)===1&&
+          !t.hydrologySource&&!t.hydrologyDrain&&t.terrain!=='WALL');
+        return neighbors.length?{type,tiles:[tile],receivers:neighbors}:null;
+      }
+      if(type==='MUD')return stable(tile)&&['PLAIN','SAND','HIGH_GROUND'].includes(tile.terrain)?{type,tiles:[tile]}:null;
+      if(type==='SHATTER'){
+        const object=(globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,tile.x,tile.y)||[])
+          .find(o=>o.type==='BOULDER'&&o.destructible===true);
+        return object&&!occupied(tile)?{type,tiles:[tile],object}:null;
+      }
+      if(type==='WALL')return stable(tile)&&tile.terrain!=='WALL'?{type,tiles:[tile]}:null;
+      if(type==='CLIFF'){
+        // The row is a clearly visible 3-cell footprint through the aimed cell;
+        // orientation follows the dominant caster-to-target axis.
+        const horizontal=Math.abs(attacker.x-tile.x)>=Math.abs(attacker.y-tile.y);
+        const row=[-1,0,1].map(i=>map.tiles.find(t=>t.x===tile.x+(horizontal?i:0)&&t.y===tile.y+(horizontal?0:i)));
+        if(row.every(t=>stable(t)&&t.terrain!=='WALL'))return{type,tiles:row};
+      }
+      return null;
+    }
+    function executeAlchemyTerrain(attacker,center,skill){
+      const plan=alchemyTerrainPlan(attacker,center,skill),{map,environmentState}=state();
+      if(!plan||!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
+        return skillFailure(attacker,skill,'ALCHEMY_TERRAIN_INVALID',center);
+      if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,'RESOURCE_OR_REQUIREMENT',center);
+      // All target checks above happen BEFORE consuming the entire rune.
+      if(!ctx.consumeSkill(attacker,skill))return false;
+      const events=[],source=skill.id+':'+plan.type;
+      const emitted=(type,t,more={})=>events.push({type,x:t.x,y:t.y,source,...more});
+      if(plan.type==='FLOOD'){
+        events.push(...HydrologyEngine.floodArea(map,plan.tiles,{surfaceRise:1,source}));
+      }else if(plan.type==='FREEZE'){
+        const t=plan.tiles[0],before=Math.max(0,Number(t.iceThickness||0));
+        t.iceThickness=Math.min(Number(t.waterDepth||0),Math.max(before,.75));
+        globalThis.ClimateEngine?.syncTileVisuals?.(environmentState,t);
+        emitted('ICE_FORMED',t,{before,iceThickness:t.iceThickness});
+      }else if(plan.type==='MUD'){
+        const t=plan.tiles[0],before=t.terrain;t.terrain='MUD';
+        emitted('TERRAIN_CHANGED',t,{from:before,to:'MUD'});
+      }else if(plan.type==='SHATTER'){
+        globalThis.EnvironmentObjectEngine?.destroy?.(map,plan.object,{events,reason:source});
+      }else if(plan.type==='WALL'){
+        const t=plan.tiles[0],before=t.terrain;t.terrain='WALL';
+        emitted('TERRAIN_CHANGED',t,{from:before,to:'WALL'});
+      }else if(plan.type==='CLIFF'){
+        for(const t of plan.tiles){
+          events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation:2,source}));
+          const previous=t.terrain;t.terrain='HIGH_GROUND';
+          if(previous!=='HIGH_GROUND')emitted('TERRAIN_CHANGED',t,{from:previous,to:t.terrain});
+        }
+      }else if(plan.type==='WATER_TO_LAND'){
+        const t=plan.tiles[0],volume=Math.max(0,Number(t.waterDepth||0));
+        // Conservation: move existing water into real neighboring cells before
+        // lifting the source bed. This is NOT free water creation.
+        const byNeighbor=volume/plan.receivers.length;
+        HydrologyEngine.setWaterDepth(t,0,events,source);
+        for(const n of plan.receivers)HydrologyEngine.addWater(n,byNeighbor,events);
+        events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation:Math.ceil(volume)+1,source}));
+        const previous=t.terrain;t.terrain='PLAIN';t.dryTerrain='PLAIN';
+        emitted('TERRAIN_CHANGED',t,{from:previous,to:'PLAIN',displacedWater:volume});
+      }
+      map.terrainRevision=Number(map.terrainRevision||0)+1;
+      events.forEach(ctx.logEnvironmentEvent);
+      ctx.resolveEnvironmentEvents?.(events,{reason:skill.name});
+      globalThis.EffectEngine?.breakStealth?.(attacker,'ACTION');
+      globalThis.EffectEngine?.interruptChannel?.(attacker,'ACTION');
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:'MAP',alchemyTerrain:plan.type});
+      ctx.pushLog(`${attacker.character.name} 施放 ${skill.name}｜${plan.type}｜地形狀態已更新。`,'BATTLE');
+      return finishActiveSkill(attacker);
+    }
+
     function mapTargetTiles(attacker,skill){
       if(skill?.terrainTargeting)return enchantedTerrainTargetTiles(attacker,skill);
+      if(skill?.alchemyCast?.mode==='TERRAIN'){
+        const common={...skill,alchemyCast:null};
+        return mapTargetTiles(attacker,common).filter(t=>alchemyTerrainPlan(attacker,t,skill));
+      }
       if(skill?.utilityAction?.type==="RANGER_FORMATION_MARCH")return rangerFormationLegalTiles(attacker,skill);
       const {map,units,environmentState}=state();
       if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
@@ -1297,6 +1396,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           (center?.x!==attacker.x||center?.y!==attacker.y))
         return skillFailure(attacker,skill,"SELF_CENTER_ONLY",center);
       if(skill?.purifiedSlash)return executeLiviaPurifiedSlash(attacker,center,skill);
+      if(skill?.alchemyCast?.mode==='TERRAIN')return executeAlchemyTerrain(attacker,center,skill);
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
       if(skill?.dispelConstruct===AngelWingBarrierEngine.TYPE){
         if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))
@@ -1659,6 +1759,31 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         ctx.resolveEnvironmentEvents?.(meteorEvents,{reason:`${skill.name} 引發環境連鎖`});
       }
       const environmentEvents=[];
+      if(skill?.alchemyCast?.mode==='BASIC'&&skill.id==='alchemy_explosion'){
+        if(skill.alchemyFreezeWater){
+          for(const tile of affected.filter(t=>HydrologyEngine.isWater(t))){
+            const before=Math.max(0,Number(tile.iceThickness||0));
+            tile.iceThickness=Math.min(Number(tile.waterDepth||0),Math.max(before,.65));
+            globalThis.ClimateEngine?.syncTileVisuals?.(environmentState,tile);
+            environmentEvents.push({type:'ICE_FORMED',x:tile.x,y:tile.y,iceThickness:tile.iceThickness,source:skill.id});
+          }
+        }
+        if(skill.alchemyConductWater&&EnvironmentEngine.isConductive(map,environmentState,center.x,center.y)){
+          const extra=EnvironmentEngine.apply({map,state:environmentState,x:center.x,y:center.y,forces:['THUNDER']});
+          environmentEvents.push(...extra);
+        }
+        if(skill.alchemyWaterPulse){
+          const watery=affected.filter(t=>HydrologyEngine.isWater(t));
+          if(watery.length)environmentEvents.push(...HydrologyEngine.floodArea(map,watery,{surfaceRise:.25,source:skill.id}));
+        }
+        if(skill.alchemyKnockback){
+          for(const victim of state().units.filter(u=>u.alive&&u.team!==attacker.team&&
+            affected.some(t=>t.x===u.x&&t.y===u.y))){
+            ctx.applyForcedMovement(center,victim,Number(skill.alchemyKnockback),
+              {name:skill.name,damage:0,damageType:'PHYSICAL'});
+          }
+        }
+      }
       affected.forEach(tile=>{
         const events=environmentState&&skill.environmentForces
           ?EnvironmentEngine.apply({map,state:environmentState,x:tile.x,y:tile.y,forces:skill.environmentForces})
@@ -1758,6 +1883,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 
     function executeEffectSkill(attacker,target,skill,{buffId=null}={}){
       if(!globalThis.EffectEngine)return skillFailure(attacker,skill,"EFFECT_ENGINE_UNAVAILABLE",target);
+      // Alchemy must not burn an ingredient and charge a full rune through a
+      // formally useless recover-HP/MP cast. Other buffs may be refreshed.
+      if(skill?.alchemyCast?.mode==='BASIC'&&skill.id==='alchemy_mana_stone'&&
+        (!Number(target?.maxMana||0)||Number(target.mana||0)>=Number(target.maxMana||0)))
+        return skillFailure(attacker,skill,'ALCHEMY_MANA_FULL',target);
+      if(skill?.alchemyCast?.mode==='BASIC'&&skill.id==='alchemy_healing_potion'&&
+        Number(target?.hp||0)>=Number(target?.character?.combat?.hp||0)&&
+        !(skill.effects||[]).some(e=>e.type!=='HEAL'))
+        return skillFailure(attacker,skill,'ALCHEMY_HP_FULL',target);
       if(skill?.dispelChoice==="POSITIVE"&&
         !EffectEngine.positiveBuffChoices(target).some(buff=>buff.id===buffId))
         return skillFailure(attacker,skill,"POSITIVE_BUFF_NOT_AVAILABLE",target);
@@ -1832,6 +1966,13 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         }
       }else if(Array.isArray(skill.effects)){
         for(const effect of skill.effects){const selected=effect.type==="DISPEL_POSITIVE"?{...effect,buffId}:effect;const r=EffectEngine.apply({source:attacker,target,effect:selected});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,selected,r);}
+      }
+      if(skill?.alchemyCast?.mode==='BASIC'&&skill.alchemySplashMana&&skill.id==='alchemy_mana_stone'){
+        for(const ally of state().units.filter(u=>u.alive&&u.team===attacker.team&&u.id!==target.id&&
+          Math.abs(u.x-target.x)+Math.abs(u.y-target.y)<=1&&Number(u.maxMana||0)>Number(u.mana||0))){
+          const result=EffectEngine.apply({source:attacker,target:ally,effect:{type:'RESTORE_MANA',amount:skill.alchemySplashMana}});
+          logAppliedEffect(skill,ally,{type:'RESTORE_MANA'},result);
+        }
       }
       // Successful fresh HoT application on an injured ally only: future
       // ticks and reapplications of an existing HoT never award Astral Power.

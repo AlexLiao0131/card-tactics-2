@@ -1,6 +1,14 @@
 import {BattleEngine} from "./battle-engine.js";
 import {RESOURCE_PROFILES} from "./resource-profile-database.js";
 export const CHARACTERS={
+// 3V = AGI / INT / WIL. All combat figures derive from the canonical CASTER six-stat profile.
+alchemist:{id:'alchemist',name:'梅莉安・羅森菲爾',title:'旅行煉金術士・萬象的採集者',visualId:'alchemist_default',
+  race:'HUMAN',faction:'ALCHEMY',archetype:'MAGE',genetics:{grade:'3V',values:['AGI','INT','WIL']},
+  attributes:{str:8,agi:20,int:20,wil:20,vit:12,luk:14},
+  combat:{move:5},resourceRules:{mana:false,alchemyRune:{label:'煉成紋路',max:3,initial:0,naturalRecovery:0}},
+  alchemyHarvest:true,passives:['ALCHEMIST_GATHERING'],
+  lore:{role:'透過無損採集戰場素材施展五種煉成術，三次有效煉成後能重塑真實地形',
+    notes:'3V 為 AGI、INT、WIL。沒有 MP。普通素材與帶元素高品質素材二擇一；高品質本身自帶元素。單一腹部煉成符文由左到右逐漸發光。'}},
 magda:{id:'magda',name:'瑪格妲・瓦爾加',title:'競技場的戰獅',visualId:'magda_default',
   race:'GIANT_BLOODLINE',faction:'ARENA',archetype:'GLADIATOR',genetics:{grade:'3V',values:['STR','AGI','VIT']},
   attributes:{str:20,agi:20,int:8,wil:14,vit:20,luk:12},

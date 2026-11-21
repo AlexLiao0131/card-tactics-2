@@ -1,5 +1,25 @@
 export const VISUALS={
   characters:{
+    alchemist_default:{
+      portrait:"assets/images/cards/heroes/alchemist.jpg",
+      card:"assets/images/cards/heroes/alchemist.jpg",
+      tactical:"assets/images/cards/heroes/alchemist.jpg",
+      expressions:{},
+      battle:{kind:"FIGURE",baseFacing:"E",height:1.69,
+        figure:{style:"TRAVEL_ALCHEMIST",longHair:true,braid:false,
+          skirtPanels:true,cape:false,beltDetail:true,waistPouches:true,
+          bootDetail:true,bareHands:true,bow:false,quiver:false,sideSword:false,
+          colors:{skin:"#ebcbb5",hair:"#8d5e41",hairDark:"#503523",
+            shirt:"#eee6da",tabard:"#e6e0cc",pants:"#4e5a46",
+            skirt:"#566752",cape:"#596d56",capeDark:"#344332",
+            leather:"#57402f",leatherDark:"#32251f",boots:"#442f28",
+            metal:"#b99b65",gold:"#cfb76b",accent:"#799167",gem:"#8cc45a",weapon:"#a58660"}},
+        animations:{IDLE:{duration:1240,loop:true,procedural:"BREATHE"},
+          WALK:{duration:235,loop:true,procedural:"STEP"},
+          ATTACK:{duration:440,loop:false,procedural:"LUNGE"},
+          CAST:{duration:700,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:700,loop:false,procedural:"FALL"}}}},
     avreshi_human:{
       portrait:"assets/images/cards/heroes/avreshi.png",
       card:"assets/images/cards/heroes/avreshi.png",
@@ -891,6 +911,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
+    alchemist:"alchemist.jpg",
     avreshi:"avreshi.png",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",

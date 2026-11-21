@@ -70,6 +70,113 @@ return Object.freeze({STATE,FATIGUE_LIMIT,FATIGUE_GAIN,FATIGUE_RECOVERY_PER_TICK
 
 (()=>{
 "use strict";
+// Source IDs and the once-per-battle ledger live on the authoritative battlefield map.
+// Extraction NEVER damages an object, changes a tile, or changes the water column.
+const ALCHEMY_SOURCE=Object.freeze({BUSH:'HERB',TREE:'WOOD',DEAD_TREE:'WOOD',STUMP:'WOOD',LOG:'WOOD',BOULDER:'MINERAL'});
+const ALCHEMY_BASE_AFFINITY=Object.freeze({HERB:'NATURE',WOOD:'NATURE',MINERAL:'STONE',CRYSTAL_SAND:'WATER'});
+const ALCHEMY_DIRECTIONS=Object.freeze([[0,0],[1,0],[-1,0],[0,1],[0,-1]]);
+function alchemyRoll(map,sourceId){
+  let h=2166136261>>>0;
+  for(const ch of `${map?.seed??map?.id??'FIELD'}:ALCHEMY:${sourceId}:QUALITY`){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}
+  return h/4294967296;
+}
+function harvestCandidates(map,x,y){
+  if(!Array.isArray(map?.tiles)||!Number.isSafeInteger(x)||!Number.isSafeInteger(y))return[];
+  const origin=map.tiles.find(t=>t.x===x&&t.y===y);
+  if(!origin)return[];
+  const out=[],seen=new Set();
+  for(const [dx,dy] of ALCHEMY_DIRECTIONS){
+    const sx=x+dx,sy=y+dy,neighbor=map.tiles.find(t=>t.x===sx&&t.y===sy);
+    if(!neighbor)continue;
+    // Only truly adjacent solid objects may be sampled. Do not collect across
+    // a wall, a cliff or an illegal movement-height difference.
+    const adjacent=dx!==0||dy!==0;
+    if(adjacent&&(neighbor.terrain==='WALL'||
+       Math.abs(Number(neighbor.elevation||0)-Number(origin.elevation||0))>1.0001))continue;
+    for(const o of globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,sx,sy)||[]){
+      if(!o||o.destroyed||o.carriedBy||!o.id)continue;
+      const kind=ALCHEMY_SOURCE[String(o.type||'').toUpperCase()];
+      if(!kind)continue;
+      if(adjacent&&o.blocksMovement!==true)continue;
+      if(!adjacent&&o.blocksMovement===true)continue;
+      const id=`OBJECT:${o.id}`;
+      if(seen.has(id))continue;seen.add(id);out.push({id,kind,x:sx,y:sy});
+    }
+  }
+  // The authored riverbed, not any arbitrary water-filled tile, is a source.
+  // Every bed cell has one persistent map-scoped source ID.
+  if(origin.river===true){const id=`RIVERBED:${x},${y}`;
+    if(!seen.has(id))out.push({id,kind:'CRYSTAL_SAND',x,y});}
+  return out;
+}
+function alchemyAffinity(map,environmentState,source){
+  const tile=map?.tiles?.find(t=>t.x===source.x&&t.y===source.y),
+    effects=globalThis.EnvironmentEngine?.effectAt?.(environmentState,source.x,source.y)||[];
+  const recognized=[];
+  for(let i=0;i<effects.length;i++){
+    const effect=effects[i],type=String(effect?.type||'').toUpperCase();
+    const affinity=type==='BURNING'||type==='FIRE_TORNADO'?'FIRE':type==='ELECTRIFIED'?'THUNDER':null;
+    if(affinity)recognized.push({affinity,order:Number(effect?.elementEventSequence??i)});
+  }
+  const mark=map?.alchemyElementEvents?.[`${source.x},${source.y}`];
+  // Only an active matching effect can validate a historical event mark.
+  const marked=recognized.find(record=>record.affinity===mark?.affinity);
+  if(marked)return mark.affinity;
+  if(recognized.length)return recognized.sort((a,b)=>b.order-a.order||a.affinity.localeCompare(b.affinity))[0].affinity;
+  if(Number(tile?.iceThickness||0)>0||Number(tile?.snowDepth||0)>0)return'ICE';
+  if(Number(tile?.waterDepth||0)>0)return'WATER';
+  return ALCHEMY_BASE_AFFINITY[source.kind]||'NATURE';
+}
+function collectAlchemyOnStep({map,environmentState,unit,x,y,kind='UNIT',round=null}={}){
+  if(!map||!unit?.alive||unit.character?.alchemyHarvest!==true||kind!=='UNIT'||
+     unit.x!==x||unit.y!==y||!globalThis.ResourceEngine?.changeMaterial||
+     globalThis.VerticalMobilityEngine?.isAirborne?.(unit)||
+     globalThis.VerticalMobilityEngine?.isBurrowed?.(unit))return[];
+  // The reversible journal follows the actual authoritative tactical round.
+  // A staged move can span several one-step commands without losing its ledger.
+  if(Number.isSafeInteger(round)&&round>=1&&unit._alchemyHarvestUndoRound!==round){
+    unit._alchemyHarvestUndo=[];
+    unit._alchemyHarvestUndoRound=round;
+  }
+  const ledger=map.alchemyHarvestedSources??={},events=[];
+  for(const source of harvestCandidates(map,x,y)){
+    if(Object.hasOwn(ledger,source.id))continue;
+    const quality=alchemyRoll(map,source.id)<.30,
+      affinity=quality?alchemyAffinity(map,environmentState,source):'NONE',
+      normal={kind:source.kind,quality:'NORMAL',affinity:'NONE',amount:1},
+      rare={kind:source.kind,quality:'HIGH',affinity,amount:1};
+    if(!ResourceEngine.changeMaterial(unit,normal))continue;
+    if(quality&&!ResourceEngine.changeMaterial(unit,rare)){
+      ResourceEngine.changeMaterial(unit,{...normal,amount:-1});continue;
+    }
+    ledger[source.id]={unitId:unit.id,kind:source.kind,quality:quality?'HIGH':'NORMAL',affinity};
+    const entry={sourceId:source.id,kind:source.kind,quality:quality?'HIGH':'NORMAL',affinity};
+    if(Array.isArray(unit._alchemyHarvestUndo))unit._alchemyHarvestUndo.push(entry);
+    events.push({type:'ALCHEMY_MATERIAL_COLLECTED',unitId:unit.id,x:source.x,y:source.y,...entry});
+  }
+  return events;
+}
+function rollbackAlchemyHarvest(unit,map){
+  const items=unit?._alchemyHarvestUndo;
+  if(!Array.isArray(items)||!map)return 0;
+  const ledger=map.alchemyHarvestedSources||{};let reverted=0;
+  for(let i=items.length-1;i>=0;i--){
+    const item=items[i];
+    if(ledger[item.sourceId]?.unitId!==unit.id)continue;
+    const normal={kind:item.kind,quality:'NORMAL',affinity:'NONE',amount:-1};
+    if(!ResourceEngine.changeMaterial(unit,normal))continue;
+    if(item.quality==='HIGH')ResourceEngine.changeMaterial(unit,{kind:item.kind,quality:'HIGH',affinity:item.affinity,amount:-1});
+    delete ledger[item.sourceId];reverted++;
+  }
+  delete unit._alchemyHarvestUndo;
+  delete unit._alchemyHarvestUndoRound;
+  return reverted;
+}
+function commitAlchemyHarvest(unit){
+  if(!unit)return;
+  delete unit._alchemyHarvestUndo;
+  delete unit._alchemyHarvestUndoRound;
+}
 function create(ctx){
  if(!ctx?.state||!ctx?.pushLog||!ctx?.handleDefeated||!ctx?.stageEvent)throw new Error("BattleEnvironmentController requires state/log/lifecycle callbacks.");
  const state=()=>ctx.state();
@@ -196,6 +303,10 @@ function create(ctx){
     unit.x=tile.x;unit.y=tile.y;unit.z=Number(tile.elevation||0);enterTile(unit);
     if(!unit.alive)return{completed:false,reason:"DEFEATED"};
     if(unit.x!==tile.x||unit.y!==tile.y)return{completed:false,reason:"CURRENT"};
+    for(const found of collectAlchemyOnStep({map:s.map,environmentState:s.environmentState,unit,x:tile.x,y:tile.y,kind,round:s.round})){
+      ctx.pushLog(`${unit.character.name} 採集 ${found.kind} ×1${found.quality==='HIGH'?`，額外獲得高品質 ${found.affinity} 素材 ×1`:''}。`,"DETAIL");
+      globalThis.UnitAnimationEngine?.emitPresentation?.(found.type,found);
+    }
     const interaction=EnvironmentEngine.pathInteraction({state:s.environmentState,x:tile.x,y:tile.y,kind}),forced=interaction.effects?.find(e=>e.type==="FORCED_MOVE");
     if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE");applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
     const friction=Number(globalThis.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);
@@ -411,6 +522,18 @@ function create(ctx){
  }
  function mudSourceLabel(event){const source=String(event?.source||"").toUpperCase();if(source.includes("SNOW")||source.includes("ICE")||source.includes("MELT"))return"融雪／積水";if(source.includes("RAIN")||source.includes("THUNDERSTORM")||source.includes("TYPHOON")||source.includes("TYPHOON"))return"降雨";if(source.includes("FLOOD"))return"洪水／積水";if(source.includes("MASS_FLOW"))return"土石流後積水";if(source.includes("ACCUMULATION")||source.includes("DRAIN")||source.includes("FLOW"))return"積水";return"土壤飽和／積水";}
  function logEnvironmentEvent(event){
+  // Keep only real, ordered elemental events. The mark is useful while the
+  // corresponding environment effect remains active; it is not permanent loot.
+  const world=state(),map=world?.map,valid=Number.isSafeInteger(event?.x)&&Number.isSafeInteger(event?.y);
+  const kind=event?.type==='IGNITE'?'FIRE':
+    ['ELECTRIC_CONDUCTION','LIGHTNING_STRIKE','ELECTRIFIED','WATER_ELECTRIFIED'].includes(event?.type)?'THUNDER':null;
+  // Without an active alchemist, environmental events must remain unchanged;
+  // a later deployment can still read the currently active real effects.
+  if(valid&&kind&&map&&world.units?.some(u=>u.alive&&u.character?.alchemyHarvest===true)){
+    map.alchemyElementEventSequence=(map.alchemyElementEventSequence||0)+1;
+    map.alchemyElementEvents??={};
+    map.alchemyElementEvents[`${event.x},${event.y}`]={affinity:kind,sequence:map.alchemyElementEventSequence};
+  }
   if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
   else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
   else if(event.type==="UNIT_BURN_WATER_EXCHANGE")ctx.pushLog(`角色燃燒與水接觸｜${event.unitId}｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量${event.extinguished?"｜燃燒已熄滅":""}。`,"DETAIL");
@@ -462,6 +585,6 @@ function create(ctx){
  }
  return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveTsunamiWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }
-globalThis.BattleEnvironmentController=Object.freeze({create});
+globalThis.BattleEnvironmentController=Object.freeze({create,collectAlchemyOnStep,rollbackAlchemyHarvest,commitAlchemyHarvest,harvestCandidates,alchemyAffinity});
 })();
 globalThis.WaterInteractionEngine=WaterInteractionEngine;
