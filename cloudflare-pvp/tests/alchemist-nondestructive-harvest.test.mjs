@@ -122,12 +122,105 @@ test('latest real elemental event wins while still active; expired marks cannot 
 test('legal riverbank collects real adjacent riverbed crystal sand without wading or touching river water',()=>{
  const tiles=[{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:0,river:true,waterDepth:3}];
  const m=mapWith([],tiles),u=unit();const before=JSON.stringify(m.tiles);
- assert.equal(collect(m,u).length,1);
- assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),1);
+ assert.equal(collect(m,u).length,2); // One geological riverbed + one shore alluvial deposit.
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),2);
  assert.equal(JSON.stringify(m.tiles),before);
  assert.deepEqual(collect(m,u),[]);
  const blocked=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'WALL',elevation:0,river:true,waterDepth:3}]);
  assert.deepEqual(collect(blocked,unit()),[]);
  const cliff=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:-4,river:true,waterDepth:3}]);
  assert.deepEqual(collect(cliff,unit()),[]);
+});
+
+// Added regression: actual authored river pools, bank deposits, and holy-shield
+// affinities are distinct from arbitrary WATER tiles or ordinary shields.
+test('authored natural channel pocket supplies a real one-time crystal sand source',()=>{
+ const m=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},
+   {x:1,y:0,terrain:'PLAIN',elevation:-.5,hydrologyNaturalChannelPool:true,waterDepth:1.2}],42);
+ const u=unit(),before=JSON.stringify(m.tiles);const first=collect(m,u);
+ assert.equal(first.length,1);assert.equal(first[0].sourceId,'RIVERBED:1,0');
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),1);
+ assert.deepEqual(collect(m,u),[]);assert.equal(JSON.stringify(m.tiles),before);
+});
+test('a real connected river bank is its own once-per-battle sediment source',()=>{
+ const m=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},
+   {x:1,y:0,terrain:'PLAIN',elevation:0,river:true,hydrologyBedMaterial:'GRAVEL'}],61);
+ const u=unit('ALC1'),other=unit('ALC2');
+ const picked=collect(m,u);assert.deepEqual(new Set(picked.map(e=>e.sourceId)),
+   new Set(['RIVERBANK:0,0','RIVERBED:1,0']));
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),2);
+ assert.deepEqual(collect(m,other),[]);
+ assert.equal(m.tiles[0].river,undefined);assert.equal(m.tiles[0].terrain,'PLAIN');
+});
+test('rainwater, disconnected bank and cliffs cannot fabricate river sediment',()=>{
+ const tile=(x,y,extra={})=>({x,y,terrain:'PLAIN',elevation:0,...extra});
+ const flooded=mapWith([], [tile(0,0,{waterDepth:3}),tile(1,0,{waterDepth:5})]);
+ assert.deepEqual(collect(flooded,unit()),[]);
+ const cliff=mapWith([], [tile(0,0,{elevation:6}),tile(1,0,{river:true,elevation:0})]);
+ assert.deepEqual(collect(cliff,unit()),[]);
+});
+test('active holy shield in actual source contact grants HOLY high quality, without altering quality roll',()=>{
+ const m0=mapWith([{id:'b1',type:'BUSH',x:0,y:0,blocksMovement:false}], [{x:0,y:0,terrain:'PLAIN',elevation:0}],80);
+ const src={x:0,y:0,kind:'HERB'};
+ const holy={id:'HOLY',alive:true,x:0,y:1,effects:[{id:'HOLY_SHIELD',type:'BUFF',classification:'POSITIVE',remaining:2}]};
+ assert.equal(harvest.alchemyAffinity(m0,{},src,[holy]),'HOLY');
+ for(let seed=1;seed<1300;seed++){
+   const m=mapWith([{id:'b1',type:'BUSH',x:0,y:0,blocksMovement:false}], [{x:0,y:0,terrain:'PLAIN',elevation:0}],seed);
+   const caster=unit(),shield={...holy,effects:holy.effects.map(x=>({...x}))};
+   const result=harvest.collectAlchemyOnStep({map:m,unit:caster,units:[caster,shield],x:0,y:0});
+   if(result[0]?.quality==='HIGH'){
+     assert.equal(result[0].affinity,'HOLY');
+     assert.equal(ResourceEngine.materialCount(caster,'HERB','HIGH','HOLY'),1);
+     assert.equal(ResourceEngine.materialCount(caster,'HERB'),1);
+     assert.equal(shield.effects[0].remaining,2);
+     assert.deepEqual(harvest.collectAlchemyOnStep({map:m,unit:caster,units:[caster,shield],x:0,y:0}),[]);
+     return;
+   }
+ }
+ assert.fail('No deterministic high-quality fixture found');
+});
+test('expired or ordinary/water shields cannot create HOLY; live saint overflow shield can',()=>{
+ const m=mapWith([], [{x:0,y:0,terrain:'FOREST',elevation:0}],99),
+   src={x:0,y:0,kind:'WOOD'},sh=(id,hp)=>({id:'X',alive:true,x:0,y:0,
+     effects:[{id,type:'SHIELD',classification:'POSITIVE',shieldHp:hp}]});
+ assert.equal(harvest.alchemyAffinity(m,{},src,[sh('NEREIA_TSUNAMI_WATER_SHIELD',50)]),'NATURE');
+ assert.equal(harvest.alchemyAffinity(m,{},src,[sh('ALCH_ARMOR_HOLY',0)]),'NATURE');
+ assert.equal(harvest.alchemyAffinity(m,{},src,[{id:'Y',alive:true,x:0,y:0,effects:[{id:'HOLY_SHIELD',type:'BUFF',remaining:0}]}]),'NATURE');
+ assert.equal(harvest.alchemyAffinity(m,{},src,[sh('SAINT_OVERHEAL_SHIELD',12)]),'HOLY');
+ assert.equal(harvest.alchemyAffinity(m,{},src,[{id:'X',alive:true,x:2,y:0,effects:[{id:'HOLY_SHIELD',type:'BUFF'}]}]),'NATURE');
+});
+test('active fire/electric contact still wins over nearby holy shield; no global holy aura',()=>{
+ const m=mapWith([], [{x:0,y:0,terrain:'FOREST',elevation:0}],20),
+   src={x:0,y:0,kind:'WOOD'},holy=[{id:'X',alive:true,x:0,y:0,effects:[{id:'HOLY_SHIELD',type:'BUFF'}]}];
+ assert.equal(harvest.alchemyAffinity(m,{effects:{'0,0':[{type:'ELECTRIFIED'}]}},src,holy),'THUNDER');
+ assert.equal(harvest.alchemyAffinity(m,{effects:{'0,0':[{type:'BURNING'}]}},src,holy),'FIRE');
+});
+
+test('riverbank and channel sample both roll 30% independently and are both undone atomically',()=>{
+ const m=mapWith([], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'PLAIN',elevation:0,river:true}],109),u=unit();
+ u._alchemyHarvestUndo=[];
+ const before=JSON.stringify(m.tiles),sample=collect(m,u,0,0,{},3);
+ assert.equal(sample.length,2);
+ assert.equal(Object.keys(m.alchemyHarvestedSources).length,2);
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),2);
+ assert.equal(harvest.rollbackAlchemyHarvest(u,m),2);
+ assert.equal(ResourceEngine.materialCount(u,'CRYSTAL_SAND'),0);
+ assert.deepEqual(m.alchemyHarvestedSources,{});
+ assert.equal(JSON.stringify(m.tiles),before);
+});
+
+test('shield changes only quality affinity; normal drop and 30% frequency remain identical',()=>{
+ const holy={id:'H',alive:true,x:0,y:0,effects:[{id:'HOLY_SHIELD',type:'BUFF',remaining:2}]};
+ let rareWith=0,rareWithout=0;
+ for(let i=1;i<=2000;i++){
+  const base=()=>mapWith([{id:'x',type:'BUSH',x:0,y:0,blocksMovement:false}],
+   [{x:0,y:0,terrain:'PLAIN',elevation:0}],i);
+  const u=unit(),withShield=harvest.collectAlchemyOnStep({map:base(),unit:u,units:[u,holy],x:0,y:0})[0];
+  const without=collect(base(),unit())[0];
+  if(withShield.quality==='HIGH')rareWith++;
+  if(without.quality==='HIGH')rareWithout++;
+  assert.equal(withShield.quality,without.quality);
+  if(withShield.quality==='HIGH'){assert.equal(withShield.affinity,'HOLY');assert.equal(without.affinity,'NATURE');}
+ }
+ assert.equal(rareWith,rareWithout);assert.ok(rareWith>500&&rareWith<700,`unexpected ${rareWith}`);
 });
