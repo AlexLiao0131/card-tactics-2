@@ -7,13 +7,13 @@
  * Adding a skill that reuses an effect role: edit vfx-database.js only.
  * Adding a genuinely new geometry type: register one new behavior factory here.
  */
-import {VfxDatabase} from './vfx-database.js?rev=20261118-avreshi-vfx-2';
+import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-vfx-1';
 import {isBowProjectileEvent,ArrowProjectileVfx} from './arrow-projectile-vfx.js';
 import {FireBowExplosionVfx} from './fire-bow-explosion-vfx.js';
 import {HolyBladeVfx} from './holy-blade-vfx.js';
 import {HolyVolleyVfx} from './holy-volley-vfx.js';
 import {DimensionalRiftVfx} from './dimensional-rift-vfx.js';
-import {ArcaneSigilVfx} from './arcane-sigil-vfx.js';
+import {ArcaneSigilVfx} from './arcane-sigil-vfx.js?rev=20261121-alchemy-vfx-1';
 import {ShadowElementalVfx} from './shadow-elemental-vfx.js';
 import {NatureGrowthVfx} from './nature-growth-vfx.js';
 import {BloodRitualVfx} from './blood-ritual-vfx.js';

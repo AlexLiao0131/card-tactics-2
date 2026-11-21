@@ -791,7 +791,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       ctx.resolveEnvironmentEvents?.(events,{reason:skill.name});
       globalThis.EffectEngine?.breakStealth?.(attacker,'ACTION');
       globalThis.EffectEngine?.interruptChannel?.(attacker,'ACTION');
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:'MAP',alchemyTerrain:plan.type});
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:'MAP',
+        alchemyTerrain:plan.type,
+        alchemyFootprint:plan.tiles.map(tile=>({x:tile.x,y:tile.y}))});
       ctx.pushLog(`${attacker.character.name} 施放 ${skill.name}｜${plan.type}｜地形狀態已更新。`,'BATTLE');
       return finishActiveSkill(attacker);
     }
@@ -1505,7 +1507,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
         landingX:transit?.landing?.x??null,landingY:transit?.landing?.y??null,
         fanTargetCells:fanAffected?.map(t=>({x:t.x,y:t.y}))||null,
-        enchantmentElement:fanEnchantment?.element||null});
+        enchantmentElement:fanEnchantment?.element||null,
+        ...(skill.alchemyCast?.mode==='BASIC'?{
+          alchemyAffinity:skill.materialCost?.affinity||'NONE',
+          alchemyQuality:skill.materialCost?.quality||'NORMAL',
+          alchemyVariant:skill.variantId||'NORMAL'}:{})});
       if(skill.tsunamiWave){
         // Stage 1: contact and knockback, before adding water. This keeps
         // wave impact independent of the hydro's steady water depths.
@@ -1936,7 +1942,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(!spent){UnitRuntimeEngine.endBloodTransaction(attacker);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(attacker,skill);
       TacticalEngine.faceToward(attacker,target);
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT",
+        ...(skill.alchemyCast?.mode==='BASIC'?{
+          alchemyAffinity:skill.materialCost?.affinity||'NONE',
+          alchemyQuality:skill.materialCost?.quality||'NORMAL',
+          alchemyVariant:skill.variantId||'NORMAL'}:{})});
       const results=[];let healedCrit=false;
       if(skill.commandAura===true){
         const radius=rangerCommandRadius(attacker);
