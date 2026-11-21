@@ -25,7 +25,8 @@ function baseState(unit,tile,fatigue=currentFatigue(unit)){
   if(set.has("WATER_WALK")||rules.waterWalk)return{state:STATE.WATER_WALK,depth,weight,safe:true,fatigue,source:rules.waterWalk?"EFFECT":null};
   if(globalThis.ClimateEngine?.isFrozen?.(tile)&&ClimateEngine.iceSupports(unit,tile))return{state:STATE.ICE,depth,weight,safe:true,iceThickness:ClimateEngine.iceThickness(tile),fatigue};
   if(depth<2)return{state:STATE.WADING,depth,weight,safe:true,fatigue};
-  if(fatigue>=FATIGUE_LIMIT&&!rules.preventSinking)return{state:STATE.SINKING,depth,weight,safe:false,fatigue};
+  // Underwater breathing prevents oxygen exhaustion; it does not block wave-forced submersion.
+  if(fatigue>=FATIGUE_LIMIT&&!rules.preventSinking&&!rules.breathing)return{state:STATE.SINKING,depth,weight,safe:false,fatigue};
   return{state:STATE.SWIMMING,depth,weight,safe:true,fatigue};
 }
 function assess(unit,tile){return baseState(unit,tile)}

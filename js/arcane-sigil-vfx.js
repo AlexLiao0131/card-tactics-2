@@ -1,4 +1,4 @@
-import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-shell-1';
+import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-swift-breath-1';
 /**
  * Cassandra's shared Babylon-only spell presentation.
  *
@@ -201,7 +201,9 @@ export class ArcaneSigilVfx{
     const kind=ALCHEMY_SPELLS[event.skillId];
     const element=String(event.alchemyAffinity||'NONE').toUpperCase();
     const affinity=Object.hasOwn(ALCHEMY_COLORS,element)?element:'NONE';
-    const mat=`alchemy${affinity}`;
+    // Potion silhouettes carry a legible tint even when the actual inventory item is ordinary.
+    const mat=kind==='ALCHEMY_SWIFT'&&affinity==='NONE'?'alchemyNATURE':
+      kind==='ALCHEMY_BREATH'&&affinity==='NONE'?'alchemyWATER':`alchemy${affinity}`;
     const terrain=kind==='ALCHEMY_TERRAIN'&&ALCHEMY_TERRAIN.has(event.alchemyTerrain)
       ?event.alchemyTerrain:null;
     const source=this.position(snapshot,event.x,event.y,1.12);
@@ -309,6 +311,18 @@ export class ArcaneSigilVfx{
         const arrow=this.mesh(impact,`alchemy-power-arrow-${i}`,'CreateCylinder',
           {height:.47,diameterTop:0,diameterBottom:.19,tessellation:4},mat);
         fx.hitForms.push(arrow);
+      }
+    }else if(kind==='ALCHEMY_SWIFT'){
+      for(let i=0;i<4;i++){
+        const arrow=this.mesh(impact,`alchemy-swiftness-sprint-arrow-${i}`,'CreateCylinder',
+          {height:.49,diameterTop:0,diameterBottom:.19,tessellation:3},i%2?'alchemyWhite':'alchemyNATURE');
+        fx.hitForms.push(arrow);
+      }
+    }else if(kind==='ALCHEMY_BREATH'){
+      for(let i=0;i<6;i++){
+        const bubble=this.sphere(impact,`alchemy-underwater-breathing-bubble-${i}`,i%2?.14:.23,
+          i%2?'alchemyWhite':'alchemyWATER');
+        fx.hitForms.push(bubble);
       }
     }else if(kind==='ALCHEMY_SHELL'){
       for(let i=0;i<5;i++){
@@ -423,6 +437,12 @@ export class ArcaneSigilVfx{
         else {m.position.set(Math.cos(a)*.52,burst*(.06+i*.09),Math.sin(a)*.52);m.rotation.z=a;}
       }else if(f.kind==='ALCHEMY_POWER'){
         m.position.set(Math.cos(a)*(.25+burst*.35),burst*(.08+i*.21),Math.sin(a)*(.25+burst*.35));
+      }else if(f.kind==='ALCHEMY_SWIFT'){
+        m.position.set(Math.cos(a)*(.4+burst*.20),burst*(.07+i*.14),Math.sin(a)*(.4+burst*.20));
+        m.rotation.y=a;
+      }else if(f.kind==='ALCHEMY_BREATH'){
+        m.position.set(Math.cos(a)*(.25+burst*.24),burst*(.07+i*.18),Math.sin(a)*(.25+burst*.24));
+        m.scaling.setAll(.65+burst*.60);
       }else if(f.kind==='ALCHEMY_SHELL'){
         m.position.set(Math.cos(a)*(.65-burst*.09),.38+Math.sin(a*2)*.16,
           Math.sin(a)*(.65-burst*.09));m.rotation.y=a;
