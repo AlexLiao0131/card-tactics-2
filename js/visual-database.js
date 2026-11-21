@@ -1,9 +1,9 @@
 export const VISUALS={
   characters:{
     alchemist_default:{
-      portrait:"assets/images/cards/heroes/alchemist.jpg",
-      card:"assets/images/cards/heroes/alchemist.jpg",
-      tactical:"assets/images/cards/heroes/alchemist.jpg",
+      portrait:"assets/images/cards/heroes/alchemist.png",
+      card:"assets/images/cards/heroes/alchemist.png",
+      tactical:"assets/images/cards/heroes/alchemist.png",
       expressions:{},
       battle:{kind:"FIGURE",baseFacing:"E",height:1.69,
         figure:{style:"TRAVEL_ALCHEMIST",longHair:true,braid:false,
@@ -911,7 +911,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
-    alchemist:"alchemist.jpg",
+    alchemist:"alchemist.png",
     avreshi:"avreshi.png",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",
@@ -937,3 +937,26 @@ export const VisualDatabase=(()=>{
 
 globalThis.VISUALS=VISUALS;
 globalThis.VisualDatabase=VisualDatabase;
+
+// GitHub Pages resolves filename case exactly. Artwork authoring accepts either
+// alchemist.png or alchemist.PNG without duplicating the real card/HUD image.
+// Only the extension differs; no JPG or duplicate permanent asset is produced.
+// Retry one failed request before existing <img> missing-art handlers run.
+function installAlchemistPngCaseFallback(){
+  if(typeof document==="undefined"||typeof document.addEventListener!=="function")return;
+  document.addEventListener("error",event=>{
+    const image=event.target;
+    if(image?.tagName!=="IMG")return;
+    const requested=image.src;
+    if(!requested)return;
+    let next;
+    try{next=new URL(requested,document.baseURI);}catch(_error){return;}
+    if(!/\/assets\/images\/cards\/heroes\/alchemist\.png$/i.test(next.pathname)||
+       !next.pathname.endsWith(".png"))return;
+    next.pathname=next.pathname.slice(0,-4)+".PNG";
+    image.src=next.href;
+    event.stopImmediatePropagation?.();
+  },true);
+}
+installAlchemistPngCaseFallback();
+
