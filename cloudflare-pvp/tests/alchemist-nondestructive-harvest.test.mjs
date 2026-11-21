@@ -24,7 +24,7 @@ test('non-destructive plant gathering: one source in entire battle, no world dam
  assert.deepEqual(collect(m,u),[]);assert.deepEqual(collect(m,other),[]);
  assert.equal(ResourceEngine.materialCount(other,'HERB'),0);
 });
-test('real route only, legal adjacent rock but not across cliff / wall',()=>{
+test('legal adjacent boulder, exposed cliff strata but not cliff-top boulder or wall',()=>{
   const rock={id:'ore1',type:'BOULDER',x:1,y:0,blocksMovement:true,durability:90};
   const m=mapWith([rock]);const u=unit();
   assert.equal(collect(m,u).length,1);
@@ -32,7 +32,9 @@ test('real route only, legal adjacent rock but not across cliff / wall',()=>{
   assert.equal(rock.durability,90);
   assert.deepEqual(collect(m,u),[]);
   const cliff=mapWith([{...rock}], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'HIGH_GROUND',elevation:4}]);
-  assert.deepEqual(collect(cliff,unit()),[]);
+  const cliffHarvest=collect(cliff,unit());
+  assert.deepEqual(cliffHarvest.map(found=>found.sourceId),['BEDROCK:1,0']);
+  assert.ok(!Object.hasOwn(cliff.alchemyHarvestedSources,'OBJECT:ore1'));
   const wall=mapWith([{...rock}], [{x:0,y:0,terrain:'PLAIN',elevation:0},{x:1,y:0,terrain:'WALL',elevation:0}]);
   assert.deepEqual(collect(wall,unit()),[]);
 });

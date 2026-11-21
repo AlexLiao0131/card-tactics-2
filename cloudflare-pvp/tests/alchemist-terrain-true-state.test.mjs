@@ -51,7 +51,7 @@ test('blocked construction never consumes rune',()=>{
 test('wall and cliff change real collision terrain and elevations',()=>{
  const a=battle('WALL');assert.equal(a.controller.executeMapSkill(a.caster,a.aim,a.skill),true);assert.equal(a.at(3,3).terrain,'WALL');
  const b=battle('CLIFF');assert.equal(b.controller.executeMapSkill(b.caster,b.aim,b.skill),true);
- for(const x of [2,3,4]){assert.equal(b.at(x,3).terrain,'HIGH_GROUND');assert.equal(b.at(x,3).elevation,2);}
+ for(const x of [2,3,4]){assert.equal(b.at(x,3).terrain,'HIGH_GROUND');assert.equal(b.at(x,3).elevation,2);assert.equal(b.at(x,3).alchemyTransmuted,true);}
 });
 test('ice uses real water column; flood adds water; shatter destroys a real rock',()=>{
  const a=battle('FREEZE');assert.equal(a.controller.executeMapSkill(a.caster,a.aim,a.skill),true);assert.ok(a.at(3,3).iceThickness>0);assert.equal(a.at(3,3).waterDepth,1);

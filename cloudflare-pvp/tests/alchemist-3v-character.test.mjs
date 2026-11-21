@@ -4,6 +4,9 @@ import {readFileSync,existsSync} from 'node:fs';
 import {CharacterDatabase} from '../../js/character-database.js';
 import {BattleEngine} from '../../js/battle-engine.js';
 import {SkillDatabase} from '../../js/skill-database.js';
+import {LoadoutDatabase} from '../../js/loadout-database.js';
+import {ResourceEngine} from '../../js/resource-engine.js';
+import {VfxDatabase} from '../../js/vfx-database.js';
 import {CardDatabase} from '../../js/card-database.js';
 import {PackDatabase} from '../../js/pack-database.js';
 import {VisualDatabase} from '../../js/visual-database.js';
@@ -24,10 +27,10 @@ test('character, card, pack and visual use the same selected identity',()=>{
  assert.ok(PackDatabase.product('ALCHEMY_FIXED').cards.includes(card.id));
  const visual=VisualDatabase.characterBattle(hero.visualId);
  assert.equal(visual.kind,'FIGURE');
- assert.ok(existsSync(new URL('../../assets/images/cards/heroes/alchemist.jpg',import.meta.url)));
+ assert.ok(['alchemist.png','alchemist.PNG'].some(file=>existsSync(new URL(`../../assets/images/cards/heroes/${file}`,import.meta.url))));
 });
 test('five canonical spells provide one normal and eight infused high-quality variants each',()=>{
- const idList=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_armor','alchemy_explosion'];
+ const idList=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_hard_shell_potion','alchemy_explosion'];
  const expected=['NATURE','WATER','ICE','FIRE','THUNDER','HOLY','DARK','STONE'];
  for(const id of idList){
   const skill=SkillDatabase.get(id);
@@ -50,4 +53,37 @@ test('ultimate uses no material and exposes seven real terrain transformations',
  assert.equal(skill.alchemyCast.mode,'TERRAIN');
  assert.equal(skill.manaCost,0);assert.equal(skill.variants.length,7);
  for(const v of skill.variants){assert.ok(v.alchemyTerrain);assert.equal(v.materialCost,undefined);}
+});
+
+test('armor recipe is replaced by hard-shell potion across formal loadout and VFX routing',()=>{
+ assert.throws(()=>SkillDatabase.get('alchemy_armor'),/Unknown skill/);
+ const skill=SkillDatabase.get('alchemy_hard_shell_potion');
+ assert.equal(skill.name,'硬殼藥劑');
+ const loadout=LoadoutDatabase.get('alchemist_default');
+ assert.ok(loadout.skillIds.includes(skill.id));
+ assert.ok(!loadout.skillIds.includes('alchemy_armor'));
+ assert.equal(VfxDatabase.roleFor('arcane',skill.id),'ALCHEMY_SHELL');
+});
+test('a normal mineral can be used for either explosion or hard-shell, with one shared debit',()=>{
+ const shell=SkillDatabase.resolveVariant(SkillDatabase.get('alchemy_hard_shell_potion'),'NORMAL');
+ const blast=SkillDatabase.resolveVariant(SkillDatabase.get('alchemy_explosion'),'NORMAL');
+ assert.deepEqual(shell.materialCost,blast.materialCost);
+ const unit={materialInventory:{}};
+ assert.ok(ResourceEngine.changeMaterial(unit,{...shell.materialCost,amount:1}));
+ assert.ok(ResourceEngine.hasMaterial(unit,shell.materialCost));
+ assert.ok(ResourceEngine.hasMaterial(unit,blast.materialCost));
+ assert.ok(ResourceEngine.changeMaterial(unit,{...shell.materialCost,amount:-1}));
+ assert.equal(ResourceEngine.hasMaterial(unit,shell.materialCost),false);
+ assert.equal(ResourceEngine.hasMaterial(unit,blast.materialCost),false);
+});
+test('one high-fire mineral can make either high-fire explosion or high-fire hard-shell',()=>{
+ const shell=SkillDatabase.resolveVariant(SkillDatabase.get('alchemy_hard_shell_potion'),'HIGH_FIRE');
+ const blast=SkillDatabase.resolveVariant(SkillDatabase.get('alchemy_explosion'),'HIGH_FIRE');
+ assert.deepEqual(shell.materialCost,blast.materialCost);
+ const unit={materialInventory:{}};
+ assert.ok(ResourceEngine.changeMaterial(unit,{...shell.materialCost,amount:1}));
+ assert.ok(ResourceEngine.hasMaterial(unit,shell.materialCost));
+ assert.ok(ResourceEngine.hasMaterial(unit,blast.materialCost));
+ assert.ok(ResourceEngine.changeMaterial(unit,{...blast.materialCost,amount:-1}));
+ assert.equal(ResourceEngine.hasMaterial(unit,shell.materialCost),false);
 });

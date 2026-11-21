@@ -35,7 +35,7 @@ const makeScene=()=>({nodes:new Set(),materials:new Set(),onDisposeObservable:{a
 const snapshot={map:{id:'alchemist-test',tiles:[{x:1,y:1,elevation:0},{x:2,y:2,elevation:0},{x:3,y:2,elevation:0},{x:4,y:2,elevation:0}]},round:1,units:[{id:'alchemist-1',x:1,y:1,alive:true,effects:[]}]};
 const event=(skillId,sequence=1,rest={})=>({type:'UNIT_ANIMATION',unitId:'alchemist-1',skillId,
   x:1,y:1,targetX:3,targetY:2,sequence,...rest});
-const base=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_armor','alchemy_explosion'];
+const base=['alchemy_mana_stone','alchemy_healing_potion','alchemy_power_potion','alchemy_hard_shell_potion','alchemy_explosion'];
 const terrains=['WATER_TO_LAND','FLOOD','FREEZE','MUD','SHATTER','WALL','CLIFF'];
 const affinities=['NONE','NATURE','WATER','ICE','FIRE','THUNDER','HOLY','DARK','STONE'];
 
@@ -135,13 +135,13 @@ test('original Cassandra four-skill Babylon pipeline remains functional',()=>{
   vfx.dispose();assert.equal(scene.nodes.size,0);assert.equal(scene.materials.size,0);
 });
 
-test('mana crystal, healing, power, armor, explosion and rune-only ultimate are visually distinct',()=>{
+test('mana crystal, healing, power, shell potion, explosion and rune-only ultimate are visually distinct',()=>{
   const scene=makeScene(),vfx=new ArcaneSigilVfx(scene);
   const expected=[
     ['alchemy_mana_stone','alchemy-mana-cut-crystal','alchemy-mana-restoration-crystal'],
     ['alchemy_healing_potion','alchemy-glass-vial','alchemy-healing-cross'],
     ['alchemy_power_potion','alchemy-glass-vial','alchemy-power-arrow'],
-    ['alchemy_armor','alchemy-glass-vial','alchemy-armor-floating-plate'],
+    ['alchemy_hard_shell_potion','alchemy-glass-vial','alchemy-shell-hex-facet'],
     ['alchemy_explosion','alchemy-glass-vial','alchemy-volumetric-explosion-core'],
     ['alchemy_world_transmutation','alchemy-world-transmutation-focus','alchemy-world-synthesis-ring']
   ];
