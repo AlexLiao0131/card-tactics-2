@@ -75,6 +75,12 @@ return Object.freeze({STATE,FATIGUE_LIMIT,FATIGUE_GAIN,FATIGUE_RECOVERY_PER_TICK
 const ALCHEMY_SOURCE=Object.freeze({BUSH:'HERB',TREE:'WOOD',DEAD_TREE:'WOOD',STUMP:'WOOD',LOG:'WOOD',BOULDER:'MINERAL'});
 const ALCHEMY_BASE_AFFINITY=Object.freeze({HERB:'NATURE',WOOD:'NATURE',MINERAL:'STONE',CRYSTAL_SAND:'WATER'});
 const ALCHEMY_DIRECTIONS=Object.freeze([[0,0],[1,0],[-1,0],[0,1],[0,-1]]);
+// Only canonical divine shields are holy. Generic SHIELD, water shield, and
+// ordinary defensive buffs must never create a fictional HOLY affinity.
+const ALCHEMY_HOLY_SHIELDS=new Set(['HOLY_SHIELD','SAINT_OVERHEAL_SHIELD',
+  'ALCH_ARMOR_HOLY','ALCH_POWER_HOLY']);
+const ALCHEMY_AFFINITY_NAMES=Object.freeze({NONE:'普通',NATURE:'自然',WATER:'水',
+  ICE:'冰',FIRE:'火',THUNDER:'雷',HOLY:'神聖',DARK:'闇',STONE:'岩'});
 function alchemyRoll(map,sourceId){
   let h=2166136261>>>0;
   for(const ch of `${map?.seed??map?.id??'FIELD'}:ALCHEMY:${sourceId}:QUALITY`){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}
@@ -82,11 +88,30 @@ function alchemyRoll(map,sourceId){
 }
 function harvestCandidates(map,x,y){
   if(!Array.isArray(map?.tiles)||!Number.isSafeInteger(x)||!Number.isSafeInteger(y))return[];
-  const origin=map.tiles.find(t=>t.x===x&&t.y===y);
+  // A per-query index reads live terrain. No stale world cache survives a
+  // terrain-restructuring spell or a river changing course.
+  const by=new Map(map.tiles.map(t=>[`${t.x},${t.y}`,t]));
+  const at=(tx,ty)=>by.get(`${tx},${ty}`);
+  const origin=at(x,y);
   if(!origin)return[];
   const out=[],seen=new Set();
+  const eligibleBed=t=>t?.river===true||t?.hydrologyNaturalChannelPool===true;
+  const bankDeposit=t=>{
+    if(!t||eligibleBed(t)||t.terrain==='WALL'||t.captureZone||t.core)return false;
+    // Real authored river-channel bank, not arbitrary standing rainwater.
+    // Each bank tile is a separate, naturally deposited sample source.
+    return ALCHEMY_DIRECTIONS.slice(1).some(([dx,dy])=>{
+      const bed=at(t.x+dx,t.y+dy);
+      return bed?.river===true&&bed.terrain!=='WALL'&&
+        Math.abs(Number(t.elevation||0)-Number(bed.elevation||0))<=1.0001;
+    });
+  };
+  const add=(id,kind,t,sourceType)=>{
+    if(seen.has(id))return;
+    seen.add(id);out.push({id,kind,x:t.x,y:t.y,sourceType});
+  };
   for(const [dx,dy] of ALCHEMY_DIRECTIONS){
-    const sx=x+dx,sy=y+dy,neighbor=map.tiles.find(t=>t.x===sx&&t.y===sy);
+    const sx=x+dx,sy=y+dy,neighbor=at(sx,sy);
     if(!neighbor)continue;
     // Only truly adjacent solid objects may be sampled. Do not collect across
     // a wall, a cliff or an illegal movement-height difference.
@@ -102,20 +127,19 @@ function harvestCandidates(map,x,y){
       // blocksMovement===true here silently discarded almost all resources.
       // The wall/cliff gate above still disallows harvesting across obstacles.
       if(!adjacent&&o.blocksMovement===true)continue;
-      const id=`OBJECT:${o.id}`;
-      if(seen.has(id))continue;seen.add(id);out.push({id,kind,x:sx,y:sy});
+      add(`OBJECT:${o.id}`,kind,neighbor,'OBJECT');
     }
-    // River sediment is sampled from the bed while standing on a legal
-    // neighboring bank or ford. Deep water need not be occupied by the unit;
-    // the same adjacency cliff/wall check above protects unreachable beds.
-    if(neighbor.river===true){
-      const id=`RIVERBED:${sx},${sy}`;
-      if(!seen.has(id)){seen.add(id);out.push({id,kind:'CRYSTAL_SAND',x:sx,y:sy});}
-    }
+    // Actual channel beds AND authored natural channel pools contain sediment.
+    // The latter are geological river pockets even though river===false.
+    if(eligibleBed(neighbor))add(`RIVERBED:${sx},${sy}`,'CRYSTAL_SAND',neighbor,'RIVERBED');
+    // Shore-side alluvium is an independent physical bank deposit. It is not
+    // a fabricated object or a new map spawn, and is available only next to
+    // an authored river with a legal, non-cliff physical bank connection.
+    if(bankDeposit(neighbor))add(`RIVERBANK:${sx},${sy}`,'CRYSTAL_SAND',neighbor,'RIVERBANK');
   }
   return out;
 }
-function alchemyAffinity(map,environmentState,source){
+function alchemyAffinity(map,environmentState,source,units=[]){
   const tile=map?.tiles?.find(t=>t.x===source.x&&t.y===source.y),
     effects=globalThis.EnvironmentEngine?.effectAt?.(environmentState,source.x,source.y)||[];
   const recognized=[];
@@ -129,11 +153,24 @@ function alchemyAffinity(map,environmentState,source){
   const marked=recognized.find(record=>record.affinity===mark?.affinity);
   if(marked)return mark.affinity;
   if(recognized.length)return recognized.sort((a,b)=>b.order-a.order||a.affinity.localeCompare(b.affinity))[0].affinity;
+  // Unit shields exist in EffectEngine's authoritative unit effects, not in
+  // EnvironmentEngine's tile effects. Only an ACTIVE real holy shield in
+  // contact with the source can impart divine affinity to a rare extraction.
+  // No cast-time reward and no new 30% roll is created by the shield.
+  if((units||[]).some(u=>u?.alive&&
+    Math.abs(Number(u.x)-source.x)+Math.abs(Number(u.y)-source.y)<=1&&
+    (u.effects||[]).some(e=>{
+      const id=String(e?.id||'').toUpperCase();
+      if(!ALCHEMY_HOLY_SHIELDS.has(id)||e.classification==='NEGATIVE'||
+        (e.remaining!=null&&Number(e.remaining)<=0))return false;
+      return id==='HOLY_SHIELD'||
+        (e.type==='SHIELD'&&Number(e.shieldHp||0)>0);
+    })))return'HOLY';
   if(Number(tile?.iceThickness||0)>0||Number(tile?.snowDepth||0)>0)return'ICE';
   if(Number(tile?.waterDepth||0)>0)return'WATER';
   return ALCHEMY_BASE_AFFINITY[source.kind]||'NATURE';
 }
-function collectAlchemyOnStep({map,environmentState,unit,x,y,kind='UNIT',round=null}={}){
+function collectAlchemyOnStep({map,environmentState,unit,units=[],x,y,kind='UNIT',round=null}={}){
   if(!map||!unit?.alive||unit.character?.alchemyHarvest!==true||kind!=='UNIT'||
      unit.x!==x||unit.y!==y||!globalThis.ResourceEngine?.changeMaterial||
      globalThis.VerticalMobilityEngine?.isAirborne?.(unit)||
@@ -148,7 +185,8 @@ function collectAlchemyOnStep({map,environmentState,unit,x,y,kind='UNIT',round=n
   for(const source of harvestCandidates(map,x,y)){
     if(Object.hasOwn(ledger,source.id))continue;
     const quality=alchemyRoll(map,source.id)<.30,
-      affinity=quality?alchemyAffinity(map,environmentState,source):'NONE',
+      potentialAffinity=alchemyAffinity(map,environmentState,source,units),
+      affinity=quality?potentialAffinity:'NONE',
       normal={kind:source.kind,quality:'NORMAL',affinity:'NONE',amount:1},
       rare={kind:source.kind,quality:'HIGH',affinity,amount:1};
     if(!ResourceEngine.changeMaterial(unit,normal))continue;
@@ -156,7 +194,7 @@ function collectAlchemyOnStep({map,environmentState,unit,x,y,kind='UNIT',round=n
       ResourceEngine.changeMaterial(unit,{...normal,amount:-1});continue;
     }
     ledger[source.id]={unitId:unit.id,kind:source.kind,quality:quality?'HIGH':'NORMAL',affinity};
-    const entry={sourceId:source.id,kind:source.kind,quality:quality?'HIGH':'NORMAL',affinity};
+    const entry={sourceId:source.id,sourceType:source.sourceType,kind:source.kind,quality:quality?'HIGH':'NORMAL',affinity,potentialAffinity};
     if(Array.isArray(unit._alchemyHarvestUndo))unit._alchemyHarvestUndo.push(entry);
     events.push({type:'ALCHEMY_MATERIAL_COLLECTED',unitId:unit.id,x:source.x,y:source.y,...entry});
   }
