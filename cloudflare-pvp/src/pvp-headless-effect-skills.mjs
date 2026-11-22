@@ -72,6 +72,30 @@ export function isCanonicalSelfChannelSkill(skill){
     !skill.statusEffects?.length && !skill.variants?.length;
 }
 
+/** Shared self-centered dance skills use the same TacticalActionController as
+ * the browser. PvP owns no alternative aura radius, pursuit or killing rules.
+ * The shape whitelist is structural, not a character-ID bypass. */
+export function isCanonicalSelfDanceSkill(skill){
+  if(!skill||skill.category!=='MAGIC'||skill.target!=='SELF'||
+     (skill.targetType&&skill.targetType!=='SINGLE')||
+     Number(skill.range?.min)!==0||Number(skill.range?.max)!==0||
+     skill.channel||skill.effects||skill.relationEffects||skill.utilityAction||
+     skill.sanctuary||skill.smokeField||skill.areaDamage||skill.bloodBurst||
+     skill.bloodShadow||skill.approach||skill.moveToTarget||skill.terrainTargeting||
+     skill.postEffects?.length||skill.afterUseEffects?.length||
+     skill.statusEffects?.length||skill.variants?.length)return false;
+  const aura=skill.danceAura,death=skill.deathDance;
+  if(!!aura===!!death)return false;
+  if(aura)return !skill.weapon&&!skill.attackType&&Number(skill.power||0)===0&&
+    ['INSPIRE','PURIFY'].includes(aura.kind)&&aura.radiusResource==='reputation'&&
+    ((aura.kind==='INSPIRE'&&aura.effect?.type==='BUFF'&&
+      aura.effect?.classification==='POSITIVE')||
+     (aura.kind==='PURIFY'&&aura.effect?.type==='DISPEL'));
+  return !!skill.weapon&&Number(skill.power)>0&&death.radiusResource==='reputation'&&
+    death.targetOrder==='LOWEST_CURRENT_HP'&&death.continueOn==='KILL'&&
+    death.strike?.attackType==='SLASH'&&Number(death.strike?.power)>0;
+}
+
 export function isCanonicalSubmergeSkill(skill){
   return !!skill&&skill.category==='ATTACK'&&skill.target==='ENEMY'&&
     (!skill.targetType||skill.targetType==='SINGLE')&&skill.power===0&&
@@ -94,7 +118,7 @@ export function isCanonicalAllySwapSkill(skill){
 export function canonicalDirectEffectSkillOptions(unit,engine){
   if(!unit?.alive)return[];
   const ids=engine.effect.skillIds?.(unit)||unit.character?.skills||[];
-  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill)||isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill));
+  return SkillDatabase.list(ids).filter(skill=>isCanonicalDirectEffectSkill(skill)||isCanonicalSelfChannelSkill(skill)||isCanonicalSelfDanceSkill(skill)||isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill));
 }
 
 export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,checkMatchEnd){
@@ -110,6 +134,9 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
   if(!target)fail('EFFECT_TARGET_NOT_AVAILABLE');
   const skill=canonicalDirectEffectSkillOptions(caster,engine).find(s=>s.id===action.skillId);
   if(!skill)fail('FULL_SKILL_ORCHESTRATION_REQUIRED');
+  const selfDance=isCanonicalSelfDanceSkill(skill);
+  // Reject foreign target IDs BEFORE automatic approach commits any movement.
+  if(selfDance&&caster.id!==target.id)fail('SELF_DANCE_TARGET_REQUIRED');
   if(skill.dispelChoice==='POSITIVE'){
     if(!exact(action,['type','unitId','targetId','skillId','buffId'])||
        typeof action.buffId!=='string'||!action.buffId||
@@ -129,7 +156,8 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     return {accepted:true,state:game,movement:approach.movement,castInterrupted:true};
   }
   const hpBefore=target.hp,manaBefore=caster.mana;
-  const environment=(isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill))?createCanonicalEnvironmentController(game,hooks):null;
+  const environment=(isCanonicalSubmergeSkill(skill)||isCanonicalAllySwapSkill(skill)||selfDance)?
+    createCanonicalEnvironmentController(game,hooks):null;
   const actionController=globalThis.TacticalActionController.create({
     TEAM:{PLAYER:'P',ENEMY:'E'},
     actionState:()=>({map:game.battlefield.map,units:game.units,
@@ -140,7 +168,11 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
     checkMatchEnd:checkMatchEnd||(()=>false),
     maybeAutoEndPlayerTurn:()=>false,
     applyForcedMovement:environment?.applyForcedMovement,
+    traverseUnitPath:environment?.traverseUnitPath,
     enterTile:environment?.enterTile,
+    handleDefeated:hooks.handleDefeated,
+    logBattleAction:hooks.logBattleAction,
+    logPostEffect:hooks.logPostEffect,
     clearEngagement:()=>{},setSelectedSkill:()=>{},
     setSelectedSkillVariant:()=>{},setMode:()=>{},render:()=>{},
     pushLog:hooks.pushLog
@@ -149,6 +181,8 @@ export function castCanonicalDirectEffectSkill(game,action,seat,engine,hooks,che
         ?actionController.executeUtilitySkill(caster,target,skill)
         :isCanonicalSelfChannelSkill(skill)
           ?(caster.id===target.id&&actionController.executeChannelSkill(caster,skill))
+          :selfDance
+          ?actionController.prepareAttack(caster,caster,skill)
           :actionController.executeEffectSkill(caster,target,skill,
               skill.dispelChoice==='POSITIVE'?{buffId:action.buffId}:{}))!==true)
     fail('OFFICIAL_EFFECT_SKILL_REJECTED');

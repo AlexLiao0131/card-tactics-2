@@ -195,8 +195,13 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
   const environment=createCanonicalEnvironmentController(game,callbacks);
   const enchantedImpact=createOfficialEnchantmentController(game,engine,callbacks,checkMatchEnd,attacker);
   const results=[];
+  // Preserve the original partner when the real contact is a valid rear return.
+  const contactSkill=skill?.danceSequence?{...skill,
+    danceReturn:TacticalEngine.relativeArc(defender,attacker)==='BACK'&&
+      attacker._dancePartnerId===defender.id}:skill;
   const outcome=engine.battleResolution.resolve({map:game.battlefield.map,
-    units:game.units,initiator:attacker,target:defender,skill,actions:[],
+    units:game.units,environmentState:game.environmentState,
+    initiator:attacker,target:defender,skill:contactSkill,actions:[],
     reaction,interception},{
     canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
     consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),
