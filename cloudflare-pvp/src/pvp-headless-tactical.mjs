@@ -3,6 +3,7 @@ import {UnitTraitEngine} from '../../js/unit-trait-engine.js';
 import {BattlefieldFieldEngine} from '../../js/battlefield-field-engine.js';
 import {BattleRoundRuleEngine} from '../../js/battle-round-rule-engine.js';
 import {NeutralActorEngine} from '../../js/neutral-actor-engine.js';
+import {MonsterDatabase,EncounterEngine} from '../../js/monster-database.js';
 import {chooseAutonomousBattleReaction} from '../../js/battle-reaction-decision-engine.js';
 /**
  * Headless battle command integration under development. NOT DEPLOYED.
@@ -123,10 +124,11 @@ function serverCallbacks(game,engine){
     const spawned=action=>{
       const requested=String(action.team||'ENEMY').toUpperCase();
       const team=requested==='PLAYER'?'P':requested==='NEUTRAL'?'N':'E';
-      // A neutral character needs its original autonomous actor turn before
-      // committing a room that cannot legally advance to the next round.
-      if(team==='N')fail('CANONICAL_NEUTRAL_ACTOR_TURN_REQUIRED');
-      if(game.units.some(u=>u.alive&&u.x===action.x&&u.y===action.y))return null;
+      // Unknown neutral units are still forbidden. Registered monsters use
+      // the existing NeutralActorEngine and official BattleResolution.
+      const monster=MonsterDatabase.forCharacter(action.characterId);
+      if(team==='N'&&!monster)fail('CANONICAL_NEUTRAL_ACTOR_TURN_REQUIRED');
+      if(TacticalEngine.occupantAt(game.units,action.x,action.y))return null;
       const character=globalThis.CHARACTERS?.[action.characterId];
       if(!character)return null;
       const prefix=team==='P'?'p':team==='N'?'n':'e';
@@ -136,6 +138,17 @@ function serverCallbacks(game,engine){
         characterId:action.characterId,x:action.x,y:action.y,
         map:game.battlefield.map});
       if(!created)return null;
+      if(team==='N'){
+        created.monsterId=monster.id;
+        created.footprint={...monster.footprint};
+        const cellOk=TacticalEngine.occupiedCells(created).every(cell=>{
+          const tile=TacticalEngine.tile(game.battlefield.map,cell.x,cell.y);
+          return tile&&TacticalEngine.canOccupyTerrain(created,tile)&&
+            !TacticalEngine.isBlockedByObject(game.battlefield.map,cell.x,cell.y,created)&&
+            !TacticalEngine.occupantAt(game.units,cell.x,cell.y);
+        });
+        if(!cellOk)return null;
+      }
       const {_runtimeMap,...unit}=created;
       game.units.push(unit);
       engine.unitRuntime.syncLiveRoster(game.units);
@@ -193,6 +206,24 @@ export function beginCanonicalPlayerCardPhase(game){
   game.stageState??=StageEngine.create(stage.scriptId,{victory:stage.victory,defeat:stage.defeat});
   return withCanonicalEngines(game,engine=>{
     const hooks=serverCallbacks(game,engine);
+    // One authoritative ecological setup, matching BattleSetupEngine's
+    // EncounterEngine.spawnInitial in the local game. Do NOT persist the
+    // EncounterEngine runtime closure into the Durable Object state.
+    // Initial marine monsters require a complete legal four-cell water patch.
+    const ecology=EncounterEngine.create(stage.encounters||[],{
+      map:game.battlefield.map,units:game.units});
+    EncounterEngine.spawnInitial(ecology,{
+      map:game.battlefield.map,units:game.units,
+      createUnit:(id,team,characterId,x,y)=>{
+        const created=engine.unitRuntime.create({id,team,characterId,x,y,
+          map:game.battlefield.map});
+        if(!created)return null;
+        const {_runtimeMap,...persistent}=created;
+        return persistent;
+      },
+      pushLog:hooks.pushLog
+    });
+    engine.unitRuntime.syncLiveRoster(game.units);
     hooks.stageEvent({type:'ROUND_START',round:game.round,team:OWNER[0]});
     CardPhaseEngine.begin(game.cards[0]);
     return game;
@@ -493,6 +524,8 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
     if(action?.type==='END_TACTICAL_PHASE'){
       if(game.phase!==TACTICAL_PHASE[seat]||!sameKeys(action,['type']))fail('INVALID_END_TACTICAL');
       if(seat===1){
+        // Registered wild monsters and berserk actors share the canonical
+        // autonomous neutral turn at the end of the complete round.
         // Berserk is the NEUTRAL action of the current complete round. It must
         // run AFTER player/enemy tactical actions, not during the following
         // player's CARD phase. The private server RNG is the only chooser.
@@ -536,8 +569,8 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
                 canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
                 consumeSkill:(u,s)=>engine.unitRuntime.consumeSkill(u,s),
                 onDefeated:hooks.handleDefeated});
-            hooks.pushLog(`${neutral.character.name} 高維失控，敵我不分地發動攻擊。`,'BATTLE');
-          }else hooks.pushLog(`${neutral.character.name} 高維失控，但沒有合法可攻擊目標。`,'BATTLE');
+            hooks.pushLog(neutral.monsterId?`${neutral.character.name} 以觸手發動攻擊。`:`${neutral.character.name} 高維失控，敵我不分地發動攻擊。`,'BATTLE');
+          }else hooks.pushLog(neutral.monsterId?`${neutral.character.name} 本回合沒有合法攻擊目標。`:`${neutral.character.name} 高維失控，但沒有合法可攻擊目標。`,'BATTLE');
           NeutralActorEngine.markActed(neutral,game.round);neutral.moved=true;neutral.acted=true;neutral.waited=true;
           if(matchObjectiveAuthority(game,hooks).checkMatchEnd())return{accepted:true,state:game};
         }

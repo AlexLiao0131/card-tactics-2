@@ -6,6 +6,7 @@ import {beginPlayerRoundSequence,tickRoundStatusEffects} from '../../js/battle-r
  * and cross-round presentation/gameplay events share the same coordinator.
  */
 import {CardPhaseEngine} from '../../js/card-phase-engine.js';
+import {MonsterDatabase} from '../../js/monster-database.js';
 import {StageDatabase} from '../../js/stage-database.js';
 import {EnvironmentEngine} from '../../js/environment-engine.js';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
@@ -19,11 +20,12 @@ export function advanceCanonicalRound(game,engine,callbacks,checkMatchEnd,{onRou
     fail('NOT_END_OF_ROUND');
   // An authorized berserk Livia is a cross-round neutral participant; its
   // original team is preserved and the shared duality state owns recovery.
-  // Ordinary unknown/monster neutral actors still require their own turn
-  // coordinator and must never silently pass this headless guard.
+  // Registered monsters may proceed only after the one authoritative neutral
+  // action for this round. Unregistered/forged N actors remain rejected.
   if(game.units.some(u=>u.alive&&u.team==='N'&&
      !(u.controlOverride?.type==='BERSERK'&&
-       (u.controlOverride.originalTeam==='P'||u.controlOverride.originalTeam==='E'))))
+       (u.controlOverride.originalTeam==='P'||u.controlOverride.originalTeam==='E'))&&
+     !(MonsterDatabase.get(u.monsterId)&&u.neutralActionRound===game.round)))
     fail('UNSUPPORTED_CROSS_ROUND_MECHANIC');
   CardPhaseEngine.resolveTurnEndEffects(game.cards[1],{units:game.units,team:'E'});
   const fields=createCanonicalAreaFields(game,engine,callbacks);
