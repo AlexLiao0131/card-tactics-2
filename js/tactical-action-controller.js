@@ -2137,7 +2137,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(!moved?.completed||!attacker.alive)break;}
         if(Math.abs(attacker.x-step.target.x)+Math.abs(attacker.y-step.target.y)!==1)break;
         const strike={...skill,id:skill.id,target:"ENEMY",targetType:"SINGLE",range:{min:1,max:1},
-          ...skill.deathDance.strike,deathDance:null,manaCost:0};
+          ...skill.deathDance.strike,deathDance:null,manaCost:0,
+          deathDanceStep:strikes+1};
         const engagement=BattleResolution.resolve({map,units,environmentState,initiator:attacker,
           target:step.target,skill:strike,actions:[],reaction:null},
           {canUseSkill:()=>true,consumeSkill:()=>({cost:0,resources:{}}),

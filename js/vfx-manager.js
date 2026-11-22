@@ -157,7 +157,7 @@ class DanceSongVfx{
       const now=performance.now(),from=this.pos(snapshot,e.x,e.y,1.1);
       const tx=Number.isFinite(e.targetX)?e.targetX:e.x,ty=Number.isFinite(e.targetY)?e.targetY:e.y;
       const to=this.pos(snapshot,tx,ty,1.15);
-      let mesh,duration=850;
+      let mesh,duration=850,bladeRoot=null;
       if(role==='CHARM'&&Number.isFinite(e.targetX)&&Number.isFinite(e.targetY)){
         mesh=BABYLON.MeshBuilder.CreatePlane('dancer-charm-heart',{size:.85},this.scene);
         mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;mesh.material=this.heartMaterial();
@@ -168,10 +168,35 @@ class DanceSongVfx{
           thickness:role==='INSPIRE'||role==='PURIFY'?.065:.10,tessellation:32},this.scene);
         mesh.material=this.mat(role,role==='HYMN'?[1,.90,.45]:role==='OCEAN'?[.20,.69,.94]:
           role==='PURIFY'?[.94,.85,.61]:role==='CHARM'?[1,.31,.65]:[.88,.38,.75]);
-        mesh.position.copyFrom(role==='SWORD'||role==='DEATH'?to:from);duration=750;
+        mesh.position.copyFrom(role==='SWORD'||role==='DEATH'?to:from);
+        duration=Math.max(280,Math.min(1100,Number(e.duration)||750));
+        if(role==='SWORD'||role==='DEATH'){
+          // A visible sweeping pair of blades for EACH authoritative hit.
+          // UnitRenderer owns the actual step/position and its articulated pose;
+          // these meshes contain no collision or gameplay-side movement.
+          bladeRoot=new BABYLON.TransformNode('dancer-blade-arcs-'+e.sequence,this.scene);
+          bladeRoot.position.copyFrom(to);
+          const step=Number(e.danceStep??e.deathDanceStep??1);
+          const pink=this.mat('dancer-blade-pink',[1,.36,.72]);
+          const ivory=this.mat('dancer-blade-ivory',[1,.89,.97]);
+          for(let k=0;k<2;k++){
+            const startAngle=(step%3)*Math.PI*.55+k*.44;
+            const points=Array.from({length:13},(_,i)=>{
+              const theta=startAngle+(i/12)*Math.PI*1.30;
+              const radius=k===0?.98:.75;
+              return new BABYLON.Vector3(Math.cos(theta)*radius,
+                .36+Math.sin(i/12*Math.PI)*.64+(k*.19),Math.sin(theta)*radius);
+            });
+            const trail=BABYLON.MeshBuilder.CreateTube('dancer-cut-'+e.sequence+'-'+k,
+              {path:points,radius:k===0?.045:.026,tessellation:5,updatable:false},this.scene);
+            trail.parent=bladeRoot;trail.material=k===0?pink:ivory;
+            trail.isPickable=false;trail.metadata={castShadow:false};
+          }
+          duration=Math.min(duration,620);
+        }
       }
       mesh.isPickable=false;mesh.metadata={castShadow:false};
-      this.active.push({mesh,from,to,start:now,duration,role});
+      this.active.push({mesh,from,to,start:now,duration,role,bladeRoot});
     }
   }
   updateFrame(now=performance.now()){
@@ -185,13 +210,20 @@ class DanceSongVfx{
         fx.mesh.rotation.x=Math.PI/2;
         fx.mesh.rotation.z+=.03;
         fx.mesh.scaling.setAll(.75+t*.55);
+        if(fx.bladeRoot){
+          fx.bladeRoot.rotation.y=t*Math.PI*1.45;
+          fx.bladeRoot.scaling.setAll(.65+t*.48);
+          // Only blade trails fade; they are not gameplay damage indicators.
+          for(const part of fx.bladeRoot.getChildMeshes())part.visibility=1-t*.95;
+        }
       }
       fx.mesh.visibility=1-t*.9;
-      if(t>=1){fx.mesh.dispose();this.active.splice(this.active.indexOf(fx),1);}
+      if(t>=1){fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);
+        this.active.splice(this.active.indexOf(fx),1);}
     }
   }
   diagnostics(){return{active:this.active.length};}
-  dispose(){for(const fx of this.active)fx.mesh.dispose();this.active=[];
+  dispose(){for(const fx of this.active){fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);}this.active=[];
     for(const material of Object.values(this.materials))material.dispose();this.heartTexture?.dispose();
     this.materials={};this.recent.clear();}
 }

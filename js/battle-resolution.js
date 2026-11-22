@@ -699,7 +699,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const berserkMultiplier=action.actor?.controlOverride?.type==='BERSERK'?
           (globalThis.UnitTraitEngine?.berserkDamageMultiplier?.(action.actor)||1):1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
-        const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
+        const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,
+          danceStep:a.danceStep??(skill.danceSequence?1:null),deathDanceStep:skill.deathDanceStep??null,
+          misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
           duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,blinkCombo:blinkCombo,
           backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
