@@ -953,25 +953,32 @@ export const VisualDatabase=(()=>{
 globalThis.VISUALS=VISUALS;
 globalThis.VisualDatabase=VisualDatabase;
 
-// GitHub Pages resolves filename case exactly. Artwork authoring accepts either
-// alchemist.png or alchemist.PNG without duplicating the real card/HUD image.
-// Only the extension differs; no JPG or duplicate permanent asset is produced.
-// Retry one failed request before existing <img> missing-art handlers run.
-function installAlchemistPngCaseFallback(){
+// GitHub Pages is case-sensitive, while artwork may arrive as .png or .PNG.
+// The SAME entry in VisualDatabase serves card faces, previews and unit HUDs;
+// one shared failed-IMG retry handles both spellings for every local game asset.
+// Do not duplicate image files or change any authoritative visual path.
+function installGamePngCaseFallback(){
   if(typeof document==="undefined"||typeof document.addEventListener!=="function")return;
   document.addEventListener("error",event=>{
     const image=event.target;
-    if(image?.tagName!=="IMG")return;
-    const requested=image.src;
-    if(!requested)return;
-    let next;
-    try{next=new URL(requested,document.baseURI);}catch(_error){return;}
-    if(!/\/assets\/images\/cards\/heroes\/alchemist\.png$/i.test(next.pathname)||
-       !next.pathname.endsWith(".png"))return;
-    next.pathname=next.pathname.slice(0,-4)+".PNG";
-    image.src=next.href;
+    if(image?.tagName!=="IMG"||!image.src)return;
+    let requested;
+    try{requested=new URL(image.src,document.baseURI);}catch(_error){return;}
+    if(requested.origin!==new URL(document.baseURI).origin||
+       !requested.pathname.split("/").includes("assets"))return;
+    const extension=requested.pathname.slice(-4);
+    if(extension!==".png"&&extension!==".PNG")return;
+    // One alternate attempt per picture/path, including if its IMG node is
+    // recycled later for a different character. Never oscillate on 404/403.
+    const key=`${requested.origin}${requested.pathname.slice(0,-4)}${requested.search}`;
+    if(image.dataset.ct2PngCaseTried===key)return;
+    image.dataset.ct2PngCaseTried=key;
+    requested.pathname=requested.pathname.slice(0,-4)+
+      (extension===".png"?".PNG":".png");
+    image.src=requested.href;
+    // Do not let card/HUD missing-art handlers hide the first retry.
     event.stopImmediatePropagation?.();
   },true);
 }
-installAlchemistPngCaseFallback();
+installGamePngCaseFallback();
 
