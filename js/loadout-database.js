@@ -1,4 +1,8 @@
 export const LOADOUTS={
+  safiya_default:{id:"safiya_default",characterId:"safiya",armorId:"livia_light_armor",
+    weaponIds:{sword:"imperial_sword"},equipmentIds:[],
+    skillIds:["safiya_sword_attack","safiya_sword_dance","safiya_enchantment_dance",
+      "safiya_inspiring_dance","safiya_purifying_dance","safiya_dance_of_death"]},
   alchemist_default:{id:'alchemist_default',characterId:'alchemist',armorId:'mage_cloth',
     weaponIds:{staff:'imperial_staff'},skillIds:[
       'alchemist_staff_strike','alchemy_mana_stone','alchemy_healing_potion',
@@ -42,9 +46,9 @@ export const LOADOUTS={
 
   seraphina_default:{id:"seraphina_default",characterId:"seraphina",armorId:"livia_light_armor",weaponIds:{rapier:"seraphina_rapier"},skillIds:["seraphina_rending_claw","seraphina_blood_drain","seraphina_blood_burst","seraphina_regeneration"]},
   water_lurker_default:{id:"water_lurker_default",characterId:"water_lurker",armorId:"natural_hide",weaponIds:{claw:"forest_claw"},skillIds:["water_tentacle","claw"]},
-  nereia_default:{id:"nereia_default",characterId:"nereia",armorId:"nereia_scale_battle_suit",weaponIds:{trident:"nereia_royal_trident"},equipmentIds:[],skillIds:["nereia_trident_thrust","nereia_trident_throw","nereia_water_bullet","nereia_whirlpool","nereia_tsunami","nereia_deep_drag"]},
+  nereia_default:{id:"nereia_default",characterId:"nereia",armorId:"nereia_scale_battle_suit",weaponIds:{trident:"nereia_royal_trident"},equipmentIds:[],skillIds:["nereia_trident_thrust","nereia_trident_throw","nereia_water_bullet","nereia_whirlpool","nereia_tsunami","nereia_deep_drag","nereia_ocean_song"]},
   cat_thief_hero_default:{id:"cat_thief_hero_default",characterId:"cat_thief_hero",armorId:"beast_thief_leather",weaponIds:{daggers:"beast_dual_daggers",throwing_knife:"beast_poison_throwing_knife"},equipmentIds:[],skillIds:["cat_dual_slash","cat_backstab","cat_poison_knife","cat_smoke_bomb","cat_pickpocket","cat_hide"]},
-  angel_archer_hero_default:{id:"angel_archer_hero_default",characterId:"angel_archer_hero",armorId:"angel_light_armor",weaponIds:{bow:"angel_longbow"},equipmentIds:[],skillIds:["angel_bow_shot","angel_holy_shot","angel_heal","angel_lift_drop","angel_carry_ally","angel_holy_arrow_rain","angel_holy_wing_barrier"]},
+  angel_archer_hero_default:{id:"angel_archer_hero_default",characterId:"angel_archer_hero",armorId:"angel_light_armor",weaponIds:{bow:"angel_longbow"},equipmentIds:[],skillIds:["angel_bow_shot","angel_holy_shot","angel_heal","angel_lift_drop","angel_carry_ally","angel_holy_arrow_rain","angel_holy_wing_barrier","angel_hymn"]},
   velsa_default:{id:"velsa_default",characterId:"velsa",armorId:"mage_cloth",weaponIds:{staff:"velsa_dimension_staff"},equipmentIds:[],skillIds:["velsa_cognitive_corruption","velsa_space_fold","velsa_dimension_collapse","velsa_existence_breakdown"]}
 };
 

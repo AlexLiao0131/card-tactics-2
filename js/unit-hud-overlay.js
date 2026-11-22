@@ -293,6 +293,13 @@ export class UnitHudOverlay{
         }
         wrap.append(label,orbs);
       }else{
+        if(id==="reputation"){
+          // This gauge is HOT PINK, not the shared MP/polarity purple default.
+          const hotPink=String(resource?.color||"#EC4899");
+          fill.style.setProperty("background",hotPink,"important");
+          fill.style.setProperty("background-image","none","important");
+          fill.style.setProperty("box-shadow",`0 0 7px ${hotPink}`,"important");
+        }
         fill.style.width=`${Math.round(clamp01(value/max)*10000)/100}%`;
         track.appendChild(fill);wrap.append(label,track);
       }

@@ -1,5 +1,20 @@
 export const VISUALS={
   characters:{
+    safiya_default:{portrait:"assets/images/cards/heroes/safiya.png",
+      card:"assets/images/cards/heroes/safiya.png",tactical:"assets/images/cards/heroes/safiya.png",
+      expressions:{},battle:{kind:"FIGURE",baseFacing:"E",height:1.70,
+        figure:{style:"SWORD_DANCER",longHair:true,braid:false,skirtPanels:true,bareArms:true,
+          bareHands:true,sideSword:true,bow:false,quiver:false,neckAccessory:true,beltDetail:true,
+          colors:{skin:"#dfb4a6",hair:"#493344",hairDark:"#291c2d",shirt:"#513253",
+            tabard:"#8b66a5",pants:"#452d4f",skirt:"#9d76b2",cape:"#bfa6d5",
+            capeDark:"#5a3e67",leather:"#553e52",leatherDark:"#352337",boots:"#6b455e",
+            gold:"#dcb979",metal:"#cfaa69",accent:"#ce91cf",gem:"#9952b7",weapon:"#d7c5cf"}},
+        animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},
+          WALK:{duration:210,loop:true,procedural:"STEP"},
+          ATTACK:{duration:430,loop:false,procedural:"LUNGE"},
+          CAST:{duration:650,loop:false,procedural:"CAST"},
+          HURT:{duration:260,loop:false,procedural:"RECOIL"},
+          DEATH:{duration:700,loop:false,procedural:"FALL"}}}},
     alchemist_default:{
       portrait:"assets/images/cards/heroes/alchemist.png",
       card:"assets/images/cards/heroes/alchemist.png",
@@ -911,7 +926,7 @@ export const VisualDatabase=(()=>{
   // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
   // generated thumbnails, fallback network guesses, or second asset registry.
   const hudPortraits=Object.freeze({
-    alchemist:"alchemist.png",
+    safiya:"safiya.png",alchemist:"alchemist.png",
     avreshi:"avreshi.png",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
     reina:"reina.png",ophi:"ophi.png",colin:"colin.png",
     church_saint:"church_saint.png",church_templar_hero:"church_templar_hero.png",

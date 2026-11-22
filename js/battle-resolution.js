@@ -185,7 +185,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     // Taking an adjacent attack never cancels the target's stealth status.
     // Individual observers must succeed at probabilistic contact detection.
     if(a.role!=="INITIATOR")TacticalEngine.faceToward(a.actor,a.target);
-    if(a.skill?.bloodShadow)return resolveWithRandom(c.map,a.actor,a.target,a.skill,{forceHit:true});
+    const duelBonus=SkillDatabase.passiveList(a.target.character?.passives||[])
+      .reduce((v,p)=>Math.max(v,Number(p.duelEvasionBonus||0)),0);
+    if(duelBonus>0&&distance(a.actor,a.target)===1&&
+      (c.units||[]).filter(u=>u.alive&&u.team!==a.target.team&&distance(u,a.target)===1).length===1){
+      const accuracy=Number(a.skill?.modifiers?.accuracy||0)-duelBonus;
+      a={...a,skill:{...a.skill,modifiers:{...(a.skill?.modifiers||{}),accuracy}}};
+    }
+    if(a.skill?.bloodShadow||a.skill?.danceReturn)return resolveWithRandom(c.map,a.actor,a.target,a.skill,{forceHit:true});
     if(!isPrimaryIncomingAction(c,a))return resolveWithRandom(c.map,a.actor,a.target,a.skill);
     if(c.interception?.type==="GUARD_ALLY")return resolveDefense(c.map,a.actor,a.target,a.skill,{type:"DEFENSE",methodId:c.interception.methodId,guardInterception:true});
     const evasiveCounter=c.reaction?.type==="COUNTER"&&c.reaction.skill?.evasiveCounter===true;
@@ -266,6 +273,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       physicalCrit:base.type!=="MAGIC"&&base.crit===true,magicCrit:base.type==="MAGIC"&&base.crit===true||magicalCrit}};
   }
   function inherentMagicSource(actor,skill){
+    // Authoritative skill-supplied enchantment, e.g. a consumed Holy Hymn rhythm.
+    if(skill?.inherentMagic)return skill.inherentMagic;
     const soulPower=globalThis.UnitRuntimeEngine?.forestSoulMagicPower?.(actor,skill)||0;
     if(soulPower>0)return{element:"NATURE",power:soulPower};
     return actor?.character?.weapons?.[skill?.weapon]?.inherentMagic||null;
@@ -412,6 +421,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     const primaryRedirect=primaryFriends.length?
       primaryFriends[Math.min(primaryFriends.length-1,Math.floor(random()*primaryFriends.length))]:null;
     const queue=buildQueue(c).filter(a=>!primaryRedirect||a.role!=="COUNTER"),results=[];
+    if(c.skill?.danceSequence){
+      // The initial contact precedes the ONE counter window; future sword contacts never reopen it.
+      const primaryIndex=queue.findIndex(a=>a.role==="INITIATOR");
+      if(primaryIndex>0){const [first]=queue.splice(primaryIndex,1);queue.unshift(first);}
+    }
     // Ganfan promises an actual first sword cut BEFORE the incoming counter,
     // regardless of ordinary action-speed ordering. Other skills keep their order.
     if(c.skill?.ganfan&&c.reaction?.type==="COUNTER"){
@@ -448,10 +462,42 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     // Queue one authoritative landing for each actually executed action,
     // including a chosen or automatically generated COUNTER.
     const backsteps=[];
+    const danceMove=(actor,target,arc)=>{
+      if(!actor?.alive||!target?.alive)return false;
+      const choices=(c.map?.tiles||[]).filter(tile=>distance(tile,target)===1&&
+        TacticalEngine.relativeArc(target,tile)===arc).map(tile=>{
+          if(tile.x===actor.x&&tile.y===actor.y)return{tile,path:[]};
+          const path=TacticalEngine.pathTo(c.map,c.units,{...actor},tile.x,tile.y);
+          return path.length?{tile,path}:null;
+        }).filter(Boolean).sort((a,b)=>a.path.length-b.path.length||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+      const preferred=choices[0];if(!preferred)return false;
+      for(const tile of preferred.path){
+        if(!actor.alive||!TacticalEngine.canActiveMove(c.map,c.units,actor,tile.x,tile.y))return false;
+        const from={x:actor.x,y:actor.y,z:actor.z};actor.x=tile.x;actor.y=tile.y;
+        if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(actor,tile);
+        else actor.z=Number(tile.elevation||0);
+        globalThis.UnitAnimationEngine?.emitMove?.(actor,{from,kind:"BACKSTEP",duration:170});
+        hooks.onBackstep?.(actor,tile);
+      }
+      TacticalEngine.faceToward(actor,target);return true;
+    };
+    const enqueueDance=(index)=>{
+      if(!c.initiator.alive||!c.originalTarget.alive||!c.skill?.danceSequence||c.skill.danceReturn)return;
+      const already=queue.some(e=>e.role==="DANCE_FOLLOWUP");if(already)return;
+      const base={...c.skill,danceSequence:false,danceReturn:false,manaCost:0};
+      queue.splice(index+1,0,
+        {id:"dance-second",role:"DANCE_FOLLOWUP",actor:c.initiator,target:c.originalTarget,skill:base,danceArc:"SIDE",danceStep:2},
+        {id:"dance-third",role:"DANCE_FOLLOWUP",actor:c.initiator,target:c.originalTarget,skill:base,danceArc:"BACK",danceStep:3});
+    };
+    const danceCounterPresent=queue.some(e=>e.role==="COUNTER"&&e.actor.id===c.originalTarget?.id);
     for(let index=0;index<queue.length;index++){
       const a=queue[index];
       if(!a.actor.alive||!a.target.alive||a.skill?.utilityAction)continue;
-      const followup=a.role==="FERVOR_FOLLOWUP"||a.role==="GANFAN_FOLLOWUP";
+      const followup=a.role==="FERVOR_FOLLOWUP"||a.role==="GANFAN_FOLLOWUP"||a.role==="DANCE_FOLLOWUP";
+      if(a.role==="DANCE_FOLLOWUP"){
+        danceMove(a.actor,a.target,a.danceArc);
+        if(!a.actor.alive||!a.target.alive||!TacticalEngine.canTarget(c.map,a.actor,a.target,a.skill,c.environmentState))continue;
+      }
       if(!followup&&hooks.canUseSkill&&!hooks.canUseSkill(a.actor,a.skill))continue;
       let skill=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(a.actor,a.skill)||a.skill;
       // Charge and Blood Shadow counterattacks must transit BEFORE the hit.
@@ -483,6 +529,21 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         skill={...skill,power:Number(skill.analysisPower),analysisConsumed:true};
       }
       const bloodDamageMultiplier=followup?1:(bloodRuntime?.attackEnhancement?.(a.actor,skill)||1);
+      // Holy Hymn affects the next legal weapon attack; RHYTHM improves it for dancers.
+      // Consumes the official buff ONCE at committed contact, even on MISS.
+      if(skill.weapon&&skill.attackType&&skill.attackType!=="MAGIC"){
+        const hymn=(a.actor.effects||[]).filter(effect=>
+          effect.nextDanceInherentMagic||effect.nextAttackInherentMagic);
+        if(hymn.length){
+          const offered=hymn.map(effect=>effect.nextDanceInherentMagic||effect.nextAttackInherentMagic)
+            .sort((x,y)=>Number(y.power||0)-Number(x.power||0))[0];
+          const weapon=a.actor.character?.weapons?.[skill.weapon];
+          if(offered&&!skill.inherentMagic&&!weapon?.inherentMagic)
+            skill={...skill,inherentMagic:offered};
+          for(const effect of hymn)
+            globalThis.EffectEngine?.removeEffectById?.(a.actor,effect.id);
+        }
+      }
       const action={...a,skill,target:redirected||a.target,misfire:!!redirected};
       // Resolve the counter's legal landing against the actual participant
       // positions before its shot, just as for an initiator attack.
@@ -742,6 +803,25 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           e.manaBurned=globalThis.UnitRuntimeEngine?.drainMana?.(action.target,amount)||0;
         }
         results.push(e);hooks.onAction?.(e);
+        if(c.skill?.danceSequence&&action.target.id===c.originalTarget.id){
+          const reward=globalThis.ResourceEngine?.RESOURCE_PROFILES?.reputation||{};
+          if(a.role==="INITIATOR"&&skill.danceReturn){
+            if(a.actor.character?.passives?.includes("STANDING_OVATION"))
+              globalThis.UnitRuntimeEngine?.changeResource?.(a.actor,"reputation",Number(reward.returnGain||0));
+            a.actor._dancePartnerId=null;
+            if(a.actor.alive&&action.target.alive)danceMove(a.actor,action.target,"FRONT");
+          }else if(a.role==="INITIATOR"&&!danceCounterPresent&&action.target.alive){
+            enqueueDance(index);
+          }else if(a.role==="COUNTER"&&!result.hit&&c.initiator.alive&&c.originalTarget.alive){
+            enqueueDance(index);
+          }else if(a.role==="DANCE_FOLLOWUP"&&a.danceStep===3){
+            if(a.actor.character?.passives?.includes("STANDING_OVATION"))
+              globalThis.UnitRuntimeEngine?.changeResource?.(a.actor,"reputation",Number(reward.swordComboGain||0));
+            a.actor._dancePartnerId=action.target.alive?action.target.id:null;
+          }
+        }
+        if(c.skill?.danceSequence&&a.role==="COUNTER"&&a.actor.id===c.originalTarget.id&&
+          !result.hit&&c.initiator.alive&&c.originalTarget.alive)enqueueDance(index);
         if(!followup&&result.hit&&result.crit&&action.target.alive&&SkillDatabase.passiveList(action.actor.character?.passives||[]).some(passive=>passive.followupOnCritical?.skillId===skill.id)){
           queue.splice(index+1,0,{...a,id:`${a.id}-fervor`,role:"FERVOR_FOLLOWUP",vengeanceMultiplier:sealMultiplier});
         }
@@ -832,7 +912,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     // An offline AI defender uses the EXISTING autonomous reaction policy when
     // attacked with Ganfan. PvP human ACCEPT is never overwritten: the caller
     // must explicitly supply autonomousReaction=true for this choice.
-    const autonomous=options.autonomousReaction===true&&options.skill?.ganfan&&!options.reaction&&
+    const autonomous=options.autonomousReaction===true&&(options.skill?.ganfan||options.skill?.danceSequence)&&!options.reaction&&
       options.initiator?.alive&&options.target?.alive?
       chooseAutonomousBattleReaction({map:options.map,units:options.units||[],
         attacker:options.initiator,defender:options.target,skill:options.skill,

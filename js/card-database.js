@@ -1,4 +1,6 @@
 export const CARDS={
+  safiya_card:{id:"safiya_card",name:"薩菲雅・夜紗",type:"CHARACTER",characterId:"safiya",
+    loadoutId:"safiya_default",faction:"DANCER",unitType:"HERO",cost:6,pack:"DANCER_SUPPLEMENT"},
   alchemist_card:{id:'alchemist_card',name:'梅莉安・羅森菲爾',type:'CHARACTER',characterId:'alchemist',
     loadoutId:'alchemist_default',faction:'ALCHEMY',unitType:'HERO',cost:6,pack:'ALCHEMY_SUPPLEMENT'},
   avreshi_card:{id:"avreshi_card",name:"艾芙蕾希・月痕",type:"CHARACTER",characterId:"avreshi",loadoutId:"avreshi_default",faction:"ELVEN",unitType:"HERO",cost:6},

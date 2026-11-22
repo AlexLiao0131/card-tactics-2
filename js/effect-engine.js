@@ -13,10 +13,13 @@ export function isStandaloneDirectEffectType(type){
 // skill-ID list. A new channel type is enabled only after EffectEngine.apply()
 // and tick() both support it with an explicit validated contract.
 export function isSupportedChannelRule(rule){
-  return rule?.type==='HEALING_CHANNEL' && typeof rule.id==='string' &&
-    rule.id.length>0 && Number.isFinite(Number(rule.radius)) &&
-    Number.isFinite(Number(rule.amount)) &&
-    Number.isFinite(Number(rule.duration)) && Number(rule.duration)>=1;
+  if(!rule||!['HEALING_CHANNEL','SONG_CHANNEL'].includes(rule.type)||
+    typeof rule.id!=='string'||!rule.id.length||
+    !Number.isFinite(Number(rule.radius))||!Number.isFinite(Number(rule.duration))||
+    Number(rule.duration)<1)return false;
+  if(rule.type==='HEALING_CHANNEL')return Number.isFinite(Number(rule.amount));
+  return Array.isArray(rule.allyEffects)&&rule.allyEffects.length>0&&
+    (!rule.enemyEffects||Array.isArray(rule.enemyEffects));
 }
 
 export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=null}={}) {
@@ -279,7 +282,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     unit.character.combat=clone(unit._effectBaseCombat);
     unit.character.attributes=clone(unit._effectBaseAttributes);
     unit.character.modifiers=clone(unit._effectBaseModifiers);
-    let damageTakenMultiplier=1,guardMultiplier=1,moveEffectDelta=0;
+    let damageTakenMultiplier=1,damageDealtMultiplier=1,guardMultiplier=1,moveEffectDelta=0;
+    let waterMagicPowerMultiplier=1;
     for(const e of state(unit)){
       // Once the physical shield becomes a boat/sled/passenger platform it
       // cannot simultaneously provide the full-shield defensive stance buff.
@@ -294,6 +298,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       }
       for(const key of ["accuracy","evasion","crit","speed"])if(m[key]!=null)unit.character.modifiers[key]=Number(unit.character.modifiers[key]||0)+Number(m[key]);
       if(m.damageTakenMultiplier!=null)damageTakenMultiplier*=Number(m.damageTakenMultiplier);
+      if(m.damageDealtMultiplier!=null)damageDealtMultiplier*=Number(m.damageDealtMultiplier);
+      if(m.waterMagicPowerMultiplier!=null)waterMagicPowerMultiplier*=Number(m.waterMagicPowerMultiplier);
       if(m.guardMultiplier!=null)guardMultiplier*=Number(m.guardMultiplier);
     }
     if(unit._bloodAwakened){
@@ -342,6 +348,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     if(completeBonus>0)for(const key of ["atk","matk","def","mdef"])
       unit.character.combat[key]=Math.round(Number(unit.character.combat[key]||0)*(1+completeBonus));
     unit.character.modifiers.damageTakenMultiplier=damageTakenMultiplier;
+    unit.character.modifiers.damageDealtMultiplier=damageDealtMultiplier;
+    unit.character.modifiers.waterMagicPowerMultiplier=waterMagicPowerMultiplier;
     unit.character.modifiers.guardMultiplier=guardMultiplier;
     globalThis.UnitRuntimeEngine?.syncMana?.(unit);
   }
@@ -386,8 +394,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function interruptChannel(unit,reason="ACTION"){
     if(!unit?.effects)return[];
-    const removed=unit.effects.filter(e=>e.type==="HEALING_CHANNEL");
-    if(removed.length)unit.effects=unit.effects.filter(e=>e.type!=="HEALING_CHANNEL");
+    const removed=unit.effects.filter(e=>e.type==="HEALING_CHANNEL"||e.type==="SONG_CHANNEL");
+    if(removed.length)unit.effects=unit.effects.filter(e=>!['HEALING_CHANNEL','SONG_CHANNEL'].includes(e.type));
     return removed.map(effect=>({id:effect.id,reason}));
   }
   function copyableSkills(target,source=null){
@@ -472,7 +480,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
         classification:"NEGATIVE",duration:0
       },source)};
     }
-    if(effect.type==="HEALING_CHANNEL"){
+    if(effect.type==="HEALING_CHANNEL"||effect.type==="SONG_CHANNEL"){
       if(!isSupportedChannelRule(effect))return{applied:false,reason:"INVALID_CHANNEL"};
       return{applied:true,type:effect.type,effect:addEffect(target,{...effect,classification:"POSITIVE"},source)};
     }
@@ -520,6 +528,18 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const rel=relation(source,target),selected=effects.filter(e=>!e.relation||e.relation===rel);
     return selected.map(effect=>apply({source,target,effect}));
   }
+  // Passive response to the successful SONG TICK, not visual/projectile playback.
+  function resonateWithSong(target,rule){
+    if(!target?.alive||!rule||!SkillDatabase.passiveList(target.character?.passives||[])
+      .some(p=>p.songResonance===true))return false;
+    if(Number(rule.manaRestore)>0)globalThis.UnitRuntimeEngine?.restoreMana?.(target,Number(rule.manaRestore));
+    if(Number(rule.evasionBuff)>0)apply({source:target,target,effect:{type:"BUFF",id:"RHYTHM_OCEAN",
+      name:"律動・海潮",classification:"POSITIVE",duration:1,durationClock:"FULL_FUTURE_ROUNDS",modifiers:{evasion:Number(rule.evasionBuff)}}});
+    if(Number(rule.holySwordPower)>0)apply({source:target,target,effect:{type:"BUFF",id:"RHYTHM_HOLY",
+      name:"律動・聖歌",classification:"POSITIVE",duration:2,durationClock:"FULL_FUTURE_ROUNDS",
+      nextDanceInherentMagic:{element:"HOLY",power:Number(rule.holySwordPower)}}});
+    return true;
+  }
   function tick(unit,{units=[]}={}){
     const events=[];
     for(const effect of [...state(unit)]){
@@ -533,7 +553,31 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
           if(amount>0)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(ally,amount);
           healed.push({unitId:ally.id,amount});
         }
+        for(const item of healed){const listener=units.find(u=>u.id===item.unitId);
+          if(listener)resonateWithSong(listener,effect.rhythm);}
         events.push({type:"HEALING_CHANNEL",effectId:effect.id,healed});
+      }
+      if(effect.type==="SONG_CHANNEL"){
+        const radius=Math.max(0,Number(effect.radius||0)),affected=[];
+        for(const listener of units){
+          if(!listener?.alive||Math.abs(listener.x-unit.x)+Math.abs(listener.y-unit.y)>radius)continue;
+          const friend=listener.team===unit.team;
+          const rules=friend?effect.allyEffects||[]:effect.enemyEffects||[];
+          let appliedToListener=false;
+          for(const rule of rules){
+            const outcome=apply({source:unit,target:listener,effect:rule});
+            if(outcome?.applied)appliedToListener=true;
+          }
+          // RHYTHM responds to an actual song effect, even if the singer is an enemy.
+          // A blocked or inaudible song grants no free rhythm benefit.
+          if(appliedToListener){
+            resonateWithSong(listener,effect.rhythm);
+            affected.push(listener.id);
+          }
+        }
+        const recovery=effect.sourceResourceRecovery;
+        if(recovery?.key)globalThis.UnitRuntimeEngine?.changeResource?.(unit,recovery.key,Number(recovery.amount||0));
+        events.push({type:"SONG_CHANNEL",effectId:effect.id,affected});
       }
       if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
       if(effect.type==="DAMAGE_OVER_TIME"){const source=units.find(u=>u.id===effect.sourceUnitId)||null;const internal=effect.id==="BLEEDING"||/POISON|TOXIN|SUFFOCAT|DROWN/.test(String(effect.id||""));const amount=damage(unit,effect.amount,{source,kind:internal?"INTERNAL":"EXTERNAL",charge:effect.id==="BLEEDING"?"BLEED":"NONE"});globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}

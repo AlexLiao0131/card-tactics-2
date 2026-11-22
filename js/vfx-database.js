@@ -5,6 +5,11 @@
  * A new skill can reuse a role without changing BabylonRenderer.
  */
 const defs={
+  'dance-magic':{
+    roles:{SWORD:['safiya_sword_dance','safiya_sword_attack'],CHARM:['safiya_enchantment_dance'],
+      INSPIRE:['safiya_inspiring_dance'],PURIFY:['safiya_purifying_dance'],
+      DEATH:['safiya_dance_of_death'],OCEAN:['nereia_ocean_song'],HYMN:['angel_hymn']},
+    events:[],legacy:'dancerSongVfx'},
   'livia-duality':{roles:{PURIFIED:['livia_purified_nether'],SHADOW_FLURRY:['nether_slash'],BLACK_BLADE:['black_slash']},events:['LIVIA_FLURRY_PATH'],legacy:'liviaDualityVfx'},
   'shield-guard':{roles:{SWAP:['colin_ally_swap'],GUARD:['colin_full_shield_defense'],BASH:['colin_shield_bash']},events:[],status:{GUARD:'FULL_SHIELD_DEFENSE',STUN:'STUN'},legacy:'shieldGuardVfx'},
   'swordsmanship':{

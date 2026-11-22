@@ -1,6 +1,12 @@
 /** Declarative resource profiles. Character identity never owns an executor.
  * These values are the existing authored balance and skill variants, not logic. */
 export const RESOURCE_PROFILES=Object.freeze({
+  reputation:Object.freeze({label:"聲望",max:100,initial:0,naturalRecovery:0,
+    // Permanent within one match; each effective performance is counted once.
+    rangeThresholds:[0,35,70],rangeRadii:[1,2,3],
+    swordComboGain:10,returnGain:10,deathKillGain:15,supportGain:5,
+    // Canonical stylistic contract: never fall back to the default purple meter.
+    color:"#EC4899"}),
   astralPower:Object.freeze({label:"星能",max:100,initial:0,naturalRecovery:0,
     moonlightResonanceMaxRatio:.5}),
   // EffectEngine awards damage credits (DIRECT = actual HP loss, BLEED = HP loss / 2).

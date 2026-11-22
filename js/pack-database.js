@@ -1,4 +1,5 @@
 export const CARD_GROUPS={
+  DANCER_SUPPLEMENT:{id:"DANCER_SUPPLEMENT",name:"劍舞姬補充包",cards:["safiya_card"]},
   ALCHEMY_SUPPLEMENT:{id:'ALCHEMY_SUPPLEMENT',name:'煉金術士補充包',cards:['alchemist_card']},
   LIVIA_SUPPLEMENT:{id:"LIVIA_SUPPLEMENT",name:"莉維亞補充包",cards:["livia_card","kahn_card","cassandra_card","bear_trap_card","avalanche_card","cassandra_blessing_card"]},
   IMPERIAL:{id:"IMPERIAL",name:"帝國",cards:["leon_card","imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card","imperial_cavalry_card"]},
@@ -17,6 +18,8 @@ export const CARD_GROUPS={
   OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
 };
 export const PACK_PRODUCTS={
+  DANCER_FIXED:{id:"DANCER_FIXED",name:"紫晶劍舞姬補充包",kind:"SUPPLEMENT",season:"PERMANENT",
+    description:"固定內容：薩菲雅・夜紗，3V 劍舞／歌聲共鳴 HERO。",cards:["safiya_card"]},
   ALCHEMY_FIXED:{id:'ALCHEMY_FIXED',name:'煉金術士補充包',kind:'SUPPLEMENT',season:'PERMANENT',
     description:'固定內容：梅莉安・羅森菲爾，3V 旅行煉金術士 HERO。',cards:['alchemist_card']},
   IMPERIAL_SEASON_TEST:{id:"IMPERIAL_SEASON_TEST",name:"帝國陣營包",kind:"FACTION",season:"TEST_SEASON",description:"15 張測試包｜7 基礎士兵・3 中階士兵・3 陣營戰術／魔法・2 高階抽選｜HERO Bonus 0.5%",slots:{basic:7,mid:3,factionSpell:3,advancedRolls:2},advancedChance:.25,heroBonusChance:.005,pools:{basic:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card"],mid:["imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"],advanced:["imperial_cavalry_card"],factionSpell:[],hero:["leon_card"]},fallback:["imperial_swordsman_card","imperial_spearman_card","imperial_archer_card","imperial_heavy_guard_card","imperial_hammer_card","imperial_mage_card"]},

@@ -8,6 +8,7 @@
  * Adding a genuinely new geometry type: register one new behavior factory here.
  */
 import {VfxDatabase} from './vfx-database.js?rev=20261121-alchemy-swift-breath-1';
+import {TILE_SIZE,ELEVATION_HEIGHT} from './coordinate-system.js';
 import {isBowProjectileEvent,ArrowProjectileVfx} from './arrow-projectile-vfx.js';
 import {FireBowExplosionVfx} from './fire-bow-explosion-vfx.js';
 import {HolyBladeVfx} from './holy-blade-vfx.js';
@@ -103,7 +104,100 @@ export function actionVisualsPending(unitRenderer,instances,action){
   return false;
 }
 
+/**
+ * Shared Babylon visual for skill categories, never an executor of game rules.
+ * The heart is an actual 3D billboard plane with a transparent procedural texture;
+ * the official UNIT_ANIMATION event exclusively supplies source and target.
+ */
+class DanceSongVfx{
+  constructor(scene){
+    this.scene=scene;this.active=[];this.recent=new Set();
+    this.materials={};this.heartTexture=null;
+    scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
+  }
+  mat(id,rgb){
+    if(this.materials[id])return this.materials[id];
+    const m=new BABYLON.StandardMaterial('dance-'+id,this.scene);
+    m.diffuseColor=new BABYLON.Color3(...rgb);m.emissiveColor=m.diffuseColor;
+    m.alpha=.86;m.disableLighting=true;m.backFaceCulling=false;
+    this.materials[id]=m;return m;
+  }
+  height(snapshot,x,y){
+    const unit=(snapshot?.units||[]).find(u=>u.x===x&&u.y===y&&u.alive!==false);
+    const raw=unit?.renderZ??unit?.z??(snapshot?.map?.tiles||[]).find(t=>t.x===x&&t.y===y)?.elevation??0;
+    return Number(raw)*ELEVATION_HEIGHT;
+  }
+  pos(snapshot,x,y,above=.8){return new BABYLON.Vector3(Number(x)*TILE_SIZE,
+    this.height(snapshot,x,y)+above,Number(y)*TILE_SIZE);}
+  heartMaterial(){
+    if(this.materials.heart)return this.materials.heart;
+    const texture=new BABYLON.DynamicTexture('dance-actual-heart',256,this.scene,false);
+    const ctx=texture.getContext();ctx.clearRect(0,0,256,256);
+    ctx.fillStyle='#FF4C9F';ctx.strokeStyle='#FFE2EF';ctx.lineWidth=9;
+    ctx.beginPath();ctx.moveTo(128,213);
+    ctx.bezierCurveTo(83,176,25,126,30,82);
+    ctx.bezierCurveTo(34,28,102,21,128,72);
+    ctx.bezierCurveTo(153,21,223,28,226,82);
+    ctx.bezierCurveTo(229,126,171,176,128,213);
+    ctx.closePath();ctx.fill();ctx.stroke();texture.hasAlpha=true;texture.update();
+    const mat=new BABYLON.StandardMaterial('dance-heart-pink',this.scene);
+    mat.diffuseTexture=texture;mat.opacityTexture=texture;
+    mat.useAlphaFromDiffuseTexture=true;mat.backFaceCulling=false;
+    mat.disableLighting=true;mat.emissiveColor=new BABYLON.Color3(1,.31,.65);
+    this.heartTexture=texture;this.materials.heart=mat;return mat;
+  }
+  sync(snapshot,events=[]){
+    for(const e of events){
+      if(e?.type!=='UNIT_ANIMATION'||!Number.isFinite(e.x)||!Number.isFinite(e.y))continue;
+      if(this.recent.has(e.sequence))continue;
+      this.recent.add(e.sequence);
+      if(this.recent.size>512)this.recent.delete(this.recent.values().next().value);
+      const role=VfxDatabase.roleFor('dance-magic',e.skillId);
+      if(!role)continue;
+      const now=performance.now(),from=this.pos(snapshot,e.x,e.y,1.1);
+      const tx=Number.isFinite(e.targetX)?e.targetX:e.x,ty=Number.isFinite(e.targetY)?e.targetY:e.y;
+      const to=this.pos(snapshot,tx,ty,1.15);
+      let mesh,duration=850;
+      if(role==='CHARM'&&Number.isFinite(e.targetX)&&Number.isFinite(e.targetY)){
+        mesh=BABYLON.MeshBuilder.CreatePlane('dancer-charm-heart',{size:.85},this.scene);
+        mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;mesh.material=this.heartMaterial();
+        mesh.position.copyFrom(from);duration=780;
+      }else{
+        mesh=BABYLON.MeshBuilder.CreateTorus('dance-'+role,{diameter:role==='INSPIRE'||role==='PURIFY'?
+          (Math.max(1,Number(e.danceRadius||1))*2+.3)*TILE_SIZE:1.18,
+          thickness:role==='INSPIRE'||role==='PURIFY'?.065:.10,tessellation:32},this.scene);
+        mesh.material=this.mat(role,role==='HYMN'?[1,.90,.45]:role==='OCEAN'?[.20,.69,.94]:
+          role==='PURIFY'?[.94,.85,.61]:role==='CHARM'?[1,.31,.65]:[.88,.38,.75]);
+        mesh.position.copyFrom(role==='SWORD'||role==='DEATH'?to:from);duration=750;
+      }
+      mesh.isPickable=false;mesh.metadata={castShadow:false};
+      this.active.push({mesh,from,to,start:now,duration,role});
+    }
+  }
+  updateFrame(now=performance.now()){
+    for(const fx of [...this.active]){
+      const t=Math.min(1,Math.max(0,(now-fx.start)/fx.duration));
+      if(fx.role==='CHARM'){
+        fx.mesh.position.copyFrom(BABYLON.Vector3.Lerp(fx.from,fx.to,t));
+        fx.mesh.position.y+=Math.sin(t*Math.PI)*.50;
+        fx.mesh.scaling.setAll(1+.22*Math.sin(t*Math.PI));
+      }else{
+        fx.mesh.rotation.x=Math.PI/2;
+        fx.mesh.rotation.z+=.03;
+        fx.mesh.scaling.setAll(.75+t*.55);
+      }
+      fx.mesh.visibility=1-t*.9;
+      if(t>=1){fx.mesh.dispose();this.active.splice(this.active.indexOf(fx),1);}
+    }
+  }
+  diagnostics(){return{active:this.active.length};}
+  dispose(){for(const fx of this.active)fx.mesh.dispose();this.active=[];
+    for(const material of Object.values(this.materials))material.dispose();this.heartTexture?.dispose();
+    this.materials={};this.recent.clear();}
+}
+
 const factories=Object.freeze({
+  'dance-magic':scene=>new DanceSongVfx(scene),
   'livia-duality':(scene,ctx)=>new LiviaDualityVfx(scene,{units:ctx.units}),
   'shield-guard':scene=>new ShieldGuardVfx(scene),
   'swordsmanship':scene=>new SwordsmanshipVfx(scene),

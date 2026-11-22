@@ -2068,6 +2068,90 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return true;
     }
 
+    function danceRadius(attacker){
+      const config=globalThis.ResourceEngine?.RESOURCE_PROFILES?.reputation;
+      const fame=Number(attacker?.resources?.reputation?.value||0);
+      const thresholds=config?.rangeThresholds,radii=config?.rangeRadii;
+      if(!Array.isArray(thresholds)||!Array.isArray(radii)||!thresholds.length||
+         thresholds.length!==radii.length)throw Error("INVALID_REPUTATION_RANGE_PROFILE");
+      let idx=0;for(let i=0;i<thresholds.length;i++)if(fame>=thresholds[i])idx=i;
+      return Number(radii[idx]);
+    }
+    function earnPerformance(attacker,kind){
+      if(!attacker?.character?.passives?.includes("STANDING_OVATION"))return 0;
+      const amount=Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.reputation?.[kind]||0);
+      return amount>0?UnitRuntimeEngine.changeResource(attacker,"reputation",amount):0;
+    }
+    function executeDanceAura(attacker,skill){
+      if(!canCommitActiveAction(attacker)||!ctx.canUseSkill(attacker,skill))
+        return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",attacker);
+      const radius=danceRadius(attacker),friends=state().units.filter(u=>u.alive&&u.team===attacker.team&&
+        Math.abs(u.x-attacker.x)+Math.abs(u.y-attacker.y)<=radius);
+      if(!ctx.consumeSkill(attacker,skill))return false;
+      EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+      let effective=0;
+      for(const friend of friends){
+        if(skill.danceAura.kind==="INSPIRE"){
+          const result=EffectEngine.apply({source:attacker,target:friend,effect:skill.danceAura.effect});
+          if(result?.applied&&friend.id!==attacker.id)effective++;
+        }else if(skill.danceAura.kind==="PURIFY"){
+          const result=EffectEngine.apply({source:attacker,target:friend,effect:skill.danceAura.effect});
+          if(result?.applied&&Number(result.removed||0)>0){effective++;}
+        }
+      }
+      if(effective)earnPerformance(attacker,"supportGain");
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF",danceRadius:radius});
+      ctx.pushLog(`${attacker.character.name}｜${skill.name}：聲望半徑 ${radius} 格，影響 ${effective} 名友軍。`,"BATTLE");
+      return finishActiveSkill(attacker);
+    }
+    function executeDanceOfDeath(attacker,skill){
+      if(!canCommitActiveAction(attacker)||!ctx.canUseSkill(attacker,skill))
+        return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",attacker);
+      const {map,units,environmentState}=state(),radius=danceRadius(attacker);
+      const candidate=()=>{
+        const enemies=units.filter(u=>u?.alive&&u.team!==attacker.team&&u.kind!=="CORE"&&
+          Math.abs(u.x-attacker.x)+Math.abs(u.y-attacker.y)<=radius&&
+          TacticalEngine.teamCanSee(map,units,attacker.team,u,environmentState));
+        const possible=[];
+        for(const target of enemies){
+          const positions=(map.tiles||[]).filter(tile=>Math.abs(tile.x-target.x)+Math.abs(tile.y-target.y)===1);
+          let best=null;
+          for(const tile of positions){
+            if(tile.x===attacker.x&&tile.y===attacker.y){best={target,path:[]};break;}
+            const actorCopy={...attacker},path=TacticalEngine.pathTo(map,units,actorCopy,tile.x,tile.y);
+            if(!path.length)continue;
+            if(!best||path.length<best.path.length)best={target,path};
+          }
+          if(best)possible.push(best);
+        }
+        return possible.sort((a,b)=>Number(a.target.hp)-Number(b.target.hp)||
+          a.path.length-b.path.length||String(a.target.id).localeCompare(String(b.target.id)))[0]||null;
+      };
+      if(!candidate())return skillFailure(attacker,skill,"NO_LEGAL_EXECUTION_TARGET",attacker);
+      if(!ctx.consumeSkill(attacker,skill))return false;
+      EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+      let kills=0,strikes=0;
+      while(attacker.alive){
+        const step=candidate();if(!step)break;
+        if(step.path.length){const moved=ctx.traverseUnitPath(attacker,step.path,{kind:"UNIT"});
+          if(!moved?.completed||!attacker.alive)break;}
+        if(Math.abs(attacker.x-step.target.x)+Math.abs(attacker.y-step.target.y)!==1)break;
+        const strike={...skill,id:skill.id,target:"ENEMY",targetType:"SINGLE",range:{min:1,max:1},
+          ...skill.deathDance.strike,deathDance:null,manaCost:0};
+        const engagement=BattleResolution.resolve({map,units,environmentState,initiator:attacker,
+          target:step.target,skill:strike,actions:[],reaction:null},
+          {canUseSkill:()=>true,consumeSkill:()=>({cost:0,resources:{}}),
+            onDefeated:ctx.handleDefeated,onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect,
+            onBackstep:(u,t)=>ctx.enterTile(u)});
+        const result=engagement.results.find(e=>e.role==="INITIATOR");if(!result)break;
+        strikes++;
+        if(step.target.alive)break;
+        kills++;earnPerformance(attacker,"deathKillGain");
+        if(kills>=units.length)break;
+      }
+      ctx.pushLog(`${attacker.character.name}｜死亡之舞：${strikes} 次劍擊、擊殺 ${kills} 名敵軍。`,"BATTLE");
+      return finishActiveSkill(attacker);
+    }
     function executeChannelSkill(attacker,skill){
       if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",attacker);
       const rule=skill.channel;
@@ -2087,6 +2171,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(skill.target==="SELF"&&skill.areaDamage?.mode==="PHYSICAL_SWEEP"&&
           skill.areaDamage.footprint==="ADJACENT_8")
         return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
+      if(skill.danceAura&&skill.target==="SELF")return executeDanceAura(attacker,skill);
+      if(skill.deathDance&&skill.target==="SELF")return executeDanceOfDeath(attacker,skill);
       if((skill.sanctuary||skill.smokeField)&&skill.target==="SELF")return executeMapSkill(attacker,{x:attacker.x,y:attacker.y},skill);
       const approachPath=skill.approach?planApproachForSkill(attacker,defender,skill):null;
       if(skill.approach&&!approachPath){
@@ -2183,9 +2269,13 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         }
         skill=committedApproachSkill(skill);
       }
+      if(skill.danceSequence){
+        const arc=TacticalEngine.relativeArc(defender,attacker);
+        skill={...skill,danceReturn:arc==="BACK"&&attacker._dancePartnerId===defender.id};
+      }
       const engagement=BattleResolution.resolve(
         {map,units,environmentState:state().environmentState,initiator:attacker,target:defender,skill,actions,reaction,
-          autonomousReaction:!reaction&&!!skill.ganfan&&attacker.team===ctx.TEAM.PLAYER&&defender.team!==ctx.TEAM.PLAYER},
+          autonomousReaction:!reaction&&!!(skill.ganfan||skill.danceSequence)&&attacker.team===ctx.TEAM.PLAYER&&defender.team!==ctx.TEAM.PLAYER},
         {canUseSkill:ctx.canUseSkill,consumeSkill:ctx.consumeSkill,onDefeated:ctx.handleDefeated,
           onAction:ctx.logBattleAction,onPostEffect:ctx.logPostEffect,
           onBackstep:(unit,tile)=>ctx.enterTile(unit)}

@@ -185,7 +185,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);UnitTraitEngine.initialize(unit);
     return Object.fromEntries(Object.entries(ResourceEngine.snapshot(unit)).map(([key,state])=>[key,{...state,label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="astralPower"?{color:"#8a9cdb"}:key==="rage"?{color:"#c53838"}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="astralPower"?{color:"#8a9cdb"}:key==="rage"?{color:"#c53838"}:key==="reputation"?{color:ResourceEngine.RESOURCE_PROFILES.reputation.color}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
