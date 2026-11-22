@@ -6,6 +6,8 @@ export const MONSTERS={
   aiProfile:"WILD_WATER",
   habitat:["WATER"],
   traits:["AQUATIC","PULL_PREDATOR"],
+  // One persistent combatant occupies all four water cells, not four sub-units.
+  footprint:{width:2,height:2},
   spawnRule:{terrain:"WATER",minWaterDepth:1,preferDeepest:true,count:1},
   encounterRewards:[{type:"BATTLE_CARD",cardId:"flood_card",count:1,chance:1}]
  }
@@ -13,7 +15,7 @@ export const MONSTERS={
 
 export const MonsterDatabase=(()=>{
  const monsters=new Map();
- function normalize(d){if(!d?.id||!d?.characterId)throw new Error("MonsterDatabase.register requires id and characterId.");return Object.freeze({id:String(d.id),characterId:String(d.characterId),family:String(d.family||"MONSTER"),habitat:Object.freeze([...(d.habitat||[])]),traits:Object.freeze([...(d.traits||[])]),aiProfile:String(d.aiProfile||"WILD"),spawnRule:d.spawnRule?Object.freeze(JSON.parse(JSON.stringify(d.spawnRule))):null,encounterRewards:Object.freeze([...(d.encounterRewards||[])].map(r=>Object.freeze({...r})))})}
+ function normalize(d){if(!d?.id||!d?.characterId)throw new Error("MonsterDatabase.register requires id and characterId.");return Object.freeze({id:String(d.id),characterId:String(d.characterId),family:String(d.family||"MONSTER"),habitat:Object.freeze([...(d.habitat||[])]),traits:Object.freeze([...(d.traits||[])]),footprint:Object.freeze({width:Math.max(1,Math.floor(Number(d.footprint?.width||1))),height:Math.max(1,Math.floor(Number(d.footprint?.height||1)))}),aiProfile:String(d.aiProfile||"WILD"),spawnRule:d.spawnRule?Object.freeze(JSON.parse(JSON.stringify(d.spawnRule))):null,encounterRewards:Object.freeze([...(d.encounterRewards||[])].map(r=>Object.freeze({...r})))})}
  function register(d){const v=normalize(d);monsters.set(v.id,v);return v}
  function get(id){return monsters.get(String(id))||null}
  function forCharacter(id){return [...monsters.values()].find(m=>m.characterId===id)||null}
@@ -24,16 +26,40 @@ export const MonsterDatabase=(()=>{
 export const EncounterEngine=(()=>{
  const TEAM_NEUTRAL="N",TRIGGER=Object.freeze({BATTLE_START:"BATTLE_START",ROUND_START:"ROUND_START",TILE_ENTER:"TILE_ENTER",SCRIPT:"SCRIPT"}),key=(x,y)=>`${x},${y}`,clone=v=>v==null?v:JSON.parse(JSON.stringify(v));
  function normalizeDefinition(d,i=0){if(!d?.monsterId)throw new Error("Encounter definition requires monsterId.");return{id:String(d.id||`encounter_${i}`),monsterId:String(d.monsterId),trigger:{type:TRIGGER.BATTLE_START,...clone(d.trigger||{})},once:d.once!==false,conditions:clone(d.conditions||[]),spawn:{count:1,preferDeepest:false,...clone(d.spawn||{})}}}
- function habitatMatches(t,m,s){if(!t||!m)return false;if(s?.terrain&&t.terrain!==s.terrain)return false;const h=m.habitat||[];if(h.length){const w=h.includes("WATER")&&window.HydrologyEngine?.isWater?.(t);if(!w&&!h.includes(t.terrain))return false}return !(Number(s?.minWaterDepth||0)>0&&Number(window.HydrologyEngine?.waterDepth?.(t)||0)<Number(s.minWaterDepth))}
+ function habitatMatches(t,m,s){if(!t||!m)return false;if(s?.terrain&&t.terrain!==s.terrain)return false;const h=m.habitat||[];if(h.length){const w=h.includes("WATER")&&globalThis.HydrologyEngine?.isWater?.(t);if(!w&&!h.includes(t.terrain))return false}return !(Number(s?.minWaterDepth||0)>0&&Number(globalThis.HydrologyEngine?.waterDepth?.(t)||0)<Number(s.minWaterDepth))}
  function objectBlocks(map,t){return(map?.objects||[]).some(o=>!o.destroyed&&o.blocksMovement&&o.x===t.x&&o.y===t.y)}
- function chooseSpawnTiles({map,units,monster,spawn}={}){const occ=new Set((units||[]).filter(u=>u.alive).map(u=>key(u.x,u.y)));const ex=(spawn?.tiles||[]).map(p=>window.HydrologyEngine?.tileAt?.(map,p.x,p.y)||map?.tiles?.find(t=>t.x===p.x&&t.y===p.y)).filter(Boolean);let c=(ex.length?ex:(map?.tiles||[])).filter(t=>!occ.has(key(t.x,t.y))&&!objectBlocks(map,t)&&habitatMatches(t,monster,spawn));c.sort((a,b)=>{if(spawn?.preferDeepest){const d=Number(window.HydrologyEngine?.waterDepth?.(b)||0)-Number(window.HydrologyEngine?.waterDepth?.(a)||0);if(d)return d}return Number(a.elevation||0)-Number(b.elevation||0)||a.y-b.y||a.x-b.x});return c}
+ // The authoritative footprint is the same data TacticalEngine uses for all movement and combat.
+ function spawnFootprint(m,x,y){const cells=[];for(let dx=0;dx<m.footprint.width;dx++)for(let dy=0;dy<m.footprint.height;dy++)cells.push({x:x+dx,y:y+dy});return cells}
+ function footprintSpawnLegal({map,units,monster,spawn,x,y}){
+   const cells=spawnFootprint(monster,x,y);
+   return cells.every(cell=>{
+     const tile=globalThis.HydrologyEngine?.tileAt?.(map,cell.x,cell.y)||map?.tiles?.find(t=>t.x===cell.x&&t.y===cell.y);
+     if(!tile||!habitatMatches(tile,monster,spawn)||objectBlocks(map,tile))return false;
+     if(globalThis.TacticalEngine?.occupantAt)return !TacticalEngine.occupantAt(units,cell.x,cell.y);
+     return !(units||[]).some(unit=>unit.alive&&unit.occupiesTile!==false&&unit.x===cell.x&&unit.y===cell.y);
+   });
+ }
+ function chooseSpawnTiles({map,units,monster,spawn}={}){
+   const explicit=(spawn?.tiles||[]).map(p=>globalThis.HydrologyEngine?.tileAt?.(map,p.x,p.y)||map?.tiles?.find(t=>t.x===p.x&&t.y===p.y)).filter(Boolean);
+   const candidates=(explicit.length?explicit:map?.tiles||[]).filter(tile=>
+     footprintSpawnLegal({map,units,monster,spawn,x:tile.x,y:tile.y}));
+   candidates.sort((a,b)=>{
+     if(spawn?.preferDeepest){
+       const depth=point=>Math.min(...spawnFootprint(monster,point.x,point.y).map(p=>
+         Number(globalThis.HydrologyEngine?.waterDepth?.(globalThis.HydrologyEngine?.tileAt?.(map,p.x,p.y)||map?.tiles?.find(t=>t.x===p.x&&t.y===p.y))||0)));
+       const diff=depth(b)-depth(a);if(diff)return diff;
+     }
+     return Number(a.elevation||0)-Number(b.elevation||0)||a.y-b.y||a.x-b.x;
+   });
+   return candidates;
+ }
  function ecologicalDefinitions(){return MonsterDatabase.list().filter(m=>m.spawnRule).map(m=>{const rule=clone(m.spawnRule)||{},trigger=clone(rule.trigger)||{type:TRIGGER.BATTLE_START};delete rule.trigger;return normalizeDefinition({id:`ecology_${m.id}`,monsterId:m.id,trigger,once:rule.once!==false,spawn:rule})})}
  function create(defs=[],ctx={}){const explicit=(defs||[]).map(normalizeDefinition),ids=new Set(explicit.map(d=>d.id)),eco=ecologicalDefinitions();return{definitions:[...explicit,...eco.filter(d=>!ids.has(d.id))],fired:new Set(),spawned:[],nextSerial:0,runtime:{map:ctx.map||null,units:ctx.units||null,createUnit:ctx.createUnit||null}}}
  function bindRuntime(state,ctx={}){if(!state)return state;state.runtime=state.runtime||{};if(ctx.map)state.runtime.map=ctx.map;if(ctx.units)state.runtime.units=ctx.units;if(ctx.createUnit)state.runtime.createUnit=ctx.createUnit;return state}
  function triggerMatches(t,e){if(!t||!e||t.type!==e.type)return false;return Object.entries(t).every(([k,v])=>k==="type"||e[k]===v)}
  function conditionMatches(c,{map,units,event}={}){if(!c)return true;if(c.type==="FLAG")return event?.flags?.[c.key]===c.value;if(c.type==="ROUND_AT_LEAST")return Number(event?.round||0)>=Number(c.round||0);if(c.type==="TERRAIN_EXISTS")return(map?.tiles||[]).some(t=>t.terrain===c.terrain);if(c.type==="MONSTER_ABSENT")return!(units||[]).some(u=>u.alive&&u.monsterId===c.monsterId);return true}
  function nextUnitId(state,d,units){const base=`n_${d.id}`;let id;do{id=`${base}_${state.nextSerial++}`}while((units||[]).some(u=>u.id===id));return id}
- function spawnDefinition(state,d,{map,units,createUnit,pushLog,event}={}){const m=MonsterDatabase.get(d.monsterId);if(!m||d.once&&state?.fired?.has(d.id)||!triggerMatches(d.trigger,event)||!(d.conditions||[]).every(c=>conditionMatches(c,{map,units,event})))return[];const c=chooseSpawnTiles({map,units,monster:m,spawn:d.spawn}),out=[],factory=createUnit||((id,team,characterId,x,y)=>window.UnitRuntimeEngine?.create?.({id,team,characterId,x,y,map}));if(typeof factory!=="function")return[];for(let i=0,n=Math.max(1,Math.floor(Number(d.spawn?.count||1)));i<n&&c.length;i++){const t=c.shift(),id=nextUnitId(state,d,units),u=factory(id,TEAM_NEUTRAL,m.characterId,t.x,t.y);if(!u)continue;u.faction="NEUTRAL";u.monsterId=m.id;u.encounterId=d.id;u.encounterAI=m.aiProfile;u.encounterHabitat=[...(m.habitat||[])];units.push(u);state.spawned.push({encounterId:d.id,unitId:u.id,monsterId:m.id,x:t.x,y:t.y,eventType:event?.type||null});out.push(u);pushLog?.(`遭遇事件｜${u.character.name} 出現在 (${t.x},${t.y})。`,"SYSTEM")}if(out.length&&d.once)state.fired.add(d.id);return out}
+ function spawnDefinition(state,d,{map,units,createUnit,pushLog,event}={}){const m=MonsterDatabase.get(d.monsterId);if(!m||d.once&&state?.fired?.has(d.id)||!triggerMatches(d.trigger,event)||!(d.conditions||[]).every(c=>conditionMatches(c,{map,units,event})))return[];const c=chooseSpawnTiles({map,units,monster:m,spawn:d.spawn}),out=[],factory=createUnit||((id,team,characterId,x,y)=>globalThis.UnitRuntimeEngine?.create?.({id,team,characterId,x,y,map}));if(typeof factory!=="function")return[];for(let i=0,n=Math.max(1,Math.floor(Number(d.spawn?.count||1)));i<n&&c.length;i++){const t=c.shift();if(!footprintSpawnLegal({map,units,monster:m,spawn:d.spawn,x:t.x,y:t.y})){i--;continue;}const id=nextUnitId(state,d,units),u=factory(id,TEAM_NEUTRAL,m.characterId,t.x,t.y);if(!u)continue;u.faction="NEUTRAL";u.monsterId=m.id;u.encounterId=d.id;u.encounterAI=m.aiProfile;u.encounterHabitat=[...(m.habitat||[])];u.footprint={...m.footprint};units.push(u);state.spawned.push({encounterId:d.id,unitId:u.id,monsterId:m.id,x:t.x,y:t.y,eventType:event?.type||null});out.push(u);pushLog?.(`遭遇事件｜${u.character.name} 出現在 (${t.x},${t.y})。`,"SYSTEM")}if(out.length&&d.once)state.fired.add(d.id);return out}
  function trigger(state,event,ctx={}){if(!state)return[];bindRuntime(state,ctx);const runtime={...(state.runtime||{}),...ctx};if(!runtime.map||!runtime.units)return[];return(state.definitions||[]).flatMap(d=>spawnDefinition(state,d,{...runtime,event}))}
  function spawnInitial(state,ctx={}){return trigger(state,{type:TRIGGER.BATTLE_START},ctx)}
  function habitatAllows(u,t){if(!u||!t)return false;const m=MonsterDatabase.get(u.monsterId)||MonsterDatabase.forCharacter(u.character?.id);return!m||!(m.habitat||[]).length?true:habitatMatches(t,m,{})}

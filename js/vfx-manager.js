@@ -228,6 +228,171 @@ class DanceSongVfx{
     this.materials={};this.recent.clear();}
 }
 
+/**
+ * Water-lurker: one viewer-filtered unit, one articulated Babylon surface model.
+ * It follows official water-surface tiles; there are NO hydrology writes, fake
+ * units, separate frame timers, or rebuilds of WaterRenderer's shared geometry.
+ */
+class WaterLurkerSurfaceModel{
+  constructor(scene){
+    this.scene=scene;this.entries=new Map();this.materials=[];
+    this.initialized=false;
+    scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
+  }
+  ensureMaterials(){
+    if(this.initialized)return;
+    this.initialized=true;
+    const scene=this.scene;
+    const tint=(name,base,glow=null,alpha=1)=>{
+      const m=new BABYLON.StandardMaterial('neutral-lurker-'+name,scene);
+      m.diffuseColor=new BABYLON.Color3(...base);
+      m.specularColor=new BABYLON.Color3(.26,.35,.38);
+      if(glow)m.emissiveColor=new BABYLON.Color3(...glow);
+      m.alpha=alpha;m.backFaceCulling=false;this.materials.push(m);return m;
+    };
+    this.skin=tint('skin',[.19,.18,.30],[.028,.021,.050]);
+    this.underside=tint('underside',[.39,.27,.43],[.045,.025,.052]);
+    this.sucker=tint('suckers',[.63,.43,.57]);
+    this.eye=tint('eye',[.88,.69,.29],[.62,.33,.07]);
+    this.ripple=tint('ripple',[.23,.60,.73],[.16,.45,.60],.43);
+    this.foam=tint('foam',[.73,.93,.92],[.31,.45,.48],.55);
+  }
+  part(parent,name,shape,options,material,unitId,{pick=true}={}){
+    const mesh=BABYLON.MeshBuilder[shape](name,options,this.scene);
+    mesh.parent=parent;mesh.material=material;
+    mesh.isPickable=pick;
+    mesh.metadata={kind:'unit',unitId,castShadow:false,waterLurker:true};
+    mesh.receiveShadows=false;
+    return mesh;
+  }
+  build(unit){
+    this.ensureMaterials();
+    const id=String(unit.id),root=new BABYLON.TransformNode('neutral-water-lurker-'+id,this.scene);
+    root.metadata={kind:'unit',unitId:id,waterLurker:true};
+    const head=this.part(root,'lurker-submerged-mantle-'+id,'CreateSphere',
+      {diameter:1,segments:18},this.skin,id);
+    head.scaling.set(TILE_SIZE*1.65,.62*TILE_SIZE,TILE_SIZE*1.52);
+    head.position.y=-.72*TILE_SIZE;
+    const base=this.part(root,'lurker-underbody-'+id,'CreateSphere',
+      {diameter:1,segments:14},this.underside,id);
+    base.scaling.set(TILE_SIZE*1.35,.33*TILE_SIZE,TILE_SIZE*1.34);
+    base.position.y=-.93*TILE_SIZE;
+    const arms=[];
+    const number=5;
+    for(let n=0;n<number;n++){
+      const angle=n*Math.PI*2/number+.36;
+      const joint=new BABYLON.TransformNode('lurker-arm-pivot-'+id+'-'+n,this.scene);
+      joint.parent=root;
+      const spread=n%2===0?.72:.93;
+      joint.position.set(Math.cos(angle)*spread*TILE_SIZE,-.24*TILE_SIZE,
+        Math.sin(angle)*spread*TILE_SIZE);
+      joint.rotation.y=angle;
+      const pivots=[];let parent=joint;
+      for(let j=0;j<5;j++){
+        const length=TILE_SIZE*(j===0?.38:j===1?.35:j===2?.30:.25);
+        const width=TILE_SIZE*(.18-j*.027);
+        const pivot=new BABYLON.TransformNode('lurker-joint-'+id+'-'+n+'-'+j,this.scene);
+        pivot.parent=parent;
+        if(j>0)pivot.position.y=TILE_SIZE*(j===1?.38:j===2?.35:j===3?.30:.25);
+        const segment=this.part(pivot,'lurker-tentacle-'+id+'-'+n+'-'+j,'CreateCylinder',
+          {height:length,diameterTop:width*.72,diameterBottom:width,tessellation:9},this.skin,id);
+        segment.position.y=length/2;
+        if(j<4){
+          const pad=this.part(pivot,'lurker-sucker-'+id+'-'+n+'-'+j,'CreateSphere',
+            {diameter:1,segments:7},this.sucker,id,{pick:false});
+          pad.scaling.set(width*.62,length*.25,width*.29);
+          pad.position.set(0,length*.57,width*.40);
+        }
+        pivots.push(pivot);parent=pivot;
+      }
+      const ring=this.part(root,'lurker-water-ring-'+id+'-'+n,'CreateTorus',
+        {diameter:TILE_SIZE*.76,thickness:.025*TILE_SIZE,tessellation:24},this.ripple,id,{pick:false});
+      ring.rotation.x=Math.PI/2;
+      ring.position.set(joint.position.x,.018,joint.position.z);
+      const spray=this.part(root,'lurker-foam-'+id+'-'+n,'CreateTorus',
+        {diameter:TILE_SIZE*.43,thickness:.020*TILE_SIZE,tessellation:20},this.foam,id,{pick:false});
+      spray.rotation.x=Math.PI/2;
+      spray.position.set(joint.position.x,.028,joint.position.z);
+      arms.push({joint,pivots,ring,spray,n});
+    }
+    const eyes=[];
+    for(const side of [-1,1]){
+      const e=this.part(root,'lurker-glowing-eye-'+id+'-'+side,'CreateSphere',
+        {diameter:.13*TILE_SIZE,segments:9},this.eye,id);
+      e.position.set(side*.27*TILE_SIZE,-.46*TILE_SIZE,.64*TILE_SIZE);
+      eyes.push(e);
+    }
+    return{root,arms,head,eyes,id,unitId:id,phase:arms.map((_,i)=>i*1.43),state:'IDLE',
+      nodes:[root]};
+  }
+  surfaceY(snapshot,unit){
+    const tiles=snapshot?.map?.tiles||[];
+    const width=Math.max(1,Number(unit?.footprint?.width||2));
+    const height=Math.max(1,Number(unit?.footprint?.height||2));
+    const samples=[];
+    for(let dy=0;dy<height;dy++)for(let dx=0;dx<width;dx++){
+      const tile=tiles.find(t=>t.x===unit.x+dx&&t.y===unit.y+dy);
+      const y=Number(tile?.waterSurfaceZ);
+      if(tile&&Number.isFinite(y))samples.push(y);
+    }
+    const surface=samples.length?samples.reduce((a,b)=>a+b,0)/samples.length:
+      Number(unit.verticalSurfaceZ??unit.z??0);
+    return surface*ELEVATION_HEIGHT;
+  }
+  sync(snapshot,events=[]){
+    const active=new Set();
+    const mapId=snapshot?.map?.id??null;
+    if(this.mapId!==null&&mapId!==this.mapId)this.clear();
+    this.mapId=mapId;
+    for(const unit of snapshot?.units||[]){
+      if(unit?.monsterId!=='water_lurker'&&unit?.visualId!=='water_lurker_default')continue;
+      if(unit.alive===false)continue;
+      const id=String(unit.id);active.add(id);
+      let fx=this.entries.get(id);
+      if(!fx){fx=this.build(unit);this.entries.set(id,fx)}
+      const width=Math.max(1,Number(unit.footprint?.width||2));
+      const height=Math.max(1,Number(unit.footprint?.height||2));
+      fx.root.position.set((Number(unit.x)+(width-1)/2)*TILE_SIZE,
+        this.surfaceY(snapshot,unit),(Number(unit.y)+(height-1)/2)*TILE_SIZE);
+      fx.root.setEnabled(true);
+      fx.state=String(unit.acted?'IDLE':unit.moved?'SWIM':'IDLE');
+      fx.lastUnit=unit;
+    }
+    for(const [id,fx] of this.entries)if(!active.has(id)){
+      fx.root.dispose(false,false);this.entries.delete(id);
+    }
+    for(const event of events||[]){
+      if(event?.type!=='UNIT_ANIMATION')continue;
+      const fx=this.entries.get(String(event.unitId));if(!fx)continue;
+      if(event.state==='ATTACK')fx.lastAttackTime=performance.now();
+      if(event.state==='HURT')fx.lastHurtTime=performance.now();
+    }
+  }
+  updateFrame(now=performance.now()){
+    for(const fx of this.entries.values()){
+      const attack=fx.lastAttackTime!=null?Math.max(0,1-(now-fx.lastAttackTime)/820):0;
+      const recoil=fx.lastHurtTime!=null?Math.max(0,1-(now-fx.lastHurtTime)/360):0;
+      fx.head.position.y=-.72*TILE_SIZE+Math.sin(now*.0011)*.06-recoil*.14;
+      for(const arm of fx.arms){
+        const phase=now*.00155+fx.phase[arm.n],active=attack&&arm.n===Math.floor(fx.arms.length/2);
+        arm.joint.rotation.z=Math.sin(phase)*.14+(active?-.70*Math.sin(attack*Math.PI):0);
+        arm.joint.rotation.x=Math.cos(phase*.8)*.11;
+        for(let i=0;i<arm.pivots.length;i++){
+          const p=arm.pivots[i];
+          p.rotation.z=Math.sin(phase-i*.46)*(.12+i*.048)+
+            (active?.36*Math.sin((1-attack)*Math.PI*2):0);
+          p.rotation.x=Math.cos(phase*.81+i*.62)*.12;
+        }
+        arm.ring.scaling.setAll(1+.12*Math.sin(phase));
+        arm.spray.scaling.setAll(1+.06*Math.cos(phase));
+      }
+    }
+  }
+  clear(){for(const fx of this.entries.values())fx.root.dispose(false,false);this.entries.clear()}
+  dispose(){this.clear();for(const m of this.materials)m.dispose();this.materials=[]}
+  diagnostics(){return{visible:this.entries.size,meshes:[...this.entries.values()].reduce((n,fx)=>n+fx.root.getChildMeshes().length,0)}}
+}
+
 const factories=Object.freeze({
   'dance-magic':scene=>new DanceSongVfx(scene),
   'livia-duality':(scene,ctx)=>new LiviaDualityVfx(scene,{units:ctx.units}),
@@ -275,6 +440,7 @@ export class VfxManager{
       this.instances.set(module,factory(scene,ctx));
       this.seen.set(module,new Set());
     }
+    this.waterLurker=new WaterLurkerSurfaceModel(scene);
     liveManagers.set(scene,this);
     // Every behavior already registered its own scene-disposal hook above.
     // Release central references AFTER those hooks without disposing twice.
@@ -329,6 +495,12 @@ export class VfxManager{
         this.errors.set(module,msg);failures.push(`${module}:${msg}`);
       }
     }
+    // Water lurker only sees the same viewer-filtered snapshot as other Babylon
+    // effects. Unobserved monsters never create world meshes or reveal intel.
+    try{this.waterLurker.sync(snapshot,events)}catch(error){
+      const msg=String(error?.message||error);
+      this.errors.set('water-lurker',msg);failures.push(`water-lurker:${msg}`);
+    }
     // Preserve renderer's existing incomplete-subsystem retry contract.
     if(failures.length)throw Error(`VFX_SYNC_FAILED:${failures.join('|')}`);
   }
@@ -337,6 +509,9 @@ export class VfxManager{
     for(const [module,handler] of this.instances){
       try{handler.updateFrame(now)}
       catch(error){this.errors.set(module,`FRAME:${String(error?.message||error)}`)}
+    }
+    try{this.waterLurker.updateFrame(now)}catch(error){
+      this.errors.set('water-lurker',`FRAME:${String(error?.message||error)}`);
     }
     // UnitRenderer.updateFrame ran immediately before this manager. One shared
     // late pose pass keeps ALL body-bound effects with that rendered frame.
@@ -351,6 +526,7 @@ export class VfxManager{
   diagnostics(){
     return{
       visualBuild:'20261118-avreshi-vfx-2',
+      waterLurker:this.waterLurker.diagnostics(),
       instances:this.instances.size,
       active:Object.fromEntries([...this.instances].map(([key,handler])=>[key,handler.diagnostics?.()||{}])),
       errors:Object.fromEntries(this.errors),
@@ -368,6 +544,7 @@ export class VfxManager{
     if(this.disposed)return;
     this.disposed=true;
     if(liveManagers.get(this.scene)===this)liveManagers.delete(this.scene);
+    this.waterLurker.dispose();
     for(const handler of this.instances.values())handler.dispose?.();
     this.instances.clear();this.seen.clear();this.errors.clear();
   }

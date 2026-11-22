@@ -1368,8 +1368,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     }
     function applyMapEffects(attacker,affected,skill){
       if(!globalThis.EffectEngine||(!Array.isArray(skill.effects)&&!Array.isArray(skill.relationEffects)))return;
+      const appliedTo=new Set();
       for(const tile of affected){
-        const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant||!relationAllows(skill,attacker,occupant))continue;
+        const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant||appliedTo.has(occupant.id)||!relationAllows(skill,attacker,occupant))continue;
+        appliedTo.add(occupant.id);
         const effects=Array.isArray(skill.relationEffects)?skill.relationEffects.filter(effect=>!effect.relation||effect.relation===EffectEngine.relation(attacker,occupant)||effect.relation==="ALLY"&&EffectEngine.relation(attacker,occupant)==="SELF"):(skill.effects||[]);
         for(const effect of effects){
           const result=EffectEngine.apply({source:attacker,target:occupant,effect});
@@ -1628,9 +1630,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
             Math.max(Math.abs(tile.x-center.x),Math.abs(tile.y-center.y))<=Number(skill.radius||0))
           :ctx.aoeTiles(center,skill.radius||0);
       if(skill.shape==="LINE"){
+        const hitUnitIds=new Set();
         affected.forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);
-          if(!occupant||occupant.team===attacker.team)return;
+          if(!occupant||occupant.team===attacker.team||hitUnitIds.has(occupant.id))return;
+          hitUnitIds.add(occupant.id);
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance,random:ctx.random});
           if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
@@ -1665,7 +1669,13 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         // One actual outcome for each unit in the canonical footprint. The
         // Babylon arrow count is presentation-only and never implies damage.
         const summary={inArea:0,hit:0,miss:0,blocked:0,damaged:0,hpLoss:0};
-        affected.forEach(tile=>{
+        const contactTiles=new Map();
+        for(const tile of affected){
+          const unit=ctx.unitAt(tile.x,tile.y);if(!unit?.alive)continue;
+          const previous=contactTiles.get(unit.id);
+          if(!previous||(tile.x===center.x&&tile.y===center.y))contactTiles.set(unit.id,tile);
+        }
+        [...contactTiles.values()].forEach(tile=>{
           const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
           const relation=String(skill.areaDamage.relation||"ENEMY").toUpperCase();
           // A misfired ENEMY area spell still hits real enemies and may also
@@ -1787,8 +1797,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           `實際 HP 傷害 ${summary.hpLoss}。`,"BATTLE");
       }
       if(skill.aoeDamage){
+        const damagedUnitIds=new Set();
         affected.forEach(tile=>{
-          const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive)return;
+          const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive||damagedUnitIds.has(occupant.id))return;
+          damagedUnitIds.add(occupant.id);
           const dealt=EffectEngine.applyDamage(occupant,Math.round(Number(skill.aoeDamage)*bloodMult),{source:attacker}).hpLoss;
           ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${dealt} 傷害。`,"BATTLE");
           if(occupant.hp<=0){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
@@ -1829,7 +1841,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         }
         if(skill.alchemyKnockback){
           for(const victim of state().units.filter(u=>u.alive&&u.team!==attacker.team&&
-            affected.some(t=>t.x===u.x&&t.y===u.y))){
+            affected.some(t=>TacticalEngine.occupiesCell(u,t.x,t.y)))){
             ctx.applyForcedMovement(center,victim,Number(skill.alchemyKnockback),
               {name:skill.name,damage:0,damageType:'PHYSICAL'});
           }
@@ -1851,10 +1863,14 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         ctx.pushLog(`${skill.name}｜注入 Water Volume ${Number(resolved?.injectedVolume||0).toFixed(2)}｜${wetCount} 格形成／加深水域。`,"SYSTEM");
       }
       ctx.resolveEnvironmentEvents?.(environmentEvents,{reason:`${skill.name} 引發環境連鎖`});
+      const burnedUnitIds=new Set();
       affected.forEach(tile=>{
         if(!EnvironmentEngine.effectAt(environmentState,tile.x,tile.y).some(effect=>effect.type===EnvironmentEngine.EFFECT.BURNING))return;
         const occupant=ctx.unitAt(tile.x,tile.y);
-        if(occupant)ctx.applyEnvironmentHazardToUnit(occupant,{reason:"遭燃燒地形波及"});
+        if(occupant&&!burnedUnitIds.has(occupant.id)){
+          burnedUnitIds.add(occupant.id);
+          ctx.applyEnvironmentHazardToUnit(occupant,{reason:"遭燃燒地形波及"});
+        }
       });
       ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜中心 (${center.x},${center.y})。`,"BATTLE");
       if(transit){

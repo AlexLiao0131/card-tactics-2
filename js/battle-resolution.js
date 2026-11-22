@@ -5,7 +5,7 @@ import {CombatContactRules} from "./combat-contact-rules.js";
 import {UnitRuntimeEngine} from "./unit-runtime-engine.js";
 export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
-  const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+  const distance=(a,b)=>TacticalEngine.distanceBetween?.(a,b)??(Math.abs(a.x-b.x)+Math.abs(a.y-b.y));
   const resolveWithRandom=(map,a,t,skill,opt={})=>TacticalEngine.resolve(map,a,t,skill,{...opt,random,forceHit:opt.forceMiss?false:opt.forceHit===true});
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}

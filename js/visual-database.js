@@ -1,5 +1,14 @@
 export const VISUALS={
   characters:{
+    // The 2x2 marine monster is drawn as a persistent 3D Babylon mesh by the
+    // existing VfxManager. This transparent holder prevents a second capsule.
+    water_lurker_default:{battle:{kind:"BILLBOARD",baseFacing:"S",height:.01,width:.01,
+      asset:"assets/images/characters/water_lurker/transparent.png",
+      animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},
+        WALK:{duration:320,loop:true,procedural:"STEP"},
+        ATTACK:{duration:800,loop:false,procedural:"LUNGE"},
+        HURT:{duration:300,loop:false,procedural:"RECOIL"},
+        DEATH:{duration:1050,loop:false,procedural:"FALL"}}}},
     safiya_default:{portrait:"assets/images/cards/heroes/safiya.png",
       card:"assets/images/cards/heroes/safiya.png",tactical:"assets/images/cards/heroes/safiya.png",
       expressions:{},battle:{kind:"FIGURE",baseFacing:"E",height:1.70,

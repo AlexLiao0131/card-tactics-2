@@ -3,10 +3,16 @@
  * TacticalEngine and UnitRuntimeEngine; no second combat resolution.
  */
 import {UnitTraitEngine} from './unit-trait-engine.js';
+import {MonsterDatabase} from './monster-database.js';
 const isUncontrolled=UnitTraitEngine.isUncontrolled;
+// A registered encounter monster can act autonomously on team N; uncontrolled
+// heroes retain their separate controlOverride lifecycle and random policy.
+const isAutonomousNeutral=unit=>unit?.team==='N'&&
+  (isUncontrolled(unit)||!!MonsterDatabase.get(unit.monsterId)||
+    !!MonsterDatabase.forCharacter(unit?.character?.id));
 const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
 function chooseAttack({map,units,unit,runtime,random=Math.random,environmentState=null}={}){
-  if(!isUncontrolled(unit)||unit.team!=='N'||!unit.alive)return null;
+  if(!isAutonomousNeutral(unit)||!unit.alive)return null;
   const skills=(unit.character?.skills||[]).map(id=>globalThis.SkillDatabase?.get?.(id)).filter(s=>
     s&&s.target==='ENEMY'&&(!s.targetType||s.targetType==='SINGLE')&&
     s.weapon&&!s.utilityAction&&runtime?.canUseSkill?.(unit,s));
@@ -28,7 +34,7 @@ function chooseAttack({map,units,unit,runtime,random=Math.random,environmentStat
  * former allies and enemies; when none are in range, use the unchanged
  * TacticalEngine pathfinder for exactly one normal movement allowance. */
 function chooseMove({map,units,unit,random=Math.random,environmentState=null}={}){
-  if(!map||!unit?.alive||!isUncontrolled(unit)||unit.team!=='N')return[];
+  if(!map||!unit?.alive||!isAutonomousNeutral(unit))return[];
   const tactical=globalThis.TacticalEngine;
   if(!tactical?.reachable||!tactical?.pathTo)return[];
   const observers=(units||[]).filter(other=>other?.alive&&other.id!==unit.id&&
@@ -38,8 +44,8 @@ function chooseMove({map,units,unit,random=Math.random,environmentState=null}={}
   const target=observers[Math.floor(clamp(random(),0,.999999)*observers.length)];
   const locations=[...tactical.reachable(map,units,unit)].map(([key,cost])=>{
     const [x,y]=key.split(',').map(Number);
-    return{x,y,cost,distance:Math.abs(x-target.x)+Math.abs(y-target.y)};
-  }).filter(cell=>cell.distance<Math.abs(target.x-unit.x)+Math.abs(target.y-unit.y));
+    return{x,y,cost,distance:tactical.distanceBetween?.({...unit,x,y},target)??Math.abs(x-target.x)+Math.abs(y-target.y)};
+  }).filter(cell=>cell.distance<(tactical.distanceBetween?.(unit,target)??Math.abs(target.x-unit.x)+Math.abs(target.y-unit.y)));
   if(!locations.length)return[];
   const best=Math.min(...locations.map(v=>v.distance));
   const eligible=locations.filter(v=>v.distance===best);
@@ -48,9 +54,12 @@ function chooseMove({map,units,unit,random=Math.random,environmentState=null}={}
 }
 
 function availableActors(units,round){
-  return(units||[]).filter(u=>u?.alive&&u.team==='N'&&isUncontrolled(u)&&
-    u.controlOverride.startedRound<=round&&u.controlOverride.actionDoneRound!==round);
+  return(units||[]).filter(u=>u?.alive&&isAutonomousNeutral(u)&&
+    (isUncontrolled(u)?u.controlOverride.startedRound<=round&&
+      u.controlOverride.actionDoneRound!==round:u.neutralActionRound!==round));
 }
-function markActed(unit,round){if(!isUncontrolled(unit))return false;unit.controlOverride.actionDoneRound=round;return true;}
-export const NeutralActorEngine=Object.freeze({chooseAttack,chooseMove,availableActors,markActed,isUncontrolled});
+function markActed(unit,round){if(!isAutonomousNeutral(unit))return false;
+  if(isUncontrolled(unit))unit.controlOverride.actionDoneRound=round;
+  else unit.neutralActionRound=round;return true;}
+export const NeutralActorEngine=Object.freeze({chooseAttack,chooseMove,availableActors,markActed,isUncontrolled,isAutonomousNeutral});
 globalThis.NeutralActorEngine=NeutralActorEngine;

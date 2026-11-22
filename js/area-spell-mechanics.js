@@ -23,9 +23,12 @@ export const AreaSpellMechanics=Object.freeze({
     resolveEnvironmentEvents(events,{reason:`${name} 捲起實際水量`});
     if(events.some(e=>e.type==='FIRE_TORNADO_CREATED'))pushLog?.('🔥🌪 火焰與龍捲風結合，形成火龍捲！','SYSTEM');
     let contacts=0;
+    const contactedUnitIds=new Set();
     for(const tile of affected){
       const unit=unitAt(tile.x,tile.y);
-      if(!unit?.alive)continue;
+      if(!unit?.alive||contactedUnitIds.has(unit.id))continue;
+      // One multi-tile body receives exactly one displacement/damage roll.
+      contactedUnitIds.add(unit.id);
       const wind=EnvironmentEngine.effectAt(environmentState,tile.x,tile.y).find(
         e=>e.type===EnvironmentEngine.EFFECT.FIRE_TORNADO)||
         EnvironmentEngine.effectAt(environmentState,tile.x,tile.y).find(
