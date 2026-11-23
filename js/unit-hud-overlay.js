@@ -490,11 +490,26 @@ export class UnitHudOverlay{
     const visual=visualManagerFor(this.scene);
     for(const item of this.floats){
       if(item.pendingAction){
-        if(visual?.visualPending(item.pendingAction)){
+        // BattleResolution publishes all three sword-dance hit results in one
+        // synchronous batch, while the UnitRenderer plays the three official
+        // attack events consecutively. A result must become visible when ITS
+        // attack is on screen, not after the entire animation/VFX is gone.
+        // The action sequence is authoritative; do not infer timing from MP,
+        // guessed milliseconds, or the current final snapshot position.
+        const action=item.pendingAction;
+        const playing=visual?.units?.activeAnimations?.get(String(action.unitId))||
+          visual?.units?.activeAnimations?.get(action.unitId);
+        const started=playing?.event?.sequence===action.sequence&&
+          String(playing.event.unitId)===String(action.unitId)&&
+          playing.event.skillId===action.skillId;
+        if(!started&&visual?.visualPending(action)){
           item.node.hidden=true;
           retained.push(item);
           continue;
         }
+        // Begin the result lifetime only once the matching visible attack
+        // starts. If no playback was scheduled (e.g. PvP filtered event),
+        // release the already-validated official result instead of losing it.
         item.pendingAction=null;
         item.start=now;
       }
