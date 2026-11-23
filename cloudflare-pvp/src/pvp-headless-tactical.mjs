@@ -532,6 +532,10 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
         createCanonicalPerception(game,engine).end('E');
         const berserkActors=NeutralActorEngine.availableActors(game.units,game.round);
         for(const neutral of berserkActors){
+          const waterMode=NeutralActorEngine.chooseAquaticStance?.({
+            map:game.battlefield.map,units:game.units,unit:neutral,
+            environmentState:game.environmentState});
+          if(waterMode)hooks.pushLog(`${neutral.character.name} ${waterMode.to==='DIVING'?'下潛至水中':'上浮露出頭部'}。`,'BATTLE');
           let action=NeutralActorEngine.chooseAttack({map:game.battlefield.map,
             units:game.units,unit:neutral,runtime:engine.unitRuntime,
             random:engine.random,environmentState:game.environmentState});
@@ -549,10 +553,16 @@ export function resolveCanonicalPlayerCommand(game,action,seat){
               }
               BattlefieldFieldEngine.endMove(neutral);
             }
-            if(neutral.alive)action=NeutralActorEngine.chooseAttack({
-              map:game.battlefield.map,units:game.units,unit:neutral,
-              runtime:engine.unitRuntime,random:engine.random,
-              environmentState:game.environmentState});
+            if(neutral.alive){
+              const afterMove=NeutralActorEngine.chooseAquaticStance?.({
+                map:game.battlefield.map,units:game.units,unit:neutral,
+                environmentState:game.environmentState});
+              if(afterMove)hooks.pushLog(`${neutral.character.name} ${afterMove.to==='DIVING'?'下潛至水中':'上浮露出頭部'}。`,'BATTLE');
+              action=NeutralActorEngine.chooseAttack({
+                map:game.battlefield.map,units:game.units,unit:neutral,
+                runtime:engine.unitRuntime,random:engine.random,
+                environmentState:game.environmentState});
+            }
           }
           if(action){
             // A berserk neutral is autonomous; defend with the same official
