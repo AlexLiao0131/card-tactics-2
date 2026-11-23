@@ -287,9 +287,9 @@ class DanceSongVfx{
  * units, separate frame timers, or rebuilds of WaterRenderer's shared geometry.
  */
 class WaterLurkerSurfaceModel{
-  constructor(scene){
-    this.scene=scene;this.entries=new Map();this.materials=[];
-    this.initialized=false;
+  constructor(scene,{units=null}={}){
+    this.scene=scene;this.units=units;this.entries=new Map();this.materials=[];
+    this.initialized=false;this.seenGrabContacts=new Set();this.visibleUnitIds=new Set();
     scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
   }
   ensureMaterials(){
@@ -410,9 +410,169 @@ class WaterLurkerSurfaceModel{
       pupil.position.set(side*.29*TILE_SIZE,.04*TILE_SIZE,.885*TILE_SIZE);
       eyes.push(e);
     }
+    // The third ORIGINAL arm becomes the grappling arm during a real PULL.
+    // Its curved replacement is built only once per visible monster and only
+    // moved by node transforms per frame. Real Babylon meshes are instanced:
+    // no Tube/MeshBuilder geometry rebuild in the animation loop.
+    const gripRig=new BABYLON.TransformNode('lurker-grip-rig-'+id,this.scene);
+    gripRig.parent=root;gripRig.setEnabled(false);
+    const links=[],pads=[];
+    const stem=this.part(gripRig,'lurker-grip-stem-'+id,'CreateCylinder',
+      {height:1,diameterTop:1,diameterBottom:1,tessellation:8},this.skin,id,{pick:false});
+    const sucker=this.part(gripRig,'lurker-grip-sucker-'+id,'CreateSphere',
+      {diameter:1,segments:7},this.sucker,id,{pick:false});
+    for(let i=0;i<22;i++){
+      const link=i===0?stem:stem.createInstance?.('lurker-grip-link-'+id+'-'+i)||
+        this.part(gripRig,'lurker-grip-link-'+id+'-'+i,'CreateCylinder',
+          {height:1,diameterTop:1,diameterBottom:1,tessellation:8},this.skin,id,{pick:false});
+      link.parent=gripRig;link.isPickable=false;link.metadata={kind:'unit',unitId:id,waterLurker:true,castShadow:false};
+      if(!link.rotationQuaternion&&BABYLON.Quaternion)link.rotationQuaternion=new BABYLON.Quaternion(0,0,0,1);
+      links.push(link);
+    }
+    for(let i=0;i<8;i++){
+      const pad=i===0?sucker:sucker.createInstance?.('lurker-grip-pad-'+id+'-'+i)||
+        this.part(gripRig,'lurker-grip-pad-'+id+'-'+i,'CreateSphere',
+          {diameter:1,segments:7},this.sucker,id,{pick:false});
+      pad.parent=gripRig;pad.isPickable=false;pad.metadata={kind:'unit',unitId:id,waterLurker:true,castShadow:false};
+      pads.push(pad);
+    }
     return{root,arms,head,headRig,face,base,eyes,id,unitId:id,
+      gripRig,gripLinks:links,gripPads:pads,pendingGrabs:[],grab:null,
       phase:arms.map((_,i)=>i*1.43),state:'IDLE',diveBlend:0,targetDive:0,
       lastPoseTime:null,nodes:[root]};
+  }
+  // Result-derived pairing: ATTACK + a subsequent, actual FORCED_MOVE for
+  // the same visible target, toward this 2x2 monster. A miss, resisted PULL,
+  // collision without movement, or a hidden target has no such pairing.
+  queueOfficialGrabs(events){
+    const actions=(events||[]).filter(e=>e?.type==='UNIT_ANIMATION'&&
+      e.state==='ATTACK'&&e.skillId==='water_tentacle'&&e.targetId&&
+      this.entries.has(String(e.unitId)));
+    const moves=(events||[]).filter(e=>e?.type==='UNIT_ANIMATION'&&
+      e.state==='WALK'&&e.kind==='FORCED_MOVE'&&Array.isArray(e.path)&&e.path.length>1);
+    for(const action of actions){
+      const fx=this.entries.get(String(action.unitId));
+      if(!fx||!this.visibleUnitIds.has(String(action.targetId)))continue;
+      const before=move=>move.path[0],after=move=>move.path.at(-1);
+      const center={x:Number(fx.lastUnit.x)+(Number(fx.lastUnit.footprint?.width||2)-1)/2,
+        y:Number(fx.lastUnit.y)+(Number(fx.lastUnit.footprint?.height||2)-1)/2};
+      const distance=point=>Math.hypot(Number(point.x)-center.x,Number(point.y)-center.y);
+      const move=moves.find(e=>String(e.unitId)===String(action.targetId)&&
+        Number(e.sequence)>Number(action.sequence)&&
+        e.path.every(pt=>Number.isFinite(Number(pt.x))&&Number.isFinite(Number(pt.y)))&&
+        distance(after(e))+.001<distance(before(e)));
+      if(!move)continue;
+      const key=`${this.mapId}:${String(action.unitId)}:${String(action.sequence)}:${String(move.sequence)}`;
+      if(this.seenGrabContacts.has(key))continue;
+      this.seenGrabContacts.add(key);
+      // A single monster has one physical grip appendage. Subsequent attacks
+      // queue rather than overwriting a currently rendered victim.
+      fx.pendingGrabs.push({action,move,targetId:String(action.targetId),receivedAt:performance.now(),startedAt:null});
+      if(fx.pendingGrabs.length>3)fx.pendingGrabs.shift();
+    }
+    while(this.seenGrabContacts.size>128)this.seenGrabContacts.delete(this.seenGrabContacts.values().next().value);
+  }
+  // This is a VIEW-only overlay on UnitRenderer's existing interpolated root.
+  // The next UnitRenderer.updateFrame resets its base pose, so lift/struggle
+  // never mutates the unit x/y/z, movement path, collision or saved snapshot.
+  targetRenderEntry(id){return this.units?.entries?.get(String(id))||this.units?.entries?.get(id)||null}
+  startVisibleGrab(fx,now){
+    if(fx.grab||!fx.pendingGrabs.length)return;
+    const next=fx.pendingGrabs[0];
+    if(!this.visibleUnitIds.has(next.targetId)||!this.targetRenderEntry(next.targetId)){
+      fx.pendingGrabs.shift();return;
+    }
+    const active=this.units?.activeAnimations?.get(fx.id)||
+      this.units?.activeAnimations?.get(fx.lastUnit.id);
+    if(active?.event?.sequence===next.action.sequence&&active.event.skillId==='water_tentacle'){
+      next.startedAt=Number(active.startedAt??now);
+      fx.grab=next;fx.pendingGrabs.shift();
+    }else if(now-next.receivedAt>4500){
+      // Never replay an action that was cancelled or never began rendering.
+      fx.pendingGrabs.shift();
+    }
+  }
+  // Position and rotate a cached cylinder so its local +Y follows a segment.
+  // Quaternion(UP->direction) avoids Euler gimbal flips around the victim.
+  poseGripLink(mesh,a,b,width){
+    const dx=b.x-a.x,dy=b.y-a.y,dz=b.z-a.z,len=Math.hypot(dx,dy,dz);
+    if(len<.00001){mesh.setEnabled(false);return}
+    mesh.setEnabled(true);
+    mesh.position.set((a.x+b.x)/2,(a.y+b.y)/2,(a.z+b.z)/2);
+    mesh.scaling.set(width,len+width*.18,width);
+    const vx=dz/len,vz=-dx/len,w=1+dy/len;
+    if(mesh.rotationQuaternion){
+      if(w<.00001)mesh.rotationQuaternion.set(1,0,0,0);
+      else{const inverse=1/Math.hypot(vx,vz,w);mesh.rotationQuaternion.set(vx*inverse,0,vz*inverse,w*inverse)}
+    }else{
+      // Small renderer mocks do not carry Babylon's quaternion constructor.
+      mesh.rotation.x=Math.atan2(dz,Math.hypot(dx,dy));
+      mesh.rotation.z=Math.atan2(-dx,dy);
+    }
+  }
+  drawOfficialGrab(fx,now){
+    this.startVisibleGrab(fx,now);
+    const grab=fx.grab,rig=fx.gripRig;
+    const realArm=fx.arms[Math.floor(fx.arms.length/2)];
+    if(!grab){rig.setEnabled(false);realArm.joint.setEnabled(true);return;}
+    const target=this.targetRenderEntry(grab.targetId);
+    if(!this.visibleUnitIds.has(grab.targetId)||!target?.root||target.root.isDisposed?.()){
+      fx.grab=null;rig.setEnabled(false);realArm.joint.setEnabled(true);return;
+    }
+    const duration=1150,progress=Math.max(0,Math.min(1,(now-grab.startedAt)/duration));
+    if(now-grab.startedAt>=duration){fx.grab=null;rig.setEnabled(false);realArm.joint.setEnabled(true);return;}
+    rig.setEnabled(true);realArm.joint.setEnabled(false);
+    const smooth=t=>{const v=Math.max(0,Math.min(1,t));return v*v*(3-2*v)};
+    const grasp=smooth((progress-.17)/.25)*(1-smooth((progress-.83)/.17));
+    const lifted=Math.sin(Math.PI*smooth((progress-.31)/.67))*grasp;
+    const height=Math.max(.7,Number(target.height||target.definition?.height||1.7));
+    const raise=Math.min(.72*TILE_SIZE,height*.46)*lifted;
+    // Directly follow the REAL UnitRenderer pose, including the official
+    // FORCED_MOVE animation's interpolated X/Z and terrain elevation.
+    target.root.position.y+=raise;
+    target.root.rotation.z+=Math.sin(progress*Math.PI*9)*.095*grasp;
+    const base=target.root.getAbsolutePosition?.()||target.root.position;
+    const centered=target.kind==='CAPSULE'?0:height*.64;
+    const torso={x:base.x-fx.root.position.x,
+      y:base.y+centered-fx.root.position.y,
+      z:base.z-fx.root.position.z};
+    const dx=torso.x,dz=torso.z,length=Math.max(.001,Math.hypot(dx,dz)),ux=dx/length,uz=dz/length;
+    const radius=Math.max(.17*TILE_SIZE,Math.min(.38*TILE_SIZE,Number(target.width||height*.40)*.65));
+    const radial=radius*(1+.62*(1-grasp));
+    const start={x:ux*.73*TILE_SIZE,y:(-.22-.55*fx.diveBlend)*TILE_SIZE,z:uz*.73*TILE_SIZE};
+    const entry={x:torso.x+ux*radial,y:torso.y-.22*height,z:torso.z+uz*radial};
+    const points=[],lead=8,total=fx.gripLinks.length;
+    // Smooth water-to-torso reach, followed by >1 genuine 3D turns around
+    // the torso. The pad instances face inward, toward the character.
+    for(let i=0;i<=lead;i++){
+      const t=i/lead,u=1-t;
+      const control={x:(start.x+entry.x)*.5,y:Math.max(start.y,entry.y)+.34*TILE_SIZE,z:(start.z+entry.z)*.5};
+      points.push({x:u*u*start.x+2*u*t*control.x+t*t*entry.x,
+        y:u*u*start.y+2*u*t*control.y+t*t*entry.y,
+        z:u*u*start.z+2*u*t*control.z+t*t*entry.z});
+    }
+    const theta=Math.atan2(uz,ux);
+    for(let i=1;i<=total-lead;i++){
+      const t=i/(total-lead),angle=theta+t*Math.PI*2.4;
+      points.push({x:torso.x+radial*Math.cos(angle),
+        y:torso.y+height*(-.22+t*.39),z:torso.z+radial*Math.sin(angle)});
+    }
+    const shown=Math.max(1,Math.ceil(total*smooth(progress/.28)*(1-smooth((progress-.91)/.09))));
+    for(let i=0;i<total;i++){
+      const mesh=fx.gripLinks[i];
+      if(i>=shown){mesh.setEnabled(false);continue;}
+      // Width tapers toward the last visible curled tip.
+      const width=TILE_SIZE*(.17-.085*i/total);
+      this.poseGripLink(mesh,points[i],points[i+1],width);
+    }
+    for(let i=0;i<fx.gripPads.length;i++){
+      const pad=fx.gripPads[i],at=lead+Math.floor((total-lead-1)*i/fx.gripPads.length);
+      if(at>=shown){pad.setEnabled(false);continue;}
+      const pt=points[at+1],toward={x:torso.x-pt.x,z:torso.z-pt.z},n=Math.max(.0001,Math.hypot(toward.x,toward.z));
+      pad.setEnabled(true);
+      pad.position.set(pt.x+toward.x/n*radius*.14,pt.y,pt.z+toward.z/n*radius*.14);
+      pad.scaling.set(TILE_SIZE*.10,TILE_SIZE*.05,TILE_SIZE*.10);
+    }
   }
   surfaceY(snapshot,unit){
     const tiles=snapshot?.map?.tiles||[];
@@ -431,8 +591,9 @@ class WaterLurkerSurfaceModel{
   sync(snapshot,events=[]){
     const active=new Set();
     const mapId=snapshot?.map?.id??null;
-    if(this.mapId!==null&&mapId!==this.mapId)this.clear();
+    if(this.mapId!==null&&mapId!==this.mapId){this.clear();this.seenGrabContacts.clear()}
     this.mapId=mapId;
+    this.visibleUnitIds=new Set((snapshot?.units||[]).filter(u=>u?.alive!==false).map(u=>String(u.id)));
     for(const unit of snapshot?.units||[]){
       if(unit?.monsterId!=='water_lurker'&&unit?.visualId!=='water_lurker_default')continue;
       if(unit.alive===false)continue;
@@ -460,6 +621,7 @@ class WaterLurkerSurfaceModel{
       if(event.state==='ATTACK')fx.lastAttackTime=performance.now();
       if(event.state==='HURT')fx.lastHurtTime=performance.now();
     }
+    this.queueOfficialGrabs(events);
   }
   updateFrame(now=performance.now()){
     for(const fx of this.entries.values()){
@@ -492,11 +654,15 @@ class WaterLurkerSurfaceModel{
         arm.ring.scaling.setAll(1+.12*Math.sin(phase));
         arm.spray.scaling.setAll(1+.06*Math.cos(phase));
       }
+      this.drawOfficialGrab(fx,now);
     }
   }
-  clear(){for(const fx of this.entries.values())fx.root.dispose(false,false);this.entries.clear()}
+  clear(){for(const fx of this.entries.values())fx.root.dispose(false,false);this.entries.clear();this.seenGrabContacts.clear()}
   dispose(){this.clear();for(const m of this.materials)m.dispose();this.materials=[]}
-  diagnostics(){return{visible:this.entries.size,meshes:[...this.entries.values()].reduce((n,fx)=>n+fx.root.getChildMeshes().length,0)}}
+  diagnostics(){return{visible:this.entries.size,
+    grabbing:[...this.entries.values()].filter(fx=>!!fx.grab).length,
+    queuedGrabs:[...this.entries.values()].reduce((n,fx)=>n+fx.pendingGrabs.length,0),
+    meshes:[...this.entries.values()].reduce((n,fx)=>n+fx.root.getChildMeshes().length,0)}}
 }
 
 const factories=Object.freeze({
@@ -546,7 +712,7 @@ export class VfxManager{
       this.instances.set(module,factory(scene,ctx));
       this.seen.set(module,new Set());
     }
-    this.waterLurker=new WaterLurkerSurfaceModel(scene);
+    this.waterLurker=new WaterLurkerSurfaceModel(scene,{units:this.units});
     liveManagers.set(scene,this);
     // Every behavior already registered its own scene-disposal hook above.
     // Release central references AFTER those hooks without disposing twice.
