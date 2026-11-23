@@ -44,18 +44,20 @@ const kit=['safiya_sword_dance','safiya_enchantment_dance','safiya_inspiring_dan
   'safiya_purifying_dance','safiya_dance_of_death'];
 const singerIds=['ophi_healing_song','nereia_ocean_song','angel_hymn'];
 
-test('3V 舞者已正式註冊，五舞全在 MAGIC，無平行技能資料庫',()=>{
+test('3V 舞者劍舞為零消耗 ATTACK，其餘四舞維持 MAGIC，共用正式技能資料庫',()=>{
  const hero=CHARACTERS.safiya;
  assert.ok(hero);
  assert.equal(hero.genetics.grade,'3V');
  assert.deepEqual([...hero.genetics.values],['AGI','WIL','LUK']);
  for(const id of kit){
   assert.ok(SKILLS[id],id);
-  assert.equal(SKILLS[id].category,'MAGIC',id);
+  assert.equal(SKILLS[id].category,id==='safiya_sword_dance'?'ATTACK':'MAGIC',id);
   assert.ok(SkillDatabase.get(id),id);
  }
  assert.ok(LOADOUTS.safiya_default,'official loadout missing');
  for(const id of kit)assert.ok(LOADOUTS.safiya_default.skillIds.includes(id),id);
+ assert.equal(SKILLS.safiya_sword_dance.manaCost,0,'劍舞應無MP消耗');
+ assert.equal(SKILLS.safiya_sword_dance.resourceCosts,undefined,'劍舞不能額外扣其他資源');
 });
 
 test('聲望桃紅色且只增不減：上限與範圍門檻由正式 ResourceProfile 持有',()=>{
