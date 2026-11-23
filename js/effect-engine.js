@@ -528,7 +528,8 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     const rel=relation(source,target),selected=effects.filter(e=>!e.relation||e.relation===rel);
     return selected.map(effect=>apply({source,target,effect}));
   }
-  // Passive response to the successful SONG TICK, not visual/projectile playback.
+  // Rhythm is granted only when an authoritative song pulse actually reaches
+  // this listener, whether it is the first cast pulse or a later round pulse.
   function resonateWithSong(target,rule){
     if(!target?.alive||!rule||!SkillDatabase.passiveList(target.character?.passives||[])
       .some(p=>p.songResonance===true))return false;
@@ -539,6 +540,43 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       name:"律動・聖歌",classification:"POSITIVE",duration:2,durationClock:"FULL_FUTURE_ROUNDS",
       nextDanceInherentMagic:{element:"HOLY",power:Number(rule.holySwordPower)}}});
     return true;
+  }
+  // One canonical song pulse for both the initial cast and future round ticks.
+  // The HUD sees only these real EffectEngine entries, never synthetic aura icons.
+  function pulseSongChannel(unit,effect,{units=[]}={}){
+    const radius=Math.max(0,Number(effect.radius||0)),affected=[];
+    for(const listener of units){
+      if(!listener?.alive||Math.abs(listener.x-unit.x)+Math.abs(listener.y-unit.y)>radius)continue;
+      const friend=listener.team===unit.team;
+      const rules=friend?effect.allyEffects||[]:effect.enemyEffects||[];
+      let appliedToListener=false;
+      for(const rule of rules){
+        const outcome=apply({source:unit,target:listener,effect:rule});
+        if(outcome?.applied)appliedToListener=true;
+      }
+      // RHYTHM fires only for a listener reached by a successfully applied song.
+      if(appliedToListener){
+        resonateWithSong(listener,effect.rhythm);
+        affected.push(listener.id);
+      }
+    }
+    const recovery=effect.sourceResourceRecovery;
+    if(recovery?.key)globalThis.UnitRuntimeEngine?.changeResource?.(unit,recovery.key,Number(recovery.amount||0));
+    return{type:"SONG_CHANNEL",effectId:effect.id,affected};
+  }
+  function pulseSongOnCast(unit,rule,{units=[]}={}){
+    if(!unit?.alive||rule?.type!=="SONG_CHANNEL")return null;
+    const channel=state(unit).find(e=>e.type==="SONG_CHANNEL"&&e.id===rule.id);
+    if(!channel)return null;
+    const pulse=pulseSongChannel(unit,channel,{units});
+    // The cast itself is pulse one of the declared channel duration; two
+    // future round ticks complete a three-round song. Do not grant a fourth
+    // pulse or alter the HEALING_CHANNEL timeline.
+    if(channel.remaining!=null){
+      channel.remaining--;
+      if(channel.remaining<=0)unit.effects=state(unit).filter(e=>e!==channel);
+    }
+    return pulse;
   }
   function tick(unit,{units=[]}={}){
     const events=[];
@@ -557,28 +595,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
           if(listener)resonateWithSong(listener,effect.rhythm);}
         events.push({type:"HEALING_CHANNEL",effectId:effect.id,healed});
       }
-      if(effect.type==="SONG_CHANNEL"){
-        const radius=Math.max(0,Number(effect.radius||0)),affected=[];
-        for(const listener of units){
-          if(!listener?.alive||Math.abs(listener.x-unit.x)+Math.abs(listener.y-unit.y)>radius)continue;
-          const friend=listener.team===unit.team;
-          const rules=friend?effect.allyEffects||[]:effect.enemyEffects||[];
-          let appliedToListener=false;
-          for(const rule of rules){
-            const outcome=apply({source:unit,target:listener,effect:rule});
-            if(outcome?.applied)appliedToListener=true;
-          }
-          // RHYTHM responds to an actual song effect, even if the singer is an enemy.
-          // A blocked or inaudible song grants no free rhythm benefit.
-          if(appliedToListener){
-            resonateWithSong(listener,effect.rhythm);
-            affected.push(listener.id);
-          }
-        }
-        const recovery=effect.sourceResourceRecovery;
-        if(recovery?.key)globalThis.UnitRuntimeEngine?.changeResource?.(unit,recovery.key,Number(recovery.amount||0));
-        events.push({type:"SONG_CHANNEL",effectId:effect.id,affected});
-      }
+      if(effect.type==="SONG_CHANNEL")events.push(pulseSongChannel(unit,effect,{units}));
       if(effect.type==="HEAL_OVER_TIME"){const amount=heal(unit,effect.amount);globalThis.UnitAnimationEngine?.emitHealingOverTime?.(unit,amount);events.push({type:"HEAL_OVER_TIME",effectId:effect.id,amount});}
       if(effect.type==="DAMAGE_OVER_TIME"){const source=units.find(u=>u.id===effect.sourceUnitId)||null;const internal=effect.id==="BLEEDING"||/POISON|TOXIN|SUFFOCAT|DROWN/.test(String(effect.id||""));const amount=damage(unit,effect.amount,{source,kind:internal?"INTERNAL":"EXTERNAL",charge:effect.id==="BLEEDING"?"BLEED":"NONE"});globalThis.UnitAnimationEngine?.emitDamageOverTime?.(unit,amount,effect);events.push({type:"DAMAGE_OVER_TIME",effectId:effect.id,amount});}
       if(effect.remaining!=null){
@@ -679,7 +696,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function skillIds(unit){return [...(unit?.character?.skills||[]),...(unit?.grantedSkills||[]).filter(g=>!g.bloodMemory||unit?._bloodAwakened).map(g=>g.skillId)];}
   function bloodMemorySkills(unit){return (unit?.grantedSkills||[]).filter(g=>g.bloodMemory).map(g=>SkillDatabase.get(g.skillId));}
-  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,positiveBuffChoices,dispelPositive,rewardDispel,resolveIncomingDamage,consumeActionSkip,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
+  return{commandStatusResistance,isStandaloneDirectEffectType,isSupportedChannelRule,isInvulnerable,linkedGuardian,markVengeance,vengeanceMultiplier,consumeVengeance,saintHealing,applyDamage,bloodBurstCenters,rememberBloodSkill,bloodMemorySkills,interruptChannel,weaponEnchantment,consumeWeaponEnchantment,relation,traits,hasTrait,state,targetMatches,heal,damage,hasEffect,shieldHp,positiveBuffChoices,dispelPositive,rewardDispel,resolveIncomingDamage,consumeActionSkip,removeEffectById,exchangeWaterBurn,removeNegative,consumeNegativeEffectGuard,addEffect,syncModifiers,attributeView,grantSkill,copyableSkills,apply,resolveRelationEffects,pulseSongOnCast,tick,syncConditionalPassives,isStealthed,applyStealth,breakStealth,directTargetAllowed,resolveProximityReveal,skillIds};
 }
 export const EffectEngine=createEffectEngine();
 globalThis.EffectEngine=EffectEngine;

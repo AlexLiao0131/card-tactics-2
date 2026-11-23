@@ -2175,8 +2175,12 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const result=EffectEngine.apply({source:attacker,target:attacker,effect:rule});
       if(!result?.applied)return skillFailure(attacker,skill,"CHANNEL_REJECTED",attacker);
       ctx.consumeSkill(attacker,skill);
+      // First real SONG_CHANNEL pulse belongs to the cast, not to next
+      // round's timer. PvP and local both use this official controller.
+      const firstPulse=rule.type==="SONG_CHANNEL"
+        ?EffectEngine.pulseSongOnCast(attacker,rule,{units:state().units}):null;
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
-      ctx.pushLog(`${attacker.character.name} 開始吟唱「${skill.name}」，最多持續 ${rule.duration} 回合；移動或交戰時中斷。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name} 開始吟唱「${skill.name}」，最多持續 ${rule.duration} 回合；${firstPulse?`已立即作用於 ${firstPulse.affected.length} 名單位；`:""}移動或交戰時中斷。`,"BATTLE");
       return finishActiveSkill(attacker);
     }
     function prepareAttack(attacker,defender,skill,{confirmOrdinaryAttack=false}={}){
