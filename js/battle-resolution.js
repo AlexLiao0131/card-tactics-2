@@ -471,15 +471,26 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           return path.length?{tile,path}:null;
         }).filter(Boolean).sort((a,b)=>a.path.length-b.path.length||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
       const preferred=choices[0];if(!preferred)return false;
+      // Each tile entry stays authoritative for terrain, water and hazards.
+      // Presentation receives one continuous route instead of disconnected WALK
+      // events that rewind when the final snapshot has already been committed.
+      const origin={x:actor.x,y:actor.y,z:actor.z},travelled=[];
       for(const tile of preferred.path){
-        if(!actor.alive||!TacticalEngine.canActiveMove(c.map,c.units,actor,tile.x,tile.y))return false;
-        const from={x:actor.x,y:actor.y,z:actor.z};actor.x=tile.x;actor.y=tile.y;
+        if(!actor.alive||!TacticalEngine.canActiveMove(c.map,c.units,actor,tile.x,tile.y))break;
+        actor.x=tile.x;actor.y=tile.y;
         if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(actor,tile);
         else actor.z=Number(tile.elevation||0);
-        globalThis.UnitAnimationEngine?.emitMove?.(actor,{from,kind:"BACKSTEP",duration:170});
         hooks.onBackstep?.(actor,tile);
+        travelled.push({x:actor.x,y:actor.y,z:actor.z});
+        // A field-triggered relocation or lethal hazard cancels the rest of
+        // the planned route, never teleports the figure back to its origin.
+        if(!actor.alive||actor.x!==tile.x||actor.y!==tile.y)break;
       }
-      TacticalEngine.faceToward(actor,target);return true;
+      if(travelled.length)globalThis.UnitAnimationEngine?.emitMove?.(actor,{
+        from:origin,path:travelled,kind:"DANCE_STEP"
+      });
+      TacticalEngine.faceToward(actor,target);
+      return travelled.length===preferred.path.length;
     };
     const enqueueDance=(index)=>{
       if(!c.initiator.alive||!c.originalTarget.alive||!c.skill?.danceSequence||c.skill.danceReturn)return;

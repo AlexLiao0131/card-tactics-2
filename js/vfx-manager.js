@@ -110,9 +110,11 @@ export function actionVisualsPending(unitRenderer,instances,action){
  * the official UNIT_ANIMATION event exclusively supplies source and target.
  */
 class DanceSongVfx{
-  constructor(scene){
-    this.scene=scene;this.active=[];this.recent=new Set();
-    this.materials={};this.heartTexture=null;
+  constructor(scene,{units=null}={}){
+    this.scene=scene;this.units=units;
+    this.active=[];this.pending=new Map();this.bladePool=[];
+    this.recent=new Set();this.materials={};this.heartTexture=null;
+    this.disposed=false;
     scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
   }
   mat(id,rgb){
@@ -147,59 +149,98 @@ class DanceSongVfx{
     this.heartTexture=texture;this.materials.heart=mat;return mat;
   }
   sync(snapshot,events=[]){
+    if(this.disposed)return;
     for(const e of events){
       if(e?.type!=='UNIT_ANIMATION'||!Number.isFinite(e.x)||!Number.isFinite(e.y))continue;
-      if(this.recent.has(e.sequence))continue;
+      const role=VfxDatabase.roleFor('dance-magic',e.skillId);
+      if(!role||this.recent.has(e.sequence))continue;
       this.recent.add(e.sequence);
       if(this.recent.size>512)this.recent.delete(this.recent.values().next().value);
-      const role=VfxDatabase.roleFor('dance-magic',e.skillId);
-      if(!role)continue;
-      const now=performance.now(),from=this.pos(snapshot,e.x,e.y,1.1);
+      const from=this.pos(snapshot,e.x,e.y,1.1);
       const tx=Number.isFinite(e.targetX)?e.targetX:e.x,ty=Number.isFinite(e.targetY)?e.targetY:e.y;
       const to=this.pos(snapshot,tx,ty,1.15);
-      let mesh,duration=850,bladeRoot=null;
-      if(role==='CHARM'&&Number.isFinite(e.targetX)&&Number.isFinite(e.targetY)){
-        mesh=BABYLON.MeshBuilder.CreatePlane('dancer-charm-heart',{size:.85},this.scene);
-        mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;mesh.material=this.heartMaterial();
-        mesh.position.copyFrom(from);duration=780;
+      if(this.units&&(role==='SWORD'||role==='DEATH')){
+        // Resolution commits all hits at once; the visible animator plays them
+        // one by one. Only their immutable event/positions are retained.
+        this.pending.set(e.sequence,{event:e,role,from,to});
+      }else this.spawn(e,role,from,to);
+    }
+  }
+  spawn(e,role,from,to){
+    const sword=role==='SWORD'||role==='DEATH';
+    let mesh,bladeRoot=null,trails=null,duration=850,baseAngle=0;
+    if(role==='CHARM'&&Number.isFinite(e.targetX)&&Number.isFinite(e.targetY)){
+      mesh=BABYLON.MeshBuilder.CreatePlane('dancer-charm-heart',{size:.85},this.scene);
+      mesh.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
+      mesh.material=this.heartMaterial();mesh.position.copyFrom(from);duration=780;
+    }else{
+      // Recycle the exact same GPU buffers across consecutive sword contacts.
+      // A triple contact has at most three reusable blade sets; no growth per
+      // dance cast and no stale mesh still alive after the scene is disposed.
+      const reused=sword?this.bladePool.pop():null;
+      if(reused){
+        mesh=reused.mesh;bladeRoot=reused.bladeRoot;trails=reused.trails;
+        mesh.setEnabled(true);bladeRoot.setEnabled(true);
       }else{
         mesh=BABYLON.MeshBuilder.CreateTorus('dance-'+role,{diameter:role==='INSPIRE'||role==='PURIFY'?
           (Math.max(1,Number(e.danceRadius||1))*2+.3)*TILE_SIZE:1.18,
           thickness:role==='INSPIRE'||role==='PURIFY'?.065:.10,tessellation:32},this.scene);
-        mesh.material=this.mat(role,role==='HYMN'?[1,.90,.45]:role==='OCEAN'?[.20,.69,.94]:
-          role==='PURIFY'?[.94,.85,.61]:role==='CHARM'?[1,.31,.65]:[.88,.38,.75]);
-        mesh.position.copyFrom(role==='SWORD'||role==='DEATH'?to:from);
-        duration=Math.max(280,Math.min(1100,Number(e.duration)||750));
-        if(role==='SWORD'||role==='DEATH'){
-          // A visible sweeping pair of blades for EACH authoritative hit.
-          // UnitRenderer owns the actual step/position and its articulated pose;
-          // these meshes contain no collision or gameplay-side movement.
-          bladeRoot=new BABYLON.TransformNode('dancer-blade-arcs-'+e.sequence,this.scene);
-          bladeRoot.position.copyFrom(to);
-          const step=Number(e.danceStep??e.deathDanceStep??1);
+      }
+      mesh.material=this.mat(role,role==='HYMN'?[1,.90,.45]:role==='OCEAN'?[.20,.69,.94]:
+        role==='PURIFY'?[.94,.85,.61]:role==='CHARM'?[1,.31,.65]:[.88,.38,.75]);
+      mesh.position.copyFrom(sword?to:from);
+      duration=Math.max(280,Math.min(1100,Number(e.duration)||750));
+      if(sword){
+        const step=Number(e.danceStep??e.deathDanceStep??1);
+        baseAngle=(step%3)*Math.PI*.55;
+        if(!bladeRoot){
+          bladeRoot=new BABYLON.TransformNode('dancer-blade-arcs',this.scene);
+          trails=[];
           const pink=this.mat('dancer-blade-pink',[1,.36,.72]);
           const ivory=this.mat('dancer-blade-ivory',[1,.89,.97]);
           for(let k=0;k<2;k++){
-            const startAngle=(step%3)*Math.PI*.55+k*.44;
             const points=Array.from({length:13},(_,i)=>{
-              const theta=startAngle+(i/12)*Math.PI*1.30;
+              const theta=k*.44+(i/12)*Math.PI*1.30;
               const radius=k===0?.98:.75;
               return new BABYLON.Vector3(Math.cos(theta)*radius,
                 .36+Math.sin(i/12*Math.PI)*.64+(k*.19),Math.sin(theta)*radius);
             });
-            const trail=BABYLON.MeshBuilder.CreateTube('dancer-cut-'+e.sequence+'-'+k,
+            const trail=BABYLON.MeshBuilder.CreateTube('dancer-cut-'+k,
               {path:points,radius:k===0?.045:.026,tessellation:5,updatable:false},this.scene);
             trail.parent=bladeRoot;trail.material=k===0?pink:ivory;
             trail.isPickable=false;trail.metadata={castShadow:false};
+            trails.push(trail);
           }
-          duration=Math.min(duration,620);
         }
+        bladeRoot.position.copyFrom(to);
+        bladeRoot.rotation.y=baseAngle;bladeRoot.scaling.setAll(1);
+        for(const trail of trails)trail.visibility=1;
+        duration=Math.min(duration,620);
       }
-      mesh.isPickable=false;mesh.metadata={castShadow:false};
-      this.active.push({mesh,from,to,start:now,duration,role,bladeRoot});
     }
+    mesh.visibility=1;mesh.scaling.setAll(1);mesh.rotation.z=0;
+    mesh.isPickable=false;mesh.metadata={castShadow:false};
+    this.active.push({mesh,from,to,start:performance.now(),duration,role,
+      bladeRoot,trails,baseAngle,event:e});
   }
   updateFrame(now=performance.now()){
+    if(this.disposed)return;
+    if(this.pending.size){
+      const animations=this.units?.activeAnimations,queues=this.units?.animationQueues;
+      for(const [seq,pending] of this.pending){
+        const id=String(pending.event.unitId);
+        const same=e=>e?.sequence===seq&&String(e.unitId)===id;
+        const active=Array.from(animations?.values?.()||[]).some(a=>same(a.event));
+        const queued=Array.from(queues?.values?.()||[]).some(q=>q.some(same));
+        if(active){
+          this.spawn(pending.event,pending.role,pending.from,pending.to);
+          this.pending.delete(seq);
+        }else if(!queued){
+          // Hidden, dead, or cancelled actions never allocate scene geometry.
+          this.pending.delete(seq);
+        }
+      }
+    }
     for(const fx of [...this.active]){
       const t=Math.min(1,Math.max(0,(now-fx.start)/fx.duration));
       if(fx.role==='CHARM'){
@@ -211,21 +252,33 @@ class DanceSongVfx{
         fx.mesh.rotation.z+=.03;
         fx.mesh.scaling.setAll(.75+t*.55);
         if(fx.bladeRoot){
-          fx.bladeRoot.rotation.y=t*Math.PI*1.45;
+          fx.bladeRoot.rotation.y=fx.baseAngle+t*Math.PI*1.45;
           fx.bladeRoot.scaling.setAll(.65+t*.48);
-          // Only blade trails fade; they are not gameplay damage indicators.
-          for(const part of fx.bladeRoot.getChildMeshes())part.visibility=1-t*.95;
+          for(const part of fx.trails)part.visibility=1-t*.95;
         }
       }
       fx.mesh.visibility=1-t*.9;
-      if(t>=1){fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);
-        this.active.splice(this.active.indexOf(fx),1);}
+      if(t>=1){
+        this.active.splice(this.active.indexOf(fx),1);
+        if(fx.bladeRoot&&this.bladePool.length<3){
+          fx.mesh.setEnabled(false);fx.bladeRoot.setEnabled(false);
+          this.bladePool.push({mesh:fx.mesh,bladeRoot:fx.bladeRoot,trails:fx.trails});
+        }else{
+          fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);
+        }
+      }
     }
   }
-  diagnostics(){return{active:this.active.length};}
-  dispose(){for(const fx of this.active){fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);}this.active=[];
-    for(const material of Object.values(this.materials))material.dispose();this.heartTexture?.dispose();
-    this.materials={};this.recent.clear();}
+  diagnostics(){return{active:this.active.length,pending:this.pending.size,pooled:this.bladePool.length};}
+  dispose(){
+    if(this.disposed)return;this.disposed=true;
+    this.pending.clear();
+    for(const fx of this.active){fx.mesh.dispose();fx.bladeRoot?.dispose(false,false);}
+    for(const fx of this.bladePool){fx.mesh.dispose();fx.bladeRoot.dispose(false,false);}
+    this.active=[];this.bladePool=[];
+    for(const material of Object.values(this.materials))material.dispose();
+    this.heartTexture?.dispose();this.materials={};this.recent.clear();
+  }
 }
 
 /**
@@ -447,7 +500,7 @@ class WaterLurkerSurfaceModel{
 }
 
 const factories=Object.freeze({
-  'dance-magic':scene=>new DanceSongVfx(scene),
+  'dance-magic':(scene,ctx)=>new DanceSongVfx(scene,{units:ctx.units}),
   'livia-duality':(scene,ctx)=>new LiviaDualityVfx(scene,{units:ctx.units}),
   'shield-guard':scene=>new ShieldGuardVfx(scene),
   'swordsmanship':scene=>new SwordsmanshipVfx(scene),

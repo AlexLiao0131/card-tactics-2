@@ -3123,6 +3123,14 @@ export class UnitRenderer{
       const progress=active?clamp01((now-active.startedAt)/duration):((now%duration)/duration);
       const definition=this.animationDefinition(unit,state);
       const event=active?.event||{state,facing:unit.facing};
+      // The final Game State snapshot can be two sword contacts ahead of the
+      // pose currently playing. Re-anchor non-WALK actions to their own
+      // committed event coordinates; path-based WALK owns its interpolation.
+      if(active&&state!=="WALK"&&Number.isFinite(event.x)&&
+        Number.isFinite(event.y)&&Number.isFinite(event.z)){
+        entry.root.position.copyFrom(this.positionFor(entry,event));
+        entry.facingMarker.root.position.copyFrom(this.markerPositionFor(event));
+      }
       const facing=event.facing??unit.facing;
       this.applyFacing(entry,unit,entry.definition,facing,state,definition);
       this.setBillboardAsset(entry,unit,state,facing,progress,definition);
