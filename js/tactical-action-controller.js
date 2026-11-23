@@ -669,7 +669,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           skill:{weapon:thunder.slot,attackType:"SHOT"},enchantment:thunder.enchant,
           target,result:{hit:true}});
         ctx.pushLog(`${commander.character.name}｜集團齊射 → ${target.character.name}｜物理 ${physicalLoss}＋魔法 ${magicalLoss}｜HP ${target.hp}。`,"BATTLE");
-        if(target.hp<=0&&target.alive){target.alive=false;ctx.handleDefeated(target,commander,skill);}
+        // A zero-HP volley target must enter the shared death lifecycle even
+        // if a damage hook already marked it nonliving. Finalization itself is
+        // idempotent; only it emits DEATH and removes the battlefield unit.
+        if(target.hp<=0){target.alive=false;ctx.handleDefeated?.(target,commander,skill);}
       }
       const fire=contributors.find(row=>row.enchant?.element==="FIRE"&&row.enchant?.bowImpact);
       const impacts=[...thunderImpacts];
