@@ -28,6 +28,18 @@ function chooseAttack({map,units,unit,runtime,random=Math.random,environmentStat
     }
   }
   if(!valid.length)return null;
+  if(unit.controlOverride?.behavior==='PREDATOR'){
+    // Ferality hunts the wounded. All candidates already passed canonical LOS,
+    // range, and public identity. Former allies are not exempt.
+    const bleeding=target=>(target.effects||[]).some(e=>
+      e.id==='BLEEDING'||e.id==='BLEED'||e.type==='BLEEDING');
+    valid.sort((a,b)=>Number(bleeding(b.target))-Number(bleeding(a.target))||
+      Number(a.target.hp||0)-Number(b.target.hp||0)||
+      (globalThis.TacticalEngine?.distanceBetween?.(unit,a.target)||0)-
+      (globalThis.TacticalEngine?.distanceBetween?.(unit,b.target)||0)||
+      String(a.target.id).localeCompare(String(b.target.id)));
+    return valid[0];
+  }
   return valid[Math.min(valid.length-1,Math.floor(clamp(random(),0,.999999)*valid.length))];
 }
 /** A berserk actor's policy first chooses a RANDOM legal target among both
@@ -41,7 +53,11 @@ function chooseMove({map,units,unit,random=Math.random,environmentState=null}={}
     other.team!=='N'&&other.occupiesTile!==false&&
     (!tactical.actorCanTrackTarget||tactical.actorCanTrackTarget(map,units,unit,other,environmentState)));
   if(!observers.length)return[];
-  const target=observers[Math.floor(clamp(random(),0,.999999)*observers.length)];
+  const target=unit.controlOverride?.behavior==='PREDATOR'?observers.slice().sort((a,b)=>
+    Number((b.effects||[]).some(e=>e.id==='BLEEDING'||e.id==='BLEED'))-
+    Number((a.effects||[]).some(e=>e.id==='BLEEDING'||e.id==='BLEED'))||
+    Number(a.hp||0)-Number(b.hp||0)||String(a.id).localeCompare(String(b.id)))[0]:
+    observers[Math.floor(clamp(random(),0,.999999)*observers.length)];
   const locations=[...tactical.reachable(map,units,unit)].map(([key,cost])=>{
     const [x,y]=key.split(',').map(Number);
     return{x,y,cost,distance:tactical.distanceBetween?.({...unit,x,y},target)??Math.abs(x-target.x)+Math.abs(y-target.y)};

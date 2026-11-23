@@ -147,6 +147,11 @@ export const SKILLS={
   nereia_tsunami:{id:"nereia_tsunami",name:"海嘯",description:"召喚沿選定方向推進的五格寬浪潮。敵人沿原有強制位移與碰撞規則沖散；真正被浪潮掃到的友軍獲得等於女王施放時MATK的水盾，持續兩回合或被擊破。浪潮之後留下真實水量，依地形流動及水深判定。",waterMagic:true,element:"WATER",tsunamiWave:{width:5},category:"MAGIC",weapon:"trident",power:0,manaCost:28,range:{min:2,max:5},target:"TILE",targetType:"AOE",radius:2,speed:-10,support:false,requiresVision:true,hydrologyFlood:{surfaceRise:1.25},affixes:["WATER_TERRAIN_CONTROL"]},
 
   cat_dual_slash:{id:"cat_dual_slash",name:"雙匕首連斬",description:"雙匕首獨立命中與爆擊，整組只產生一次反擊機會；任一刀造成傷害便施加流血。",category:"ATTACK",weapon:"daggers",power:1.0,hitCount:2,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:15,target:"ENEMY",support:false,statusEffects:[{...BLEEDING_STATUS}],affixes:[]},
+  cat_feral_feast:{id:"cat_feral_feast",name:"獵食狂舞",
+    description:"【獸性覺醒限定】獸化程度達100才可施放。在相鄰合法目標前連續揮出四次獨立判定的匕首／利爪攻擊；敵人至多獲一次正常反擊。流血獵物承受額外20%傷害。施放一次消耗100獸性；無論有沒有擊殺，完成交戰後米菈失去理智，由既有中立自主行動控制一次；下次我方回合恢復。必須先用正常移動貼近獵物，不允許直接跨地形瞬移。",
+    category:"ATTACK",weapon:"daggers",power:.72,hitCount:4,range:{min:1,max:1},attackType:"SLASH",element:"INHERIT",speed:20,
+    target:"ENEMY",support:false,manaCost:0,resourceCosts:{ferality:100},feralUltimate:true,
+    requirements:{feralityFull:true},affixes:[]},
   cat_backstab:{id:"cat_backstab",name:"背刺",category:"ATTACK",weapon:"daggers",power:1.05,range:{min:1,max:1},attackType:"PIERCE",element:"INHERIT",speed:20,target:"ENEMY",support:false,backstabMultiplier:1.65,affixes:["BACKSTAB"]},
   cat_poison_knife:{id:"cat_poison_knife",name:"淬毒投擲刀",category:"ATTACK",weapon:"throwing_knife",power:.8,manaCost:12,range:{min:2,max:4},attackType:"PIERCE",attackClass:"RANGED",element:"INHERIT",speed:10,target:"ENEMY",support:false,statusEffects:[{type:"DAMAGE_OVER_TIME",id:"POISON",name:"中毒",classification:"NEGATIVE",duration:POISON_THROW_DURATION,amount:POISON_THROW_TOTAL_DAMAGE/POISON_THROW_DURATION,chance:100}],affixes:["POISON"]},
   cat_smoke_bomb:{id:"cat_smoke_bomb",name:"煙霧彈",description:"以米菈自身為中心展開固定兩回合的煙幕，範圍內友軍獲得掩護；離開煙霧或出手會暴露。",category:"SPECIAL",power:0,manaCost:16,range:{min:0,max:0},target:"SELF",targetType:"SINGLE",radius:2,support:false,smokeField:{duration:2}},
@@ -255,6 +260,8 @@ export const PASSIVES={
   FELINE_NIGHT_VISION:{id:"FELINE_NIGHT_VISION",name:"貓眼夜視",category:"PASSIVE",description:"黑暗中能辨認更遠的輪廓；不穿透牆壁、濃煙與環境迷霧。",nightVision:{rangeBonus:2,maxRange:7}},
   ABYSSAL_NIGHT_VISION:{id:"ABYSSAL_NIGHT_VISION",name:"深海夜視",category:"PASSIVE",description:"深海生物的低光視覺；黑暗中的觀測距離高於一般人，但無法穿透物理遮蔽。",nightVision:{rangeBonus:3,maxRange:8}},
   FELINE_BODY:{id:"FELINE_BODY",name:"貓族體態",category:"PASSIVE",description:"攀上兩層高差，也能主動跳下任意高度的合法落點；墜落本身不造成傷害，但仍受地形及環境影響。",movementRules:{maxClimb:2},terrainTraits:["UNRESTRICTED_DESCENT"],fallRules:{safeDrop:2,damageMultiplier:0}},
+  CAT_FERALITY:{id:"CAT_FERALITY",name:"獵食本能",category:"PASSIVE",
+    description:"專屬獸性資源最高100。從背刺有效傷害、雙匕首逐擊命中、主動迴避及直接擊殺累積，不吃持續傷害。獸性50/80/100時近戰傷害分別增加5%/10%/15%，滿值仍保持理性，解鎖獵食狂舞。大招完成後才由野性暴走接管一次自主行動；敵我皆可能成為獵物，下一輪恢復控制。"},
   CAT_OPENING_STEALTH:{id:"CAT_OPENING_STEALTH",name:"夜行潛伏",category:"PASSIVE",description:"戰鬥開始時進入潛行。潛行無法阻止範圍攻擊，主動出手或被近距離發現時解除。",openingEffects:[{id:"STEALTH",type:"STEALTH",classification:"POSITIVE",detectionRange:1}]},
 
   AVRESHI_BARKSKIN:{id:"AVRESHI_BARKSKIN",name:"樹皮術",category:"PASSIVE",description:"自然樹皮常駐護體，所有形態的物理防禦 DEF 提高 20%（依當前基本物防 ×1.20；四捨五入）。不是直接減免 20% 傷害，不提高魔法防禦，也不消耗 MP 或行動。",physicalDefenseBonusRatio:.20},

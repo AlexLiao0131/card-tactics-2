@@ -7,6 +7,11 @@ export const RESOURCE_PROFILES=Object.freeze({
     swordComboGain:10,returnGain:10,deathKillGain:15,supportGain:5,
     // Canonical stylistic contract: never fall back to the default purple meter.
     color:"#EC4899"}),
+  ferality:Object.freeze({label:"獸化程度",max:100,initial:0,naturalRecovery:0,
+    color:"#D97726",berserkColor:"#C53A30",
+    thresholds:[0,50,80,100],meleeDamageBonus:[0,.05,.10,.15],
+    gains:{backstab:20,dualContact:8,evade:6,kill:15},
+    ultimateBleedingMultiplier:1.20}),
   astralPower:Object.freeze({label:"星能",max:100,initial:0,naturalRecovery:0,
     moonlightResonanceMaxRatio:.5}),
   // EffectEngine awards damage credits (DIRECT = actual HP loss, BLEED = HP loss / 2).

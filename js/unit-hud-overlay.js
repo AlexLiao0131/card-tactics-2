@@ -117,6 +117,49 @@ function createElement(tag,className){
   return node;
 }
 
+// One mouth silhouette, ten actual teeth as 10 individual ferality segments.
+// This is display-only SVG, derived from the user's black-and-white fang reference;
+// it never owns the resource value or introduces a second numeric meter.
+function feralityFangs(value,max,berserk=false){
+  const ns='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox','0 0 280 135');
+  svg.setAttribute('width','205');svg.setAttribute('height','100');
+  svg.setAttribute('role','img');
+  svg.setAttribute('aria-label',`獸化程度 ${Math.round(value)}/${Math.round(max)}${berserk?'，野性暴走':''}`);
+  const shape=(d,fill,stroke='#241812',thickness=2)=>{
+    const path=document.createElementNS(ns,'path');
+    path.setAttribute('d',d);path.setAttribute('fill',fill);
+    path.setAttribute('stroke',stroke);path.setAttribute('stroke-width',String(thickness));
+    path.setAttribute('stroke-linejoin','round');svg.appendChild(path);return path;
+  };
+  // Black cavity, like the supplied open-jaw ink illustration.
+  shape('M13 32 Q22 12 39 23 Q50 5 66 17 Q81 1 97 21 Q115 6 134 24 Q144 15 155 24 Q174 6 190 21 Q208 2 224 17 Q245 3 258 23 Q271 12 276 32 Q268 74 244 101 Q210 125 140 129 Q67 125 36 102 Q18 79 13 32 Z','#211a1a','#100d0d',3);
+  const teeth=[
+    // Six upper teeth; elongated canines at both edges.
+    'M19 29 Q31 16 43 26 L49 67 Q37 58 27 43 Z',
+    'M48 20 Q61 4 77 19 L71 102 Q60 72 48 20 Z',
+    'M89 25 Q101 15 111 27 L109 58 Q97 50 89 25 Z',
+    'M168 27 Q178 15 191 25 L183 58 Q172 50 168 27 Z',
+    'M204 19 Q220 4 232 20 L219 102 Q211 73 204 19 Z',
+    'M238 26 Q250 16 263 29 L253 43 Q242 58 231 67 Z',
+    // Four lower fangs pointing upward.
+    'M48 99 Q62 117 77 121 L73 77 Q63 91 48 99 Z',
+    'M93 124 Q110 131 121 129 L117 98 Q104 113 93 124 Z',
+    'M159 129 Q171 131 187 124 L171 98 Q164 112 159 129 Z',
+    'M203 121 Q220 117 235 99 Q218 91 207 77 Z'
+  ];
+  const lit=berserk?teeth.length:Math.min(teeth.length,Math.floor(Math.max(0,Number(value)||0)/Math.max(1,Number(max)||1)*teeth.length+1e-8));
+  teeth.forEach((d,i)=>{
+    const charged=i<lit;
+    const color=charged?(berserk?'#F05948':'#E8A341'):'#8B8075';
+    const p=shape(d,color,'#23130c',1.9);
+    if(charged)p.setAttribute('stroke',berserk?'#f99788':'#ffe0a0');
+    else p.style.opacity='.67';
+  });
+  return svg;
+}
+
 export class UnitHudOverlay{
   constructor(scene,engine,canvas,camera){
     this.scene=scene;
@@ -220,7 +263,7 @@ export class UnitHudOverlay{
     const maxHp=Math.max(1,Number(unit.maxHp||hp||1));
     const pct=clamp01(hp/maxHp);
     const mana=Math.max(0,Number(unit.mana||0)),maxMana=Math.max(0,Number(unit.maxMana||0)),manaPct=maxMana>0?clamp01(mana/maxMana):0;
-    const resources=unit.resources||{},resourceKey=Object.entries(resources).map(([id,r])=>`${id}:${r.value}/${r.max}`).join("|");
+    const resources=unit.resources||{},resourceKey=Object.entries(resources).map(([id,r])=>`${id}:${r.value}/${r.max}:${r.berserk?1:0}`).join("|");
     const materials=unit.materials||{},materialKey=Object.entries(materials).filter(([,n])=>Number(n)>0)
       .sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}:${v}`).join('|');
     const picture=globalThis.VisualDatabase?.characterHudPortrait?.(unit.characterId)||null;
@@ -265,7 +308,18 @@ export class UnitHudOverlay{
       const wrap=createElement("div","unit-hud-resource"),label=createElement("div","unit-hud-mana-row"),track=createElement("div","unit-hud-track unit-hud-mana-track"),fill=createElement("i","unit-hud-fill unit-hud-mana-fill");
       label.textContent=`${resource?.label||id.toUpperCase()} ${Math.round(value)}/${Math.round(max)}`;
       wrap.dataset.resource=id;
-      if(id==="alchemyRune"){
+      if(id==="ferality"){
+        const berserk=resource?.berserk===true;
+        label.textContent=berserk?`獸化程度｜野性暴走`:
+          `獸化程度 ${Math.round(value)}/${Math.round(max)}`;
+        label.style.color=berserk?'#f27f71':'#f4be74';
+        wrap.title=berserk?'野性暴走：自主攻擊一次後，下次我方回合恢復控制':
+          '獸性越高近戰傷害越強；滿值可施放獵食狂舞，施放後會失去理智';
+        const fangs=feralityFangs(value,max,berserk);
+        wrap.dataset.feralityStage=berserk?'berserk':value>=max?'awakened':
+          value>=max*.8?'predatory':value>=max*.5?'rising':'calm';
+        wrap.append(label,fangs);
+      }else if(id==="alchemyRune"){
         // ONE abdominal rune. The same picture is clipped from left to right
         // at 0%, 1/3, 2/3 and 100%, never rendered as three separate icons.
         const outer=createElement('div','unit-hud-alchemy-rune');

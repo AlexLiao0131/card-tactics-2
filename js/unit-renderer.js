@@ -2461,6 +2461,29 @@ export class UnitRenderer{
     }
 
     const dualDaggers=entry.definition?.figure?.dualDaggers===true;
+    if(type==='SLASH'&&dualDaggers&&event?.skillId==='cat_feral_feast'&&
+       parts.leftWeapon&&parts.rightWeapon){
+      // Four contact beats driven by ONE canonical animation event. The HUD
+      // already aligns each server damage event with the quarter of this event.
+      // Never teleport the Game State; this is a weapon/pivot-only lunge.
+      const step=Math.min(3,Math.floor(clamp01(progress)*4));
+      const phase=clamp01(progress*4-step);
+      const bite=Math.sin(Math.PI*clamp01((phase-.06)/.90));
+      const left=step%2===0,drive=bite*(1+.08*step);
+      if(parts.leftArm){parts.leftArm.rotation.x+=(left?-1.30:.30)*drive;
+        parts.leftArm.rotation.z+=(left?-.66:.15)*drive;}
+      if(parts.rightArm){parts.rightArm.rotation.x+=(left?.30:-1.30)*drive;
+        parts.rightArm.rotation.z+=(left?-.15:.66)*drive;}
+      parts.leftWeapon.rotation.z+=(left?-1.48:.22)*drive;
+      parts.rightWeapon.rotation.z+=(left?-.22:1.48)*drive;
+      if(parts.body){parts.body.rotation.y+=(left?.27:-.27)*drive;
+        parts.body.rotation.x+=drive*.11;}
+      if(parts.head)parts.head.rotation.x-=drive*.11;
+      if(parts.tail)parts.tail.rotation.y+=(left?-.32:.32)*drive;
+      entry.root.position.x+=vector.x*drive*.27;
+      entry.root.position.z+=vector.z*drive*.27;
+      return true;
+    }
     if(type==="PIERCE"&&entry.definition?.figure?.fieldSpear&&parts.leftWeapon){
       // Start upright, level the spear at the wrist, then project the point
       // forward. LEFT glove, shaft and tip remain on one inherited transform.
@@ -3135,6 +3158,23 @@ export class UnitRenderer{
       this.applyFacing(entry,unit,entry.definition,facing,state,definition);
       this.setBillboardAsset(entry,unit,state,facing,progress,definition);
       this.applyProcedural(entry,unit,state,progress,now,event,definition);
+      // Authoritative resource snapshot drives the catkin pose in all modes.
+      // Overlay the pose AFTER the existing animation; no new mesh or material.
+      const feral=unit.characterId==='cat_thief_hero'?unit.resources?.ferality:null;
+      if(feral&&entry.kind==='FIGURE'&&state!=='DEATH'){
+        const value=Number(feral.value||0),max=Math.max(1,Number(feral.max||100));
+        const intensity=feral.berserk?1:value>=max?0.65:value>=max*0.8?0.34:0;
+        if(intensity>0){
+          const p=entry.figureParts||{};
+          if(p.body){p.body.rotation.x+=intensity*.24;p.body.position.y-=intensity*.035;}
+          if(p.head)p.head.rotation.x-=intensity*.17;
+          if(p.leftArm)p.leftArm.rotation.x-=intensity*.16;
+          if(p.rightArm)p.rightArm.rotation.x-=intensity*.16;
+          if(p.leftLeg)p.leftLeg.rotation.x+=intensity*.13;
+          if(p.rightLeg)p.rightLeg.rotation.x-=intensity*.13;
+          if(p.tail)p.tail.rotation.y+=Math.sin(now/190)*intensity*.21;
+        }
+      }
       this.applyColinShieldPose(entry,unit,active,now);
       this.updateAnimationBadge(entry,unit,state);
     }

@@ -719,7 +719,9 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         }
         const sealMultiplier=action.misfire?1:
           a.vengeanceMultiplier||globalThis.EffectEngine?.vengeanceMultiplier?.(a.actor,action.target)||1;
-        const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:1;
+        const bleedingBonus=skill.bloodShadow&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?1.5:
+          skill.feralUltimate&&globalThis.EffectEngine?.hasEffect?.(action.target,"BLEEDING")?
+            Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.ferality?.ultimateBleedingMultiplier||1):1;
         const berserkMultiplier=action.actor?.controlOverride?.type==='BERSERK'?
           (globalThis.UnitTraitEngine?.berserkDamageMultiplier?.(action.actor)||1):1;
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
@@ -785,6 +787,12 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           element:original.el||skill.element,componentElements:{
             physical:original.type==="MAGIC"?null:original.el||skill.element,
             magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id}),contactVisualEvent,hitIndex,hitCount);
+        if(!action.misfire&&result.damage>0)globalThis.UnitRuntimeEngine?.onFeralityContact?.(
+          action.actor,skill,action.target,{hpLoss:result.damage,
+            backstab:skill.id==='cat_backstab'&&
+              TacticalEngine.relativeArc?.(action.target,action.actor)==='BACK'});
+        if(!result.hit&&result.evadeOutcome==='MISS')
+          globalThis.UnitRuntimeEngine?.onFeralityEvade?.(action.target);
         if(action.misfire)friendlyHpLoss+=result.damage;
         if(!result.hit)stampContact(globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
           !action.misfire&&c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS"),contactVisualEvent,hitIndex,hitCount);
@@ -818,7 +826,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           globalThis.UnitRuntimeEngine?.rageUser?.(action.actor))
           globalThis.UnitRuntimeEngine.changeRage(action.actor,
             Number(globalThis.ResourceEngine?.RESOURCE_PROFILES?.rage?.slashBonus||0));
-        if(action.target.hp===0){action.target.alive=false;hooks.onDefeated?.(action.target,action.actor,skill)}
+        if(action.target.hp===0){
+          action.target.alive=false;
+          if(!action.misfire&&result.damage>0)globalThis.UnitRuntimeEngine?.onFeralityKill?.(action.actor,action.target);
+          hooks.onDefeated?.(action.target,action.actor,skill);
+        }
         else if(result.hit&&result.damage>0)globalThis.UnitAnimationEngine?.emitHit?.(action.target,{sourceId:action.actor.id,skillId:skill?.id||null,damage:result.damage});
         if(action.target.alive&&globalThis.EffectEngine)for(const effect of resolved?.defense?.afterInterceptEffects||[])EffectEngine.apply({source:action.target,target:action.target,effect});
         const refund=globalThis.UnitRuntimeEngine?.criticalManaRefund?.(action.actor,skill,spent,result.crit)??0;
@@ -937,6 +949,11 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       globalThis.UnitAnimationEngine?.emitMove?.(unit,{from,kind:"BACKSTEP"});
       hooks.onBackstep?.(unit,tile);
     }
+    // The cast is a single committed action. Never switch allegiance between
+    // individual blade contacts, counter reactions, or VFX playback.
+    if(c.skill?.feralUltimate&&results.some(entry=>entry.role==='INITIATOR'&&
+      entry.actor?.id===c.initiator?.id))
+      globalThis.UnitRuntimeEngine?.startFeralRampage?.(c.initiator);
     return{context:c,queue,results,postEngagement:post};
   }
   function resolve(options,hooks={}){

@@ -49,6 +49,65 @@ export function createUnitRuntimeEngine(){
     if(moved!==0)globalThis.EffectEngine?.syncModifiers?.(unit);
     return moved;
   }
+  // Catkin Ferality: one canonical scalar, one committed-hit credit path.
+  // It never alters team ownership until the completed ultimate exchanges control.
+  const feralityUser=u=>u?.character?.id==='cat_thief_hero'&&!!extraResourceRules(u).ferality;
+  const feralityProfile=u=>extraResourceRules(u).ferality||{};
+  function feralityValue(unit){return feralityUser(unit)?Number(ResourceEngine.value(unit,'ferality')||0):0;}
+  function changeFerality(unit,amount){
+    if(!feralityUser(unit)||unit?.controlOverride?.behavior==='PREDATOR'||!Number.isFinite(Number(amount)))return 0;
+    return changeResource(unit,'ferality',amount);
+  }
+  function feralityBonus(unit,skill){
+    if(!feralityUser(unit)||unit?.controlOverride?.behavior==='PREDATOR'||
+       !skill?.attackType||skill.attackType==='MAGIC'||
+       skill?.attackClass==='RANGED'||Number(skill?.range?.max||0)>1)return 0;
+    const rule=feralityProfile(unit),thresholds=rule.thresholds||[],bonuses=rule.meleeDamageBonus||[];
+    const value=feralityValue(unit);let result=0;
+    for(let i=0;i<thresholds.length;i++)if(value>=Number(thresholds[i]))result=Number(bonuses[i]||0);
+    return result;
+  }
+  function onFeralityContact(actor,skill,target,{hpLoss=0,backstab=false}={}){
+    if(!feralityUser(actor)||actor?.controlOverride?.behavior==='PREDATOR'||
+       Number(hpLoss)<=0||!target||target.team===actor.team)return 0;
+    const gains=feralityProfile(actor).gains||{};
+    return skill?.id==='cat_dual_slash'?changeFerality(actor,Number(gains.dualContact||0)):
+      skill?.id==='cat_backstab'&&backstab?changeFerality(actor,Number(gains.backstab||0)):0;
+  }
+  function onFeralityEvade(unit){
+    return feralityUser(unit)?changeFerality(unit,Number(feralityProfile(unit).gains?.evade||0)):0;
+  }
+  function onFeralityKill(actor,target){
+    return feralityUser(actor)&&target?.team!==actor.team&&target?.kind!=='CORE'?
+      changeFerality(actor,Number(feralityProfile(actor).gains?.kill||0)):0;
+  }
+  function startFeralRampage(actor){
+    if(!feralityUser(actor)||!actor._feralUltimatePaid||!actor.alive||actor.controlOverride)return false;
+    delete actor._feralUltimatePaid;
+    // The completing slash may also kill its prey; kill credits cannot refill
+    // the just-spent 100 before the penalty is committed.
+    ResourceEngine.set(actor,'ferality',0);
+    actor.controlOverride={type:'BERSERK',sourceResource:'ferality',behavior:'PREDATOR',
+      startedRound:0,actionDoneRound:null,originalTeam:actor.team,
+      originalParticipation:actor.participatesInTurn!==false,damageMultiplier:1};
+    actor.team='N';actor.participatesInTurn=false;
+    globalThis.EffectEngine?.breakStealth?.(actor,'ACTION');
+    return true;
+  }
+  function onFeralityRoundStart({units=[],round}={}){
+    if(!Number.isSafeInteger(round))return [];
+    const restored=[];
+    for(const unit of units){const override=unit?.controlOverride;
+      if(override?.type!=='BERSERK'||override.behavior!=='PREDATOR'||
+         override.sourceResource!=='ferality'||override.actionDoneRound==null||
+         override.actionDoneRound>=round)continue;
+      unit.team=override.originalTeam;
+      unit.participatesInTurn=override.originalParticipation!==false;
+      delete unit.controlOverride;
+      restored.push(unit.id);
+    }
+    return restored;
+  }
   // Forest Soul uses the canonical per-unit resource and persistent real plant
   // objects. No synthetic plants, per-render mutation, or independent PvP cache.
   const forestSoulUser=u=>u?.alive===true&&u.character?.id==="ophi"&&
@@ -185,7 +244,7 @@ export function createUnitRuntimeEngine(){
   function resourceSnapshot(unit){
     syncResources(unit);UnitTraitEngine.initialize(unit);
     return Object.fromEntries(Object.entries(ResourceEngine.snapshot(unit)).map(([key,state])=>[key,{...state,label:key==="duality"?(state.value===0?"雙極・水晶共鳴":state.value===100?"雙極・高維污染":"雙極"):(state.label||key.toUpperCase()),
-      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="astralPower"?{color:"#8a9cdb"}:key==="rage"?{color:"#c53838"}:key==="reputation"?{color:ResourceEngine.RESOURCE_PROFILES.reputation.color}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
+      ...(key==="blood"?{awakened:unit._bloodAwakened===true}:key==="forestSoul"?{color:"#38ad78",resonance:forestSoulFull(unit)}:key==="astralPower"?{color:"#8a9cdb"}:key==="rage"?{color:"#c53838"}:key==="reputation"?{color:ResourceEngine.RESOURCE_PROFILES.reputation.color}:key==="ferality"?{color:feralityProfile(unit).color,berserk:unit?.controlOverride?.behavior==="PREDATOR"}:key===UnitTraitEngine.resourceKey(unit)?{berserk:UnitTraitEngine.status(unit)?.berserk===true}:{})}]));
   }
   function resourceCosts(skill){
     const out={};
@@ -522,6 +581,9 @@ export function createUnitRuntimeEngine(){
     }
     if(isBloodMemory(unit,skill)&&!unit._bloodAwakened)return false;
     if(skill?.rageSpendAll&&rageValue(unit)<=0)return false;
+    if(skill?.requirements?.feralityFull===true&&
+       (!feralityUser(unit)||feralityValue(unit)<Number(feralityProfile(unit).max||100)||
+        unit?.controlOverride?.behavior==='PREDATOR'))return false;
     skill=skillForUnit(unit,skill);
     if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits(),skill,world).length)return false;
     if(skill?.approach&&unit?.moved)return false;
@@ -579,6 +641,7 @@ export function createUnitRuntimeEngine(){
     if(recipe?.valid&&recipe.mode==='BASIC')changeResource(unit,'alchemyRune',1);
     if(recipe?.valid&&recipe.mode==='TERRAIN')spent.alchemyRune={cost:3,remaining:ResourceEngine.value(unit,'alchemyRune'),max:3};
     UnitTraitEngine.afterCommittedSkill(unit,skill);
+    if(skill?.feralUltimate===true)unit._feralUltimatePaid=true;
     return{type:Object.keys(spent).length||recipe?.material?'MULTI':'MANA',cost:mana,remaining:unit.mana,max:unit.maxMana,resources:spent,
       ...(recipe?.material?{material:{...recipe.material,spent:recipe.material.amount}}:{})};
   }
@@ -614,6 +677,8 @@ export function createUnitRuntimeEngine(){
       skill={...skill,power:Number(skill.power||0)*bonus};
     }
     let multiplier=1;
+    const feralBonus=feralityBonus(unit,skill);
+    if(feralBonus>0)multiplier*=1+feralBonus;
     const rageSnapshot=rageUser(unit)?rageValue(unit):null;
     if(rageSnapshot!==null&&skill?.attackType&&Number(skill.power||0)>0){
       const maximum=Math.max(1,Number(unit.resources?.rage?.max||100));
@@ -690,7 +755,7 @@ export function createUnitRuntimeEngine(){
     if(index<0||!from?.cargo?.[index]||!canLoadCargo(to,from.cargo[index]))return false;
     const payload=from.cargo.splice(index,1)[0];to.cargo??=[];to.cargo.push(payload);return true;
   }
-  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,alchemyRecipe,alchemyAffordable,astralPowerUser,astralPowerValue,gainAstralPower,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
+  return Object.freeze({currentForm,formSpec,skillIdsForUnit,canShiftForm,shiftForm,alchemyRecipe,alchemyAffordable,astralPowerUser,astralPowerValue,gainAstralPower,rageUser,rageValue,changeRage,onRageDamage,onRageForcedLanding,onRageDefeat,feralityUser,feralityValue,changeFerality,feralityBonus,onFeralityContact,onFeralityEvade,onFeralityKill,startFeralRampage,onFeralityRoundStart,forestSoulValue,forestSoulFull,forestSoulMagicPower,forestSoulPlantAmount,syncForestSouls,drainMana,knownUnits,changeHolyPower,faithUser,faithValue,changeFaith,criticalManaRefund,bloodUser,bloodValue,changeBlood,reconcileBlood,beginBloodTransaction,endBloodTransaction,attackEnhancement,isBloodMemory,bloodMemoryCost,skillForUnit,MANA_BASE,MANA_INT_FACTOR,MANA_WIL_FACTOR,changeResource,sanityMisfireChance,rollSanityMisfire,sanityBacklashRefund,humidityValue,changeHumidity,advanceHumidity,humidityMdefBonus,skillManaCost,maxManaFromAttributes,maxMana,syncMana,restoreMana,manaCost,extraResourceRules,syncResources,resourceSnapshot,resourceCosts,createSkillResources,resolveCharacter,create,createFromCard,syncLiveRoster,reconcileCompanions,despawnCompanionsForOwner,living,turnActors,resetActions,allFinished,resourceFor,canUseSkill,consumeSkill,resourceLabel,applyResourceScaling,targetType,getLiveUnit,rotateFacing,setFacing,flightControl,adjustFlightAltitude,diveControl,adjustDiveMode,cargoProfile,cargoList,canLoadCargo,loadCargo,unloadCargo,transferCargo});
 }
 export const UnitRuntimeEngine=createUnitRuntimeEngine();
 globalThis.UnitRuntimeEngine=UnitRuntimeEngine;
