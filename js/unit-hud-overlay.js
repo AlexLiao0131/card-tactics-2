@@ -428,17 +428,23 @@ export class UnitHudOverlay{
       // leave them immediate. Single-hit, ranged and AoE results share the
       // official caster animation/VFX sequence from this same drain batch.
       const animateResult=kind!=='dot'&&(event.skillId||outcomes[event.kind]);
-      const action=animateResult?actions.filter(candidate=>
-        event.skillId?candidate.skillId===event.skillId:
+      // Prefer the exact official attack receipt. Skill ID alone cannot
+      // identify the correct contact of a multi-hit attack or dance followup.
+      const linked=Number.isSafeInteger(event.actionSequence)
+        ?actions.find(candidate=>candidate.sequence===event.actionSequence)||null:null;
+      const action=animateResult?(Number.isSafeInteger(event.actionSequence)?linked:
+        actions.filter(candidate=>event.skillId?candidate.skillId===event.skillId:
           candidate.targetId!=null&&String(candidate.targetId)===String(event.unitId))
-        .sort((a,b)=>Math.abs(Number(a.sequence)-Number(event.sequence))-
-          Math.abs(Number(b.sequence)-Number(event.sequence)))[0]||null:null;
+          .sort((a,b)=>Math.abs(Number(a.sequence)-Number(event.sequence))-
+            Math.abs(Number(b.sequence)-Number(event.sequence)))[0]||null):null;
       const stack=Math.min(3,this.floats.filter(item=>item.unitId===event.unitId&&
         item.start!=null&&now-item.start<260).length);
       node.hidden=!!action;
       this.floats.push({node,kind,unitId:event.unitId,x:event.x,y:event.y,
         renderZ:event.renderZ,afterDeath:!!event.afterDeath,start:action?null:now,
         pendingAction:action||null,
+        contactIndex:Number.isSafeInteger(event.contactIndex)?event.contactIndex:0,
+        contactCount:Number.isSafeInteger(event.contactCount)&&event.contactCount>0?event.contactCount:1,
         stack,lifetime:kind==="status"?1400:kind==="critical"?1250:kind==="dot"?1350:1100});
     }
     // Bound DOM work under AoE and mass-status effects; never retain old nodes.
@@ -502,16 +508,33 @@ export class UnitHudOverlay{
         const started=playing?.event?.sequence===action.sequence&&
           String(playing.event.unitId)===String(action.unitId)&&
           playing.event.skillId===action.skillId;
-        if(!started&&visual?.visualPending(action)){
+        if(started){
+          // The official UnitRenderer already owns action playback duration.
+          // Distribute the authored contacts across that exact animation,
+          // without creating extra VFX, duplicate attacks or arbitrary timers.
+          const count=Math.max(1,item.contactCount);
+          const index=Math.min(count-1,Math.max(0,item.contactIndex));
+          const progress=Math.max(0,(now-playing.startedAt)/Math.max(1,playing.duration));
+          // Contact centers align with successive attack beats. A single
+          // impact preserves the existing immediate-on-start behaviour.
+          const contactBeat=count===1?0:(index+.5)/count;
+          if(progress<contactBeat){
+            item.node.hidden=true;
+            retained.push(item);
+            continue;
+          }
+        }else if(visual?.visualPending(action)){
           item.node.hidden=true;
           retained.push(item);
           continue;
         }
-        // Begin the result lifetime only once the matching visible attack
-        // starts. If no playback was scheduled (e.g. PvP filtered event),
-        // release the already-validated official result instead of losing it.
+        // Start after the correct contact, or reveal an authentic result if
+        // the action has legitimately been filtered/skipped from the playback.
         item.pendingAction=null;
         item.start=now;
+        item.stack=Math.min(3,this.floats.filter(other=>other!==item&&
+          other.unitId===item.unitId&&other.start!=null&&
+          now-other.start<260).length);
       }
       const elapsed=now-item.start;
       if(elapsed>=item.lifetime){item.node.remove();continue;}

@@ -7,6 +7,15 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   const ACTIVE_EVADE_PENALTY=20,GRAZE_DAMAGE_MULTIPLIER=.5;
   const distance=(a,b)=>TacticalEngine.distanceBetween?.(a,b)??(Math.abs(a.x-b.x)+Math.abs(a.y-b.y));
   const resolveWithRandom=(map,a,t,skill,opt={})=>TacticalEngine.resolve(map,a,t,skill,{...opt,random,forceHit:opt.forceMiss?false:opt.forceHit===true});
+  function stampContact(receipts,actionEvent,index,count){
+    if(actionEvent?.sequence==null)return;
+    for(const event of Array.isArray(receipts)?receipts:[receipts]){
+      if(event?.type!=="UNIT_FLOAT_TEXT")continue;
+      event.actionSequence=actionEvent.sequence;
+      event.contactIndex=index;
+      event.contactCount=count;
+    }
+  }
   const isSingleTarget=s=>(s?.targetType||"SINGLE")==="SINGLE";
   function passiveDefenseProfiles(c){return SkillDatabase.passiveDefenseProfiles?SkillDatabase.passiveDefenseProfiles(c?.passives):[]}
   function effectDefenseProfiles(u){const profiles=[];for(const effect of u?.effects||[])for(const profile of effect?.defenseProfiles||[])profiles.push({...profile,sourceId:effect.id,sourceName:effect.name||effect.id,sourceType:"EFFECT"});return profiles}
@@ -662,6 +671,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       const blinkCombo=action.actor.character?.id==='livia'&&skill.id==='nether_slash'&&
         hitCount>1&&!followup&&!action.misfire&&!c.interception;
       const origin=blinkCombo?{x:action.actor.x,y:action.actor.y,z:action.actor.z}:null;
+      // One official action can own several independent combat contacts. The
+      // presentation receipts below point back to this exact action sequence,
+      // not merely a matching skill ID (which may be cast many times).
+      let contactVisualEvent=null;
       const blinkPath=blinkCombo?[{...origin}]:null,visited=new Set();
       if(blinkCombo)visited.add(`${origin.x},${origin.y}`);
       for(let hitIndex=0;hitIndex<hitCount&&action.target.alive&&action.actor.alive;hitIndex++){
@@ -717,6 +730,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,blinkCombo:blinkCombo,
           backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
             z:Number(plannedBackstep.elevation||0)}:null}):null;
+        if(visualEvent)contactVisualEvent=visualEvent;
         const hallucinationHit=action.target?.hallucination===true&&original.hit;
         const hpBefore=Math.max(0,Number(action.target.hp||0));
         const executionLine=skill?.rageExecution===true&&original.hit&&
@@ -763,20 +777,24 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           evasiveCounterChecked=true;
           if(original.evadeOutcome!=="MISS")evasiveCounterSucceeded=false;
         }
-        globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{damage:result.damage,critical:result.crit,
+        // Label only official HP/outcome presentation events with the exact
+        // originating action and contact number. Does not add another animation.
+        stampContact(globalThis.UnitAnimationEngine?.emitResolvedHit?.(action.target,{
+          damage:result.damage,critical:result.crit,
           components:{physical:physLoss,magic:magicLoss},criticalComponents:result.criticalComponents,
           element:original.el||skill.element,componentElements:{
             physical:original.type==="MAGIC"?null:original.el||skill.element,
-            magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id});
+            magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id}),contactVisualEvent,hitIndex,hitCount);
         if(action.misfire)friendlyHpLoss+=result.damage;
-        if(!result.hit)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,!action.misfire&&c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS");
+        if(!result.hit)stampContact(globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,
+          !action.misfire&&c.reaction?.type==="EVADE"&&result.evadeOutcome==="MISS"?"DODGE":"MISS"),contactVisualEvent,hitIndex,hitCount);
         else if(resolved.defense?.triggered&&resolved.defense.success!==false&&Number(resolved.defense.damageMultiplier)<1){
           const swordCounterParry=resolved.defense.method?.method==="PARRY"&&
             SkillDatabase.passiveList(action.target.character?.passives||[])
               .some(p=>p.counterOnDefense?.methods?.includes("PARRY"));
-          globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,swordCounterParry?"PARRY":"BLOCK");
+          stampContact(globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,swordCounterParry?"PARRY":"BLOCK"),contactVisualEvent,hitIndex,hitCount);
         }
-        else if(result.graze)globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE");
+        else if(result.graze)stampContact(globalThis.UnitAnimationEngine?.emitOutcome?.(action.target,"GRAZE"),contactVisualEvent,hitIndex,hitCount);
         const markTarget=(c.interception&&!action.misfire&&a.role==="INITIATOR"?c.originalTarget:action.target);
         if(result.hit)globalThis.EffectEngine?.markVengeance?.(markTarget,action.actor,c.interception?.guardian||null);
         if(result.hit){
