@@ -823,9 +823,53 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   skillInspector.style.cssText="position:fixed;z-index:230;pointer-events:none;box-sizing:border-box;width:min(340px,calc(100vw - 24px));max-height:min(62vh,460px);overflow:hidden;padding:12px 14px;border:1px solid #b89b66;border-radius:12px;background:#0a1420f5;color:#edf1f4;box-shadow:0 12px 32px #000c;white-space:normal;line-height:1.55;";
   document.body.appendChild(skillInspector);
   let skillHold=null,skillHoldConsumedClick=null;
+  function previewOnlineSkillRange(skill){
+    // PvP's last interaction state is the server-published battlefield view.
+    // Only project public geometry (never invent legal PVP target tiles).
+    const renderer=globalThis.CardTacticsRenderer,state=renderer?.lastState;
+    if(!state?.map?.tiles)return null;
+    const actor=state.units?.find(unit=>unit.selected===true);
+    if(!actor||actor.friendlyToViewer===false)return null;
+    const published=actor.skills?.find(entry=>entry.id===skill.id||
+      (skill.baseSkillId&&entry.id===skill.baseSkillId));
+    if(!published)return null;
+    const dist=tile=>Math.abs(tile.x-actor.x)+Math.abs(tile.y-actor.y);
+    const self=skill.target==='SELF';
+    const radius=(()=>{
+      if(skill.channel)return Number(skill.channel.radius||0);
+      if(skill.danceAura||skill.deathDance){
+        const profile=globalThis.ResourceEngine?.RESOURCE_PROFILES?.reputation;
+        const limits=profile?.rangeThresholds||[],radii=profile?.rangeRadii||[];
+        if(!limits.length||limits.length!==radii.length)return 0;
+        const fame=Number(actor.resources?.reputation?.value||0);
+        let i=0;for(let j=0;j<limits.length;j++)if(fame>=limits[j])i=j;
+        return Number(radii[i]||0);
+      }
+      if(skill.sanctuary)return Number(skill.radius||0);
+      if(skill.areaDamage?.footprint==='ADJACENT_8')return 1;
+      return Number(skill.radius||0);
+    })();
+    const range=published.range||skill.range||{min:0,max:0};
+    const area=self||skill.sanctuary||skill.channel||skill.danceAura||skill.deathDance||
+      skill.areaDamage?.footprint==='ADJACENT_8';
+    const tiles=state.map.tiles.filter(tile=>{
+      const d=dist(tile);
+      return area?d<=radius:(d>=Number(range.min||0)&&d<=Number(range.max||0));
+    });
+    return {mapId:state.map.id,unitId:actor.id,skillId:skill.id,
+      kind:skill.danceAura||skill.channel?'ALLY':'AIM',
+      radius:area?radius:null,tiles,targets:[],approximate:true};
+  }
+  function previewOfflineSkillRange(skill){
+    if(!selected?.alive||phase!==PHASE.PLAYER)return null;
+    const usable=UnitRuntimeEngine.skillForUnit(selected,skill)||skill;
+    // Effective skill form/resource is recomputed when the hold begins.
+    return actionController.previewSkillArea(selected,effectiveSkill(selected,usable));
+  }
   function dismissSkillInspection(){
     if(skillHold?.timer!==null&&skillHold?.timer!==undefined)clearTimeout(skillHold.timer);
     skillHold=null;skillInspector.hidden=true;skillInspector.replaceChildren();
+    globalThis.CardTacticsRenderer?.clearSkillHoldPreview?.();
   }
   function showSkillInspection(button,skill,point){
     const detail=SkillDatabase.inspect(skill);if(!detail)return;
@@ -835,6 +879,25 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     body.style.cssText="font-size:13px;color:#e2e8ef;white-space:pre-wrap;";
     const stats=document.createElement("small");stats.textContent=detail.mechanics.join(" ｜ ");
     stats.style.cssText="display:block;margin-top:9px;color:#a9bdcf;font-size:11px;";
+    // Skill hover/hold never calls a gameplay command or consumes a resource.
+    // Native/Gemini use the official action controller; PvP uses only the
+    // server-published public range, and does not claim target legality.
+    const online=document.body.dataset.battleMode==='PVP';
+    let preview=null;
+    try{preview=online?previewOnlineSkillRange(skill):previewOfflineSkillRange(skill);}
+    catch(error){
+      globalThis.CardTacticsDiagnostics?.push?.('SKILL_HOLD_PREVIEW_FAILED',{
+        skillId:skill.id,mode:online?'PVP':'LOCAL',message:String(error?.message||error)});
+    }
+    if(preview){
+      globalThis.CardTacticsRenderer?.showSkillHoldPreview?.(preview);
+      const foot=preview.radius==null?`${preview.tiles?.length||0} 格`:`半徑 ${preview.radius} 格`;
+      stats.textContent+=` ｜ 當下地圖預覽：${foot}`;
+      if(preview.approximate)stats.textContent+=' ｜ PVP 射程示意（合法目標以伺服器為準）';
+      else stats.textContent+=preview.kind==='ALLY'?' ｜ 綠色：友軍影響範圍':
+        preview.kind==='ALLY_TARGET'?' ｜ 藍色：可及範圍／綠色：合法友軍':
+        ' ｜ 藍色：可及範圍／紅色：合法目標';
+    }
     skillInspector.replaceChildren(title,body,stats);skillInspector.hidden=false;
     const rect=button.getBoundingClientRect();
     const x=Number(point?.x??rect.left+rect.width/2),y=Number(point?.y??rect.top);
@@ -866,6 +929,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function finishSkillHold(event){if(skillHold&&skillHold.pointerId===event.pointerId)dismissSkillInspection();}
   window.addEventListener("pointerup",finishSkillHold);
   window.addEventListener("pointercancel",finishSkillHold);
+  window.addEventListener("blur",dismissSkillInspection);
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)dismissSkillInspection();});
   skillBar.addEventListener("click",event=>{
     const button=event.target.closest?.("button");
     if(button&&button===skillHoldConsumedClick){

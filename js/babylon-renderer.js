@@ -619,6 +619,43 @@ export class BabylonRenderer{
   // carries only read-only, server-certified movement tiles and the selected
   // unit flag. This deliberately skips terrain, water, effects and game rules;
   // the official full snapshot sync() owns those systems.
+  /** Temporary interaction-only range projection. Both the native/Gemini
+   * game and PvP share this same HighlightRenderer and release path. */
+  showSkillHoldPreview(preview){
+    const state=this.lastState;
+    if(!state?.map?.tiles||!preview||state.map.id!==preview.mapId)return false;
+    this.skillHoldPreview={...preview};
+    return this.paintSkillHoldPreview();
+  }
+
+  paintSkillHoldPreview(){
+    const preview=this.skillHoldPreview,state=this.lastState;
+    if(!preview||!state?.map?.tiles||state.map.id!==preview.mapId){
+      this.skillHoldPreview=null;return false;
+    }
+    const footprint=new Set((preview.tiles||[]).map(t=>`${t.x},${t.y}`));
+    const targets=new Set((preview.targets||[]).flatMap(t=>
+      (t.cells?.length?t.cells:[t]).map(c=>`${c.x},${c.y}`)));
+    const special=new Set((preview.additional||[]).map(t=>`${t.x},${t.y}`));
+    const ally=preview.kind==='ALLY',allyTarget=preview.kind==='ALLY_TARGET';
+    const tiles=state.map.tiles.map(tile=>{
+      const key=`${tile.x},${tile.y}`;
+      const inRange=footprint.has(key),isTarget=targets.has(key)||special.has(key);
+      return {...tile,inspected:false,targetRange:false,
+        reachable:!ally&&inRange&&!isTarget,
+        deployable:ally&&inRange||allyTarget&&isTarget,
+        attackable:!allyTarget&&isTarget};
+    });
+    this.highlights.sync({...state,map:{...state.map,tiles}});
+    return true;
+  }
+
+  clearSkillHoldPreview(){
+    if(!this.skillHoldPreview)return;
+    this.skillHoldPreview=null;
+    if(this.lastState?.map?.tiles)this.highlights.sync(this.lastState);
+  }
+
   syncInteractionPresentation(state){
     if(!state?.map?.tiles||!Array.isArray(state.units))return false;
     const stages=[
@@ -630,6 +667,7 @@ export class BabylonRenderer{
     for(const [name,run] of stages)
       if(!this.syncSubsystem(name,run))complete=false;
     if(complete)this.lastState=state;
+    if(complete&&this.skillHoldPreview)this.paintSkillHoldPreview();
     return complete;
   }
 
@@ -681,7 +719,8 @@ export class BabylonRenderer{
         this.environment.syncSpatialLightMembership();
     });
     publish("objectives",()=>this.objectives.sync(state));
-    publish("highlights",()=>this.highlights.sync(state));
+    publish("highlights",()=>{this.highlights.sync(state);
+      if(this.skillHoldPreview)this.paintSkillHoldPreview();});
     publish("shadows",()=>this.syncShadows());
     publish("unitHud",()=>this.unitHud.sync(state));
 

@@ -2336,11 +2336,72 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return true;
     }
 
+    /** One read-only skill hold projection. It never spends resources, writes
+     * state, reveals unseen enemies, or emits animations. All actual legal
+     * targets come from the original official targeting helpers above. */
+    function previewSkillArea(unit,skill){
+      const world=state(),map=world.map,environmentState=world.environmentState;
+      if(!unit?.alive||!skill||!map?.tiles)return null;
+      const center=TacticalEngine.tile(map,unit.x,unit.y);
+      const distance=point=>Math.abs(point.x-unit.x)+Math.abs(point.y-unit.y);
+      const rangeTiles=radius=>map.tiles.filter(tile=>distance(tile)<=radius);
+      const projectTarget=target=>({id:target.id,x:target.x,y:target.y,
+        cells:TacticalEngine.occupiedCells?.(target)||[{x:target.x,y:target.y}]});
+      const visibleTarget=target=>target?.team===unit.team||
+        skill.ignoreFogOfWar===true||TacticalEngine.teamCanSee(
+          map,world.units,unit.team,target,environmentState);
+      // Dance and channel radii belong to their official execution rules.
+      if(skill.danceAura||skill.deathDance){
+        const radius=danceRadius(unit),tiles=rangeTiles(radius);
+        const targets=skill.deathDance?world.units.filter(other=>other.alive&&
+          other.team!==unit.team&&other.kind!=='CORE'&&distance(other)<=radius&&
+          visibleTarget(other)&&map.tiles.some(tile=>{
+            if(Math.abs(tile.x-other.x)+Math.abs(tile.y-other.y)!==1)return false;
+            if(tile.x===unit.x&&tile.y===unit.y)return true;
+            return TacticalEngine.pathTo(map,world.units,{...unit},tile.x,tile.y).length>0;
+          })).map(projectTarget):[];
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:skill.deathDance?'ATTACK':'ALLY',radius,tiles,targets};
+      }
+      if(skill.channel){
+        const radius=Math.max(0,Number(skill.channel.radius||0)),tiles=rangeTiles(radius);
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:'ALLY',radius,tiles,targets:[]};
+      }
+      if(skill.sanctuary){
+        const tiles=ctx.sanctuaryTiles(center,skill.radius)||[];
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:'ALLY',tiles,targets:[]};
+      }
+      if(skill.target==='SELF'&&skill.targetType!=='AOE'&&
+         !skill.areaDamage&&!skill.aoeDamage){
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:'ALLY',tiles:center?[center]:[],targets:[]};
+      }
+      if(skill.target==='SELF'&&skill.areaDamage){
+        const radius=skill.areaDamage.footprint==='ADJACENT_8'?1:
+          Math.max(0,Number(skill.radius||0));
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:'AREA',radius,tiles:rangeTiles(radius),targets:[]};
+      }
+      const single=ctx.targetType(skill)==='SINGLE';
+      if(!single){
+        const tiles=mapTargetTiles(unit,skill);
+        return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+          kind:'AIM',tiles,targets:[]};
+      }
+      const tiles=targetRangeTiles(unit,skill);
+      const targets=targetableEntities(unit,skill).filter(visibleTarget).map(projectTarget);
+      const additional=environmentTargetTiles(unit,skill);
+      return {mapId:map.id,unitId:unit.id,skillId:skill.id,
+        kind:skill.target==='ALLY'?'ALLY_TARGET':'AIM',tiles,targets,additional};
+    }
+
     function reset(){pendingMove=null;pendingTransport=null;pendingEnchantment=null;enchantmentFollowup=null;}
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,bloodShadowLanding,
-      attackPlanForTarget,targetableEntities,targetRangeTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
+      attackPlanForTarget,targetableEntities,targetRangeTiles,previewSkillArea,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,executeUtilitySkill,approachForSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
