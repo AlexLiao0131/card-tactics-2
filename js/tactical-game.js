@@ -642,6 +642,12 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);
     const dual=globalThis.NeutralActorEngine;
     const actors=dual.availableActors(units,round);
+    // The neutral turn is a real state transition, not a render-only effect.
+    // Preserve actual encounter skills, water depth and sight constraints.
+    for(const actor of actors){
+      const transition=dual.chooseAquaticStance?.({map,units,unit:actor,environmentState});
+      if(transition)pushLog(`${actor.character.name} ${transition.to==='DIVING'?'下潛至水中':'上浮露出頭部'}。`,'SYSTEM');
+    }
     if(!actors.length){enemyController?.runPhase();return;}
     phase=PHASE.ENEMY;
     const processNext=()=>{
@@ -654,16 +660,24 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       if(!attack){
         const path=dual.chooseMove({map,units,unit:actor,random:Math.random,environmentState});
         if(path.length)traverseUnitPath(actor,path);
-        if(actor.alive)attack=dual.chooseAttack({map,units,unit:actor,
-          runtime:UnitRuntimeEngine,random:Math.random,environmentState});
+        // A submerged monster that reaches its prey must actually surface
+        // before attacking, including when the movement changed four cells.
+        if(actor.alive){
+          const waterMode=dual.chooseAquaticStance?.({map,units,unit:actor,environmentState});
+          if(waterMode)pushLog(`${actor.character.name} ${waterMode.to==='DIVING'?'下潛至水中':'上浮露出頭部'}。`,'SYSTEM');
+          attack=dual.chooseAttack({map,units,unit:actor,
+            runtime:UnitRuntimeEngine,random:Math.random,environmentState});
+        }
       }
       dual.markActed(actor,round);
       if(!actor.alive){processNext();return;}
       if(!attack){actor.moved=true;actor.acted=true;actor.waited=true;
-        pushLog(`${actor.character.name} 高維失控，本次未找到可攻擊的合法目標。`,"BATTLE");
+        pushLog(actor.monsterId?`${actor.character.name} 在水域巡游，沒有合法攻擊目標。`:
+          `${actor.character.name} 高維失控，本次未找到可攻擊的合法目標。`,"BATTLE");
         processNext();return;}
       const {skill,target}=attack;
-      pushLog(`${actor.character.name} 高維失控，敵我不分地攻擊 ${target.character.name}。`,"BATTLE");
+      pushLog(actor.monsterId?`${actor.character.name} 揮動觸手攻擊 ${target.character.name}。`:
+        `${actor.character.name} 高維失控，敵我不分地攻擊 ${target.character.name}。`,"BATTLE");
       if(target.team===TEAM.PLAYER){
         pendingEnemyAttack={attacker:actor,defender:target,skill};
         pendingBerserkResume=processNext;

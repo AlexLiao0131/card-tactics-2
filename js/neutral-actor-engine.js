@@ -53,6 +53,42 @@ function chooseMove({map,units,unit,random=Math.random,environmentState=null}={}
   return tactical.pathTo(map,units,unit,landing.x,landing.y)||[];
 }
 
+/** The canonical water predator decides its own vertical pose at the start
+ * of its neutral turn. It surfaces to strike a visible target within its
+ * existing skill range; when idle it submerges only if the ENTIRE 2x2 water
+ * footprint has enough depth. Both browser and PvP call this same policy. */
+function chooseAquaticStance({map,units,unit,environmentState=null}={}){
+  if(!map||!unit?.alive||unit.team!=='N'||
+    unit.monsterId!=='water_lurker'&&unit.character?.id!=='water_lurker')return null;
+  const vertical=globalThis.VerticalMobilityEngine;
+  const tactical=globalThis.TacticalEngine;
+  if(!vertical?.describe||!vertical?.setMode||!tactical?.tile)return null;
+  const origin=tactical.tile(map,unit.x,unit.y);
+  if(!origin)return null;
+  const activeSkill=(unit.character?.skills||[]).map(id=>globalThis.SkillDatabase?.get?.(id))
+    .find(skill=>skill?.target==='ENEMY'&&skill?.weapon&&
+      skill?.range&&Number.isFinite(Number(skill.range.max)));
+  const threat=!!activeSkill&&(units||[]).some(other=>{
+    if(!other?.alive||other.id===unit.id||other.team==='N')return false;
+    const distance=tactical.distanceBetween?.(unit,other);
+    if(!Number.isFinite(distance)||distance>Number(activeSkill.range.max))return false;
+    return !tactical.actorCanTrackTarget||tactical.actorCanTrackTarget(
+      map,units,unit,other,environmentState,{map,units,environmentState});
+  });
+  const cells=tactical.occupiedCells?.(unit)||[{x:unit.x,y:unit.y}];
+  const canSubmerge=vertical.capabilities?.(unit)?.canDive&&cells.every(cell=>{
+    const tile=tactical.tile(map,cell.x,cell.y);
+    return tile&&vertical.waterDepth(tile)>=vertical.bodyHeight(unit)&&
+      !globalThis.ClimateEngine?.isSolidIce?.(tile);
+  });
+  const desired=threat||!canSubmerge?'SWIMMING':'DIVING';
+  const before=vertical.describe(unit,origin).mode;
+  if(before===desired)return null;
+  const changed=vertical.setMode(unit,origin,desired);
+  return changed?.ok&&changed.state?.mode===desired?
+    {unitId:unit.id,from:before,to:desired}:null;
+}
+
 function availableActors(units,round){
   return(units||[]).filter(u=>u?.alive&&isAutonomousNeutral(u)&&
     (isUncontrolled(u)?u.controlOverride.startedRound<=round&&
@@ -61,5 +97,5 @@ function availableActors(units,round){
 function markActed(unit,round){if(!isAutonomousNeutral(unit))return false;
   if(isUncontrolled(unit))unit.controlOverride.actionDoneRound=round;
   else unit.neutralActionRound=round;return true;}
-export const NeutralActorEngine=Object.freeze({chooseAttack,chooseMove,availableActors,markActed,isUncontrolled,isAutonomousNeutral});
+export const NeutralActorEngine=Object.freeze({chooseAttack,chooseMove,chooseAquaticStance,availableActors,markActed,isUncontrolled,isAutonomousNeutral});
 globalThis.NeutralActorEngine=NeutralActorEngine;

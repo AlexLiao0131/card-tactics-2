@@ -251,6 +251,9 @@ class WaterLurkerSurfaceModel{
       m.alpha=alpha;m.backFaceCulling=false;this.materials.push(m);return m;
     };
     this.skin=tint('skin',[.19,.18,.30],[.028,.021,.050]);
+    // Slightly brighter mantle makes the surfaced head readable in night/fog
+    // without altering the established dark-purple tentacle materials.
+    this.mantleSkin=tint('mantle',[.29,.25,.41],[.075,.055,.088]);
     this.underside=tint('underside',[.39,.27,.43],[.045,.025,.052]);
     this.sucker=tint('suckers',[.63,.43,.57]);
     this.eye=tint('eye',[.88,.69,.29],[.62,.33,.07]);
@@ -269,14 +272,39 @@ class WaterLurkerSurfaceModel{
     this.ensureMaterials();
     const id=String(unit.id),root=new BABYLON.TransformNode('neutral-water-lurker-'+id,this.scene);
     root.metadata={kind:'unit',unitId:id,waterLurker:true};
-    const head=this.part(root,'lurker-submerged-mantle-'+id,'CreateSphere',
-      {diameter:1,segments:18},this.skin,id);
-    head.scaling.set(TILE_SIZE*1.65,.62*TILE_SIZE,TILE_SIZE*1.52);
-    head.position.y=-.72*TILE_SIZE;
+    // The old mantle was entirely below the water surface (-.72 tiles) and
+    // could never be seen. A body rig now rises into a readable OCTOPUS head:
+    // surface = upper half visible; dive = head and face genuinely submerged.
+    const headRig=new BABYLON.TransformNode('lurker-head-rig-'+id,this.scene);
+    headRig.parent=root;
+    const head=this.part(headRig,'lurker-raised-mantle-'+id,'CreateSphere',
+      {diameter:1,segments:24},this.mantleSkin,id);
+    head.scaling.set(TILE_SIZE*1.52,1.25*TILE_SIZE,TILE_SIZE*1.38);
+    head.position.y=-.17*TILE_SIZE;
+    const face=this.part(headRig,'lurker-face-'+id,'CreateSphere',
+      {diameter:1,segments:18},this.underside,id);
+    face.scaling.set(TILE_SIZE*.95,TILE_SIZE*.62,TILE_SIZE*.86);
+    face.position.set(0,-.30*TILE_SIZE,.37*TILE_SIZE);
+    const brow=this.part(headRig,'lurker-brow-'+id,'CreateSphere',
+      {diameter:1,segments:14},this.skin,id,{pick:false});
+    brow.scaling.set(.91*TILE_SIZE,.19*TILE_SIZE,.28*TILE_SIZE);
+    brow.position.set(0,.08*TILE_SIZE,.55*TILE_SIZE);
+    const beak=this.part(headRig,'lurker-beak-'+id,'CreateSphere',
+      {diameter:1,segments:12},this.skin,id,{pick:false});
+    beak.scaling.set(.23*TILE_SIZE,.29*TILE_SIZE,.22*TILE_SIZE);
+    beak.position.set(0,-.51*TILE_SIZE,.78*TILE_SIZE);
     const base=this.part(root,'lurker-underbody-'+id,'CreateSphere',
-      {diameter:1,segments:14},this.underside,id);
-    base.scaling.set(TILE_SIZE*1.35,.33*TILE_SIZE,TILE_SIZE*1.34);
-    base.position.y=-.93*TILE_SIZE;
+      {diameter:1,segments:18},this.underside,id);
+    base.scaling.set(TILE_SIZE*1.48,.58*TILE_SIZE,TILE_SIZE*1.39);
+    base.position.y=-.77*TILE_SIZE;
+    const siphons=[];
+    for(const side of [-1,1]){
+      const siphon=this.part(headRig,'lurker-siphon-'+id+'-'+side,'CreateCylinder',
+        {height:TILE_SIZE*.35,diameterTop:TILE_SIZE*.12,diameterBottom:TILE_SIZE*.23,tessellation:12},
+        this.underside,id,{pick:false});
+      siphon.position.set(side*.56*TILE_SIZE,-.40*TILE_SIZE,.15*TILE_SIZE);
+      siphon.rotation.z=side*.50;siphons.push(siphon);
+    }
     const arms=[];
     const number=5;
     for(let n=0;n<number;n++){
@@ -317,13 +345,21 @@ class WaterLurkerSurfaceModel{
     }
     const eyes=[];
     for(const side of [-1,1]){
-      const e=this.part(root,'lurker-glowing-eye-'+id+'-'+side,'CreateSphere',
-        {diameter:.13*TILE_SIZE,segments:9},this.eye,id);
-      e.position.set(side*.27*TILE_SIZE,-.46*TILE_SIZE,.64*TILE_SIZE);
+      const socket=this.part(headRig,'lurker-eye-socket-'+id+'-'+side,'CreateSphere',
+        {diameter:.31*TILE_SIZE,segments:14},this.skin,id,{pick:false});
+      socket.scaling.set(.85,1,.70);
+      socket.position.set(side*.29*TILE_SIZE,.01*TILE_SIZE,.66*TILE_SIZE);
+      const e=this.part(headRig,'lurker-glowing-eye-'+id+'-'+side,'CreateSphere',
+        {diameter:.19*TILE_SIZE,segments:14},this.eye,id);
+      e.position.set(side*.29*TILE_SIZE,.04*TILE_SIZE,.79*TILE_SIZE);
+      const pupil=this.part(headRig,'lurker-pupil-'+id+'-'+side,'CreateSphere',
+        {diameter:.068*TILE_SIZE,segments:8},this.skin,id,{pick:false});
+      pupil.position.set(side*.29*TILE_SIZE,.04*TILE_SIZE,.885*TILE_SIZE);
       eyes.push(e);
     }
-    return{root,arms,head,eyes,id,unitId:id,phase:arms.map((_,i)=>i*1.43),state:'IDLE',
-      nodes:[root]};
+    return{root,arms,head,headRig,face,base,eyes,id,unitId:id,
+      phase:arms.map((_,i)=>i*1.43),state:'IDLE',diveBlend:0,targetDive:0,
+      lastPoseTime:null,nodes:[root]};
   }
   surfaceY(snapshot,unit){
     const tiles=snapshot?.map?.tiles||[];
@@ -356,6 +392,10 @@ class WaterLurkerSurfaceModel{
         this.surfaceY(snapshot,unit),(Number(unit.y)+(height-1)/2)*TILE_SIZE);
       fx.root.setEnabled(true);
       fx.state=String(unit.acted?'IDLE':unit.moved?'SWIM':'IDLE');
+      // Only authoritative vertical state controls emergence. Never infer
+      // diving from a VFX timer, animation name, or player's camera angle.
+      fx.verticalMode=String(unit.verticalMode||unit.verticalState?.mode||'SWIMMING').toUpperCase();
+      fx.targetDive=fx.verticalMode==='DIVING'?1:0;
       fx.lastUnit=unit;
     }
     for(const [id,fx] of this.entries)if(!active.has(id)){
@@ -372,9 +412,22 @@ class WaterLurkerSurfaceModel{
     for(const fx of this.entries.values()){
       const attack=fx.lastAttackTime!=null?Math.max(0,1-(now-fx.lastAttackTime)/820):0;
       const recoil=fx.lastHurtTime!=null?Math.max(0,1-(now-fx.lastHurtTime)/360):0;
-      fx.head.position.y=-.72*TILE_SIZE+Math.sin(now*.0011)*.06-recoil*.14;
+      const elapsed=fx.lastPoseTime==null?0:Math.max(0,Math.min(120,now-fx.lastPoseTime));
+      fx.lastPoseTime=now;
+      // First frame shows the actual state; subsequent transitions are smooth.
+      if(elapsed===0)fx.diveBlend=fx.targetDive;
+      else fx.diveBlend+=(fx.targetDive-fx.diveBlend)*Math.min(1,elapsed/330);
+      const submerged=fx.diveBlend;
+      const motion=Math.sin(now*.0011)*.045-recoil*.11;
+      // At the surface the crown breaches the waterline and the full face is
+      // visible. DIVING moves the entire head beneath the same waterline.
+      fx.headRig.position.y=(-.035-1.53*submerged)*TILE_SIZE+motion;
+      fx.head.rotation.z=Math.sin(now*.00053)*.018;
+      fx.base.position.y=(-.77-.25*submerged)*TILE_SIZE+motion*.35;
       for(const arm of fx.arms){
         const phase=now*.00155+fx.phase[arm.n],active=attack&&arm.n===Math.floor(fx.arms.length/2);
+        // The tips may remain visible when diving, while their roots retract.
+        arm.joint.position.y=(-.24-.68*submerged)*TILE_SIZE;
         arm.joint.rotation.z=Math.sin(phase)*.14+(active?-.70*Math.sin(attack*Math.PI):0);
         arm.joint.rotation.x=Math.cos(phase*.8)*.11;
         for(let i=0;i<arm.pivots.length;i++){
