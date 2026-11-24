@@ -162,7 +162,7 @@ function serverCallbacks(game,engine){
     StageEngine.run(game.stageState,event,{units:game.units,
       log:pushLog,spawn:spawned,onObjectiveChanged:()=>{}});
   };
-  const death=DeathLifecycleEngine.create({stageEvent,pushLog,
+  const death=DeathLifecycleEngine.create({stageEvent,pushLog,units:()=>game.units,
     cardStateFor:unit=>game.perceptionState?.session?.defeatCards?.[(unit.controlOverride?.originalTeam||unit.team)==='P'?0:1]||
       game.cards[(unit.controlOverride?.originalTeam||unit.team)==='P'?0:1],
     deathScope:()=>game.perceptionState?.session,allowRewards:()=>!game.perceptionState?.session?.active,

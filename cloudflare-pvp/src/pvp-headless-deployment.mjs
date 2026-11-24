@@ -94,7 +94,7 @@ export function deployCanonicalCard(game, action, seat) {
   created.moved=true;
   created.acted=true;
   created.waited=true;
-  if(!cardPhase.commit(cardState,card))throw new PvpCommandError('CARD_COMMIT_FAILED');
+  if(!cardPhase.commit(cardState,card,created))throw new PvpCommandError('CARD_COMMIT_FAILED');
   // The original single-player ItemRuntimeEngine owns inventory capacity,
   // item payload creation, equipment effects and consumption.
   const queue=game.preparedItems?.[seat]?.[card.id];

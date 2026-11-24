@@ -3,6 +3,7 @@ import {SkillDatabase} from '../../js/skill-database.js';
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import {createBattleAreaFieldEngine,createBattleAreaFieldState} from '../../js/battle-area-field-engine.js';
 import '../../js/tactical-action-controller.js';
+import {createCanonicalEnvironmentController} from './pvp-environment-controller.mjs';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 
 const TEAM=['P','E'],PHASE=['PLAYER_TACTICAL_PHASE','ENEMY_TACTICAL_PHASE'];
@@ -14,7 +15,8 @@ export function createCanonicalAreaFields(game,engine,hooks){
   game.fieldState??=createBattleAreaFieldState();
   return createBattleAreaFieldEngine({state:game.fieldState,map:()=>game.battlefield.map,
     units:()=>game.units,round:()=>game.round,effect:()=>engine.effect,
-    pushLog:hooks.pushLog,handleDefeated:hooks.handleDefeated});
+    pushLog:hooks.pushLog,handleDefeated:hooks.handleDefeated,environmentState:()=>game.environmentState,
+    resolveEnvironmentEvents:(...args)=>createCanonicalEnvironmentController(game,hooks).resolveEnvironmentEvents(...args),random:engine.random});
 }
 
 /** Capability is declared by SkillDatabase, never by a hard-coded skill ID. */

@@ -101,6 +101,12 @@ export function isCanonicalImmediateMapSkill(skill){
       Array.isArray(skill.effects)&&skill.effects.length===1&&
       skill.effects[0].type==='DISPEL_POSITIVE'&&!skill.weapon&&!skill.attackType;
   if(AngelWingBarrierEngine.isCanonicalSkill(skill))return true;
+  if(skill?.persistentArea)return skill.category==='MAGIC'&&skill.target==='TILE'&&skill.targetType==='AOE'&&
+    skill.persistentArea.relation==='ENEMY'&&Number.isSafeInteger(skill.persistentArea.duration)&&skill.persistentArea.duration>0&&
+    Number(skill.power)>0&&Number.isSafeInteger(skill.radius)&&skill.radius>0&&
+    Array.isArray(skill.persistentArea.environmentForces)&&skill.persistentArea.environmentForces.every(f=>Object.values(EnvironmentEngine.FORCE).includes(f));
+  if(skill?.areaDamage?.footprint==='FRONT_3')return skill.category==='ATTACK'&&skill.target==='TILE'&&skill.targetType==='AOE'&&
+    skill.areaDamage.mode==='PHYSICAL_SWEEP'&&skill.areaDamage.relation==='ENEMY'&&skill.attackType==='SLASH'&&skill.range?.min===1&&skill.range?.max===1&&Number(skill.power)>0;
   if(skill?.purifiedSlash&&skill?.id==="nether_slash"&&skill?.target==="TILE"&&
      skill?.targetType==="AOE"&&skill?.shape==="FAN")return true;
   if(isCanonicalSpatialTransitSkill(skill)||isCanonicalLineTransitSkill(skill)||
@@ -231,6 +237,7 @@ export function castCanonicalMapSkill(game,action,seat,engine,hooks,checkMatchEn
     enterTile:environment.enterTile,
     traverseUnitPath:environment.traverseUnitPath,
     damageUnitFlat:hooks.damageUnitFlat,
+    activatePersistentArea:createCanonicalAreaFields(game,engine,hooks).activatePersistentArea,
     random:engine.random
   });
   const target=TacticalEngine.tile(game.battlefield.map,action.x,action.y);
