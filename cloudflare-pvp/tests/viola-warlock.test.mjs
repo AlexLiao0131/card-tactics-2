@@ -69,3 +69,13 @@ test('soul drain uses actual shared combat HP loss and generates a single stone'
  const res=resolver.resolve({map:world.map,units:state.units,initiator:v,target:f,skill:used,actions:[]});
  assert.ok(res.results.length>0);assert.ok(f.hp<foeHp);assert.equal(v.resources.soulStone.value,1);assert.ok(v.hp>before);
 }));
+
+// Both figures must opt out of default archer meshes in the shared renderer.
+test('warlock and felguard explicitly omit bow, quiver and side sword',async()=>{
+ const {VisualDatabase}=await import('../../js/visual-database.js');
+ for(const [id,weapon] of [['viola_default','arcaneStaff'],['felguard_default','fieldWarAxe']]){
+  const figure=VisualDatabase.characterBattle(id).figure;
+  assert.equal(figure[weapon],true,id);
+  for(const key of ['bow','quiver','sideSword'])assert.equal(figure[key],false,`${id}: ${key}`);
+ }
+});
