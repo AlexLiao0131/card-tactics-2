@@ -638,23 +638,24 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         const resolved=TacticalEngine.resolve(map,virtual,target,skill,{random:ctx.random,disableCrit:true});
         const physicalRoll=resolved.result;
         if(!physicalRoll.hit){ctx.pushLog(`${commander.character.name} → ${target.character.name}｜集團齊射 MISS。`,"BATTLE");continue;}
+        const enchantments=new Map();
+        for(const {unit,slot,enchant} of contributors){
+          const shot={...skill,weapon:slot,attackType:"SHOT"};
+          const innate=BattleResolution.previewInherentComponent(unit,target,shot,{critical:false});
+          if(innate.amount>0){
+            enchantments.set(innate.element,(enchantments.get(innate.element)||0)+innate.amount);
+          }
+          if(enchant){
+            const bonus=BattleResolution.enchantmentMagicDamage(unit,target,enchant,false,shot);
+            if(bonus>0)enchantments.set(enchant.element,(enchantments.get(enchant.element)||0)+bonus);
+          }
+        }
         const physical=EffectEngine.applyDamage(target,Number(physicalRoll.damage||0),
           {source:commander,damageType:"PHYSICAL"});
         const physicalLoss=Number(physical.hpLoss||0);
         if(physicalLoss)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{
           damage:physicalLoss,components:{physical:physicalLoss,magic:0},
           componentElements:{physical:"NONE"},skillId:skill.id});
-        const enchantments=new Map();
-        for(const {unit,slot,weapon,enchant} of contributors){
-          const shot={...skill,weapon:slot,attackType:"SHOT"};
-          const innate=BattleResolution.previewInherentBonus(unit,target,shot,{critical:false});
-          if(innate>0){const el=weapon.inherentMagic.element;
-            enchantments.set(el,(enchantments.get(el)||0)+innate);}
-          if(enchant){
-            const bonus=BattleResolution.enchantmentMagicDamage(unit,target,enchant,false,shot);
-            if(bonus>0)enchantments.set(enchant.element,(enchantments.get(enchant.element)||0)+bonus);
-          }
-        }
         let magicalLoss=0;
         for(const [element,amount] of enchantments){
           const magic=EffectEngine.applyDamage(target,amount,{source:commander,damageType:"MAGIC"});

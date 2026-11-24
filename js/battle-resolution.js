@@ -288,9 +288,8 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(soulPower>0)return{element:"NATURE",power:soulPower};
     return actor?.character?.weapons?.[skill?.weapon]?.inherentMagic||null;
   }
-  function inherentMagicDamage(actor,target,skill,critical){
+  function inherentMagicDamage(actor,target,skill,critical,inherent=inherentMagicSource(actor,skill)){
     const weapon=actor?.character?.weapons?.[skill?.weapon];
-    const inherent=inherentMagicSource(actor,skill);
     if(!inherent||!target?.character)return 0;
     const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
     const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
@@ -299,9 +298,15 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       element:inherent.element,defender:target.character,critical,attackClass:sourceClass,unresistable:inherent.unresistable===true
     });
   }
-  function previewInherentBonus(actor,target,skill,{critical=false,defenseMultiplier=1,grazeMultiplier=1}={}){
-    if(skill?.skipInherentMagic)return 0;
-    return Math.round(inherentMagicDamage(actor,target,skill,critical)*defenseMultiplier*grazeMultiplier);
+  // Resolve amount and element from the same canonical source: a skill,
+  // Forest Soul resonance, or the weapon. Do not infer the element from gear.
+  function previewInherentComponent(actor,target,skill,{critical=false,defenseMultiplier=1,grazeMultiplier=1}={}){
+    const inherent=skill?.skipInherentMagic?null:inherentMagicSource(actor,skill);
+    if(!inherent)return {amount:0,element:null};
+    return {amount:Math.round(inherentMagicDamage(actor,target,skill,critical,inherent)*defenseMultiplier*grazeMultiplier),element:inherent.element};
+  }
+  function previewInherentBonus(actor,target,skill,options={}){
+    return previewInherentComponent(actor,target,skill,options).amount;
   }
   function withInherentMagic(resolved,actor,target,skill){
     const inherent=inherentMagicSource(actor,skill);
@@ -312,7 +317,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       let multiplier=base.graze?GRAZE_DAMAGE_MULTIPLIER:1;
       const defense=resolved.defense;
       if(!inherent.unblockable&&defense?.triggered&&defense.success!==false&&defense.physicalOnly!==true)multiplier*=Number(defense.damageMultiplier??1);
-      extra=Math.round(inherentMagicDamage(actor,target,skill,magicalCrit)*multiplier);
+      extra=Math.round(inherentMagicDamage(actor,target,skill,magicalCrit,inherent)*multiplier);
     }
     return {...resolved,result:{...base,weaponDamage:base.weaponDamage??base.damage,
       damage:base.damage+extra,inherentMagicDamage:extra,inherentMagicElement:inherent.element,
@@ -981,7 +986,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       actions.push(createCounterAction(options.target,options.initiator,reaction.skill));
     return execute(createContext({...options,reaction,interception,actions}),hooks);
   }
-  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,positionInitiative,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
+  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentComponent,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,positionInitiative,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 }
 export const BattleResolution=createBattleResolution();
 globalThis.BattleResolution=BattleResolution;
