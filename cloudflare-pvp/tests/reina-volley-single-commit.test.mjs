@@ -28,7 +28,7 @@ const context=vm.createContext({globalThis:null,SkillDatabase:{passiveList:()=>[
  faceToward:()=>{},resolve:()=>{battleCommit++;return{result:{hit:true,damage:10}}}},
  EffectEngine:{breakStealth:()=>{},interruptChannel:()=>{},consumeWeaponEnchantment:()=>null,
  applyDamage:(target,amount)=>{const loss=Math.min(target.hp,amount);target.hp-=loss;return{hpLoss:loss}}},
- BattleResolution:{previewInherentBonus:()=>0},UnitRuntimeEngine:{},
+ BattleResolution:{previewInherentComponent:()=>({amount:0,element:null})},UnitRuntimeEngine:{},
  AngelWingBarrierEngine:{TYPE:'HOLY_WING_BARRIER'},
  UnitAnimationEngine:{emitAction:(...a)=>presentation.push(a),emitResolvedHit:()=>{}},
  TERRAINS:{PLAIN:{passable:true}}});context.globalThis=context;

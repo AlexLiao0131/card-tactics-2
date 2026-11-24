@@ -66,7 +66,7 @@ function canonicalFixture({hp=5,autoDead=false}={}){
       resolve:()=>{history.rolls++;return{result:{hit:true,damage:10}}}},
     EffectEngine:{breakStealth:()=>{},interruptChannel:()=>{},consumeWeaponEnchantment:()=>null,
       applyDamage:(u,n)=>{const loss=Math.min(u.hp,n);u.hp-=loss;if(autoDead&&u.hp===0)u.alive=false;return{hpLoss:loss}}},
-    BattleResolution:{previewInherentBonus:()=>0},UnitRuntimeEngine:{},
+    BattleResolution:{previewInherentComponent:()=>({amount:0,element:null})},UnitRuntimeEngine:{},
     AngelWingBarrierEngine:{TYPE:'HOLY_WING_BARRIER'},
     UnitAnimationEngine:{emitAction:()=>history.actions.push('ACTION'),emitResolvedHit:()=>history.actions.push('DAMAGE')},
     TERRAINS:{PLAIN:{passable:true}}};box.globalThis=box;
