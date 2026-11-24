@@ -2,6 +2,15 @@ const BLEEDING_STATUS=Object.freeze({type:"DAMAGE_OVER_TIME",id:"BLEEDING",name:
 const POISON_THROW_TOTAL_DAMAGE=18; // Existing poison knife bonus, distributed over its newly specified 3 ticks.
 const POISON_THROW_DURATION=3;
 export const SKILLS={
+  viola_soul_drain:{"id":"viola_soul_drain","name":"靈魂吸取","description":"消耗18 MP；造成實際HP傷害時等量回血並生成1顆靈魂石，上限3。","category":"MAGIC","weapon":"staff","attackType":"MAGIC","element":"DARK","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":4},"support":false,"power":1,"manaCost":18,"damageRecovery":{"healRatio":1,"resource":"soulStone","amount":1}},
+  viola_hellfire:{"id":"viola_hellfire","name":"地獄火","description":"消耗1顆靈魂石；命中造成實際傷害後附加3回合耐水地獄火，雨水與浸水不會熄滅，可淨化。","category":"MAGIC","weapon":"staff","attackType":"MAGIC","element":"DARK","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":4},"support":false,"power":1.05,"manaCost":0,"resourceCosts":{"soulStone":1},"statusEffects":[{"type":"DAMAGE_OVER_TIME","id":"HELLFIRE_BURN","name":"地獄火","classification":"NEGATIVE","amount":12,"duration":3,"chance":100,"waterproof":true}]},
+  viola_firestorm:{"id":"viola_firestorm","name":"火風暴","description":"消耗2顆靈魂石；指定區域半徑2格降火雨共3波（施放當下及後2回合），直接魔法傷害只打敵軍，並依正常環境規則點燃地形。","category":"MAGIC","weapon":"staff","attackType":"MAGIC","element":"FIRE","target":"TILE","targetType":"AOE","range":{"min":1,"max":4},"support":false,"power":0.65,"manaCost":0,"resourceCosts":{"soulStone":2},"radius":2,"persistentArea":{"duration":3,"relation":"ENEMY","environmentForces":["FIRE"]}},
+  viola_soul_harvest:{"id":"viola_soul_harvest","name":"靈魂收割","description":"消耗3顆靈魂石；以自身為中心3格，只對受詛咒敵人各結算一次暗魔法傷害，不解除詛咒。","category":"MAGIC","weapon":"staff","attackType":"MAGIC","element":"DARK","target":"TILE","targetType":"AOE","range":{"min":0,"max":0},"support":false,"power":1.75,"manaCost":0,"resourceCosts":{"soulStone":3},"radius":3,"areaDamage":{"mode":"MAGIC_POWER","relation":"ENEMY","hitRule":"AREA_CONTACT","requiredEffectTag":"CURSE"}},
+  viola_weakness_curse:{"id":"viola_weakness_curse","name":"衰弱詛咒","description":"消耗16 MP；物防與魔防降低12點，持續3回合，可淨化，同種刷新。","category":"MAGIC","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":4},"support":false,"power":0,"manaCost":16,"effects":[{"type":"BUFF","id":"CURSE_WEAKNESS","name":"衰弱詛咒","classification":"NEGATIVE","duration":3,"durationClock":"FULL_FUTURE_ROUNDS","tags":["CURSE"],"modifiers":{"mdef":-12,"def":-12}}]},
+  viola_blood_curse:{"id":"viola_blood_curse","name":"鮮血詛咒","description":"消耗16 MP；最大HP降低25%，解除不回血，持續3回合，可淨化，同種刷新。","category":"MAGIC","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":4},"support":false,"power":0,"manaCost":16,"effects":[{"type":"BUFF","id":"CURSE_BLOOD","name":"鮮血詛咒","classification":"NEGATIVE","duration":3,"durationClock":"FULL_FUTURE_ROUNDS","tags":["CURSE"],"modifiers":{"maxHpMultiplier":0.75}}]},
+  viola_slow_curse:{"id":"viola_slow_curse","name":"遲滯詛咒","description":"消耗16 MP；移動力降低2格，持續3回合，可淨化，同種刷新。","category":"MAGIC","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":4},"support":false,"power":0,"manaCost":16,"effects":[{"type":"BUFF","id":"CURSE_SLOW","name":"遲滯詛咒","classification":"NEGATIVE","duration":3,"durationClock":"FULL_FUTURE_ROUNDS","tags":["CURSE"],"modifiers":{"move":-2}}]},
+  felguard_cleave:{"id":"felguard_cleave","name":"順劈斬","description":"揮動巨斧，橫掃面向的前方三格敵人。","category":"ATTACK","weapon":"axe","attackType":"SLASH","element":"NONE","target":"TILE","targetType":"AOE","range":{"min":1,"max":1},"power":1,"manaCost":0,"support":false,"radius":1,"areaDamage":{"mode":"PHYSICAL_SWEEP","relation":"ENEMY","hitRule":"STANDARD","footprint":"FRONT_3"}},
+  felguard_armor_break:{"id":"felguard_armor_break","name":"破甲","description":"對相鄰敵人重擊；造成實際HP傷害時降低20物防，持續3回合。","category":"ATTACK","weapon":"axe","attackType":"SLASH","element":"NONE","target":"ENEMY","targetType":"SINGLE","range":{"min":1,"max":1},"power":1.15,"manaCost":0,"support":false,"statusEffects":[{"type":"DEF_DOWN","id":"FELGUARD_ARMOR_BREAK","value":20,"duration":3}]},
   safiya_sword_attack:{id:"safiya_sword_attack",name:"輕劍斬",category:"ATTACK",weapon:"sword",
     power:1,range:{min:1,max:1},target:"ENEMY",targetType:"SINGLE",attackType:"SLASH",element:"INHERIT",support:false,
     description:"薩菲雅以單手劍施展普通近身斬擊。"},
@@ -221,6 +230,8 @@ export const SKILLS={
   velsa_existence_breakdown:{id:"velsa_existence_breakdown",description:"對射程 2～5 格內單一敵軍施放高威力暗屬性魔法，依正式命中、暴擊、魔防及護盾結算。Sanity 越低魔法越強，認知失控時可能誤擊合法射程內友軍。純高威力單體攻擊，不具即死或無視魔防效果。消耗 55 MP、20 Sanity。",name:"存在崩解",category:"MAGIC",weapon:"staff",power:1.75,manaCost:55,resourceCosts:{sanity:20},range:{min:2,max:5},attackType:"MAGIC",element:"DARK",speed:-20,target:"ENEMY",support:false,highDimensional:true,affixes:["HIGH_DIMENSION","SANITY_SCALING","EXISTENCE_BREAKDOWN"]}
 };
 export const PASSIVES={
+  DEMON_SUMMON:{id:"DEMON_SUMMON",name:"惡魔召喚",category:"PASSIVE",description:"首次部署後，手牌獲得兩張惡魔衛士卡。"},
+  SOUL_RETURN:{id:"SOUL_RETURN",name:"靈魂歸還",category:"PASSIVE",description:"自己召喚的惡魔死亡時回復24 MP。",summonDeathMana:24},
   RHYTHM:{id:"RHYTHM",name:"律動",category:"PASSIVE",songResonance:true,
     description:"每次正式受到有 soundMagic 標記的歌聲影響，依歌曲類型額外獲得專屬增益；奧菲治癒歌聲額外回MP，海洋之歌提升舞步迴避，聖歌強化下一次劍舞的神聖效果。"},
   STAGE_FOCUS:{id:"STAGE_FOCUS",name:"舞台焦點",category:"PASSIVE",
@@ -312,7 +323,7 @@ export const SkillDatabase=(()=>{
     const costs=[];
     if(Number(active.manaCost)>0)costs.push(`魔力 ${active.manaCost}`);
     if(active.rageSpendAll)costs.push('全部憤怒');
-    for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${{holyPower:"聖能",faith:"信仰",blood:"血能",sanity:"Sanity",astralPower:"星能"}[key]||key} ${value}`);
+    for(const [key,value] of Object.entries(active.resourceCosts||{}))if(Number(value)>0)costs.push(`${{soulStone:"靈魂石",holyPower:"聖能",faith:"信仰",blood:"血能",sanity:"Sanity",astralPower:"星能"}[key]||key} ${value}`);
     if(active.alchemyCast?.mode==='TERRAIN')costs.push('煉成紋路 3/3');
     if(active.alchemyCast?.mode==='BASIC'&&Array.isArray(active.variants)&&!active.variantId)
       costs.push('必須選擇對應素材');

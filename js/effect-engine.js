@@ -283,7 +283,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
     unit.character.attributes=clone(unit._effectBaseAttributes);
     unit.character.modifiers=clone(unit._effectBaseModifiers);
     let damageTakenMultiplier=1,damageDealtMultiplier=1,guardMultiplier=1,moveEffectDelta=0;
-    let waterMagicPowerMultiplier=1;
+    let waterMagicPowerMultiplier=1,maxHpMultiplier=1;
     for(const e of state(unit)){
       // Once the physical shield becomes a boat/sled/passenger platform it
       // cannot simultaneously provide the full-shield defensive stance buff.
@@ -292,6 +292,7 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       if(e.type==="ATTRIBUTE_OVERRIDE")Object.assign(unit.character.attributes,e.values||{});
       if(e.type==="ATTRIBUTE_MODIFIER")for(const [k,v] of Object.entries(e.values||{}))unit.character.attributes[k]=Number(unit.character.attributes[k]||0)+Number(v||0);
       const m=e.modifiers||{};
+      if(Number.isFinite(m.maxHpMultiplier))maxHpMultiplier*=Math.max(0,m.maxHpMultiplier);
       for(const key of ["atk","matk","def","mdef","move"])if(m[key]!=null){
         unit.character.combat[key]=Number(unit.character.combat[key]||0)+Number(m[key]);
         if(key==="move")moveEffectDelta+=Number(m[key]);
@@ -334,10 +335,11 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
       const nextMaxHp=Math.max(1,Number(unit._effectBaseCombat.hp||1)
         +Number(projected.hp)-Number(baseline.hp));
       unit.character.combat.hp=nextMaxHp;
-      // Keep current HP; VIT adjustments must not heal for free.
-      if(Number.isFinite(Number(unit.hp)))
-        unit.hp=Math.min(Math.max(0,Number(unit.hp)),nextMaxHp);
+
     }
+    unit.character.combat.hp=Math.max(1,Math.round(Number(unit.character.combat.hp||1)*maxHpMultiplier));
+    if(Number.isFinite(Number(unit.hp)))unit.hp=Math.min(Math.max(0,Number(unit.hp)),unit.character.combat.hp);
+    unit.character.combat.move=Math.max(0,Number(unit.character.combat.move||0));
     // Shape-changing characters use their original walk range plus only the
     // active form's declared modifier, even after a buff/dispelling refresh.
     const form=unit.character?.forms?.[unit.currentForm];

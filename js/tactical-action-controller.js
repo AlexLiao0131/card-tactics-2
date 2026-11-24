@@ -1447,6 +1447,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(skill?.target==="SELF"&&skill.areaDamage?.mode==="PHYSICAL_SWEEP"&&
           (center?.x!==attacker.x||center?.y!==attacker.y))
         return skillFailure(attacker,skill,"SELF_CENTER_ONLY",center);
+      if(skill?.persistentArea){
+        if(!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y)||!ctx.canUseSkill(attacker,skill))return false;
+        if(!ctx.consumeSkill(attacker,skill))return false;
+        EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
+        TacticalEngine.faceToward(attacker,center);
+        if(!ctx.activatePersistentArea(attacker,center,skill))throw new Error("CANONICAL_PERSISTENT_AREA_INVALID");
+        return finishActiveSkill(attacker);
+      }
+      if(skill?.areaDamage?.requiredEffectTag&&!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))return false;
       if(skill?.purifiedSlash)return executeLiviaPurifiedSlash(attacker,center,skill);
       if(skill?.alchemyCast?.mode==='TERRAIN')return executeAlchemyTerrain(attacker,center,skill);
       if(skill?.rangerVolley===true)return executeRangerVolley(attacker,center,skill);
@@ -1628,6 +1637,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const enchantImpacts=[];
       const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):
         skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):
+        skill.areaDamage?.footprint==="FRONT_3" ? TacticalEngine.frontThreeTiles(map,attacker,center):
         skill.areaDamage?.footprint==="ADJACENT_8"
           ?ctx.aoeTiles(center,Number(skill.radius||0)*2).filter(tile=>
             Math.max(Math.abs(tile.x-center.x),Math.abs(tile.y-center.y))<=Number(skill.radius||0))
@@ -1686,6 +1696,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(relation==="ENEMY"&&occupant.id===attacker.id)return;
           if(relation==="ENEMY"&&occupant.team===attacker.team&&!sanityMisfire)return;
           if(relation==="ALLY"&&occupant.team!==attacker.team)return;
+          if(skill.areaDamage.requiredEffectTag&&!EffectEngine.state(occupant).some(e=>e.tags?.includes(skill.areaDamage.requiredEffectTag)))return;
           summary.inArea++;
           // Area magic cannot bypass the ally-facing Holy Wing Wall. Friendlies
           // can still shoot/counter outward through it using the same rule.

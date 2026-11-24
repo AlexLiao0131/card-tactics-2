@@ -787,6 +787,12 @@ export function createBattleResolution({random=()=>Math.random()}={}){
           element:original.el||skill.element,componentElements:{
             physical:original.type==="MAGIC"?null:original.el||skill.element,
             magic:original.enchantmentElement||original.inherentMagicElement||(original.type==="MAGIC"?original.el||skill.element:null)},skillId:skill.id}),contactVisualEvent,hitIndex,hitCount);
+        if(!action.misfire&&result.damage>0&&action.actor.alive&&action.target.team!==action.actor.team&&skill.damageRecovery){
+          const rule=skill.damageRecovery;
+          const healed=EffectEngine.apply({source:action.actor,target:action.actor,effect:{type:"HEAL",amount:result.damage*Number(rule.healRatio||0)}}).amount||0;
+          if(healed>0)globalThis.UnitAnimationEngine?.emitHealingOverTime?.(action.actor,healed);
+          if(rule.resource)runtime?.changeResource?.(action.actor,rule.resource,Number(rule.amount||0));
+        }
         if(!action.misfire&&result.damage>0)globalThis.UnitRuntimeEngine?.onFeralityContact?.(
           action.actor,skill,action.target,{hpLoss:result.damage,
             backstab:skill.id==='cat_backstab'&&

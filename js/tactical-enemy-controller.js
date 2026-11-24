@@ -56,12 +56,12 @@
         const summary=u=>({id:u.id,name:u.character?.name||u.id,x:u.x,y:u.y,hp:u.hp,mana:u.mana,
           maxHp:u.maxHp||u.character?.combat?.hp,role:u.character?.archetype||null,
           moved:!!u.moved,acted:!!u.acted,just_deployed:u.deployedRound===world.round,
-          effects:(u.effects||[]).map(e=>e.id||e.type).slice(0,6)});
+          resources:globalThis.UnitRuntimeEngine?.resourceSnapshot?.(u)||{},effects:(u.effects||[]).map(e=>e.id||e.type).slice(0,6)});
         return{round:world.round,actor_id:actor?.id||null,map:{width:world.map?.width,height:world.map?.height},
           team_plan:teamPlan,
           actor_skills:actor?ctx.skillList(actor).map(skill=>({id:skill.id,name:skill.name,
             power:skill.power,mana_cost:skill.manaCost||0,range:skill.range||null,
-            target:skill.target,category:skill.category})):[],
+            target:skill.target,category:skill.category,resource_costs:skill.resourceCosts||{}})):[],
           weather:state.weather||"CLEAR",time:state.timeOfDay||"DAY",
           allies:allied.map(summary),visible_opponents:tracked.map(summary),
           objectives:world.stage?.ruleset==="CORE_CAPTURE"?DeploymentEngine.points(world.stage).map(p=>({id:p.id,owner:p.owner,x:p.captureTiles?.[0]?.x,y:p.captureTiles?.[0]?.y})):[],
@@ -87,6 +87,7 @@
         const burst=ctx.skillList(actor).find(skill=>skill.bloodBurst&&ctx.canUseSkill(actor,skill));
         if(burst)choices.push({kind:"ATTACK",label:`${burst.name}｜範圍攻擊｜消耗 ${burst.manaCost||0} MP`,
           attack:{attacker:actor,defender:actor,skill:burst}});
+        for(const attack of mapAreaAttacks(actor))choices.push({kind:"ATTACK",label:`${attack.skill.name}｜(${attack.center.x},${attack.center.y})｜${attack.score} 名可見敵軍`,attack});
         const allSkills=singleSkills(actor);
         // Interleave skills: one verbose skill must not monopolize the action list.
         const attacks=allSkills.map(skill=>targetsForSkill(actor,skill).map(target=>({
@@ -145,16 +146,45 @@
         return ctx.combatTargets(actor).filter(target=>target.alive&&target.team!==actor.team);
       };
 
+      const curseEffects=skill=>(skill.effects||[]).filter(e=>e.tags?.includes("CURSE"));
       const targetsForSkill=(actor,skill)=>targetEntities(actor).filter(target=>
+        (!curseEffects(skill).length||(target.kind!=="CORE"&&curseEffects(skill).some(e=>!(target.effects||[]).some(a=>a.id===e.id))))&&
         measured("enemyAI.targetVisibility",()=>TacticalEngine.actorCanTrackTarget(ctx.map(),ctx.state().units,actor,target,ctx.actionState?.().environmentState||null,ctx.state()))&&
         measured("enemyAI.targetRangeLOS",()=>skill.bloodShadow?
           !!ctx.bloodShadowLanding?.(actor,target):TacticalEngine.canTarget(ctx.map(),actor,target,skill,ctx.actionState?.().environmentState||null))
       );
 
+      const mapAreaAttacks=actor=>{
+        const world=ctx.state(),map=ctx.map();
+        const foes=world.units.filter(u=>u.alive&&u.team!==actor.team&&TacticalEngine.actorCanTrackTarget(map,world.units,actor,u,world.environmentState||null,world));
+        const candidates=[];
+        for(const skill of ctx.skillList(actor)){
+          if(!(skill.persistentArea||skill.areaDamage?.requiredEffectTag||skill.areaDamage?.footprint==="FRONT_3")||!ctx.canUseSkill(actor,skill))continue;
+          const eligible=foes.filter(u=>!skill.areaDamage?.requiredEffectTag||(u.effects||[]).some(e=>e.tags?.includes(skill.areaDamage.requiredEffectTag)));
+          let best=null;
+          for(const center of ctx.mapSkillTiles?.(actor,skill)||[]){
+            const tiles=skill.areaDamage?.footprint==="FRONT_3"?TacticalEngine.frontThreeTiles(map,actor,center):TacticalEngine.aoeTiles(map,center,skill.radius||0);
+            const score=eligible.filter(u=>tiles.some(t=>TacticalEngine.occupiesCell(u,t.x,t.y))).length;
+            if(score>0&&(!best||score>best.score))best={attacker:actor,defender:actor,skill,center,score};
+          }
+          if(best)candidates.push(best);
+        }
+        return candidates.sort((a,b)=>b.score-a.score);
+      };
       const chooseAttack=actor=>{
         const burst=ctx.skillList(actor).find(skill=>skill.bloodBurst&&ctx.canUseSkill(actor,skill));
         if(burst)return{attacker:actor,defender:actor,skill:burst};
-        for(const skill of singleSkills(actor)){
+        const area=mapAreaAttacks(actor)[0];
+        if(area)return area;
+        const singles=singleSkills(actor);
+        const priority=skill=>{
+          const recovery=skill.damageRecovery,resource=recovery&&actor.resources?.[recovery.resource];
+          if(resource&&resource.value<resource.max)return 4;
+          if(curseEffects(skill).length&&singles.some(s=>s.damageRecovery&&actor.resources?.[s.damageRecovery.resource]?.value>=actor.resources?.[s.damageRecovery.resource]?.max))return 3;
+          if(Object.keys(skill.resourceCosts||{}).length)return 2;
+          return 0;
+        };
+        for(const skill of singles.sort((a,b)=>priority(b)-priority(a))){
           const targets=targetsForSkill(actor,skill);
           if(targets.length){
             targets.sort((a,b)=>{
@@ -238,6 +268,15 @@
 
       const requestAttack=attack=>{
         if(!attack?.attacker?.alive){afterStep(continuePhase,0);return;}
+        if(attack.center||curseEffects(attack.skill).length){
+          showStep("ATTACK",`AI｜${attack.attacker.character.name} 使用 ${attack.skill.name}`,{unitId:attack.attacker.id});
+          afterStep(()=>{
+            const actor=attack.attacker;
+            if(actor.alive){const ok=attack.center?ctx.performMapSkill?.(actor,attack.center,attack.skill):attack.defender?.alive&&ctx.performEffectSkill?.(actor,attack.defender,attack.skill);
+              if(!ok){actor.acted=true;actor.waited=true;}}
+            ctx.render();ctx.emitState();afterStep(continuePhase,350);
+          },400);return;
+        }
         if(attack.skill?.bloodBurst||attack.skill?.bloodShadow){
           showStep("ATTACK",`AI｜${attack.attacker.character.name} 使用 ${attack.skill.name}`,{unitId:attack.attacker.id});
           afterStep(()=>{
@@ -429,7 +468,7 @@
             afterStep(decide,0);return;
           }
           const unit=ctx.createEnemyCardUnit(card,tile);
-          if(!unit||!CardPhaseEngine.commit(cards,card)){afterStep(decide,0);return;}
+          if(!unit||!CardPhaseEngine.commit(cards,card,unit)){afterStep(decide,0);return;}
           state.units.push(unit);ctx.onUnitCreated?.(unit);
           ctx.pushLog(`敵方使用「${card.name}」部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶。`,"SYSTEM");
           ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});

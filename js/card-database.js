@@ -1,4 +1,6 @@
 export const CARDS={
+  viola_card:{id:"viola_card",name:"薇奧菈・月蝕",type:"CHARACTER",characterId:"viola",loadoutId:"viola_default",faction:"DEMON",unitType:"HERO",cost:6,pack:"DEMON_SUPPLEMENT"},
+  felguard_card:{id:"felguard_card",name:"惡魔衛士",type:"CHARACTER",characterId:"felguard",loadoutId:"felguard_default",faction:"DEMON",unitType:"UNIT",cost:3,availability:"BATTLE_ONLY",acquisition:"GENERATED",lifetime:"BATTLE",collectible:false,handSizeExempt:true,mulliganEligible:false},
   safiya_card:{id:"safiya_card",name:"薩菲雅・夜紗",type:"CHARACTER",characterId:"safiya",
     loadoutId:"safiya_default",faction:"DANCER",unitType:"HERO",cost:6,pack:"DANCER_SUPPLEMENT"},
   alchemist_card:{id:'alchemist_card',name:'梅莉安・羅森菲爾',type:'CHARACTER',characterId:'alchemist',

@@ -16,6 +16,15 @@ export const DeathLifecycleEngine=(()=>{
       const scope=finalizationScope();
       if(scope.has(unit.id))return false;
       scope.add(unit.id);
+      // Serialized guard: worker contexts are recreated for each command.
+      if(unit.summonerId&&!unit.summonerDeathReturned){
+        unit.summonerDeathReturned=true;
+        const owner=(ctx.units?.()||globalThis.UnitRuntimeEngine?.knownUnits?.()||[]).find(u=>u.id===unit.summonerId&&u.alive);
+        const ratio=(globalThis.SkillDatabase?.passiveList?.(owner?.character?.passives||[])||[]).reduce((n,p)=>n+Number(p.summonDeathMana||0),0);
+        if(owner&&ratio>0){const restored=globalThis.UnitRuntimeEngine?.restoreMana?.(owner,ratio)||0;
+          globalThis.UnitAnimationEngine?.emitPresentation?.("SOUL_RETURN",{unitId:owner.id,x:owner.x,y:owner.y,targetX:unit.x,targetY:unit.y});
+          ctx.pushLog(`${unit.character.name} 靈魂歸還 → ${owner.character.name}｜MP +${restored}。`,"BATTLE");}
+      }
 
       // A defeated unit is counted once across reaction chains, DOT and VFX.
       // The canonical runtime records Rage spending; neither a UI nor PvP may

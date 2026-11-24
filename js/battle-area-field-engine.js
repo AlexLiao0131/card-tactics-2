@@ -6,6 +6,7 @@
  */
 import {TacticalEngine} from './tactical-engine.js';
 import {SkillDatabase} from './skill-database.js';
+import {BattleEngine} from './battle-engine.js';
 
 const key=(x,y)=>`${x},${y}`;
 const covers=(field,unit)=>field?.cells instanceof Set
@@ -13,17 +14,18 @@ const covers=(field,unit)=>field?.cells instanceof Set
   : Array.isArray(field?.cells)&&field.cells.includes(key(unit.x,unit.y));
 
 export function createBattleAreaFieldState(){
-  return {sanctuaries:[],smokeFields:[],sanctuarySerial:0,smokeSerial:0};
+  return {sanctuaries:[],smokeFields:[],sanctuarySerial:0,smokeSerial:0,persistentAreas:[],persistentSerial:0};
 }
 export function isSanctuaryProtected(fields,unit){
   return !!unit?.alive && (fields?.sanctuaries||[]).some(field=>
     field.mode==='HEALING'&&field.team===unit.team&&covers(field,unit));
 }
-export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLog,handleDefeated}={}){
+export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLog,handleDefeated,environmentState=null,resolveEnvironmentEvents=null,random=Math.random}={}){
   if(!state||!Array.isArray(state.sanctuaries)||!Array.isArray(state.smokeFields)||
      ![map,units,round,effect,pushLog,handleDefeated].every(fn=>typeof fn==='function'))
     throw new Error('CANONICAL_AREA_FIELD_CONTEXT_REQUIRED');
   const cells=state;
+  cells.persistentAreas??=[];cells.persistentSerial??=0;
   const getUnits=()=>units()||[];
   function sanctuaryTiles(center,radius){
     const m=map(),origin=TacticalEngine.tile(m,center.x,center.y);
@@ -107,7 +109,43 @@ export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLo
     pushLog(`${caster.character.name} 放出${mode==='HEALING'?'庇護':'懲戒'}聖域｜中心 (${center.x},${center.y})｜範圍 ${tiles.length} 格｜剩下 ${field.ticksRemaining} 次。`,'BATTLE');
     return field;
   }
+  function pulsePersistentArea(field){
+    const skill=SkillDatabase.get(field.skillId),rule=skill?.persistentArea;
+    if(!rule)throw new Error('CANONICAL_PERSISTENT_AREA_SKILL_MISSING');
+    const source=getUnits().find(u=>u.id===field.casterId)||null;
+    const actor={id:field.casterId,team:field.team,character:field.character,x:field.origin.x,y:field.origin.y};
+    globalThis.UnitAnimationEngine?.emitAction?.(source||actor,field.center,skill,{targetKind:"MAP",fieldCells:field.cells.map(cell=>{const [x,y]=cell.split(",").map(Number);return{x,y};})});
+    for(const target of getUnits()){
+      if(!target.alive||target.team===field.team||!covers(field,target))continue;
+      if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map(),actor,target,skill))continue;
+      const result=BattleEngine.calculate(actor.character,target.character,skill,{distance:Math.abs(actor.x-target.x)+Math.abs(actor.y-target.y),random,forceHit:true});
+      if(!result.hit)continue;
+      const hit=effect().applyDamage(target,result.damage,{source,damageType:"MAGIC"});
+      if(hit.hpLoss>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:hit.hpLoss,critical:result.crit,components:{magic:hit.hpLoss},element:skill.element,skillId:skill.id});
+      pushLog(`${skill.name} → ${target.character.name}｜${hit.hpLoss} 傷害。`,"BATTLE");
+      if(target.hp<=0)handleDefeated(target,source,skill);
+    }
+    const env=environmentState?.();
+    if(env&&rule.environmentForces?.length){
+      const events=[];
+      for(const cell of field.cells){const [x,y]=cell.split(',').map(Number);events.push(...(globalThis.EnvironmentEngine.apply({map:map(),state:env,x,y,forces:rule.environmentForces})||[]));}
+      resolveEnvironmentEvents?.(events,{reason:skill.name});
+    }
+  }
+  function activatePersistentArea(caster,center,skill){
+    const rule=skill.persistentArea,tiles=TacticalEngine.aoeTiles(map(),center,skill.radius);
+    if(!rule||!tiles.length)return null;
+    const field={id:`persistent-area-${++cells.persistentSerial}`,casterId:caster.id,team:caster.team,skillId:skill.id,
+      origin:{x:caster.x,y:caster.y},character:JSON.parse(JSON.stringify(caster.character)),center:{x:center.x,y:center.y},cells:tiles.map(t=>key(t.x,t.y)),
+      nextRound:round()+1,ticksRemaining:rule.duration-1};
+    cells.persistentAreas.push(field);pulsePersistentArea(field);return field;
+  }
   function tickSanctuaries(team){
+    for(const field of cells.persistentAreas){
+      if(field.team===team&&field.ticksRemaining>0&&round()>=field.nextRound){pulsePersistentArea(field);field.ticksRemaining--;field.nextRound=round()+1;}
+    }
+    cells.persistentAreas=cells.persistentAreas.filter(f=>f.ticksRemaining>0);
+
     const active=[];
     for(const field of cells.sanctuaries){
       if(field.team===team&&round()>=field.expiresRound)continue;
@@ -121,8 +159,9 @@ export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLo
   function reset(){
     cells.sanctuaries.length=0;cells.smokeFields.length=0;
     cells.sanctuarySerial=0;cells.smokeSerial=0;
+    cells.persistentAreas.length=0;cells.persistentSerial=0;
   }
   return Object.freeze({state:cells,sanctuaries:cells.sanctuaries,smokeFields:cells.smokeFields,
     sanctuaryTiles,sanctuaryProtects:unit=>isSanctuaryProtected(cells,unit),syncSmokeCover,
-    activateSmoke,expireSmoke,activateSanctuary,tickSanctuaries,reset});
+    activateSmoke,expireSmoke,activateSanctuary,activatePersistentArea,tickSanctuaries,reset});
 }

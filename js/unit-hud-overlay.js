@@ -338,6 +338,13 @@ export class UnitHudOverlay{
         revealed.style.cssText=`position:absolute;left:0;top:0;height:80px;overflow:hidden;width:${Math.round(clamp01(value/max)*100)}%;`;
         const lit=picture();lit.style.filter='drop-shadow(0 0 3px #ef72b8)';
         revealed.appendChild(lit);outer.append(dim,revealed);wrap.append(label,outer);
+      }else if(id==="soulStone"){
+        const gems=createElement("div","unit-hud-holy-orbs");
+        for(let i=0;i<max;i++){
+          const gem=createElement("span","unit-hud-soul-stone");
+          gem.style.cssText=`display:inline-block;width:16px;height:24px;clip-path:polygon(50% 0,95% 28%,82% 75%,50% 100%,18% 75%,5% 28%);background:${i<value?'linear-gradient(135deg,#e0c7ff,#9158db 50%,#49227e)':'#494454'};opacity:${i<value?1:.45}`;
+          gem.setAttribute("aria-label",`靈魂石 ${i+1} ${i<value?"已充能":"未充能"}`);gems.appendChild(gem);
+        }wrap.append(label,gems);
       }else if(id==="holyPower"){
         const orbs=createElement("div","unit-hud-holy-orbs");
         for(let i=0;i<max;i++){

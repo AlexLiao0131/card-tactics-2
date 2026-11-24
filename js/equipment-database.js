@@ -1,4 +1,6 @@
 export const EQUIPMENT={
+  viola_staff:{id:"viola_staff",name:"月蝕法杖",kind:"WEAPON",weaponKind:"STAFF",attackType:"MAGIC",element:"DARK",affixes:[]},
+  felguard_axe:{id:"felguard_axe",name:"惡魔巨斧",kind:"WEAPON",weaponKind:"AXE",attackType:"SLASH",element:"NONE",materialId:"COMMON_METAL",affixes:[]},
   avreshi_moon_spear:{id:"avreshi_moon_spear",name:"月林祭司長矛",kind:"WEAPON",weaponKind:"POLEARM",attackType:"PIERCE",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},
   avreshi_claws:{id:"avreshi_claws",name:"月林獵豹利爪",kind:"WEAPON",weaponKind:"CLAWS",attackType:"SLASH",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},
   avreshi_fangs:{id:"avreshi_fangs",name:"月林獵豹獠牙",kind:"WEAPON",weaponKind:"FANGS",attackType:"PIERCE",element:"NONE",affixes:[],inherentMagic:{element:"NATURE",power:.45}},

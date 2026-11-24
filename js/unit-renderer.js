@@ -452,7 +452,7 @@ export class UnitRenderer{
         figureParts[part].metadata.figureBase.scaling.copyFrom(figureParts[part].scaling);
       }
     }
-    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.arenaGreatsword||figure.fieldWarHammer){
+    if(figure.armingSword||figure.blessedGreatsword||figure.greatsword||figure.arenaGreatsword||figure.fieldWarHammer||figure.fieldWarAxe){
       // The hilt is centered inside the RIGHT glove. Rotating that arm carries
       // the entire arming sword; it cannot drift when walking or slashing.
       const hand=[.307,.70,.070],shoulder=figureParts.rightArm.metadata.figurePivot;
@@ -1777,6 +1777,12 @@ export class UnitRenderer{
       lionFace("figure-arena-greatsword-lion","weapon",.31,.985,.19,.090);
     }
 
+    if(figure.fieldWarAxe){
+      cylinder("figure-war-axe-shaft",1.38,.05,.055,material.leatherDark,[.30,.80,.075],[0,0,-.04],10,"weapon");
+      box("figure-war-axe-head",[.40,.25,.075],material.weapon,[.30,.20,.075],[0,0,-.04],"weapon");
+      box("figure-war-axe-edge",[.085,.38,.085],material.metal,[.09,.20,.075],[0,0,-.12],"weapon");
+      box("figure-war-axe-edge-back",[.085,.38,.085],material.metal,[.51,.20,.075],[0,0,.12],"weapon");
+    }
     if(figure.greatsword){
       box("figure-greatsword-blade",[.115,1.10,.050],material.weapon,[.31,.47,.075],[0,0,-.04],"weapon");
       box("figure-greatsword-core",[.036,.96,.058],material.holy,[.31,.50,.075],[0,0,-.04],"weapon");

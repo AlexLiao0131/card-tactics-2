@@ -10,13 +10,16 @@ export function createCardPhaseEngine({deckEngine=null,cardDatabase=null,loadout
   function create({deck=[],startingCrystals=DEFAULT_STARTING_CRYSTALS,maxCrystals=DEFAULT_MAX_CRYSTALS,crystalGrowth=DEFAULT_CRYSTAL_GROWTH,handSize=DEFAULT_HAND_SIZE}={}){return{zones:deckRules().create(deck),crystals:0,crystalCapacity:0,startingCrystals,maxCrystals,crystalGrowth,turnsStarted:0,handSize,active:false,played:[],generatedCardsGranted:[],lastGeneratedCards:[],mulliganAvailable:true,mulliganDone:false};}
   function expireTurnCards(state){const expired=[];for(const zoneName of ["hand","deck","discard"]){const zone=state?.zones?.[zoneName];if(!Array.isArray(zone))continue;for(let i=zone.length-1;i>=0;i--){const card=cards().get(zone[i]);if(card&&cards().lifetime(card)===cards().LIFETIME.TURN){expired.push(zone[i]);zone.splice(i,1);}}}return expired;}
   function handSizeCount(state){return(state?.zones?.hand||[]).reduce((count,id)=>count+(cards().get(id)?.handSizeExempt===true?0:1),0);}
-  function grantGeneratedCards(state,cardIds=[]){
+  function grantGeneratedCards(state,cardIds=[],ownerId=null){
     if(!state?.zones?.hand)return[];
     state.generatedCardsGranted??=[];
     const granted=[];
-    for(const cardId of [...new Set(cardIds||[])]){
-      const card=cards().get(cardId);if(!card||state.generatedCardsGranted.includes(card.id))continue;
-      state.zones.hand.push(card.id);state.generatedCardsGranted.push(card.id);granted.push(card);
+    state.generatedCardOwners??={};
+    const previous=new Set(state.generatedCardsGranted);
+    for(const cardId of cardIds||[]){
+      const card=cards().get(cardId);if(!card||previous.has(card.id))continue;
+      state.zones.hand.push(card.id);if(!state.generatedCardsGranted.includes(card.id))state.generatedCardsGranted.push(card.id);granted.push(card);
+      if(ownerId)(state.generatedCardOwners[card.id]??=[]).push(ownerId);
     }
     state.lastGeneratedCards=granted.map(card=>card.id);
     return granted;
@@ -42,7 +45,7 @@ export function createCardPhaseEngine({deckEngine=null,cardDatabase=null,loadout
   }
   function keepOpeningHand(state){if(!state?.mulliganAvailable||state.mulliganDone)return false;state.mulliganAvailable=false;state.mulliganDone=true;return true;}
   function canPlay(state,card){return !!state.active&&!!card&&typeof card.cost==="number"&&Number.isFinite(card.cost)&&card.cost>=0&&state.zones.hand.includes(card.id)&&state.crystals>=card.cost;}
-  function commit(state,card){if(!canPlay(state,card))return false;if(!deckRules().removeFromHand(state.zones,card.id))return false;state.crystals-=Number(card.cost||0);state.played.push(card.id);state.lastGeneratedCards=[];if(cards().isCharacter(card))grantGeneratedCards(state,loadouts().generatedCardsForCard(card));if(cards().isSpell(card))deckRules().toDiscard(state.zones,card.id);return true;}
+  function commit(state,card,unit=null){if(!canPlay(state,card))return false;if(!deckRules().removeFromHand(state.zones,card.id))return false;state.crystals-=Number(card.cost||0);state.played.push(card.id);state.lastGeneratedCards=[];if(cards().isCharacter(card)){const owners=state.generatedCardOwners?.[card.id];if(unit&&owners?.length)unit.summonerId=owners.shift();grantGeneratedCards(state,loadouts().generatedCardsForCard(card),unit?.id||null);}if(cards().isSpell(card))deckRules().toDiscard(state.zones,card.id);return true;}
   function characterDefeated(state,cardId){if(cardId)deckRules().toGraveyard(state.zones,cardId);}
   function resolveTurnEndEffects(state,{units=[],team="P"}={}){const results=[];for(const unit of units){if(!unit?.alive||unit.team!==team)continue;for(const passive of skills().passiveList(unit.character?.passives)){const effect=passive.turnEndEffect;if(effect?.type!=="DRAW")continue;const drawn=deckRules().draw(state.zones,Math.max(0,Number(effect.count||0)));results.push({sourceId:passive.id,sourceName:passive.name,unitId:unit.id,drawn});}}return results;}
   function end(state){state.active=false;}

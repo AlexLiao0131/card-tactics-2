@@ -1,6 +1,8 @@
 import {BattleEngine} from "./battle-engine.js";
 import {RESOURCE_PROFILES} from "./resource-profile-database.js";
 export const CHARACTERS={
+viola:{"id":"viola","name":"薇奧菈・月蝕","title":"黑暗精靈術士","visualId":"viola_default","race":"DARK_ELF","faction":"DEMON","archetype":"MAGE","statProfile":"CASTER","genetics":{"grade":"4V","values":["AGI","INT","WIL","LUK"]},"attributes":{"str":8,"agi":20,"int":20,"wil":20,"vit":12,"luk":20},"combat":{"move":4},"resourceRules":{"mana":true,"soulStone":{}},"passives":["DEMON_SUMMON","SOUL_RETURN"]},
+felguard:{"id":"felguard","name":"惡魔衛士","visualId":"felguard_default","race":"DEMON","faction":"DEMON","archetype":"MELEE","attributes":{"str":18,"agi":9,"int":6,"wil":12,"vit":18,"luk":8},"combat":{"move":3},"resourceRules":{"mana":false},"displacement":{"weightClass":"HEAVY","resistance":2},"passives":[]},
 // 3V = AGI / INT / WIL. All combat figures derive from the canonical CASTER six-stat profile.
 alchemist:{id:'alchemist',name:'梅莉安・羅森菲爾',title:'旅行煉金術士・萬象的採集者',visualId:'alchemist_default',
   race:'HUMAN',faction:'ALCHEMY',archetype:'MAGE',genetics:{grade:'3V',values:['AGI','INT','WIL']},

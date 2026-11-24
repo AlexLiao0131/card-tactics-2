@@ -1,4 +1,6 @@
 export const LOADOUTS={
+  viola_default:{id:"viola_default",characterId:"viola",armorId:"mage_cloth",weaponIds:{staff:"viola_staff"},skillIds:["viola_soul_drain","viola_hellfire","viola_firestorm","viola_soul_harvest","viola_weakness_curse","viola_blood_curse","viola_slow_curse"],generatedCardsOnDeploy:["felguard_card","felguard_card"]},
+  felguard_default:{id:"felguard_default",characterId:"felguard",armorId:"imperial_heavy_armor",weaponIds:{axe:"felguard_axe"},skillIds:["felguard_cleave","felguard_armor_break"]},
   safiya_default:{id:"safiya_default",characterId:"safiya",armorId:"livia_light_armor",
     weaponIds:{sword:"imperial_sword"},equipmentIds:[],
     skillIds:["safiya_sword_attack","safiya_sword_dance","safiya_enchantment_dance",

@@ -9,7 +9,7 @@ import {TILE_SIZE,ELEVATION_HEIGHT} from './coordinate-system.js';
 
 const MODULE='dimensional';
 const SPELLS=Object.fromEntries(VfxDatabase.skillIds(MODULE).map(id=>[id,VfxDatabase.roleFor(MODULE,id)]));
-const DURATION=Object.freeze({BOLT:1120,CORRUPTION:1160,FOLD:1050,COLLAPSE:1290,BREAKDOWN:1270,BACKLASH:900});
+const DURATION=Object.freeze({BOLT:1120,CORRUPTION:1160,FOLD:1050,COLLAPSE:1290,BREAKDOWN:1270,BACKLASH:900,SOUL_DRAIN:1000,HELLFIRE:1100,FIRE_RAIN:1250,HARVEST:1150});
 const clamp=t=>Math.min(1,Math.max(0,Number(t)||0));
 const smooth=t=>{const x=clamp(t);return x*x*(3-2*x)};
 const v=(x,y,z)=>new BABYLON.Vector3(x,y,z);
@@ -26,7 +26,7 @@ export class DimensionalRiftVfx{
       dark:this.material('velsa-void',[.08,.025,.20],.91),
       violet:this.material('velsa-violet',[.42,.09,.94],.87),
       bright:this.material('velsa-fissure',[.82,.46,1],.93),
-      haze:this.material('velsa-distortion',[.31,.10,.65],.48)
+      haze:this.material('velsa-distortion',[.31,.10,.65],.48),fire:this.material('fire-rain',[1,.23,.045],.92)
     };
     scene.onDisposeObservable?.addOnce?.(()=>this.dispose());
   }
@@ -86,6 +86,16 @@ export class DimensionalRiftVfx{
       fx.orbCore=this.sphere(root,'velsa-arcane-core',.14,'bright');
       fx.trails=Array.from({length:3},(_,i)=>this.sphere(root,`velsa-trail-${i}`,.13-i*.025,'haze'));
       fx.impactRing=this.torus(impact,'velsa-bolt-impact',.78,'violet');fx.impactRing.rotation.x=Math.PI/2;
+    }else if(kind==='FIRE_RAIN'){
+      fx.drops=(event.fieldCells||[{x:targetX,y:targetY}]).map((cell,i)=>{
+        const m=this.mesh(impact,`fire-rain-${i}`,'CreateSphere',{diameter:.22,segments:6},'fire');
+        const base=this.point(snapshot,cell.x,cell.y,.1).subtract(target);return{m,base,delay:(i%5)*70};
+      });
+    }else if(kind==='HELLFIRE'){
+      fx.flames=Array.from({length:7},(_,i)=>this.mesh(impact,`hellfire-${i}`,'CreateSphere',{diameter:.30,segments:6},i%2?'violet':'bright'));
+    }else if(kind==='HARVEST'){
+      fx.rings=[this.torus(impact,'harvest-wave',TILE_SIZE*6,'violet'),this.torus(impact,'harvest-core',1.3,'bright')];
+      fx.rings.forEach(r=>r.rotation.x=Math.PI/2);
     }else if(kind==='CORRUPTION'){
       fx.targetRings=[this.torus(impact,'velsa-perception-fracture-a',1.38,'violet'),
         this.torus(impact,'velsa-perception-fracture-b',1.0,'bright')];
@@ -115,7 +125,7 @@ export class DimensionalRiftVfx{
         {width:.16,height:.20,depth:Math.max(.1,length)},'bright');
       beamRoot.lookAt(target);
       fx.beamRoot=beamRoot;fx.beam=beam;
-    }else if(kind==='BACKLASH'){
+    }else if(kind==='BACKLASH'||kind==='SOUL_DRAIN'){
       // Backlash travels from the actual wounded ally / area to the caster.
       fx.orb=this.sphere(impact,'velsa-backlash-return',.27,'bright');
       fx.targetRings=[this.torus(impact,'velsa-backlash-echo',.74,'violet')];
@@ -131,7 +141,7 @@ export class DimensionalRiftVfx{
     const visible=new Set((snapshot?.units||[]).map(u=>String(u.id)));
     const now=performance.now();
     for(const e of events||[]){
-      const backlash=e?.type==='VELSA_BACKLASH';
+      const backlash=e?.type==='VELSA_BACKLASH'||e?.type==='SOUL_RETURN';
       if(!backlash&&!isVelsaSpellPresentationEvent(e))continue;
       if(!visible.has(String(e.unitId))||!Number.isFinite(e.targetX)||!Number.isFinite(e.targetY))continue;
       const key=Number.isSafeInteger(e.sequence)?`${mapId}:${e.sequence}:${e.unitId}`:null;
@@ -194,6 +204,12 @@ export class DimensionalRiftVfx{
         f.impactRing.setEnabled(t>=740);
         f.impactRing.scaling.setAll(.15+1.5*smooth((t-740)/340));
         f.impactRing.visibility=1-smooth((t-740)/340);
+      }else if(f.kind==='FIRE_RAIN'){
+        for(const {m,base,delay} of f.drops){const q=clamp((t-delay)/850);m.position.copyFrom(base);m.position.y+=4*(1-q);m.scaling.set(.75,2.5*(1-q)+.45,.75);m.visibility=t<delay?0:1-smooth((q-.82)/.18);}
+      }else if(f.kind==='HELLFIRE'){
+        f.flames.forEach((m,i)=>{const a=i*Math.PI*2/f.flames.length+t*.004;m.position.set(Math.cos(a)*.43,.1+((p+i/7)%1)*1.25,Math.sin(a)*.43);m.scaling.set(.8,1.7,.8);m.visibility=1-p;});
+      }else if(f.kind==='HARVEST'){
+        f.rings[0].scaling.setAll(.08+.92*smooth(p));f.rings[0].visibility=1-p;f.rings[1].scaling.setAll(.5+Math.sin(p*Math.PI));f.rings[1].visibility=1-p;
       }else if(f.kind==='CORRUPTION'){
         f.impact.rotation.y=t*.0025;
         f.targetRings[0].rotation.x=t*.002;
@@ -227,7 +243,7 @@ export class DimensionalRiftVfx{
           m.position.set(Math.cos(a)*r,Math.sin(a*2)*(.3+release),Math.sin(a)*r);
           m.rotation.z+=.04;m.visibility=1-release;
         });
-      }else if(f.kind==='BACKLASH'){
+      }else if(f.kind==='BACKLASH'||f.kind==='SOUL_DRAIN'){
         const travel=smooth((t-150)/570);
         f.orb.position.set(lerp(0,f.source.x-f.target.x,travel),
           lerp(0,f.source.y-f.target.y,travel)+Math.sin(travel*Math.PI)*.40,

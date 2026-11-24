@@ -585,6 +585,9 @@ export function createUnitRuntimeEngine(){
        (!feralityUser(unit)||feralityValue(unit)<Number(feralityProfile(unit).max||100)||
         unit?.controlOverride?.behavior==='PREDATOR'))return false;
     skill=skillForUnit(unit,skill);
+    if(skill?.areaDamage?.requiredEffectTag&&!knownUnits().some(target=>target.alive&&target.team!==unit.team&&
+      Math.abs(target.x-unit.x)+Math.abs(target.y-unit.y)<=Number(skill.radius||0)&&
+      target.effects?.some(e=>e.tags?.includes(skill.areaDamage.requiredEffectTag))))return false;
     if(skill?.bloodBurst&&!globalThis.EffectEngine?.bloodBurstCenters?.(unit,knownUnits(),skill,world).length)return false;
     if(skill?.approach&&unit?.moved)return false;
     if(skill?.sanctuary&&faithValue(unit)===unit?.resources?.faith?.max)skill={...skill,manaCost:0};

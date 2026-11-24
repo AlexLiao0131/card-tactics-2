@@ -1,6 +1,7 @@
 /** Declarative resource profiles. Character identity never owns an executor.
  * These values are the existing authored balance and skill variants, not logic. */
 export const RESOURCE_PROFILES=Object.freeze({
+  soulStone:Object.freeze({label:"靈魂石",max:3,initial:0,naturalRecovery:0,color:"#9A6CE8"}),
   reputation:Object.freeze({label:"聲望",max:100,initial:0,naturalRecovery:0,
     // Permanent within one match; each effective performance is counted once.
     rangeThresholds:[0,35,70],rangeRadii:[1,2,3],

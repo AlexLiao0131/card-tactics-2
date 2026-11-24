@@ -14,10 +14,11 @@ export const CARD_GROUPS={
   SEA_WORLD_SUPPLEMENT:{id:"SEA_WORLD_SUPPLEMENT",name:"海世界補充包",cards:["nereia_card"]},
   BEAST_SUPPLEMENT:{id:"BEAST_SUPPLEMENT",name:"獸族補充包",cards:["cat_thief_hero_card","steal_hand_card"]},
   ANGEL_SUPPLEMENT:{id:"ANGEL_SUPPLEMENT",name:"天使族補充包",cards:["angel_archer_hero_card"]},
-  DEMON_SUPPLEMENT:{id:"DEMON_SUPPLEMENT",name:"魔族補充包",cards:["velsa_card"]},
+  DEMON_SUPPLEMENT:{id:"DEMON_SUPPLEMENT",name:"魔族補充包",cards:["velsa_card","viola_card"]},
   OTHER:{id:"OTHER",name:"其他／測試",cards:["rain_card","resurrection_card"]}
 };
 export const PACK_PRODUCTS={
+  WARLOCK_FIXED:{id:"WARLOCK_FIXED",name:"黑暗精靈術士補充包",kind:"SUPPLEMENT",season:"PERMANENT",description:"固定內容：薇奧菈・月蝕，4V 術士。",cards:["viola_card"]},
   DANCER_FIXED:{id:"DANCER_FIXED",name:"紫晶劍舞姬補充包",kind:"SUPPLEMENT",season:"PERMANENT",
     description:"固定內容：薩菲雅・夜紗，3V 劍舞／歌聲共鳴 HERO。",cards:["safiya_card"]},
   ALCHEMY_FIXED:{id:'ALCHEMY_FIXED',name:'煉金術士補充包',kind:'SUPPLEMENT',season:'PERMANENT',

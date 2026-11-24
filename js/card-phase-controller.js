@@ -77,6 +77,8 @@ function create(ctx){
       if(!CardPhaseEngine.commit(s.cardState,card))return cardFailure(card,"CARD_NOT_PAYABLE");
       const random=typeof ctx.random==="function"?ctx.random():Math.random();
       const cardId=opponent.splice(Math.floor(random*opponent.length),1)[0];
+      const owners=s.enemyCardState.generatedCardOwners?.[cardId];
+      if(owners?.length){owners.shift();s.cardState.generatedCardOwners??={};(s.cardState.generatedCardOwners[cardId]??=[]).push(null);}
       s.cardState.zones.hand.push(cardId);
       ctx.pushLog(`施放「${card.name}」｜消耗 ${card.cost} 水晶，取得敵方手牌「${CardDatabase.get(cardId)?.name||cardId}」｜僅本場戰鬥可用。`,"BATTLE");
       ctx.setPendingCard(null);ctx.checkMatchEnd();
@@ -210,7 +212,7 @@ function create(ctx){
     if(!DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y}))return cardFailure(card,"DEPLOY_TILE_INVALID",tile);
     const unit=UnitRuntimeEngine.createFromCard({id:ctx.nextUnitId(),team:TEAM.PLAYER,card,x:tile.x,y:tile.y,map:s.map});if(!unit)return false;
     unit.cardId=card.id;unit.deployedRound=s.round;unit.moved=true;unit.acted=true;unit.waited=true;
-    if(!CardPhaseEngine.commit(s.cardState,card))return false;
+    if(!CardPhaseEngine.commit(s.cardState,card,unit))return false;
     const itemIds=globalThis.ItemInventoryEngine?.claimBattleLoadout?.(card.id)||[];
     globalThis.ItemRuntimeEngine?.initializeUnitInventory?.(unit,itemIds,{owned:true,source:"PREPARATION"});
     s.units.push(unit);ctx.onUnitCreated?.(unit);UnitRuntimeEngine.reconcileCompanions(s.units);

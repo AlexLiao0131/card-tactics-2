@@ -16,7 +16,7 @@ const defs={
     roles:{CUT:['leon_slash'],GANFAN:['ganfan'],PIERCE:['leon_thrust'],STRIKE:['leon_strike'],FLASH:['lion_flash']},
     events:['UNIT_FLOAT_TEXT','LIVIA_GANFAN_PARRY','LIVIA_GANFAN_BREAK_STANCE'],legacy:'swordsmanshipVfx'},
   'physical-impact':{
-    roles:{RAGE_SLASH:['magda_rage_slash'],QUAKE:['magda_leap_quake'],CLEAVE:['magda_breaking_cleave'],EXECUTION:['magda_execution']},
+    roles:{RAGE_SLASH:['magda_rage_slash'],QUAKE:['magda_leap_quake'],CLEAVE:['magda_breaking_cleave','felguard_cleave','felguard_armor_break'],EXECUTION:['magda_execution']},
     events:[],legacy:'physicalImpactVfx'},
   'holy-blade':{
     roles:{VERDICT:['templar_verdict']},events:['TEMPLAR_VERDICT_IMPACT'],
@@ -27,9 +27,9 @@ const defs={
   'projectile':{roles:{},events:[],legacy:'arrowProjectileVfx',genericProjectile:true},
   'fire-impact':{roles:{},events:['FIRE_BOW_EXPLOSION'],legacy:'fireBowExplosionVfx'},
   'dimensional':{
-    roles:{BOLT:['velsa_arcane_bolt'],CORRUPTION:['velsa_cognitive_corruption'],
+    roles:{BOLT:['velsa_arcane_bolt'],SOUL_DRAIN:['viola_soul_drain'],HELLFIRE:['viola_hellfire'],FIRE_RAIN:['viola_firestorm'],HARVEST:['viola_soul_harvest'],CORRUPTION:['velsa_cognitive_corruption','viola_weakness_curse','viola_blood_curse','viola_slow_curse'],
       FOLD:['velsa_space_fold'],COLLAPSE:['velsa_dimension_collapse'],
-      BREAKDOWN:['velsa_existence_breakdown']},events:['VELSA_BACKLASH'],
+      BREAKDOWN:['velsa_existence_breakdown']},events:['VELSA_BACKLASH','SOUL_RETURN'],
     status:{RESOURCE_CHARACTER:'velsa'},legacy:'velsaDimensionalVfx'},
   'arcane':{
     roles:{ANALYZE:['cassandra_magic_bolt'],MANA_BURN:['cassandra_fire_burst'],
