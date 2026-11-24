@@ -285,12 +285,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     // BattleResolution, reaction, hit chance and damage unchanged.
     function canObserveFireSource(unit,tile,environmentState,origin=unit){
       const {map}=state();
-      if(!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y))return false;
       const observer={...unit,x:origin.x,y:origin.y};
-      // Optical fire-source transmission is distinct from identifying a unit
-      // standing behind opaque smoke. The environment owns the burning state.
-      return TacticalEngine.canSeeLight(map,observer,{x:tile.x,y:tile.y,radius:0},environmentState)&&
-        TacticalEngine.lightTransmission(map,observer,{x:tile.x,y:tile.y,radius:0},environmentState)>0;
+      return TacticalEngine.canObserveFireSource(map,observer,tile,environmentState);
     }
     function environmentTargetTiles(unit,skill){
       if(!unit?.alive||unit.acted)return[];
@@ -311,11 +307,12 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const origins=skill.approach?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       const r=TacticalEngine.range(skill);
       return map.tiles.filter(tile=>{
-        if(ctx.unitAt(tile.x,tile.y)||ctx.coreAt(tile.x,tile.y)||!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y))return false;
+        if(ctx.coreAt(tile.x,tile.y)||!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y))return false;
         if(!units.some(observer=>observer.alive&&observer.team===unit.team&&canObserveFireSource(observer,tile,environmentState)))return false;
         return origins.some(origin=>{
           const d=Math.abs(origin.x-tile.x)+Math.abs(origin.y-tile.y);
-          return d>=r.min&&d<=r.max&&canObserveFireSource(unit,tile,environmentState,origin);
+          return d>=r.min&&d<=r.max&&canObserveFireSource(unit,tile,environmentState,origin)&&
+            TacticalEngine.hasLineOfSight(map,{...unit,x:origin.x,y:origin.y},tile,{...skill,ignoreVision:true},environmentState);
         });
       });
     }
@@ -346,7 +343,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       for(const candidate of attackOrigins(unit)){
         const d=Math.abs(candidate.x-tile.x)+Math.abs(candidate.y-tile.y);
         if(d<r.min||d>r.max)continue;
-        if(!canObserveFireSource(unit,tile,environmentState,candidate))continue;
+        if(!canObserveFireSource(unit,tile,environmentState,candidate)||
+          !TacticalEngine.hasLineOfSight(map,{...unit,x:candidate.x,y:candidate.y},tile,{...skill,ignoreVision:true},environmentState))continue;
         const route=candidate.x===unit.x&&candidate.y===unit.y?[]:
           TacticalEngine.pathTo(map,state().units,unit,candidate.x,candidate.y);
         unit.facing=originalFacing;
@@ -359,10 +357,16 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!moved.completed){commitPendingMove(unit);ctx.render();return false;}
       }
       // Recheck the actual landing position before spending a resource.
-      if(!EnvironmentEngine.isBurning(environmentState,tile.x,tile.y)||
-        !canObserveFireSource(unit,tile,environmentState))return skillFailure(unit,skill,"ENVIRONMENT_TARGET_CHANGED",tile);
+      const distance=Math.abs(unit.x-tile.x)+Math.abs(unit.y-tile.y);
+      if(!unit.alive||distance<r.min||distance>r.max||ctx.coreAt(tile.x,tile.y)||
+        !canObserveFireSource(unit,tile,environmentState)||
+        !TacticalEngine.hasLineOfSight(map,unit,tile,{...skill,ignoreVision:true},environmentState))return skillFailure(unit,skill,"ENVIRONMENT_TARGET_CHANGED",tile);
+      const cast=ctx.effectiveSkill(unit,skill);
+      if(!ctx.consumeSkill(unit,cast))return skillFailure(unit,skill,"RESOURCE_OR_REQUIREMENT",tile);
       globalThis.EffectEngine?.breakStealth?.(unit,"ACTION");
-      const cast=ctx.effectiveSkill(unit,skill);ctx.consumeSkill(unit,cast);
+      EffectEngine.interruptChannel(unit,"ACTION");
+      TacticalEngine.faceToward(unit,tile);
+      globalThis.UnitAnimationEngine?.emitAction?.(unit,tile,cast,{targetKind:"MAP"});
       const events=EnvironmentEngine.waterImpact(map,environmentState,tile.x,tile.y,{source:cast.id});
       events.forEach(ctx.logEnvironmentEvent);
       ctx.resolveEnvironmentEvents?.(events,{reason:`${cast.name} 水流接觸`});
@@ -1502,6 +1506,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       }
       // The single canonical cast must validate its actual water/terrain
       // footprint before committing resources.
+      if(skill.tsunamiWave&&!mapTargetTiles(attacker,skill).some(t=>t.x===center?.x&&t.y===center?.y))
+        return skillFailure(attacker,skill,"TSUNAMI_TARGET_INVALID",center);
       const tsunamiPlan=skill.tsunamiWave?EnvironmentEngine.planTsunami(map,attacker,center,{
         width:skill.tsunamiWave.width,surfaceRise:skill.hydrologyFlood?.surfaceRise}):null;
       if(skill.tsunamiWave&&!tsunamiPlan?.cells.length)return skillFailure(attacker,skill,"TSUNAMI_PATH_BLOCKED",center);

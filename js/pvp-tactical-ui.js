@@ -239,8 +239,10 @@ export class PvpTacticalUI {
     const preview=unit&&skill?.fanShot&&this.fanAim&&
       (aim?.actionableTiles||[]).some(t=>t.x===this.fanAim.x&&t.y===this.fanAim.y)
       ?TacticalEngine.fanTiles(source.map,unit,this.fanAim,skill.fanShot):null;
-    const range=new Set((preview||aim?.tiles||[]).map(t=>`${t.x},${t.y}`));
-    const attackable=new Set((preview||aim?.actionableTiles||[]).map(t=>`${t.x},${t.y}`));
+    const environmentAim=this.mode==='DECLARE_ATTACK'&&unit?.aimOptions?.find(entry=>
+      entry.type==='CAST_ENVIRONMENT_CONTACT'&&entry.skillId===this.target?.skillId);
+    const range=new Set([...(preview||aim?.tiles||[]),...(environmentAim?.tiles||[])].map(t=>`${t.x},${t.y}`));
+    const attackable=new Set([...(preview||aim?.actionableTiles||[]),...(environmentAim?.actionableTiles||[])].map(t=>`${t.x},${t.y}`));
     if(unit&&this.mode!=='SELECT'&&this.target?.skillId){
       const key=`${this.match.revision}:${unit.id}:${this.mode}:${this.target.skillId}`;
       if(this.lastAimAuditKey!==key){
@@ -873,16 +875,18 @@ export class PvpTacticalUI {
     else if(this.isTacticalPhase()&&choice?.unitId){
       if(type==='MOVE_UNIT')action={type,unitId:choice.unitId,x,y};
       else if(type==='DECLARE_ATTACK'){
-        if(unit&&unit.team!==UNIT_TEAM[this.seat])
+        const attacker=v.units?.find(u=>u.id===choice.unitId);
+        const core=v.battlefield?.cores?.find(c=>c.x===x&&c.y===y);
+        const directAim=attacker?.aimOptions?.find(a=>a.type==='DECLARE_ATTACK'&&a.skillId===choice.skillId);
+        const environmental=attacker?.aimOptions?.find(a=>a.type==='CAST_ENVIRONMENT_CONTACT'&&a.skillId===choice.skillId);
+        const legal=aim=>aim?.actionableTiles?.some(t=>t.x===x&&t.y===y);
+        if(unit&&unit.team!==UNIT_TEAM[this.seat]&&(!directAim||legal(directAim)))
           action={type,attackerId:choice.unitId,targetId:unit.id,skillId:choice.skillId};
-        else {
-          const core=v.battlefield?.cores?.find(c=>c.x===x&&c.y===y);
-          const attacker=v.units?.find(u=>u.id===choice.unitId);
-          if(core&&attacker?.coreAttackSkillIds?.includes(choice.skillId))
-            action={type:'ATTACK_CORE',unitId:choice.unitId,skillId:choice.skillId,coreOwner:core.owner};
-          else if(!unit&&!core&&attacker?.environmentContactSkillIds?.includes(choice.skillId))
-            action={type:'CAST_ENVIRONMENT_CONTACT',unitId:choice.unitId,skillId:choice.skillId,x,y};
-        }
+        else if(core&&attacker?.coreAttackSkillIds?.includes(choice.skillId))
+          action={type:'ATTACK_CORE',unitId:choice.unitId,skillId:choice.skillId,coreOwner:core.owner};
+        else if(!core&&attacker?.environmentContactSkillIds?.includes(choice.skillId)&&
+          (environmental?legal(environmental):!unit))
+          action={type:'CAST_ENVIRONMENT_CONTACT',unitId:choice.unitId,skillId:choice.skillId,x,y};
       }else if(type==='CAST_EFFECT_SKILL'&&unit&&(
         choice.effectTarget==='ENEMY'?unit.team!==UNIT_TEAM[this.seat]:
         choice.effectTarget==='SELF'?unit.id===choice.unitId:

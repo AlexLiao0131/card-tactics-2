@@ -5,6 +5,9 @@ const highlightKind=tile=>tile.inspected?"inspected":tile.attackable?"attackable
 export class HighlightRenderer{
   constructor(scene,{terrain,environment}={}){
     this.scene=scene;this.terrain=terrain;this.environment=environment;
+    // Dynamic tactical overlays follow group-0 particles (including smoke),
+    // preserving the world depth buffer so solid geometry is not revealed.
+    this.scene.setRenderingAutoClearDepthStencil?.(1,false,false,false);
     this.dynamic=new Map();this.areas=new Map();this.signatureValue=null;
     this.materials={
       reachable:this.mat("reachable",new BABYLON.Color3(.18,.55,1),.35),
@@ -157,7 +160,7 @@ export class HighlightRenderer{
     for(const [kind,parts] of dynamic){
       const mesh=this.syncMesh(this.dynamic.get(kind),`hl-${kind}`,parts,
         this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY+1);
-      if(mesh)this.dynamic.set(kind,mesh);
+      if(mesh){mesh.renderingGroupId=1;this.dynamic.set(kind,mesh);}
     }
     for(const [owner,mesh] of this.areas)if(!areas.has(owner)){mesh.dispose();this.areas.delete(owner);}
     for(const [kind,mesh] of this.dynamic)if(!dynamic.has(kind)){mesh.dispose();this.dynamic.delete(kind);}

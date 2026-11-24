@@ -402,7 +402,7 @@ export const TacticalEngine=(()=>{
       Number.isFinite(Number(EnvironmentEngine.visionRange(state)));
   }
   // Seeing a luminous source through mist does not reveal occupants around it.
-  function lightTransmission(m,observer,source,environmentState){
+  function lightTransmission(m,observer,source,environmentState,{minimumTransmission=.025}={}){
     if(!m||!observer||!source)return 0;
     const radius=Math.max(0,Number(source.radius||0)),distance=D(observer,source);
     const fog=Number(globalThis.EnvironmentEngine?.fogAt?.(environmentState)?.intensity||0);
@@ -419,7 +419,16 @@ export const TacticalEngine=(()=>{
       }
     }
     const transmission=Math.exp(-opticalDepth)*Math.min(1,(reach-distance+1)/2);
-    return transmission<.025?0:transmission;
+    return transmission<minimumTransmission?0:transmission;
+  }
+  // Environmental source perception is not unit identification. Use the
+  // existing finite optical reach and terrain ray, without the visual cutoff.
+  // Never change the renderer's light transmission or ordinary combat LOS.
+  function canObserveFireSource(m,observer,target,environmentState){
+    if(!observer?.alive||!target||!globalThis.EnvironmentEngine?.isBurning?.(environmentState,target.x,target.y))return false;
+    const effects=EnvironmentEngine.effectAt(environmentState,target.x,target.y);
+    const radius=Math.max(0,...effects.filter(e=>e.type===EnvironmentEngine.EFFECT.BURNING||e.type===EnvironmentEngine.EFFECT.FIRE_TORNADO).map(e=>Number(e.lightRadius||0)));
+    return lightTransmission(m,observer,{x:target.x,y:target.y,radius},environmentState,{minimumTransmission:0})>0;
   }
   function canSeeLight(m,observer,source,environmentState){
     if(!m||!observer||!source)return false;
@@ -616,6 +625,6 @@ export const TacticalEngine=(()=>{
   }
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);const contact=contactPair(m,a,d,s,opt.environmentState||null),contactActor=contact?.a||a,contactDefender=contact?.b||d;let at=tile(m,contactActor.x,contactActor.y),dt=tile(m,contactDefender.x,contactDefender.y),w=a.character.weapons[s.weapon],type=s.attackType==="INHERIT"?w?.attackType:s.attackType,acc=0,eva=TERRAINS[dt.terrain].evasion||0;if(at.terrain==="HIGH_GROUND"&&(type==="SHOT"||type==="MAGIC")&&at.elevation>dt.elevation)acc=TERRAINS[at.terrain].rangedAccuracy||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(contactActor,contactDefender),arc=relativeArc(contactDefender,contactActor);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;
