@@ -28,11 +28,13 @@ test('Arena category displays the canonical Magda HERO card and permits deck inc
 });
 
 test('Existing preparation categories remain intact and Arena has one resolvable card',()=>{
-  const existing=['LIVIA_SUPPLEMENT','IMPERIAL','MAGIC','ELF_EMPIRE',
+  const existing=['DANCER_SUPPLEMENT','ALCHEMY_SUPPLEMENT','LIVIA_SUPPLEMENT','IMPERIAL','MAGIC','ELF_EMPIRE','MOON_FOREST',
     'OPHI_SUPPLEMENT','CHURCH','SAINT_SUPPLEMENT','SERAPHINA_SUPPLEMENT',
-    'SEA_WORLD_SUPPLEMENT','BEAST_SUPPLEMENT','ANGEL_SUPPLEMENT','DEMON_SUPPLEMENT','OTHER'];
+    'SEA_WORLD_SUPPLEMENT','BEAST_SUPPLEMENT','ANGEL_SUPPLEMENT','DEMON_SUPPLEMENT','WARLOCK_SUPPLEMENT','OTHER'];
   for(const id of existing)assert.strictEqual(PackDatabase.get(id),CARD_GROUPS[id]);
-  assert.equal(PackDatabase.list().length,existing.length+1);
+  // New official categories may be added; preserve existing IDs, not a historical total.
+  const ids=PackDatabase.list().map(group=>group.id);
+  assert.equal(new Set(ids).size,ids.length);
   assert.deepEqual(PackDatabase.cards('ARENA').map(card=>card.id),['magda_card']);
 });
 
