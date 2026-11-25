@@ -403,8 +403,8 @@ export class PvpLobbyController {
       phase.includes('TACTICAL_PHASE')?`${mine?'我方':'敵方'}戰棋階段`:'對戰中';
     $('turnStatus').textContent=`Round ${snapshot.round}｜${phaseLabel}`;
   }
-  tilePicked(x,y){
-    if(this.battleVisible)this.tacticalUI?.tilePicked({seat:this.session?.seat,x,y});
+  tilePicked(x,y,options){
+    if(this.battleVisible)return this.tacticalUI?.tilePicked({seat:this.session?.seat,x,y,aimOnly:options?.aimOnly===true});
   }
   sendCommand(action){
     if(!this.session||!this.match||this.commandInFlight||!this.isConnected())return false;

@@ -18,7 +18,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   let map,units,selected,mode,selectedSkill,selectedSkillVariant,logs,round,phase,matchResult,stage,stageState,environmentState,inspectedTile,cores=[];
   // Read-only player confirmation of the exact canonical fan-shot footprint.
   // This is not a second combat rule and cannot spend resources on preview.
-  let pendingFanAim=null,pendingVolleyAim=null;
+  let pendingAreaAim=null;
   let pendingPositiveDispel=null;
   let logState=BattleLog.create(),cardState=null,enemyCardState=null,pendingCard=null,unitSerial=0;
   let enemyView={active:false,kind:null,message:"",cardId:null,unitId:null};
@@ -360,7 +360,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function currentWorld(){return{map,units,stage,stageState,environmentState,cores};}
   function realWorld(){return perceptionState.session?.real||currentWorld();}
   function presentationWorld(){return perceptionState.session?.active&&perceptionState.session.team===TEAM.ENEMY?perceptionState.session.real:currentWorld();}
-  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===perceptionState.session?.real?null:selected,selectedSkill:w===perceptionState.session?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,renderRevision};}
+  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===perceptionState.session?.real?null:selected,selectedSkill:w===perceptionState.session?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,fieldState:areaFields.state,areaAimActive:phase===PHASE.PLAYER&&mode==="map-target"&&!!selected&&!selected.acted&&TacticalEngine.isAreaAimSkill(selectedSkill),aimPreview:phase===PHASE.PLAYER&&selected&&mode==="self-area-confirm"?actionController.previewSkillArea(selected,selectedSkill)?.tiles||[]:phase===PHASE.PLAYER&&mode==="map-target"&&selected&&pendingAreaAim&&TacticalEngine.isAreaAimSkill(selectedSkill)?actionController.aimedAreaTiles(selected,selectedSkill,pendingAreaAim):[],renderRevision};}
   function presentationUnitAt(x,y){return presentationWorld().units.find(u=>u.alive&&u.x===x&&u.y===y)||null;}
   function presentationCoreAt(x,y){return presentationWorld().cores.find(core=>core.x===x&&core.y===y)||null;}
   function checkMatchEnd(){return perceptionState.session?.active?false:objectiveController.checkMatchEnd();}
@@ -467,7 +467,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     ({stage,map,stageState,cores,environmentState,units,cardState,enemyCardState,unitSerial}=setup);
     enchantIdentityById.clear();enchantIdentityCounters.clear();releaseEnchantmentMarkers();
     EffectEngine.syncConditionalPassives(units,environmentState);
-    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingVolleyAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;globalThis.BattlefieldFieldEngine?.spawnWells?.(map,units,round,Math.random);stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
+    logState=BattleLog.create();deathLifecycle?.reset?.();selected=null;inspectedTile=null;selectedSkill=null;selectedSkillVariant=null;pendingAreaAim=null;pendingEngagement=null;supportSelection=new Map();pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;mode="idle";logs=[];grantInitialGeneratedCards();UnitRuntimeEngine.reconcileCompanions(units);round=1;phase=PHASE.CARD;matchResult=null;globalThis.BattlefieldFieldEngine?.spawnWells?.(map,units,round,Math.random);stageEvent({type:"ROUND_START",round,team:"PLAYER"});cardPhaseController.begin({initial:true});
   }
   function unitAt(x,y){return TacticalEngine.occupantAt(units,x,y);}
   function shieldBoardOrDismount(unit,{passenger=null,tile=null}={}){
@@ -612,7 +612,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }
   function clearEngagement(){pendingEngagement=null;supportSelection=new Map();}
   function clearEnemyReaction(){pendingEnemyAttack=null;pendingReactionType=null;selectedGuardian=null;selectedGuardInterception=null;}
-  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingFanAim=null;pendingVolleyAim=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
+  function clearSelection(){releaseEnchantmentMarkers();commandPanelCollapsed=false;selected=null;selectedSkill=null;selectedSkillVariant=null;pendingAreaAim=null;pendingPositiveDispel=null;clearEngagement();mode="idle";}
   function resolveWeatherEvents(...args){return environmentController.resolveWeatherEvents(...args);}
   function beginPlayerTurn(){
     const completed=beginPlayerRoundSequence({
@@ -627,7 +627,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       logRoundStart:()=>pushLog(`Round ${round}｜我方回合開始。`,"SYSTEM"),
       environmentAvailable:()=>!!environmentState,
       applyEnvironmentHazards:()=>applyEnvironmentHazards({reason:"回合開始仍處於燃燒區"}),
-      tickEffects:()=>tickRoundStatusEffects({units,effectEngine:window.EffectEngine,onDefeated:handleDefeated}),
+      tickEffects:()=>tickRoundStatusEffects({units,effectEngine:window.EffectEngine,onDefeated:handleDefeated,pushLog}),
       tickSanctuaries:()=>tickSanctuaries(TEAM.PLAYER),
       stageRoundStart:()=>stageEvent({type:"ROUND_START",round,team:"PLAYER"}),
       tickEnvironment:()=>EnvironmentEngine.tick(environmentState),
@@ -694,14 +694,14 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }
   function maybeAutoEndPlayerTurn(){if(phase!==PHASE.PLAYER||matchResult||!allFinished(TEAM.PLAYER))return false;pushLog("我方所有存活角色皆已完成行動，自動結束回合。","SYSTEM");clearSelection();endPlayerTurn({automatic:true});return true;}
   function endPlayerTurn({automatic=false}={}){if(engagementPlayback?.isActive())return false;if(phase!==PHASE.PLAYER||matchResult)return false;pushLog(`Round ${round}｜我方回合結束。`);const endTurnDraws=CardPhaseEngine.resolveTurnEndEffects(cardState,{units,team:TEAM.PLAYER});endTurnDraws.forEach(result=>{const sourceUnit=units.find(unit=>unit.id===result.unitId);const sourceLabel=sourceUnit?.character?.name?`${sourceUnit.character.name}【${result.sourceName}】`:`【${result.sourceName}】`;if(result.drawn.length){const drawnNames=result.drawn.map(cardId=>CardDatabase.get(cardId)?.name||cardId);pushLog(`${sourceLabel}發動｜額外抽牌：${drawnNames.join("、")}｜目前手牌 ${cardState.zones.hand.length} 張。`,"SYSTEM");}else pushLog(`${sourceLabel}發動｜牌庫已無可抽取卡牌。`,"SYSTEM");});endHallucinationTurn(TEAM.PLAYER);if(checkMatchEnd()){render();return true;}runEnemyPhase();return true;}
-  function finishUnit(unit,reason,{waited=false}={}){pendingFanAim=null;pendingVolleyAim=null;unit.moved=true;unit.acted=true;unit.waited=waited;selectedSkill=null;clearEngagement();mode="inspect";pushLog(`${unit.character.name} ${reason}`);maybeAutoEndPlayerTurn();}
+  function finishUnit(unit,reason,{waited=false}={}){pendingAreaAim=null;unit.moved=true;unit.acted=true;unit.waited=waited;selectedSkill=null;clearEngagement();mode="inspect";pushLog(`${unit.character.name} ${reason}`);maybeAutoEndPlayerTurn();}
   function logBattleAction(entry){
     if(entry.role==="GANFAN_PARRY"){
       const defense=entry.resolved?.defense;
       pushLog(`${entry.target.character.name}｜雁反招架 ${entry.actor.character.name} 的「${entry.skill.name}」成功｜招架骰 ${Number(defense.roll).toFixed(1)} / ${defense.chance}%｜反擊傷害歸零，立即返斬。`,"BATTLE");
       return;
     }
-    const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":entry.role==="FERVOR_FOLLOWUP"?"狂熱追擊｜":entry.role==="GANFAN_FOLLOWUP"?"雁反返斬｜":entry.role==="GANFAN_PARRY"?"雁反招架｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.ganfanParry?"PARRY":result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}if(entry.refundedMana>0)pushLog(`${actor.character.name}｜聖痕・暴擊返還 ${entry.refundedMana} MP。`,"BATTLE");if(entry.astralGained>0){const stored=UnitRuntimeEngine.resourceSnapshot(actor).astralPower;pushLog(`${actor.character.name}｜${skill.name} 星能 +${entry.astralGained}｜${stored?.value??0}/${stored?.max??'?'}`,"BATTLE");}environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
+    const {actor,target,skill,result,resolved,spd}=entry;const resource=resourceFor(actor,skill);const resourceText=resource.type==="USES"?`｜剩餘 ${resource.remaining}/${resource.max}`:"";const roleText=entry.role==="SUPPORT"?"支援｜":entry.role==="COUNTER"?"反擊｜":entry.role==="FERVOR_FOLLOWUP"?"狂熱追擊｜":entry.role==="GANFAN_FOLLOWUP"?"雁反返斬｜":entry.role==="GANFAN_PARRY"?"雁反招架｜":"";const hpAfter=Math.max(0,Number(entry.hpAfter||0));const hpBefore=hpAfter+Math.max(0,Number(result.damage||0));const hitLabel=result.ganfanParry?"PARRY":result.hit?(result.graze?"GRAZE":"HIT"):"MISS";const critLabel=result.crit?"｜CRIT":"";pushLog(`${roleText}${actor.character.name}｜${skill.name} → ${target.character.name}｜${hitLabel}${critLabel}｜${result.damage||0} 傷害${Number(result.magicHpDamage||0)>0?`（物理 ${result.physicalHpDamage||0}＋魔法 ${result.magicHpDamage}）`:""}｜HP ${hpBefore} → ${hpAfter}`,"BATTLE");const normalRoll=Number.isFinite(result.hitRoll)?result.hitRoll:null;const evadeRoll=Number.isFinite(result.evadeRoll)?result.evadeRoll:null;const hitRollText=evadeRoll!==null?`迴避骰 ${evadeRoll.toFixed(1)}｜原命中 ${result.originalHitChance}%｜全中門檻 ${result.activeHitChance}%`:normalRoll!==null?`命中骰 ${normalRoll.toFixed(1)} / ${result.hc}% → ${result.hit?"HIT":"MISS"}`:`命中判定 ${result.guaranteedHit?"必中":result.hit?"強制命中":"強制未命中"}`;const critRollText=Number.isFinite(result.critRoll)?`｜暴擊骰 ${result.critRoll.toFixed(1)} / ${result.cc}% → ${result.crit?"CRIT":"NO CRIT"}`:(result.hit?`｜暴擊率 ${result.cc}%${result.crit?" → CRIT":""}`:"");const terrainText=`${resolved.terrain.eva?`｜地形EVA +${resolved.terrain.eva}`:""}${resolved.terrain.acc?`｜高地ACC +${resolved.terrain.acc}`:""}`;pushLog(`[${skill.name}] ${actor.character.name} → ${target.character.name}｜${hitRollText}${critRollText}｜ACC修正 ${result.accuracy>=0?"+":""}${result.accuracy}｜EVA修正 ${result.evasion>=0?"+":""}${result.evasion}${terrainText}｜SPD ${spd}${resourceText}`,"DETAIL");if(resolved.defense?.method){const d=resolved.defense;pushLog(`防禦判定｜${d.method.name}${Number.isFinite(d.roll)?`｜骰 ${d.roll.toFixed(1)} / ${d.chance}%`:""}${d.bypassed?"｜被突破":d.triggered?`｜${d.success===false?"失敗":"成功"}`:"｜未觸發"}`,"DETAIL");}if(entry.refundedMana>0)pushLog(`${actor.character.name}｜聖痕・暴擊返還 ${entry.refundedMana} MP。`,"BATTLE");if(entry.astralGained>0){const stored=UnitRuntimeEngine.resourceSnapshot(actor).astralPower;pushLog(`${actor.character.name}｜${skill.name} 星能 +${entry.astralGained}｜${stored?.value??0}/${stored?.max??'?'}`,"BATTLE");}BattleResolution.logStatusResults(entry,pushLog);environmentController?.resolveWaterSkillHit?.(entry);actionController?.resolveEnchantmentImpact?.(entry);}
   function executeEnemyAttack(reaction=null,interception=null){if(!pendingEnemyAttack)return;const {attacker,defender,skill}=pendingEnemyAttack;const guardian=interception?.type==="GUARD_ALLY"&&interception.guardian?.alive?interception.guardian:EffectEngine.linkedGuardian(defender,units);if(guardian)pushLog(`${guardian.character.name} 援護 ${defender.character.name}，承接 ${attacker.character.name} 的攻擊。`,"BATTLE");BattleResolution.resolve({map,units,initiator:attacker,target:defender,skill,actions:[],reaction,interception},{canUseSkill,consumeSkill,onDefeated:handleDefeated,onAction:logBattleAction,onPostEffect:logPostEffect,onBackstep:(unit,tile)=>enterTile(unit)});attacker.moved=true;attacker.acted=true;attacker.waited=true;clearEnemyReaction();mode="idle";if(checkMatchEnd()){render();return;}render();
     if(pendingBerserkResume){
       const resume=pendingBerserkResume;pendingBerserkResume=null;
@@ -740,8 +740,6 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     return clickBattleTile(next.x,next.y);
   }
   function wingTargetTiles(unit,skill){
-    if(skill?.fanShot&&pendingFanAim&&selected?.id===unit.id&&selectedSkill?.id===skill.id)
-      return TacticalEngine.fanTiles(map,unit,pendingFanAim,skill.fanShot);
     if(skill?.utilityAction?.type!==AngelWingBarrierEngine.ACTION)return mapTargetTiles(unit,skill);
     if(!canUseSkill(unit,skill))return[];
     return AngelWingBarrierEngine.legalTiles(map,units,unit,{cores});
@@ -761,6 +759,12 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     finishUnit(unit,`施展「${skill.name}」，${fromAir?"降落並":""}展開四格盾牆。`);
     render();return true;
   }
+  function aimBattleTile(x,y){
+    if(engagementPlayback?.isActive()||matchResult||phase!==PHASE.PLAYER||mode!=="map-target"||!selected?.alive||selected.acted||selected.waited||!TacticalEngine.isAreaAimSkill(selectedSkill))return false;
+    const tile=TacticalEngine.tile(map,x,y);
+    if(!tile||!mapTargetTiles(selected,selectedSkill).includes(tile))return false;
+    if(pendingAreaAim!==tile){pendingAreaAim=tile;render();}return true;
+  }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
   function render(){
     // Remove stale team-private mana wells before publishing a new presentation
@@ -777,9 +781,8 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       // read-only enchantment choice is open.
       return;
     }
-    if(mode==="support-select")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile)){
-        if(selectedSkill.fanShot){pendingFanAim=tile;render();}
-        else if(selectedSkill.rangerVolley===true){pendingVolleyAim=tile;render();}
+    if(mode==="support-select"||mode==="self-area-confirm")return;if(selected&&!selected.acted&&mode==="map-target"&&selectedSkill){if(selectedSkill.utilityAction?.type===AngelWingBarrierEngine.ACTION){castWingBarrier(selected,tile,selectedSkill);return;}if(mapTargetTiles(selected,selectedSkill).includes(tile)){
+        if(TacticalEngine.isAreaAimSkill(selectedSkill)){aimBattleTile(tile.x,tile.y);}
         else executeMapSkill(selected,tile,selectedSkill);
       }else if(selectedSkill.rangerVolley===true&&unit&&unit.team!==selected.team){
         pushLog(`${selectedSkill.name}：目前不能鎖定該目標地格（超出射程、未觀測或射線受阻）。`,"SYSTEM");
@@ -814,7 +817,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       if(selectedSkill?.terrainTargeting===true&&mapTargetTiles(selected,selectedSkill).includes(tile)){
         executeMapSkill(selected,tile,selectedSkill);return;
       }
-    }if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;pendingFanAim=null;pendingVolleyAim=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
+    }if(unit&&unit.team===TEAM.PLAYER&&unit.participatesInTurn!==false){const activeFollowup=actionController?.enchantmentFollowup?.();if(activeFollowup&&selected&&activeFollowup.unitId===selected.id){render();return;}if(selected&&selected!==unit)commitPendingMove(selected);commandPanelCollapsed=false;selected=unit;selectedSkill=null;pendingAreaAim=null;clearEngagement();mode=unit.acted?"inspect":"command";render();return;}if(selected&&!selected.acted&&mode==="command"&&!selected.moved&&!unit&&reachable.has(tile.x+","+tile.y)){commandPanelCollapsed=true;const path=TacticalEngine.pathTo(map,units,selected,tile.x,tile.y);beginPendingMove(selected);const moveResult=traverseUnitPath(selected,path,{kind:"UNIT"});selected.moved=true;if(!moveResult.completed)commitPendingMove(selected);pushLog(`${selected.character.name} ${moveResult.completed?"移動完成，可在其他行動前取消移動":"移動途中受到環境影響而中斷"}。`);render();return;}if(selected&&!selected.acted&&mode==="command"&&!unit)commandPanelCollapsed=true;render();}
   function renderTurnStatus(){if(matchResult){turnStatus.textContent=matchResult==="VICTORY"?`戰鬥結束｜VICTORY｜Round ${round}`:`戰鬥結束｜DEFEAT｜Round ${round}`;return;}const phaseName=phase===PHASE.CARD?"卡牌階段":phase===PHASE.PLAYER?"我方戰棋階段":"敵方回合";const actors=turnActors(TEAM.PLAYER),ready=actors.filter(u=>!u.acted).length;turnStatus.textContent=`Round ${round}｜${phaseName}｜我方可行動 ${ready}/${actors.length}`;}
   // The skill selector owns one reusable read-only inspector, rather than a tooltip per button.
   // Use the same hold threshold as BattleInputController's battlefield inspector.
@@ -1274,7 +1277,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       }
       addActionButton("返回魔法",()=>{selectedSkill=null;mode="special-menu";render();});return;
     }
-    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
+    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=TacticalEngine.isFixedAreaSkill(selectedSkill)?"self-area-confirm":targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){
       pendingCopySkill.options.forEach(skill=>addActionButton(`${skill.name}｜血能 ${UnitRuntimeEngine.bloodMemoryCost(skill)}`,()=>{
         EffectEngine.rememberBloodSkill(pendingCopySkill.attacker,skill.id,pendingCopySkill.target);
@@ -1288,63 +1291,30 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     if(mode==="special-menu"&&UnitRuntimeEngine.currentForm(selected)){
       addActionButton("變身",()=>{mode="form-menu";render();});
     }
-    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(battleSkillButtonLabel(skill,range,resourceLabel(selected,skill)),()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;pendingFanAim=null;pendingVolleyAim=null;if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
+    shownSkills.forEach(skill=>{const range=TacticalEngine.range(skill),usable=canUseSkill(selected,skill);addActionButton(battleSkillButtonLabel(skill,range,resourceLabel(selected,skill)),()=>{selectedSkill=attackWithEnchantmentTargets(selected,skill);selectedSkillVariant=null;pendingAreaAim=null;if(!skillVariants(skill).length&&TacticalEngine.isFixedAreaSkill(selectedSkill)){mode="self-area-confirm";render();return;}if(!skillVariants(skill).length&&skill.target==="SELF"&&targetType(skill)==="SINGLE"){prepareAttack(selected,selected,skill);return;}if(skill.utilityAction?.type==="ENCHANT_WEAPON"&&!skillVariants(skill).length){actionController.beginEnchantment(selected,skill);return;}mode=skillVariants(skill).length?"variant-menu":(targetType(skill)==="SINGLE"?"attack":"map-target");render();},!usable,skill);});addActionButton("返回",()=>{selectedSkill=null;mode=mode==="blood-memory-menu"?"special-menu":"command";render();});return;}
+    if(mode==="self-area-confirm"&&selectedSkill){
+      const actor=selected,skill=selectedSkill,cells=actionController.previewSkillArea(actor,skill)?.tiles||[];
+      addActionButton(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
+        if(mode!=="self-area-confirm"||selected!==actor||selectedSkill!==skill||actor.acted||actor.waited||!canUseSkill(actor,skill))return;
+        // Leave the read-only mode before invoking the official self action.
+        mode="attack";prepareAttack(actor,actor,skill);
+      },!cells.length||!canUseSkill(actor,skill));
+      addActionButton("取消施放",backFromTargeting);return;
+    }
     if((mode==="map-target"||mode==="attack")&&selectedSkill){
-      if(mode==="map-target"&&selectedSkill.rangerVolley===true){
-        // An enemy is an aim-point for this TILE/AOE skill, not an ATTACK
-        // target. A tap selects the center; only this button may commit MP
-        // and damage. Cancel can never trigger the volley.
-        if(pendingVolleyAim){
-          const aim=pendingVolleyAim;
-          addActionButton(`確認集團齊射｜中心 (${aim.x},${aim.y})`,()=>{
-            const actor=selected,skill=selectedSkill,center=pendingVolleyAim;
-            if(mode!=="map-target"||!actor||!center||!skill||skill.rangerVolley!==true||
-                actor.acted||actor.waited||!canUseSkill(actor,skill)||
-                !mapTargetTiles(actor,skill).some(t=>t.x===center.x&&t.y===center.y)){
-              pendingVolleyAim=null;render();return;
-            }
-            pendingVolleyAim=null;
-            executeMapSkill(actor,center,skill);
+      if(mode==="map-target"&&TacticalEngine.isAreaAimSkill(selectedSkill)){
+        const aim=pendingAreaAim,actor=selected,skill=selectedSkill;
+        const legal=aim&&mapTargetTiles(actor,skill).some(t=>t.x===aim.x&&t.y===aim.y);
+        if(legal){
+          const cells=actionController.aimedAreaTiles(actor,skill,aim);
+          addActionButton(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
+            if(mode!=="map-target"||selected!==actor||selectedSkill!==skill||pendingAreaAim!==aim)return;
+            if(actor.acted||actor.waited||!canUseSkill(actor,skill)||!mapTargetTiles(actor,skill).some(t=>t.x===aim.x&&t.y===aim.y)){pendingAreaAim=null;render();return;}
+            pendingAreaAim=null;executeMapSkill(actor,aim,skill);
           });
-          addActionButton("重新選擇齊射中心",()=>{pendingVolleyAim=null;render();});
-        }else addActionButton("請在地圖點選集團齊射中心（可點敵人）",()=>{},true);
-        addActionButton("取消施放",()=>{pendingVolleyAim=null;backFromTargeting();});
-        return;
-      }
-      if(mode==="map-target"&&selectedSkill.fanShot){
-        const dirs=[
-          ["↑ 北",0,-1],["↗ 東北",1,-1],["→ 東",1,0],["↘ 東南",1,1],
-          ["↓ 南",0,1],["↙ 西南",-1,1],["← 西",-1,0],["↖ 西北",-1,-1]
-        ];
-        const legal=mapTargetTiles(selected,selectedSkill);
-        // Every button resolves an actual legal tile; the direction labels
-        // never create a fictitious target beyond the canonical map or fog.
-        addActionButton("選擇射擊方向（點地格或點方位）",()=>{},true);
-        for(const [label,dx,dy] of dirs){
-          const candidates=legal.filter(tile=>{
-            const rx=tile.x-selected.x,ry=tile.y-selected.y;
-            return dx===0?rx===0&&ry*dy>0:dy===0?ry===0&&rx*dx>0:
-              rx*dx>0&&ry*dy>0&&Math.abs(rx)===Math.abs(ry);
-          }).sort((a,b)=>(Math.abs(b.x-selected.x)+Math.abs(b.y-selected.y))-
-            (Math.abs(a.x-selected.x)+Math.abs(a.y-selected.y)));
-          const aim=candidates[0];
-          addActionButton(label,()=>{if(!aim)return;pendingFanAim=aim;render();},!aim);
-        }
-        if(pendingFanAim){
-          const fan=TacticalEngine.fanTiles(map,selected,pendingFanAim,selectedSkill.fanShot);
-          addActionButton(`確認多重箭｜扇形 ${fan.length} 格`,()=>{
-            if(!pendingFanAim||!selectedSkill||!selected)return;
-            const aim=pendingFanAim,skill=selectedSkill,actor=selected;
-            if(!mapTargetTiles(actor,skill).some(tile=>tile.x===aim.x&&tile.y===aim.y)){
-              pendingFanAim=null;render();return;
-            }
-            pendingFanAim=null;
-            if(actor.acted||actor.waited)return;
-            executeMapSkill(actor,aim,skill);
-          });
-        }
-        addActionButton("取消施放",()=>{pendingFanAim=null;backFromTargeting();});
-        return;
+          addActionButton("重新瞄準",()=>{pendingAreaAim=null;render();});
+        }else addActionButton("點選或拖曳地格瞄準",()=>{},true);
+        addActionButton("取消施放",()=>{pendingAreaAim=null;backFromTargeting();});return;
       }
       if(actionController.enchantmentFollowup()?.unitId===selected.id){
         addActionButton("返回攻擊選擇",backFromTargeting);
@@ -1418,7 +1388,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     return pending?{casterId:pending.attacker.id,focusedRecipientId:focusedEnchantRecipientId,
       candidates:enchantRecipientGroups(pending).map(({target,weapons})=>({unitId:target.id,...enchantIdentity(target),
         weaponSlots:weapons.map(weapon=>weapon.slot),waited:!!target.waited}))}:null;
-  },getEnemyCardState:()=>enemyCardState,getEnemyPresentation:()=>({...enemyView}),getBattleMap:()=>presentationWorld().map,getBattleSnapshot:()=>presentationController.battleSnapshot(),clickBattleTile,getStage:()=>presentationWorld().stage,getCores:()=>presentationWorld().cores.map(core=>({...core})),getPhase:()=>phase,getPendingCard:()=>pendingCard,getBattleLog:(type=null)=>({active:logState.active,entries:BattleLog.list(logState,type||logState.active).map(entry=>({...entry}))}),getEngagementPresentation:engagementPresentation,handleEngagementUIAction,setBattleLogTab:type=>{BattleLog.setActive(logState,type);window.dispatchEvent(new CustomEvent("cardtactics:log"));},getActionMenuAnchor:()=>phase===PHASE.PLAYER&&selected&&!commandPanelCollapsed&&mode!=="support-select"?{x:selected.x,y:selected.y}:null,getInspectedUnitPresentation:()=>{const s=presentationWorld(),unit=inspectedTile?s.units.find(candidate=>candidate.alive&&candidate.x===inspectedTile.x&&candidate.y===inspectedTile.y):selected;return presentationController.unitPresentation(unit||selected);},getInspectedTilePresentation:()=>{const w=presentationWorld(),tile=inspectedTile?TacticalEngine.tile(w.map,inspectedTile.x,inspectedTile.y):null;return tile?TileInspectionPresentation.create({map:w.map,environmentState:w.environmentState,tile}):null;},playCard:cardId=>cardPhaseController.select(cardId),canPlayCard:cardId=>cardPhaseController.canResolve(CardDatabase.get(cardId)),hasPlayableCard:()=>cardPhaseController.hasPlayableCard(),maybeAutoEndCardPhase:()=>cardPhaseController.maybeAutoEnd(),endCardPhase:()=>cardPhaseController.end(),cancelCard:()=>cardPhaseController.cancel(),endPlayerTurn,selectNextAvailableUnit,refresh:render,resetBattle,prepareGeminiMatch:geminiPreparationScreen,clearGeminiMatch:()=>{geminiSession=null;
+  },getEnemyCardState:()=>enemyCardState,getEnemyPresentation:()=>({...enemyView}),getBattleMap:()=>presentationWorld().map,getBattleSnapshot:()=>presentationController.battleSnapshot(),clickBattleTile,aimBattleTile,getStage:()=>presentationWorld().stage,getCores:()=>presentationWorld().cores.map(core=>({...core})),getPhase:()=>phase,getPendingCard:()=>pendingCard,getBattleLog:(type=null)=>({active:logState.active,entries:BattleLog.list(logState,type||logState.active).map(entry=>({...entry}))}),getEngagementPresentation:engagementPresentation,handleEngagementUIAction,setBattleLogTab:type=>{BattleLog.setActive(logState,type);window.dispatchEvent(new CustomEvent("cardtactics:log"));},getActionMenuAnchor:()=>phase===PHASE.PLAYER&&selected&&!commandPanelCollapsed&&mode!=="support-select"?{x:selected.x,y:selected.y}:null,getInspectedUnitPresentation:()=>{const s=presentationWorld(),unit=inspectedTile?s.units.find(candidate=>candidate.alive&&candidate.x===inspectedTile.x&&candidate.y===inspectedTile.y):selected;return presentationController.unitPresentation(unit||selected);},getInspectedTilePresentation:()=>{const w=presentationWorld(),tile=inspectedTile?TacticalEngine.tile(w.map,inspectedTile.x,inspectedTile.y):null;return tile?TileInspectionPresentation.create({map:w.map,environmentState:w.environmentState,tile}):null;},playCard:cardId=>cardPhaseController.select(cardId),canPlayCard:cardId=>cardPhaseController.canResolve(CardDatabase.get(cardId)),hasPlayableCard:()=>cardPhaseController.hasPlayableCard(),maybeAutoEndCardPhase:()=>cardPhaseController.maybeAutoEnd(),endCardPhase:()=>cardPhaseController.end(),cancelCard:()=>cardPhaseController.cancel(),endPlayerTurn,selectNextAvailableUnit,refresh:render,resetBattle,prepareGeminiMatch:geminiPreparationScreen,clearGeminiMatch:()=>{geminiSession=null;
     if(window.CardTacticsBattleSetup)delete window.CardTacticsBattleSetup.enemyDeck;},isHallucinated:()=>!!perceptionState.session?.active,debug:Object.freeze({state:debugState,setWeather:debugSetWeather,setTimeOfDay:debugSetTimeOfDay,setMoonlight:debugSetMoonlight,advanceEnvironmentTurns:debugAdvanceEnvironmentTurns,setWind:debugSetWind,applyEnvironmentForce:debugApplyEnvironmentForce,clearTileEffects:debugClearTileEffects,giveCard:debugGiveCard,spawnCharacterCard:debugSpawnCharacterCard,moveUnit:debugMoveUnit,hallucination:()=>perceptionState.session?{active:true,team:perceptionState.session.team,pending:Object.keys(perceptionState.pending)}:{active:false,pending:Object.keys(perceptionState.pending)}})};
   resetBattle();
 })();

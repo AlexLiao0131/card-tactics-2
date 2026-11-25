@@ -1,6 +1,7 @@
 import { BattleCommandMenuUI } from './battle-command-menu-ui.js';
 function q(id){return document.getElementById(id)}
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+const fieldLabels=tile=>(tile?.activeFields||[]).map(f=>`${f.name}｜${f.clock==='PULSES'?`剩 ${f.remaining} 次脈衝${f.ward?'（庇護仍有效）':''}`:`剩 ${f.remaining} 回合`}`);
 const OWNER_LABEL={PLAYER:"我方",ENEMY:"敵方",NEUTRAL:"中立"};
 const WEATHER_LABEL=Object.freeze({
   CLEAR:["☀","晴朗"],
@@ -333,6 +334,7 @@ export class BattleUI{
       // presentation without creating a second state or revealing hidden units.
       const effects=(published.effectDetails||[]).map(effect=>
         `${effect.type}${effect.duration==null?'':` ${effect.duration} 回合`}`);
+      effects.push(...fieldLabels(published));
       const climate=snapshot.presentation?.environment||{};
       const weather=WEATHER_LABEL[climate.weather]?.[1]||climate.weather||'—';
       // The tile-only source does not carry the private environmentState; remove
@@ -400,8 +402,8 @@ export class BattleUI{
       stats:character?.combat||{}
     }:null,tile:{summary:{title:tile.terrain||'地形',
       meta:`(${x}, ${y})｜高度 ${tile.elevation??0}`,
-      status:(tile.effectDetails||[]).map(e=>e.type).join('、')||'無'},
-      details:`地形：${tile.terrain||'—'}｜高度：${tile.elevation??0}`}};
+      status:[...(tile.effectDetails||[]).map(e=>e.type),...fieldLabels(tile)].join('、')||'無'},
+      details:[`地形：${tile.terrain||'—'}｜高度：${tile.elevation??0}`,...fieldLabels(tile)].join('\n')}};
     this.contextTab=unit?'UNIT':'TILE';
     this.setContextOpen(true);return true;
   }

@@ -10,12 +10,12 @@ export class GridPicker{
     this.scene=scene;this.canvas=canvas;this.hitMeshes=new Map();this.unitHits=new Map();
   }
 
-  pickCurrent(){
+  pickCurrent(x=this.scene.pointerX,y=this.scene.pointerY){
     // The visible 3D character occupies screen pixels ABOVE its ground tile.
     // A ground-only ray can select the tile BEHIND a tall character (especially
     // on iPhone's tilted camera), making enemy-targeted map skills appear dead.
     // This is one shared pick surface for local / Gemini / PvP, not targeting logic.
-    const pick=this.scene.pick(this.scene.pointerX,this.scene.pointerY,mesh=>
+    const pick=this.scene.pick(x,y,mesh=>
       mesh?.metadata?.kind==="tile-hit"||mesh?.metadata?.kind==="unit-hit");
     const meta=pick?.pickedMesh?.metadata;
     return pick?.hit&&(meta?.kind==="tile-hit"||meta?.kind==="unit-hit")

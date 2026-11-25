@@ -46,7 +46,7 @@ export class PvpTacticalUI {
     this.onRenderFailure=onRenderFailure;
     this.renderOfficialEngagement=typeof renderOfficialEngagement==='function'?renderOfficialEngagement:null;
     this.match=null;this.bridge=null;this.closed=false;this.presented=false;
-    this.selectedUnitId=null;this.mode='SELECT';this.menu='command';this.target=null;this.fanAim=null;
+    this.selectedUnitId=null;this.mode='SELECT';this.menu='command';this.target=null;this.areaAim=null;
     this.renderToken=0;this.newestRender=null;this.serverSnapshot=null;
     this.enchantIdentities=new Map();this.enchantCounters=new Map();
     this.enchantMarkers=new Map();this.enchantMarkerRoot=null;
@@ -112,7 +112,7 @@ export class PvpTacticalUI {
     return false;
   }
   cancelTarget({clearSelection=false}={}){
-    this.mode='SELECT';this.menu='command';this.target=null;this.fanAim=null;
+    this.mode='SELECT';this.menu='command';this.target=null;this.areaAim=null;
     // Cancelling target mode must clear native attack markers on the next publish.
     if(this.presented&&this.serverSnapshot)this.refreshNativePresentation();
     this.pendingCardCommit=null;
@@ -236,13 +236,13 @@ export class PvpTacticalUI {
     // Both sets are certified by the same Worker that accepts the command.
     // targetRange is the original native preview; attackable is legal contact.
     const skill=knownSkill(this.target?.skillId);
-    const preview=unit&&skill?.fanShot&&this.fanAim&&
-      (aim?.actionableTiles||[]).some(t=>t.x===this.fanAim.x&&t.y===this.fanAim.y)
-      ?TacticalEngine.fanTiles(source.map,unit,this.fanAim,skill.fanShot):null;
+    const areaAimActive=!!(unit&&this.mode==='CAST_MAP_SKILL'&&(!!aim?.areaFootprints||TacticalEngine.isAreaAimSkill(skill)));
+    const preview=aim?.fixedArea||(areaAimActive&&this.areaAim?aim?.areaFootprints?.[`${this.areaAim.x},${this.areaAim.y}`]:null);
+    const previewKeys=new Set((preview||[]).map(t=>`${t.x},${t.y}`));
     const environmentAim=this.mode==='DECLARE_ATTACK'&&unit?.aimOptions?.find(entry=>
       entry.type==='CAST_ENVIRONMENT_CONTACT'&&entry.skillId===this.target?.skillId);
-    const range=new Set([...(preview||aim?.tiles||[]),...(environmentAim?.tiles||[])].map(t=>`${t.x},${t.y}`));
-    const attackable=new Set([...(preview||aim?.actionableTiles||[]),...(environmentAim?.actionableTiles||[])].map(t=>`${t.x},${t.y}`));
+    const range=new Set([...(aim?.tiles||[]),...(environmentAim?.tiles||[])].map(t=>`${t.x},${t.y}`));
+    const attackable=new Set([...(aim?.actionableTiles||[]),...(environmentAim?.actionableTiles||[])].map(t=>`${t.x},${t.y}`));
     if(unit&&this.mode!=='SELECT'&&this.target?.skillId){
       const key=`${this.match.revision}:${unit.id}:${this.mode}:${this.target.skillId}`;
       if(this.lastAimAuditKey!==key){
@@ -274,13 +274,13 @@ export class PvpTacticalUI {
     const tiles=source.map.tiles.map(tile=>{
       const key=`${tile.x},${tile.y}`;
       return {...tile,reachable:reachable.has(key),
-        targetRange:range.has(key),attackable:attackable.has(key),
+        targetRange:range.has(key),attackable:attackable.has(key),aimPreview:previewKeys.has(key),
         deploymentAreaOwner:areaOwner.get(key)??tile.deploymentAreaOwner??null,
         // The canonical server owns legality. Not every colored home area is
         // selectable (some cells are blocked, occupied or enemy-owned).
         deployable:deployable.has(key)};
     });
-    const view={...source,map:{...source.map,tiles},units:source.units.map(u=>({
+    const view={...source,presentation:{...source.presentation,areaAimActive},map:{...source.map,tiles},units:source.units.map(u=>({
       ...u,selected:!!(unit&&u.id===unit.id)
     }))};
     // No terrain/water redraw for a local selection. Reuse the exact native
@@ -406,7 +406,7 @@ export class PvpTacticalUI {
     return this.request({type:'ADJUST_DIVE_MODE',unitId:unit.id,steps});
   }
   targetAction(type,payload){
-    this.target={type,...payload};this.mode=type;this.fanAim=null;this.update();
+    this.target={type,...payload};this.mode=type;this.areaAim=null;this.update();
     this.refreshNativePresentation();
   }
   add(label,callback,{disabled=false,skill=null}={}){
@@ -426,41 +426,29 @@ export class PvpTacticalUI {
   // online-only heading, status column or disabled prompt.
   renderTargetPrompt(){
     const actor=this.selectedUnit(),skill=knownSkill(this.target?.skillId);
-    if(this.mode==='CAST_MAP_SKILL'&&skill?.fanShot&&actor){
-      const aim=(actor.aimOptions||[]).find(a=>a.type===this.mode&&a.skillId===skill.id);
-      const legal=aim?.actionableTiles||[];
-      const dirs=[
-        ['↑ 北',0,-1],['↗ 東北',1,-1],['→ 東',1,0],['↘ 東南',1,1],
-        ['↓ 南',0,1],['↙ 西南',-1,1],['← 西',-1,0],['↖ 西北',-1,-1]
-      ];
-      this.add('選擇射擊方向（點地格或點方位）',()=>{}, {disabled:true});
-      for(const [label,dx,dy] of dirs){
-        const candidates=legal.filter(tile=>{
-          const rx=tile.x-actor.x,ry=tile.y-actor.y;
-          return dx===0?rx===0&&ry*dy>0:dy===0?ry===0&&rx*dx>0:
-            rx*dx>0&&ry*dy>0&&Math.abs(rx)===Math.abs(ry);
-        }).sort((a,b)=>(Math.abs(b.x-actor.x)+Math.abs(b.y-actor.y))-
-          (Math.abs(a.x-actor.x)+Math.abs(a.y-actor.y)));
-        const choice=candidates[0];
-        this.add(label,()=>{if(choice){this.fanAim={x:choice.x,y:choice.y};this.update();this.refreshNativePresentation();}},
-          {disabled:!choice});
-      }
-      if(this.fanAim&&legal.some(t=>t.x===this.fanAim.x&&t.y===this.fanAim.y)){
-        const cells=TacticalEngine.fanTiles(this.serverSnapshot?.map||this.match.view.battlefield?.map,
-          actor,this.fanAim,skill.fanShot);
-        this.add(`確認多重箭｜扇形 ${cells.length} 格`,()=>{
-          const selected=this.selectedUnit();
-          if(!selected||!this.fanAim||!this.isTacticalPhase())return;
-          const latest=(selected.aimOptions||[]).find(a=>a.type==='CAST_MAP_SKILL'&&a.skillId===skill.id);
-          if(!latest?.actionableTiles?.some(t=>t.x===this.fanAim.x&&t.y===this.fanAim.y)){
-            this.fanAim=null;this.update();this.refreshNativePresentation();return;
-          }
-          if(this.request({type:'CAST_MAP_SKILL',unitId:selected.id,skillId:skill.id,
-            x:this.fanAim.x,y:this.fanAim.y})){
-            this.cancelTarget();this.update();this.refreshNativePresentation();
-          }
+    const aimOption=actor?.aimOptions?.find(a=>a.type===this.mode&&a.skillId===this.target?.skillId);
+    if((aimOption?.fixedArea||TacticalEngine.isFixedAreaSkill(skill))&&actor){
+      const type=this.mode,aim=actor.aimOptions?.find(a=>a.type===type&&a.skillId===skill.id);
+      const cells=aim?.fixedArea;
+      this.add(cells?`確認${skill.name}｜影響 ${cells.length} 格`:'範圍資料尚未同步，請更新 Worker',()=>{
+        const current=this.selectedUnit(),latest=current?.aimOptions?.find(a=>a.type===type&&a.skillId===skill.id);
+        if(this.mode!==type||this.target?.skillId!==skill.id||current?.id!==actor.id||current.acted||current.waited||!latest?.fixedArea?.length)return;
+        const payload={type,unitId:actor.id,skillId:skill.id};
+        if(type==='CAST_EFFECT_SKILL')payload.targetId=actor.id;
+        if(type==='CAST_MAP_SKILL')Object.assign(payload,{x:actor.x,y:actor.y});
+        if(this.request(payload)){this.cancelTarget();this.update();this.refreshNativePresentation();}
+      },{disabled:!cells?.length});
+    }else if(this.mode==='CAST_MAP_SKILL'&&(!!aimOption?.areaFootprints||TacticalEngine.isAreaAimSkill(skill))&&actor){
+      const aim=actor.aimOptions?.find(a=>a.type===this.mode&&a.skillId===skill.id),center=this.areaAim;
+      const cells=center&&aim?.areaFootprints?.[`${center.x},${center.y}`];
+      if(cells){
+        this.add(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
+          const selected=this.selectedUnit(),latest=selected?.aimOptions?.find(a=>a.type==='CAST_MAP_SKILL'&&a.skillId===skill.id);
+          if(this.mode!=='CAST_MAP_SKILL'||this.target?.skillId!==skill.id||selected?.id!==actor.id||this.areaAim!==center||!this.isTacticalPhase()||!latest?.actionableTiles?.some(t=>t.x===center.x&&t.y===center.y)||!latest.areaFootprints?.[`${center.x},${center.y}`])return;
+          if(this.request({type:'CAST_MAP_SKILL',unitId:actor.id,skillId:skill.id,x:center.x,y:center.y})){this.cancelTarget();this.update();this.refreshNativePresentation();}
         });
-      }
+        this.add('重新瞄準',()=>{this.areaAim=null;this.update();this.refreshNativePresentation();});
+      }else this.add(aim?.areaFootprints?'點選或拖曳地格瞄準':'範圍資料尚未同步，請更新 Worker',()=>{},{disabled:true});
     }
     this.add('取消施放',()=>{this.cancelTarget();this.update();this.refreshNativePresentation();});
   }
@@ -544,7 +532,7 @@ export class PvpTacticalUI {
     for(const skill of (unit.effectSkills||[]).filter(s=>battleSkillCategory(knownSkill(s.id))==='special'))this.add(
       battleSkillButtonLabel(skill,skill.range,skill.resourceLabel),
       skill.target==='SELF'
-        ?direct('CAST_EFFECT_SKILL',{skillId:skill.id,targetId:u})
+        ?(TacticalEngine.isFixedAreaSkill(knownSkill(skill.id))?tile('CAST_EFFECT_SKILL',{skillId:skill.id,effectTarget:'SELF'}):direct('CAST_EFFECT_SKILL',{skillId:skill.id,targetId:u}))
         :tile('CAST_EFFECT_SKILL',{skillId:skill.id,effectTarget:skill.target}),
       {skill,disabled:skill.usable===false});
     for(const skill of unit.selfUtilitySkills||[])this.add(
@@ -569,7 +557,7 @@ export class PvpTacticalUI {
     for(const skill of unit.bloodBurstSkills||[])
       this.add(skill.name,direct('CAST_BLOOD_BURST',{skillId:skill.id}),{skill});
     for(const skill of unit.areaFieldSkills||[])
-      this.add(skill.name,direct('CAST_AREA_FIELD',{skillId:skill.id}),{skill});
+      this.add(skill.name,tile('CAST_AREA_FIELD',{skillId:skill.id}),{skill});
     for(const skill of unit.mapSkills||[]){
       if(skill.category==='ATTACK'||(knownSkill(skill.id)?.dispelConstruct&&
         (unit.effectSkills||[]).some(other=>other.id===skill.id)))continue;
@@ -851,12 +839,16 @@ export class PvpTacticalUI {
     if(this.menu==='enchant-weapon'){this.renderEnchantmentWeapons(actor);return;}
     this.renderCommand(actor);
   }
-  tilePicked({seat,x,y}={}){
+  tilePicked({seat,x,y,aimOnly=false}={}){
     const v=this.match?.view;
     if(seat!==this.seat||!Number.isSafeInteger(x)||!Number.isSafeInteger(y)||
        !this.myTurn()||!this.isConnected())return false;
     const unit=v.units?.find(candidate=>candidate.x===x&&candidate.y===y&&candidate.alive!==false);
     const type=this.mode,choice=this.target;
+    const mapAim=this.selectedUnit()?.aimOptions?.find(a=>a.type===type&&a.skillId===choice?.skillId);
+    const draggable=type==='CAST_MAP_SKILL'&&(!!mapAim?.areaFootprints||TacticalEngine.isAreaAimSkill(knownSkill(choice?.skillId)));
+    if(aimOnly&&!draggable)return false;
+    if(choice?.skillId&&(mapAim?.fixedArea||TacticalEngine.isFixedAreaSkill(knownSkill(choice.skillId))))return false;
     let action=null;
     if(this.isCardPhase()&&type==='DEPLOY'&&choice?.cardId){
       // Reject unlit cells locally. The server will independently recompute
@@ -908,13 +900,14 @@ export class PvpTacticalUI {
         (this.selectedUnit()?.aimOptions||[]).some(aim=>aim.type==='CAST_EFFECT_SKILL'&&
           aim.skillId===choice.skillId&&aim.actionableTiles?.some(t=>t.x===x&&t.y===y)))
         action={type:'CAST_MAP_SKILL',unitId:choice.unitId,skillId:choice.skillId,x,y};
-      else if(type==='CAST_MAP_SKILL'&&knownSkill(choice.skillId)?.fanShot){
+      else if(draggable){
         // Read-only aim stage, identical to local map-target confirmation;
         // authoritative command is submitted ONLY on the confirm button.
         const actor=this.selectedUnit(),aim=(actor?.aimOptions||[]).find(a=>
           a.type==='CAST_MAP_SKILL'&&a.skillId===choice.skillId);
-        if(aim?.actionableTiles?.some(t=>t.x===x&&t.y===y)){
-          this.fanAim={x,y};this.update();this.refreshNativePresentation();return true;
+        if(aim?.actionableTiles?.some(t=>t.x===x&&t.y===y)&&aim.areaFootprints?.[`${x},${y}`]){
+          if(this.areaAim?.x===x&&this.areaAim?.y===y)return true;
+          this.areaAim={x,y};this.update();this.refreshNativePresentation();return true;
         }
         return false;
       }else if(type==='CAST_MAP_SKILL'||type==='ATTACK_ENCHANTED_TERRAIN')

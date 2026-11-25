@@ -45,12 +45,16 @@ export function beginPlayerRoundSequence(steps){
  * zero HP to one death notification. Never grant a second DOT damage instance.
  * Used by both browser BattleTest/normal/Gemini and authoritative PvP.
  */
-export function tickRoundStatusEffects({units,effectEngine,onDefeated}){
+export function tickRoundStatusEffects({units,effectEngine,onDefeated,pushLog}){
   if(typeof effectEngine?.tick!=='function')return [];
   const roster=units||[],deaths=[];
   for(const unit of roster.filter(unit=>unit?.alive)){
     const pending=(unit.effects||[]).filter(e=>e.type==='DAMAGE_OVER_TIME');
     const events=effectEngine.tick(unit,{units:roster})||[];
+    for(const event of events){if(event.type!=='DAMAGE_OVER_TIME')continue;
+      const status=pending.find(e=>e.id===event.effectId);
+      pushLog?.(`${unit.character?.name||unit.id}｜${status?.name||event.effectId||'持續傷害'}｜DOT ${Number(event.amount||0)} HP${status?.remaining!=null?`｜剩 ${Math.max(0,status.remaining)} 回合`:''}`,'BATTLE');
+    }
     if(unit.alive||Number(unit.hp)>0)continue;
     // The effect may expire inside tick(), so retain the original source ID.
     const lethal=[...events].reverse().find(e=>e.type==='DAMAGE_OVER_TIME'&&Number(e.amount)>0);

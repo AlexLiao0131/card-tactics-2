@@ -216,8 +216,14 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     const {chance,...effect}=status;return effect;
   }
   function applyStatuses(entry){
-    if(!entry?.result?.hit||Number(entry.result.damage||0)<=0||!globalThis.EffectEngine)return[];const applied=[];
-    for(const status of entry.skill?.statusEffects||[]){const chance=Math.max(0,Math.min(100,Number(status.chance??100)));if(random()*100>=chance)continue;const effect=normalizeStatus(status),result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});if(result?.applied)applied.push({effect,result})}
+    if(!entry?.target?.alive||!entry?.result?.hit||Number(entry.result.damage||0)<=0||!globalThis.EffectEngine)return[];const applied=[];
+    for(const status of entry.skill?.statusEffects||[]){
+      const chance=Math.max(0,Math.min(100,Number(status.chance??100)));
+      const effect=normalizeStatus(status);
+      if(random()*100>=chance){(entry.statusFailures??=[]).push({effect,reason:'CHANCE'});continue;}
+      const result=EffectEngine.apply({source:entry.actor,target:entry.target,effect});
+      if(result?.applied)applied.push({effect,result});else (entry.statusFailures??=[]).push({effect,reason:result?.reason||'BLOCKED'});
+    }
     if(entry.skill?.giantUppercut===true&&
       uppercutHitsHeavyArmor(entry.target)){
       const result=EffectEngine.apply({source:entry.actor,target:entry.target,
@@ -225,6 +231,16 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       if(result?.applied)applied.push({effect:result.effect,result});
     }
     return applied;
+  }
+  function logStatusResults(entry,pushLog){
+    if(typeof pushLog!=='function'||!entry?.target)return;
+    const name=entry.target.character?.name||entry.target.id;
+    const reasons={FIRE_WARD:'防火藥劑',ALCHEMY_STATUS_WARD:'異常防護',STATUS_RESISTED:'抵抗成功',NEGATIVE_EFFECT_GUARD:'負面狀態防護',CHANCE:'機率未觸發'};
+    for(const {effect,result} of entry.statusEffects||[]){
+      const remaining=result?.effect?.remaining??effect.duration;
+      pushLog(`${name}｜附加 ${effect.name||effect.id||effect.type}${remaining!=null?`｜${remaining} 回合`:''}`,'BATTLE');
+    }
+    for(const {effect,reason} of entry.statusFailures||[])pushLog(`${name}｜${effect.name||effect.id||effect.type} 未附加（${reasons[reason]||reason}）`,'BATTLE');
   }
   function uppercutHitsHeavyArmor(target){
     const c=target?.character||{};
@@ -986,7 +1002,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
       actions.push(createCounterAction(options.target,options.initiator,reaction.skill));
     return execute(createContext({...options,reaction,interception,actions}),hooks);
   }
-  return{enchantmentMagicDamage,previewEnchantmentBonus,previewInherentComponent,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,positionInitiative,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
+  return{logStatusResults,enchantmentMagicDamage,previewEnchantmentBonus,previewInherentComponent,previewInherentBonus,splitActualHpLoss,createContext,buildQueue,execute,resolve,actionSpeed,positionInitiative,isSingleTarget,supportSkills,supportCandidates,createSupportAction,counterSkills,createCounterAction,createReaction,defenseMethods,guardProfiles,guardCandidates,createGuardInterception,prepareSingleTargetReaction}
 }
 export const BattleResolution=createBattleResolution();
 globalThis.BattleResolution=BattleResolution;

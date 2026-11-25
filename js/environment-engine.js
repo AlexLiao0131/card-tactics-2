@@ -979,11 +979,16 @@ export const EnvironmentEngine=(()=>{
     }
     return[...byId.entries()].map(([vortexId,cells])=>({vortexId,cells}));
   }
+  function whirlpoolFootprint(map,x,y,radius){
+    const center=tileAt(map,x,y);if(!center||!HydrologyEngine.isWater(center))return[];
+    const r=Math.max(1,Number(radius||2)),connected=HydrologyEngine.connectedWaterBody?.(map,x,y)||waterComponents(map).find(group=>group.some(tile=>tile===center))||[center];
+    return connected.filter(tile=>Math.hypot(Number(tile.x)-Number(x),Number(tile.y)-Number(y))<=r+.001);
+  }
   function createWhirlpool(state,map,x,y,{duration=2,radius=2,strength=2.4,pullDistance=1,submergeTurns=1,damage=10,sourceTeam=null,sourceUnitId=null,onlyEnemies=false}={}){
     if(!state?.effects||!map)return[];const center=tileAt(map,x,y);
     if(!center||!HydrologyEngine.isWater(center))return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NOT_WATER"}];
-    const vortexId=nextWhirlpoolId(state),r=Math.max(1,Number(radius||2)),connected=HydrologyEngine.connectedWaterBody?.(map,x,y)||waterComponents(map).find(group=>group.some(tile=>tile===center))||[center];
-    const cells=connected.filter(tile=>Math.hypot(Number(tile.x)-Number(x),Number(tile.y)-Number(y))<=r+.001).map(tile=>({x:Number(tile.x),y:Number(tile.y),depth:Number(waterDepth(tile)||0)}));
+    const vortexId=nextWhirlpoolId(state),r=Math.max(1,Number(radius||2));
+    const cells=whirlpoolFootprint(map,x,y,radius).map(tile=>({x:Number(tile.x),y:Number(tile.y),depth:Number(waterDepth(tile)||0)}));
     if(!cells.length)return[{type:"WHIRLPOOL_FAILED",x,y,reason:"NO_CONNECTED_WATER"}];
     const avgDepth=cells.reduce((sum,cell)=>sum+cell.depth,0)/cells.length,depthFactor=Math.max(.65,Math.min(1.45,.72+avgDepth*.42)),resolvedStrength=Math.max(.5,Number(strength||2.4))*depthFactor,resolvedPull=Math.max(1,Math.min(3,Math.round(Number(pullDistance||1)+(resolvedStrength>=3.2?1:0))));
     for(const cell of cells)addEffect(state,cell.x,cell.y,{type:EFFECT.WHIRLPOOL,duration:Math.max(1,Number(duration||2)),vortexId,centerX:Number(x),centerY:Number(y),radius:r,strength:Number(resolvedStrength.toFixed(2)),pullDistance:resolvedPull,submergeTurns:Math.max(1,Number(submergeTurns||1)),damage:Math.max(0,Number(damage||0)),contactProfile:"WAVE_VOLUME",waterOnly:true,sourceTeam,sourceUnitId,onlyEnemies});
@@ -1123,6 +1128,6 @@ export const EnvironmentEngine=(()=>{
     return range;
   }
 
-  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,MOON_PHASES,MOON_PHASE_INTERVAL,normalizeMoonlight,moonPhaseState,moonExposure,setMoonPhase,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,planTsunami,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
+  return{ELEMENT,FORCE,EFFECT,HAZARD,fireHeatReserve,rainAmount,addSteam,ELECTRIC_CONDUCTION,WEATHER,PRECIPITATION,CLIMATE_CHANNEL,WIND_DIRECTION,WIND_VECTORS,WIND_LABEL,WIND_SCALE,WIND_LEVELS,WEATHER_RULES,WEATHER_TURNS,MOONLIGHT,MOON_PHASES,MOON_PHASE_INTERVAL,normalizeMoonlight,moonPhaseState,moonExposure,setMoonPhase,DAY_NIGHT_INTERVAL,NATURAL_WEATHER_INTERVAL,HYDROLOGY,create,setTimeOfDay,setMoonlight,setWeather,setClimateChannel,largeFireKeys,exchangeWaterFire,resolveStandingWaterFire,waterImpact,applyClimatePreset,climateFromWeather,climateSnapshot,legacyWeather,normalizeWind,windDirection,windVector,windTier,windVisualStrength,windLabel,windAt,localWindAt,setWind,precipitationAt,fogAt,thunderAt,isFog,hasThunder,isRain,isSnow,isBlizzard,advanceEnvironmentTurn,advanceTornadoes,advanceWhirlpools,planTsunami,advanceSmoke,spreadFire,waterComponents,waterWindProfile,windDrivenWaterEvents,whirlpoolFootprint,createWhirlpool,lightningRisk,rollWeatherEvent,environmentAt,effectAt,isBurning,isBoiling,isConductive,conductivePropagation,conductiveRegion,conductThunder,elevation,waterDepth,fillCapacity,addWater,removeWater,deformTerrain,apply,createTornado,createTrap,triggerTrap,pathInteraction,tick,lightSources,illuminationBonus,isLit,visionModifier,visionRange};
 })();
 globalThis.EnvironmentEngine=EnvironmentEngine;

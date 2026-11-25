@@ -1,6 +1,6 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,SURFACE_RENDER_ORDER } from "./coordinate-system.js";
 const keyOf=tile=>`${tile.x},${tile.y}`;
-const highlightKind=tile=>tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
+const highlightKind=tile=>tile.aimPreview?"aimPreview":tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
 
 export class HighlightRenderer{
   constructor(scene,{terrain,environment}={}){
@@ -8,8 +8,13 @@ export class HighlightRenderer{
     // Dynamic tactical overlays follow group-0 particles (including smoke),
     // preserving the world depth buffer so solid geometry is not revealed.
     this.scene.setRenderingAutoClearDepthStencil?.(1,false,false,false);
-    this.dynamic=new Map();this.areas=new Map();this.signatureValue=null;
+    this.dynamic=new Map();this.areas=new Map();this.fields=new Map();this.signatureValue=null;
     this.materials={
+      aimPreview:this.mat("aim-preview",new BABYLON.Color3(1,.66,.18),.64),
+      damage:this.mat("active-damage",new BABYLON.Color3(.94,.15,.12),.32),
+      heal:this.mat("active-heal",new BABYLON.Color3(.15,.85,.37),.32),
+      buff:this.mat("active-buff",new BABYLON.Color3(.92,.72,.20),.28),
+      control:this.mat("active-control",new BABYLON.Color3(.62,.30,.87),.30),
       reachable:this.mat("reachable",new BABYLON.Color3(.18,.55,1),.35),
       targetRange:this.mat("target-range",new BABYLON.Color3(1,.28,.22),.18),
       attackable:this.mat("attackable",new BABYLON.Color3(1,.25,.22),.48),
@@ -128,8 +133,9 @@ export class HighlightRenderer{
     const parts=[];
     for(const tile of tiles){
       const owner=tile.deploymentAreaOwner||"",kind=highlightKind(tile)||"";
-      if(!owner&&!kind)continue;
-      parts.push([tile.x,tile.y,owner,kind,
+      const fieldKinds=[...new Set((tile.activeFields||[]).map(f=>f.kind))].sort().join(',');
+      if(!owner&&!kind&&!fieldKinds)continue;
+      parts.push([tile.x,tile.y,owner,kind,fieldKinds,
         Number(tile.waterDepth||0).toFixed(4),
         tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(4)].join(":"));
     }
@@ -140,12 +146,17 @@ export class HighlightRenderer{
     const tiles=state?.map?.tiles||[],signature=this.signature(tiles);
     if(signature===this.signatureValue)return;
     const layers=this.environment?.publishedCoverGeometry()||[];
-    const areas=new Map(),dynamic=new Map();
+    const areas=new Map(),dynamic=new Map(),fields=new Map();
     for(const tile of tiles){
       const owner=tile.deploymentAreaOwner,kind=highlightKind(tile);
       if(owner){
         const part=this.indicatorGeometry(tile,.045,layers);
         if(part){const group=areas.get(owner)||[];group.push(part);areas.set(owner,group);}
+      }
+      for(const fieldKind of new Set((tile.activeFields||[]).map(f=>f.kind))){
+        if(!['damage','heal','buff','control'].includes(fieldKind))continue;
+        const part=this.indicatorGeometry(tile,.058,layers);
+        if(part){const group=fields.get(fieldKind)||[];group.push(part);fields.set(fieldKind,group);}
       }
       if(kind){
         const part=this.indicatorGeometry(tile,.070,layers);
@@ -157,6 +168,11 @@ export class HighlightRenderer{
         this.materials[owner]||this.materials.NEUTRAL,SURFACE_RENDER_ORDER.TACTICAL_OVERLAY);
       if(mesh)this.areas.set(owner,mesh);
     }
+    for(const [kind,parts] of fields){
+      const mesh=this.syncMesh(this.fields.get(kind),`active-field-${kind}`,parts,this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY);
+      if(mesh){mesh.renderingGroupId=1;this.fields.set(kind,mesh);}
+    }
+    for(const [kind,mesh] of this.fields)if(!fields.has(kind)){mesh.dispose();this.fields.delete(kind);}
     for(const [kind,parts] of dynamic){
       const mesh=this.syncMesh(this.dynamic.get(kind),`hl-${kind}`,parts,
         this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY+1);
@@ -170,8 +186,8 @@ export class HighlightRenderer{
   }
 
   diagnostics(){
-    const meshes=[...this.areas.values(),...this.dynamic.values()];
-    return{deploymentAreaMeshes:this.areas.size,dynamicHighlights:this.dynamic.size,
+    const meshes=[...this.areas.values(),...this.dynamic.values(),...this.fields.values()];
+    return{deploymentAreaMeshes:this.areas.size,dynamicHighlights:this.dynamic.size,activeFieldMeshes:this.fields.size,
       deploymentAreaTiles:this.areaTileCount||0,dynamicHighlightTiles:this.dynamicTileCount||0,
       batchedByMaterial:true,
       publishedTerrainRevision:this.terrain?.surfaceResolver?.renderedSurfaceGeometryRevision??null,

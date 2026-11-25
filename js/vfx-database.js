@@ -30,7 +30,7 @@ const defs={
     roles:{BOLT:['velsa_arcane_bolt'],SOUL_DRAIN:['viola_soul_drain'],HELLFIRE:['viola_hellfire'],FIRE_RAIN:['viola_firestorm'],HARVEST:['viola_soul_harvest'],CORRUPTION:['velsa_cognitive_corruption','viola_weakness_curse','viola_blood_curse','viola_slow_curse'],
       FOLD:['velsa_space_fold'],COLLAPSE:['velsa_dimension_collapse'],
       BREAKDOWN:['velsa_existence_breakdown']},events:['VELSA_BACKLASH','SOUL_RETURN'],
-    status:{RESOURCE_CHARACTER:'velsa'},legacy:'velsaDimensionalVfx'},
+    status:{RESOURCE_CHARACTER:'velsa',HELLFIRE:'HELLFIRE_BURN'},legacy:'velsaDimensionalVfx'},
   'arcane':{
     roles:{ANALYZE:['cassandra_magic_bolt'],MANA_BURN:['cassandra_fire_burst'],
       DISPEL:['cassandra_frost'],DISSOLVE:['cassandra_dissolve'],

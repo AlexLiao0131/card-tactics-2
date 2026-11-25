@@ -13,6 +13,51 @@ const covers=(field,unit)=>field?.cells instanceof Set
   ? field.cells.has(key(unit.x,unit.y))
   : Array.isArray(field?.cells)&&field.cells.includes(key(unit.x,unit.y));
 
+// Projection of authoritative active fields, not a second effect lifecycle.
+export function activeFieldTiles({map,units=[],fieldState={},environmentState=null,round=0,viewerTeam,canSeeCell=()=>false,canSeeUnit=()=>false}={}){
+  const index=new Map();
+  const add=(cells,team,record)=>{for(const cell of cells||[]){
+    const k=typeof cell==='string'?cell:key(cell.x,cell.y);
+    if(team!==viewerTeam&&!canSeeCell(k))continue;
+    const list=index.get(k)||[];list.push(record);index.set(k,list);
+  }};
+  for(const f of fieldState.persistentAreas||[]){
+    if(!(f.ticksRemaining>0))continue;
+    const skill=SkillDatabase.get(f.skillId);if(!skill?.persistentArea)continue;
+    add(f.cells,f.team,{name:skill.name,kind:'damage',remaining:f.ticksRemaining,clock:'PULSES'});
+  }
+  for(const f of fieldState.sanctuaries||[]){
+    // The sanctuary ward survives its last pulse until its true expiry.
+    if(f.mode!=='HEALING'&&!(f.ticksRemaining>0))continue;
+    const kind=f.mode==='HEALING'?(f.ticksRemaining>0?'heal':'buff'):'damage';
+    add(f.cells,f.team,{name:f.mode==='HEALING'?'聖域・庇護':'聖域・懲戒',kind,remaining:Math.max(0,f.ticksRemaining),clock:'PULSES',ward:f.mode==='HEALING'});
+  }
+  for(const f of fieldState.smokeFields||[]){
+    if(round>=f.expiresRound)continue;
+    add(f.cells,f.team,{name:'煙霧彈',kind:'control',remaining:f.expiresRound-round,clock:'ROUNDS'});
+  }
+  for(const unit of units){
+    if(!unit.alive||(unit.team!==viewerTeam&&!canSeeUnit(unit)))continue;
+    for(const e of unit.effects||[]){
+      if(!['HEALING_CHANNEL','SONG_CHANNEL'].includes(e.type)||!(e.remaining>0))continue;
+      add(TacticalEngine.aoeTiles(map,unit,e.radius),unit.team,{name:e.name||e.id,kind:e.type==='HEALING_CHANNEL'?'heal':'buff',remaining:e.remaining,clock:'ROUNDS'});
+    }
+  }
+  for(const f of map?.spatialDistortions||[]){if(Number(f.expireRound)>round)add(f.cells,f.team,{name:'空間扭曲',kind:'control',remaining:f.expireRound-round,clock:'ROUNDS'});}
+  const hazardNames={BURNING:'燃燒',FIRE_TORNADO:'火龍捲',TORNADO:'龍捲風',WHIRLPOOL:'漩渦',BOILING:'沸騰',ELECTRIFIED:'帶電'};
+  for(const tile of map?.tiles||[]){
+    const cell=key(tile.x,tile.y);
+    for(const effect of globalThis.EnvironmentEngine?.effectAt?.(environmentState,tile.x,tile.y)||[]){
+      if(!hazardNames[effect.type]||!(effect.duration>0))continue;
+      if(effect.sourceTeam!==viewerTeam&&!canSeeCell(cell))continue;
+      add([cell],effect.sourceTeam||null,{name:hazardNames[effect.type],kind:effect.type==='WHIRLPOOL'?'control':'damage',remaining:effect.duration,clock:'ROUNDS'});
+    }
+  }
+  return index;
+}
+// The browser boot imports this module via TacticalGame; the Worker imports it
+// via its field controller. The existing presentation IIFE consumes the export.
+globalThis.BattleAreaFieldProjection=activeFieldTiles;
 export function createBattleAreaFieldState(){
   return {sanctuaries:[],smokeFields:[],sanctuarySerial:0,smokeSerial:0,persistentAreas:[],persistentSerial:0};
 }
@@ -27,27 +72,7 @@ export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLo
   const cells=state;
   cells.persistentAreas??=[];cells.persistentSerial??=0;
   const getUnits=()=>units()||[];
-  function sanctuaryTiles(center,radius){
-    const m=map(),origin=TacticalEngine.tile(m,center.x,center.y);
-    if(!origin||origin.terrain==='WALL')return[];
-    const limit=Math.max(0,Number(radius||0)),seen=new Set([key(origin.x,origin.y)]),queue=[origin],result=[];
-    for(let i=0;i<queue.length;i++){
-      const current=queue[i],distance=Math.abs(current.x-origin.x)+Math.abs(current.y-origin.y);
-      if(distance>limit)continue;
-      result.push(current);
-      if(distance===limit)continue;
-      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-        const next=TacticalEngine.tile(m,current.x+dx,current.y+dy);
-        if(!next||next.terrain==='WALL')continue;
-        const k=key(next.x,next.y);
-        if(seen.has(k)||Math.abs(next.x-origin.x)+Math.abs(next.y-origin.y)>limit)continue;
-        // A cliff of more than one terrain level blocks the field.
-        if(Math.abs(TacticalEngine.elevation(current)-TacticalEngine.elevation(next))>1)continue;
-        seen.add(k);queue.push(next);
-      }
-    }
-    return result;
-  }
+  function sanctuaryTiles(center,radius){return sanctuaryFootprint(map(),center,radius);}
   function syncSmokeCover(unit){
     if(!unit?.alive)return false;
     const rules=effect();
@@ -165,3 +190,25 @@ export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLo
     sanctuaryTiles,sanctuaryProtects:unit=>isSanctuaryProtected(cells,unit),syncSmokeCover,
     activateSmoke,expireSmoke,activateSanctuary,activatePersistentArea,tickSanctuaries,reset});
 }
+
+export function sanctuaryFootprint(m,center,radius){
+    const origin=TacticalEngine.tile(m,center.x,center.y);
+    if(!origin||origin.terrain==='WALL')return[];
+    const limit=Math.max(0,Number(radius||0)),seen=new Set([key(origin.x,origin.y)]),queue=[origin],result=[];
+    for(let i=0;i<queue.length;i++){
+      const current=queue[i],distance=Math.abs(current.x-origin.x)+Math.abs(current.y-origin.y);
+      if(distance>limit)continue;
+      result.push(current);
+      if(distance===limit)continue;
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const next=TacticalEngine.tile(m,current.x+dx,current.y+dy);
+        if(!next||next.terrain==='WALL')continue;
+        const k=key(next.x,next.y);
+        if(seen.has(k)||Math.abs(next.x-origin.x)+Math.abs(next.y-origin.y)>limit)continue;
+        // A cliff of more than one terrain level blocks the field.
+        if(Math.abs(TacticalEngine.elevation(current)-TacticalEngine.elevation(next))>1)continue;
+        seen.add(k);queue.push(next);
+      }
+    }
+    return result;
+  }

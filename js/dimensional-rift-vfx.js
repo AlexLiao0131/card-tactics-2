@@ -21,7 +21,7 @@ export function isVelsaSpellPresentationEvent(event){
 }
 export class DimensionalRiftVfx{
   constructor(scene){
-    this.scene=scene;this.active=[];this.auras=new Map();this.recent=new Set();this.mapId=null;this.round=null;
+    this.scene=scene;this.active=[];this.auras=new Map();this.hellfireAuras=new Map();this.recent=new Set();this.mapId=null;this.round=null;
     this.materials={
       dark:this.material('velsa-void',[.08,.025,.20],.91),
       violet:this.material('velsa-violet',[.42,.09,.94],.87),
@@ -171,6 +171,21 @@ export class DimensionalRiftVfx{
       aura.ring.rotation.x=Math.PI/2;
     }
     for(const [id,aura] of this.auras)if(!wanted.has(id)){aura.root.dispose(false,false);this.auras.delete(id)}
+    // Lifetime is the viewer-filtered authoritative effect, not cast duration.
+    const burning=new Set();
+    for(const unit of snapshot?.units||[]){
+      if(unit.alive===false||!unit.effects?.some(e=>e.id===VfxDatabase.statusId(MODULE,'HELLFIRE')&&(e.remaining==null||e.remaining>0)))continue;
+      const id=String(unit.id);burning.add(id);
+      let aura=this.hellfireAuras.get(id);
+      if(!aura){
+        const root=new BABYLON.TransformNode(`hellfire-aura-${id}`,this.scene);
+        const flames=Array.from({length:7},(_,i)=>this.mesh(root,`hellfire-body-${i}`,'CreateSphere',{diameter:.28,segments:6},i%3===0?'bright':i%3===1?'violet':'dark'));
+        aura={root,flames};this.hellfireAuras.set(id,aura);
+      }
+      aura.root.position.set(unit.x*TILE_SIZE,Number(unit.renderZ??unit.z??0)*ELEVATION_HEIGHT+.12,unit.y*TILE_SIZE);
+    }
+    for(const [id,aura] of this.hellfireAuras)if(!burning.has(id)){aura.root.dispose(false,false);this.hellfireAuras.delete(id);}
+
   }
   updateFrame(now=performance.now()){
     for(const aura of this.auras.values()){
@@ -180,6 +195,11 @@ export class DimensionalRiftVfx{
       aura.fragments.forEach((m,i)=>{m.rotation.y+=.012+.014*aura.depleted;
         m.visibility=.12+.7*aura.depleted;m.scaling.setAll(.25+.75*aura.depleted)})
     }
+    for(const aura of this.hellfireAuras.values())aura.flames.forEach((m,i)=>{
+      const p=(now/780+i/aura.flames.length)%1,a=i*Math.PI*2/aura.flames.length+now*.002;
+      m.position.set(Math.cos(a)*(.38+.12*p),.14+p*1.28,Math.sin(a)*(.38+.12*p));
+      m.scaling.set(.7*(1-p*.48),1.9*(1-p*.45),.7*(1-p*.48));m.visibility=Math.sin(Math.PI*p)*.9;
+    });
     for(let i=this.active.length-1;i>=0;i--){
       const f=this.active[i],t=Math.max(0,now-f.started),p=clamp(t/f.duration);
       if(t>=f.duration){this.remove(f);this.active.splice(i,1);continue;}
@@ -260,8 +280,9 @@ export class DimensionalRiftVfx{
   }
   clear(){for(const fx of this.active)this.remove(fx);this.active.length=0;
     for(const aura of this.auras.values())aura.root.dispose(false,false);
-    this.auras.clear();this.recent.clear()}
+    this.auras.clear();for(const aura of this.hellfireAuras.values())aura.root.dispose(false,false);
+    this.hellfireAuras.clear();this.recent.clear()}
   dispose(){this.clear();for(const material of Object.values(this.materials))material.dispose?.()}
-  diagnostics(){return{active:this.active.length,sanityAuras:this.auras.size,
+  diagnostics(){return{active:this.active.length,sanityAuras:this.auras.size,hellfireAuras:this.hellfireAuras.size,
     materials:Object.keys(this.materials).length,skills:Object.keys(SPELLS).length}}
 }

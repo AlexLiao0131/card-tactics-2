@@ -67,8 +67,9 @@ try{
     if(surface!==canvas)throw Error('NATIVE_BATTLE_CANVAS_REQUIRED');
     if(!renderer){
       renderer=new BabylonRenderer(canvas,snapshot,{
-        onTilePicked:(x,y)=>{
-          if(pvp?.isBattleActive())return pvp.tilePicked(x,y);
+        onTilePicked:(x,y,options)=>{
+          if(pvp?.isBattleActive())return pvp.tilePicked(x,y,options);
+          if(options?.aimOnly)return runtime.aimBattleTile(x,y);
           // Test-only input consumer. When absent/inactive, the original
           // tactical click remains the single owner of battlefield actions.
           if(document.body.classList.contains('battletest-page')&&globalThis.CardTacticsBattleTest?.onTilePicked?.(x,y)===true)return true;

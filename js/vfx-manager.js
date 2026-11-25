@@ -69,6 +69,10 @@ export function attachAurasToRenderedUnits(instances,unitRenderer){
         if(follow(node,unitId,offset))moved++;
       }
     }
+    // Hellfire and Sanity may coexist on the same target; both follow the
+    // shared rendered body origin after movement/forced-displacement frames.
+    if(module==='dimensional')for(const [unitId,fx] of handler?.hellfireAuras||[])
+      if(follow(fx?.root,unitId,.12))moved++;
     // Cassandra's analysis glyphs have a distinct map, not an aura record.
     if(module==='arcane')for(const [unitId,glyph] of handler?.analysisGlyphs||[])
       if(follow(glyph?.root,unitId,1.58))moved++;

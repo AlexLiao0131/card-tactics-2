@@ -450,17 +450,17 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     // step-by-step move. Target selection and execution share one landing plan.
     // The strike remains inside its attack range; at most one additional cell
     // behind the last struck occupant may be used as the unoccupied landing.
-    function lineTransitPlan(attacker,aim,skill){
+    function lineTransitPlan(attacker,aim,skill,occupantAt=ctx.unitAt){
       const {map}=state(),range=TacticalEngine.range(skill);
       const dx=Math.sign(aim.x-attacker.x),dy=Math.sign(aim.y-attacker.y);
       if((dx!==0&&dy!==0)||(!dx&&!dy))return null;
       const distance=Math.abs(aim.x-attacker.x)+Math.abs(aim.y-attacker.y);
       if(distance<range.min||distance>range.max)return null;
-      const lastStep=ctx.unitAt(aim.x,aim.y)?range.max+1:distance;
+      const lastStep=occupantAt(aim.x,aim.y)?range.max+1:distance;
       for(let step=distance;step<=lastStep;step++){
         const landing=TacticalEngine.tile(map,attacker.x+dx*step,attacker.y+dy*step);
         if(!landing||!ctx.canTraverseMoveLine(attacker,landing))return null;
-        if(ctx.unitAt(landing.x,landing.y))continue;
+        if(occupantAt(landing.x,landing.y))continue;
         return{landing,affected:ctx.lineTiles(attacker,landing).slice(0,range.max)};
       }
       return null;
@@ -704,7 +704,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
     // enemy as an aim point. Clicking an enemy picks ONE nearby empty landing;
     // the enemy remains in the quake footprint. Browser, Gemini and PVP all
     // use this same read-only plan; it never moves or spends resources.
-    function jumpShockwaveLanding(attacker,target,skill){
+    function jumpShockwaveLanding(attacker,target,skill,occupantAt=ctx.unitAt){
       if(!skill?.jumpShockwave||!target?.alive||target.occupiesTile===false||
          target.team===attacker.team)return null;
       const {map,units,environmentState}=state(),range=TacticalEngine.range(skill);
@@ -718,7 +718,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           TERRAINS[tile.terrain]?.passable!==false&&
           TacticalEngine.canOccupyTerrain(attacker,tile)&&
           !TacticalEngine.isBlockedByObject(map,tile.x,tile.y,attacker)&&
-          !ctx.unitAt(tile.x,tile.y)&&!ctx.coreAt?.(tile.x,tile.y));
+          !occupantAt(tile.x,tile.y)&&!ctx.coreAt?.(tile.x,tile.y));
       // Deterministic nearest-side selection; no new AI or landing resource.
       candidates.sort((a,b)=>distance(a)-distance(b)||a.y-b.y||a.x-b.x);
       return candidates[0]||null;
@@ -1642,13 +1642,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       // are crossed. A committed strike spends exactly one weapon enchant.
       const enchantment=skill.shape==="LINE"?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
       const enchantImpacts=[];
-      const affected=transit?transit.affected:skill.shape==="LINE"?ctx.lineTiles(attacker,center):
-        skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):
-        skill.areaDamage?.footprint==="FRONT_3" ? TacticalEngine.frontThreeTiles(map,attacker,center):
-        skill.areaDamage?.footprint==="ADJACENT_8"
-          ?ctx.aoeTiles(center,Number(skill.radius||0)*2).filter(tile=>
-            Math.max(Math.abs(tile.x-center.x),Math.abs(tile.y-center.y))<=Number(skill.radius||0))
-          :ctx.aoeTiles(center,skill.radius||0);
+      const affected=transit?transit.affected:TacticalEngine.areaImpactTiles(map,attacker,center,skill);
       if(skill.shape==="LINE"){
         const hitUnitIds=new Set();
         affected.forEach(tile=>{
@@ -2389,7 +2383,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         return {mapId:map.id,unitId:unit.id,skillId:skill.id,
           kind:'ALLY',radius,tiles,targets:[]};
       }
-      if(skill.sanctuary){
+      if(skill.sanctuary||skill.smokeField){
         const tiles=ctx.sanctuaryTiles(center,skill.radius)||[];
         return {mapId:map.id,unitId:unit.id,skillId:skill.id,
           kind:'ALLY',tiles,targets:[]};
@@ -2403,7 +2397,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         const radius=skill.areaDamage.footprint==='ADJACENT_8'?1:
           Math.max(0,Number(skill.radius||0));
         return {mapId:map.id,unitId:unit.id,skillId:skill.id,
-          kind:'AREA',radius,tiles:rangeTiles(radius),targets:[]};
+          kind:'AREA',radius,tiles:TacticalEngine.areaImpactTiles(map,unit,center,skill),targets:[]};
       }
       const single=ctx.targetType(skill)==='SINGLE';
       if(!single){
@@ -2418,11 +2412,26 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         kind:skill.target==='ALLY'?'ALLY_TARGET':'AIM',tiles,targets,additional};
     }
 
+    function aimedAreaTiles(unit,skill,center,{legalTiles=null}={}){
+      if(!TacticalEngine.isAreaAimSkill(skill)||!center||!(legalTiles||mapTargetTiles(unit,skill)).some(t=>t.x===center.x&&t.y===center.y))return[];
+      const world=state(),map=world.map;
+      // Preview must not expose an unseen occupant by shifting a landing.
+      // Commit still validates against all actual occupants.
+      const visibleAt=(x,y)=>{const u=ctx.unitAt(x,y);return u&&(u.team===unit.team||TacticalEngine.teamCanIdentifyUnit(world,unit.team,u))?u:null;};
+      if(skill.shape==="LINE"&&skill.moveToTarget)return lineTransitPlan(unit,center,skill,visibleAt)?.affected||[];
+      if(skill.jumpShockwave){const occupant=visibleAt(center.x,center.y);if(occupant)center=jumpShockwaveLanding(unit,occupant,skill,visibleAt);if(!center)return[];}
+      if(skill.whirlpool)return EnvironmentEngine.whirlpoolFootprint(map,center.x,center.y,skill.radius);
+      if(skill.id==='avreshi_starfall'){
+        const outer=Number(CardDatabase.get('starfall_card')?.effect?.shockwave?.outerRadius||0);
+        return TacticalEngine.aoeTiles(map,center,Number(skill.radius||0)+outer);
+      }
+      return TacticalEngine.areaImpactTiles(map,unit,center,skill);
+    }
     function reset(){pendingMove=null;pendingTransport=null;pendingEnchantment=null;enchantmentFollowup=null;}
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,bloodShadowLanding,
-      attackPlanForTarget,targetableEntities,targetRangeTiles,previewSkillArea,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
+      attackPlanForTarget,targetableEntities,targetRangeTiles,previewSkillArea,aimedAreaTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
       backFromTargeting,finishActiveSkill,executeEffectSkill,executeUtilitySkill,approachForSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,

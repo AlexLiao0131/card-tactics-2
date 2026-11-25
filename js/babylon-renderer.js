@@ -193,7 +193,7 @@ export class BabylonRenderer{
     this.vfxManager=new VfxManager(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
-    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked});
+    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked,canAimDrag:()=>this.lastState?.presentation?.areaAimActive===true});
     this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
