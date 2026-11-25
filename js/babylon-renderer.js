@@ -193,7 +193,7 @@ export class BabylonRenderer{
     this.vfxManager=new VfxManager(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
-    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked,getAreaAim:()=>{const state=this.lastState;if(state?.presentation?.areaAimActive!==true)return null;return {center:state.presentation.aimCenter,contains:(x,y)=>{const t=state.map.tiles.find(t=>t.x===x&&t.y===y);return !!(t?.aimPreview||t?.aimCenter);}};}});
+    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked,getAreaAim:()=>{const state=this.lastState;if(state?.presentation?.areaAimActive!==true)return null;const pending=this.pendingAreaAim;if(pending?.state===state)return {center:pending.center,contains:(x,y)=>pending.cells.some(t=>t.x===x&&t.y===y)||(pending.center.x===x&&pending.center.y===y)};return {center:state.presentation.aimCenter,contains:(x,y)=>{const t=state.map.tiles.find(t=>t.x===x&&t.y===y);return !!(t?.aimPreview||t?.aimCenter);}};}});
     this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
@@ -214,6 +214,8 @@ export class BabylonRenderer{
       // terrain, water or character versions on the previous/next GPU frame.
       if(this.presentationFrameSync)
         this.syncSubsystem("presentationFrameSync",()=>this.presentationFrameSync());
+      if(this.input.gesture?.pendingPoint)this.syncSubsystem("areaAimInput",()=>this.input.flushAimDrag());
+      if(this.pendingAreaAim)this.syncSubsystem("areaAim",()=>this.flushAreaAim());
       const dt=Math.min(.05,Math.max(0,Number(this.engine.getDeltaTime()||16)/1000));
       this.updateDayNightTransition(dt);
       this.units.updateFrame();
@@ -657,7 +659,28 @@ export class BabylonRenderer{
     if(this.lastState?.map?.tiles)this.highlights.sync(this.lastState);
   }
 
+  queueAreaAim({mapId,revision,center,cells}={}){
+    const state=this.lastState;
+    if(state?.presentation?.areaAimActive!==true||state.map.id!==mapId||state.revision!==revision)return false;
+    this.pendingAreaAim={state,center:{x:center.x,y:center.y},cells:cells.map(t=>({x:t.x,y:t.y}))};
+    return true;
+  }
+  flushAreaAim(){
+    const pending=this.pendingAreaAim;this.pendingAreaAim=null;
+    if(!pending||pending.state!==this.lastState)return false;
+    const {state,center,cells}=pending,keys=new Set(cells.map(t=>`${t.x},${t.y}`));
+    // Only clone changed overlay flags; reuse all other published tile data.
+    const tiles=state.map.tiles.map(t=>{
+      const aimPreview=keys.has(`${t.x},${t.y}`),aimCenter=t.x===center.x&&t.y===center.y;
+      return !!t.aimPreview===aimPreview&&!!t.aimCenter===aimCenter?t:{...t,aimPreview,aimCenter};
+    });
+    const view={...state,presentation:{...state.presentation,aimCenter:center},map:{...state.map,tiles}};
+    this.highlights.syncAim(view);
+    this.lastState=view;
+    return true;
+  }
   syncInteractionPresentation(state){
+    this.pendingAreaAim=null;
     if(!state?.map?.tiles||!Array.isArray(state.units))return false;
     const stages=[
       ['highlights',()=>this.highlights.sync(state)],
@@ -673,6 +696,7 @@ export class BabylonRenderer{
   }
 
   sync(state,presentationEvents=[]){
+    this.pendingAreaAim=null;
     const commitStarted=performance.now();
     const owners=()=>({
       ground:this.terrain.meshes.get("surface")?.uniqueId??null,

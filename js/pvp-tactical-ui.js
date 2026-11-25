@@ -450,9 +450,11 @@ export class PvpTacticalUI {
       const aim=actor.aimOptions?.find(a=>a.type===this.mode&&a.skillId===skill.id),center=this.ensureAreaAim(actor,aim);
       const cells=center&&aim?.areaFootprints?.[`${center.x},${center.y}`];
       if(cells){
-        this.add(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
+        const target=this.target;
+        const confirmButton=this.areaAimConfirmButton=this.add(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
+          const center=this.areaAim;
           const selected=this.selectedUnit(),latest=selected?.aimOptions?.find(a=>a.type==='CAST_MAP_SKILL'&&a.skillId===skill.id);
-          if(this.mode!=='CAST_MAP_SKILL'||this.target?.skillId!==skill.id||selected?.id!==actor.id||this.areaAim!==center||!this.isTacticalPhase()||!latest?.actionableTiles?.some(t=>t.x===center.x&&t.y===center.y)||!latest.areaFootprints?.[`${center.x},${center.y}`]?.length)return;
+          if(this.mode!=='CAST_MAP_SKILL'||this.target!==target||this.areaAimConfirmButton!==confirmButton||this.target?.skillId!==skill.id||selected?.id!==actor.id||selected.acted||selected.waited||!center||!this.isTacticalPhase()||!latest?.actionableTiles?.some(t=>t.x===center.x&&t.y===center.y)||!latest.areaFootprints?.[`${center.x},${center.y}`]?.length)return;
           if(this.request({type:'CAST_MAP_SKILL',unitId:actor.id,skillId:skill.id,x:center.x,y:center.y})){this.cancelTarget();this.update();this.refreshNativePresentation();}
         });
         this.menuUI.heading('拖曳橘色範圍｜點藍格重新定位');
@@ -718,7 +720,7 @@ export class PvpTacticalUI {
     if(this.menu!=='enchant-weapon'||this.mode!=='SELECT'||!this.isTacticalPhase())
       this.clearEnchantmentMarkers();
     const v=this.match.view,canAct=this.myTurn()&&this.isConnected();
-    this.menuUI.clear();
+    this.areaAimConfirmButton=null;this.menuUI.clear();
     const end=document.getElementById('endTurn'),next=document.getElementById('nextUnit');
     // Original controls belong to the actionable tactical phase only.
     // Hide rather than leave a dead PvP control column on the opponent turn.
@@ -915,7 +917,14 @@ export class PvpTacticalUI {
           a.type==='CAST_MAP_SKILL'&&a.skillId===choice.skillId);
         if(aim?.actionableTiles?.some(t=>t.x===x&&t.y===y)&&aim.areaFootprints?.[`${x},${y}`]?.length){
           if(this.areaAim?.x===x&&this.areaAim?.y===y)return true;
-          this.areaAim={x,y};this.update();this.refreshNativePresentation();return true;
+          this.areaAim={x,y};
+          const cells=aim.areaFootprints[`${x},${y}`],renderer=this.bridge?.renderer;
+          if(this.areaAimConfirmButton)this.areaAimConfirmButton.textContent=`確認${knownSkill(choice.skillId)?.name||choice.skillId}｜影響 ${cells.length} 格`;
+          // Worker-certified geometry is already available; no DOM/HUD/scene
+          // rebuild for a cursor move. A stale render view takes the normal
+          // interaction publication path (also used by lightweight adapters).
+          if(renderer?.queueAreaAim?.({mapId:this.serverSnapshot?.map?.id,revision:this.serverSnapshot?.revision,center:this.areaAim,cells})!==true)this.refreshNativePresentation();
+          return true;
         }
         return false;
       }else if(type==='CAST_MAP_SKILL'||type==='ATTACK_ENCHANTED_TERRAIN')

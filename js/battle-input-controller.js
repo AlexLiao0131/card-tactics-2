@@ -138,11 +138,8 @@ export class BattleInputController{
         return;
       }
       if(this.gesture?.type==="AIM"&&this.gesture.id===event.pointerId){
-        if(pointer.moved&&this.getAreaAim()){
-          const tile=this.pickAt(event);
-          if(tile){const x=tile.x+this.gesture.aimOffsetX,y=tile.y+this.gesture.aimOffsetY,key=`${x},${y}`;
-            if(this.gesture.lastAim!==key){this.gesture.lastAim=key;this.onTilePicked(x,y,{aimOnly:true});}}
-        }return;
+        if(pointer.moved)this.gesture.pendingPoint={clientX:event.clientX,clientY:event.clientY};
+        return;
       }
       if(this.gesture?.type!=="PAN"||this.gesture.id!==event.pointerId||!pointer.moved)return;
       const dx=event.clientX-this.gesture.lastX,dy=event.clientY-this.gesture.lastY;
@@ -157,6 +154,10 @@ export class BattleInputController{
       const wasMulti=multiGestureType(this.gesture)||this.pointers.size>1;
       const wasRotate=this.gesture?.type==="ROTATE_MOUSE";
       const wasAim=this.gesture?.type==="AIM";
+      if(wasAim&&pointer.moved){
+        this.gesture.pendingPoint={clientX:event.clientX,clientY:event.clientY};
+        this.flushAimDrag();
+      }
       this.pointers.delete(event.pointerId);
       try{this.canvas.releasePointerCapture?.(event.pointerId)}catch(_){}
       if(this.pointers.size===1){this.resumeSinglePointerPan();return;}
@@ -201,6 +202,18 @@ export class BattleInputController{
     window.addEventListener("blur",this.onInterrupted);
     window.addEventListener("pagehide",this.onInterrupted);
     document.addEventListener("visibilitychange",this.onVisibilityChange);
+  }
+  flushAimDrag(){
+    const g=this.gesture;
+    if(g?.type!=="AIM"||!g.pendingPoint)return false;
+    const point=g.pendingPoint;g.pendingPoint=null;
+    if(!this.getAreaAim()||this.pointers.size!==1)return false;
+    if(g.lastPoint?.clientX===point.clientX&&g.lastPoint?.clientY===point.clientY)return false;
+    g.lastPoint=point;
+    const tile=this.pickAt(point);if(!tile)return false;
+    const x=tile.x+g.aimOffsetX,y=tile.y+g.aimOffsetY,key=`${x},${y}`;
+    if(g.lastAim===key)return false;
+    g.lastAim=key;this.onTilePicked(x,y,{aimOnly:true});return true;
   }
   resetPointers(){
     this.clearHold();

@@ -1,6 +1,6 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,SURFACE_RENDER_ORDER } from "./coordinate-system.js";
 const keyOf=tile=>`${tile.x},${tile.y}`;
-const highlightKind=tile=>tile.aimPreview?"aimPreview":tile.aimLegal?"aimLegal":tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
+const highlightKind=tile=>tile.aimLegal?"aimLegal":tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
 
 export class HighlightRenderer{
   constructor(scene,{terrain,environment}={}){
@@ -94,7 +94,7 @@ export class HighlightRenderer{
     return{positions,indices,snowCoverage};
   }
 
-  syncMesh(previous,name,parts,material,overlayOrder){
+  syncMesh(previous,name,parts,material,overlayOrder,{retainMesh=false}={}){
     const positions=[],indices=[],colors=[];
     const baseOpacity=Number(material.baseOverlayOpacity??material.alpha??1);
     for(const part of parts){
@@ -112,7 +112,7 @@ export class HighlightRenderer{
     if(!indices.length){previous?.dispose();return null;}
     let mesh=previous;
     if(!mesh||mesh.getTotalVertices()!==positions.length/3||mesh.getTotalIndices()!==indices.length){
-      mesh?.dispose();mesh=new BABYLON.Mesh(name,this.scene);
+      if(!mesh||!retainMesh){mesh?.dispose();mesh=new BABYLON.Mesh(name,this.scene);}
       mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind,positions,true);
       mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,colors,true);
       mesh.setIndices(indices);
@@ -136,8 +136,8 @@ export class HighlightRenderer{
     for(const tile of tiles){
       const owner=tile.deploymentAreaOwner||"",kind=highlightKind(tile)||"";
       const fieldKinds=[...new Set((tile.activeFields||[]).map(f=>f.kind))].sort().join(',');
-      if(!owner&&!kind&&!fieldKinds&&!tile.aimCenter)continue;
-      parts.push([tile.x,tile.y,owner,kind,fieldKinds,tile.aimCenter===true,
+      if(!owner&&!kind&&!fieldKinds)continue;
+      parts.push([tile.x,tile.y,owner,kind,fieldKinds,
         Number(tile.waterDepth||0).toFixed(4),
         tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(4)].join(":"));
     }
@@ -146,7 +146,7 @@ export class HighlightRenderer{
 
   sync(state){
     const tiles=state?.map?.tiles||[],signature=this.signature(tiles);
-    if(signature===this.signatureValue)return;
+    if(signature===this.signatureValue){this.syncAim(state);return;}
     const layers=this.environment?.publishedCoverGeometry()||[];
     const areas=new Map(),dynamic=new Map(),fields=new Map();
     for(const tile of tiles){
@@ -159,17 +159,6 @@ export class HighlightRenderer{
         if(!['damage','heal','buff','control'].includes(fieldKind))continue;
         const part=this.indicatorGeometry(tile,.058,layers);
         if(part){const group=fields.get(fieldKind)||[];group.push(part);fields.set(fieldKind,group);}
-      }
-      if(tile.aimCenter){
-        // One non-pickable crosshair on the published surface, batched with the
-        // existing dynamic highlights. It does not change the gameplay footprint.
-        const surface=this.indicatorGeometry(tile,.095,layers);
-        if(surface?.positions?.length){
-          const x=tile.x*TILE_SIZE,z=tile.y*TILE_SIZE,y=Math.max(...surface.positions.filter((_,i)=>i%3===1));
-          const r=TILE_SIZE*.32,w=TILE_SIZE*.045;
-          const quad=(a,b,c,d)=>({positions:[a,y,b,c,y,b,c,y,d,a,y,d],indices:[0,1,2,0,2,3]});
-          dynamic.set("aimCenter",[quad(x-r,z-w,x+r,z+w),quad(x-w,z-r,x+w,z+r)]);
-        }
       }
       if(kind){
         const part=this.indicatorGeometry(tile,.070,layers);
@@ -192,16 +181,53 @@ export class HighlightRenderer{
       if(mesh){mesh.renderingGroupId=1;this.dynamic.set(kind,mesh);}
     }
     for(const [owner,mesh] of this.areas)if(!areas.has(owner)){mesh.dispose();this.areas.delete(owner);}
-    for(const [kind,mesh] of this.dynamic)if(!dynamic.has(kind)){mesh.dispose();this.dynamic.delete(kind);}
+    for(const [kind,mesh] of this.dynamic)if(!["aimPreview","aimCenter"].includes(kind)&&!dynamic.has(kind)){mesh.dispose();this.dynamic.delete(kind);}
     this.areaTileCount=[...areas.values()].reduce((sum,parts)=>sum+parts.length,0);
     this.dynamicTileCount=[...dynamic.values()].reduce((sum,parts)=>sum+parts.length,0);
     this.signatureValue=signature;
+    this.syncAim(state);
+  }
+
+  // Only these two batches depend on the current cursor. Keep static blue,
+  // deployment and active field meshes intact. Geometry is memoized by the
+  // published surface/cover revision, not by a guessed frame duration.
+  syncAim(state){
+    const tiles=state?.map?.tiles||[],preview=tiles.filter(t=>t.aimPreview),center=tiles.find(t=>t.aimCenter);
+    const surfaceKey=`${state?.map?.id||""}|${this.terrain?.surfaceResolver?.renderedSurfaceGeometryRevision||0}|${this.environment?.publishedCoverRevision||0}`;
+    const surfaceTileKey=t=>`${keyOf(t)}:${Number(t.waterDepth||0)}:${t.waterSurfaceZ??"n"}`;
+    const signature=`${surfaceKey}|${preview.map(surfaceTileKey).join(";")}|${center?surfaceTileKey(center):""}`;
+    if(this.aimSignature===signature)return;
+    if(this.aimGeometrySurface!==surfaceKey){this.aimGeometrySurface=surfaceKey;this.aimGeometry=new Map();}
+    const layers=this.environment?.publishedCoverGeometry()||[];
+    const geometry=(tile,clearance)=>{
+      const key=`${surfaceTileKey(tile)}:${clearance}`;
+      if(!this.aimGeometry.has(key))this.aimGeometry.set(key,this.indicatorGeometry(tile,clearance,layers));
+      return this.aimGeometry.get(key);
+    };
+    const parts=preview.map(t=>geometry(t,.070)).filter(Boolean),cross=[];
+    if(center){
+      const surface=geometry(center,.095);
+      if(surface?.positions?.length){
+        const x=center.x*TILE_SIZE,z=center.y*TILE_SIZE,y=Math.max(...surface.positions.filter((_,i)=>i%3===1));
+        const r=TILE_SIZE*.32,w=TILE_SIZE*.045;
+        const quad=(a,b,c,d)=>({positions:[a,y,b,c,y,b,c,y,d,a,y,d],indices:[0,1,2,0,2,3]});
+        cross.push(quad(x-r,z-w,x+r,z+w),quad(x-w,z-r,x+w,z+r));
+      }
+    }
+    for(const [kind,group,order] of [["aimPreview",parts,2],["aimCenter",cross,3]]){
+      if(!group.length){this.dynamic.get(kind)?.dispose();this.dynamic.delete(kind);continue;}
+      const mesh=this.syncMesh(this.dynamic.get(kind),`hl-${kind}`,group,this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY+order,{retainMesh:true});
+      if(mesh){mesh.renderingGroupId=1;this.dynamic.set(kind,mesh);}else this.dynamic.delete(kind);
+    }
+    this.aimSignature=signature;
+    this.aimTileCount=preview.length;
+    if(!preview.length&&!center)this.aimGeometry.clear();
   }
 
   diagnostics(){
     const meshes=[...this.areas.values(),...this.dynamic.values(),...this.fields.values()];
     return{deploymentAreaMeshes:this.areas.size,dynamicHighlights:this.dynamic.size,activeFieldMeshes:this.fields.size,
-      deploymentAreaTiles:this.areaTileCount||0,dynamicHighlightTiles:this.dynamicTileCount||0,
+      deploymentAreaTiles:this.areaTileCount||0,dynamicHighlightTiles:(this.dynamicTileCount||0)+(this.aimTileCount||0),
       batchedByMaterial:true,
       publishedTerrainRevision:this.terrain?.surfaceResolver?.renderedSurfaceGeometryRevision??null,
       publishedCoverRevision:this.environment?.publishedCoverRevision??null,
