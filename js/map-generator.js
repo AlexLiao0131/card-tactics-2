@@ -1113,12 +1113,13 @@ export const MapGenerator=(()=>{
   }
 
   function reachableTiles(map,objects,start){
+    const by=new Map(map.tiles.map(t=>[key(t.x,t.y),t]));
     const seen=new Set(),q=[{x:start.x,y:start.y}];seen.add(key(start.x,start.y));
-    while(q.length){
-      const p=q.shift(),from=tileAt(map,p.x,p.y);
+    for(let head=0;head<q.length;head++){
+      const p=q[head],from=by.get(key(p.x,p.y));
       for(const[dx,dy]of DIRS){
         const x=p.x+dx,y=p.y+dy,k=key(x,y);if(seen.has(k))continue;
-        const to=tileAt(map,x,y);if(!normalPassable(map,objects,from,to))continue;
+        const to=by.get(k);if(!normalPassable(map,objects,from,to))continue;
         seen.add(k);q.push({x,y});
       }
     }
@@ -1176,6 +1177,11 @@ export const MapGenerator=(()=>{
       protectedKeys.add(key(tile.x,tile.y));
     }
     top.mountainRamp=true;top.rampId=`mountain_ramp_${rampIndex}`;
+    // Both ends are part of the same access route. The lower endpoint may
+    // already be a road or ford, so protect its coordinate without rewriting
+    // its existing terrain/hydrology metadata.
+    protectedKeys.add(key(top.x,top.y));
+    protectedKeys.add(key(bottom.x,bottom.y));
     return changed;
   }
 
@@ -1212,9 +1218,49 @@ export const MapGenerator=(()=>{
     return report;
   }
 
-  function addRocks(map,cfg,rand,protectedKeys){
-    const candidates=map.tiles.filter(t=>!protectedKeys.has(key(t.x,t.y))&&!t.river&&!t.hydrologyNaturalChannelPool&&t.terrain==="PLAIN"&&t.waterDepth<=0&&DIRS.some(([dx,dy])=>{const n=tileAt(map,t.x+dx,t.y+dy);return n&&t.elevation>n.elevation;})),objects=[];
-    for(let i=0;i<cfg.rocks&&candidates.length;i++){const n=Math.floor(rand()*candidates.length),t=candidates.splice(n,1)[0];t.material="ROCK";objects.push({id:`generated_rock_${i}`,x:t.x,y:t.y,type:"ROCK",environment:"STONE",destructible:true,blocksMovement:true,breaksIntoTerrain:"PLAIN"});}
+  // Use the same movement-height/passability graph as mountain ramp creation.
+  // Baseline is taken AFTER watershed conditioning, before random obstacles.
+  // Cores are actual blocking objects: seed from each own core (virtual exit),
+  // never treat the opposite core as a walkable bridge.
+  function mountainAccessBaseline(map,objects,starts){
+    const fixed=[...objects,...starts.filter(c=>!objects.some(o=>o.blocksMovement&&o.x===c.x&&o.y===c.y))
+      .map(c=>({x:c.x,y:c.y,blocksMovement:true}))];
+    const components=highGroundComponents(map);
+    const ramps=map.tiles.filter(t=>t.mountainRamp).map(t=>key(t.x,t.y));
+    const sides=starts.map(start=>{
+      const reachable=reachableTiles(map,fixed,start);
+      return{start,groups:components.map(c=>c.map(t=>key(t.x,t.y)).filter(k=>reachable.has(k))).filter(g=>g.length),
+        ramps:ramps.filter(k=>reachable.has(k))};
+    });
+    return{fixed,sides};
+  }
+  function mountainAccessLosses(map,baseline,rocks){
+    const blocked=new Set(rocks.filter(o=>!o.destroyed&&o.blocksMovement).map(o=>key(o.x,o.y)));
+    const losses=[];
+    for(const {start,groups,ramps} of baseline.sides){
+      const reachable=reachableTiles(map,[...baseline.fixed,...rocks],start);
+      for(const group of groups){
+        // A rock can occupy a mountain tile, but cannot isolate any remaining
+        // previously reachable mountain tile or occupy the entire access area.
+        const open=group.filter(k=>!blocked.has(k));
+        if(!open.length)losses.push(`MOUNTAIN_ACCESS_CLOSED_${start.x}_${start.y}_${group[0]}`);
+        else for(const k of open)if(!reachable.has(k))losses.push(`MOUNTAIN_ACCESS_LOST_${start.x}_${start.y}_${k}`);
+      }
+      for(const k of ramps)if(!reachable.has(k))losses.push(`MOUNTAIN_RAMP_BLOCKED_${start.x}_${start.y}_${k}`);
+    }
+    return losses;
+  }
+  function addRocks(map,cfg,rand,protectedKeys,baseInfo,fixedObjects=[]){
+    const candidates=map.tiles.filter(t=>!protectedKeys.has(key(t.x,t.y))&&!t.mountainRamp&&!t.river&&!t.hydrologyNaturalChannelPool&&t.terrain==="PLAIN"&&t.waterDepth<=0&&DIRS.some(([dx,dy])=>{const n=tileAt(map,t.x+dx,t.y+dy);return n&&t.elevation>n.elevation;})),objects=[];
+    const baseline=mountainAccessBaseline(map,fixedObjects,[baseInfo.playerCore,baseInfo.enemyCore]);
+    while(objects.length<cfg.rocks&&candidates.length){
+      const n=Math.floor(rand()*candidates.length),t=candidates.splice(n,1)[0];
+      const rock={id:`generated_rock_${objects.length}`,x:t.x,y:t.y,type:"ROCK",environment:"STONE",destructible:true,blocksMovement:true,breaksIntoTerrain:"PLAIN"};
+      // Test the cumulative set, not just the current rock in isolation. Two
+      // otherwise safe rocks can jointly cut both entries to a mountain.
+      if(mountainAccessLosses(map,baseline,[...objects,rock]).length)continue;
+      t.material="ROCK";objects.push(rock);
+    }
     return objects;
   }
 
@@ -1291,6 +1337,14 @@ export const MapGenerator=(()=>{
         if(!connected)errors.push(`POOL_UNCONNECTED_${tile.x}_${tile.y}`);
       }
     }
+    // Independently validate the final obstacle layout against the actual
+    // pre-rock access graph, including naturally traversable mountain slopes.
+    const rocks=objects.filter(o=>o.type==="ROCK"&&o.blocksMovement&&!o.destroyed);
+    const fixed=objects.filter(o=>!rocks.includes(o));
+    const blockedRamps=new Set(rocks.map(o=>key(o.x,o.y)));
+    for(const tile of map.tiles)if(tile.mountainRamp&&blockedRamps.has(key(tile.x,tile.y)))
+      errors.push(`MOUNTAIN_RAMP_ROCK_${tile.x}_${tile.y}`);
+    errors.push(...mountainAccessLosses(map,mountainAccessBaseline(map,fixed,[p,e]),rocks));
     if(!hasPath(map,objects,p,e))errors.push("CORE_TO_CORE");
     for(const point of points){const goal=point.captureTiles?.[0];if(goal&&!hasPath(map,objects,p,goal))errors.push(`PLAYER_TO_${point.id}`);if(goal&&!hasPath(map,objects,e,goal))errors.push(`ENEMY_TO_${point.id}`);}
     routes.forEach((route,i)=>{
@@ -1313,7 +1367,7 @@ export const MapGenerator=(()=>{
     addForests(map,cfg,rand,protectedKeys);
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
     const drainage=authorGeneratedWatershed(map);
-    const rocks=addRocks(map,cfg,rand,protectedKeys);
+    const rocks=addRocks(map,cfg,rand,protectedKeys,baseInfo,river.sourceObjects||[]);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
     const cores=[
@@ -1323,10 +1377,12 @@ export const MapGenerator=(()=>{
     map.objects=[{id:"player_core_object",x:baseInfo.playerCore.x,y:baseInfo.playerCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},{id:"enemy_core_object",x:baseInfo.enemyCore.x,y:baseInfo.enemyCore.y,type:"CORE",environment:"STONE",destructible:false,blocksMovement:true},...(river.sourceObjects||[]),...rocks];
     const deploymentPoints=[{id:"player_base",name:"我方本陣",owner:"PLAYER",capturable:false,captureTiles:[],area:baseArea(map,"PLAYER",baseInfo)},...capturePoints,{id:"enemy_base",name:"敵方本陣",owner:"ENEMY",capturable:false,captureTiles:[],area:baseArea(map,"ENEMY",baseInfo)}];
 
-    const validation=validateBattlefield(map,rocks,cores,capturePoints,routes,river);
+    const validation=validateBattlefield(map,[...(river.sourceObjects||[]),...rocks],cores,capturePoints,routes,river);
     if(!validation.ok)throw new Error(`Generated battlefield validation failed: ${validation.errors.join(",")}`);
     const summary=stats(map);
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:mountainAccess.remainingInaccessible,conditionedDrainageTiles:drainage.conditionedTiles,connectedDeepPools:drainage.connectedDeepPools,watershedExcavated:drainage.channelExcavation,watershedBreaches:drainage.breachedChannels,watershedMaxFill:drainage.maximumRaise,watershedFillVolume:drainage.conditionedVolume,validation:"PASS",...summary}};
+    const finalReachable=reachableTiles(map,map.objects,baseInfo.playerCore);
+    const remainingInaccessible=highGroundComponents(map).filter(component=>!component.some(t=>finalReachable.has(key(t.x,t.y)))).length;
+    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:remainingInaccessible,conditionedDrainageTiles:drainage.conditionedTiles,connectedDeepPools:drainage.connectedDeepPools,watershedExcavated:drainage.channelExcavation,watershedBreaches:drainage.breachedChannels,watershedMaxFill:drainage.maximumRaise,watershedFillVolume:drainage.conditionedVolume,validation:"PASS",...summary}};
   }
 
   return Object.freeze({SIZE_PRESETS,preset,randomSeed,generateVersus,validateBattlefield});
