@@ -1,3 +1,4 @@
+import {TerrainMaterial} from "./terrain-database.js";
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 
 const EPSILON=1e-8;
@@ -72,9 +73,13 @@ const averageColors=colors=>{
 };
 
 function baseTerrainOf(tile){
-  if(tile?.material==="ROCK")return"HIGH_GROUND";
-  if(tile?.terrain==="WATER"&&tile?.dryTerrain)return String(tile.dryTerrain);
-  return String(tile?.terrain||"DEFAULT");
+  const base=TerrainMaterial.baseTerrain(tile);
+  if(base==="WALL")return "WALL";
+  const material=TerrainMaterial.of(tile);
+  if(material==="ROCK")return "HIGH_GROUND";
+  if(material==="SAND")return "SAND";
+  if(base==="HIGH_GROUND"&&material==="SOIL")return "PLAIN";
+  return String(base||"DEFAULT");
 }
 
 function influenceSnapshot(tile,weight,direction){

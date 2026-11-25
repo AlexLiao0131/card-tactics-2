@@ -1,3 +1,4 @@
+import {TerrainMaterial} from "./terrain-database.js";
 export const EnvironmentEngine=(()=>{
   const ELEMENT={NONE:"NONE",GRASS:"GRASS",WATER:"WATER",STONE:"STONE"};
   const FORCE={FIRE:"FIRE",HEAVY_FIRE:"HEAVY_FIRE",EXPLOSION:"EXPLOSION",WIND:"WIND",THUNDER:"THUNDER",IMPACT:"IMPACT",AVALANCHE_TRIGGER:"AVALANCHE_TRIGGER"};
@@ -34,7 +35,7 @@ export const EnvironmentEngine=(()=>{
   function objectAt(map,x,y){return globalThis.EnvironmentObjectEngine?.activeObjectsAt?.(map,x,y)?.[0]||(map?.objects||[]).find(o=>!o.destroyed&&o.x===x&&o.y===y)||null;}
   const elevation=tile=>HydrologyEngine.elevation(tile);
   const waterDepth=tile=>HydrologyEngine.waterDepth(tile);
-  function environmentAt(map,x,y){const object=objectAt(map,x,y);if(object?.environment)return object.environment;const tile=tileAt(map,x,y);return TERRAINS[tile?.terrain]?.environment||ELEMENT.NONE;}
+  function environmentAt(map,x,y){const object=objectAt(map,x,y);if(object?.environment)return object.environment;const tile=tileAt(map,x,y);return tile?.terrain!=="WATER"&&TerrainMaterial.isRock(tile)?ELEMENT.STONE:TERRAINS[tile?.terrain]?.environment||ELEMENT.NONE;}
   function windDirection(value={}){const strength=Math.max(0,Number(value?.strength||0));if(strength<=.001)return WIND_DIRECTION.CALM;const x=Math.sign(Number(value?.x||0)),y=Math.sign(Number(value?.y||0));return x===0&&y<0?WIND_DIRECTION.N:x>0&&y<0?WIND_DIRECTION.NE:x>0&&y===0?WIND_DIRECTION.E:x>0&&y>0?WIND_DIRECTION.SE:x===0&&y>0?WIND_DIRECTION.S:x<0&&y>0?WIND_DIRECTION.SW:x<0&&y===0?WIND_DIRECTION.W:x<0&&y<0?WIND_DIRECTION.NW:WIND_DIRECTION.CALM;}
   function windVector(direction="CALM"){return{...(WIND_VECTORS[String(direction||"CALM").toUpperCase()]||WIND_VECTORS.CALM)}}
   function windTier(value=0){const strength=Math.max(WIND_SCALE.MIN,Math.min(WIND_SCALE.MAX,Number(typeof value==="object"?value?.strength:value)||0)),level=Math.max(0,Math.min(8,Math.round(strength)));return{...WIND_LEVELS[level],strength};}

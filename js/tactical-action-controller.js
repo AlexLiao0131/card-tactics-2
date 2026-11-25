@@ -792,7 +792,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         globalThis.ClimateEngine?.syncTileVisuals?.(environmentState,t);
         emitted('ICE_FORMED',t,{before,iceThickness:t.iceThickness});
       }else if(plan.type==='MUD'){
-        const t=plan.tiles[0],before=t.terrain;t.terrain='MUD';
+        const t=plan.tiles[0],before=t.terrain;HydrologyEngine.setGroundMaterial(t,'SOIL',events,source);t.terrain='MUD';
         emitted('TERRAIN_CHANGED',t,{from:before,to:'MUD'});
       }else if(plan.type==='SHATTER'){
         globalThis.EnvironmentObjectEngine?.destroy?.(map,plan.object,{events,reason:source});
@@ -822,7 +822,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           // more rock mass to emerge, derived from its REAL pre-cast depth.
           const deltaElevation=Math.max(2,Math.ceil(depth)+1);
           events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation,source}));
-          const previous=t.terrain;t.terrain='HIGH_GROUND';t.dryTerrain='HIGH_GROUND';
+          const previous=t.terrain;HydrologyEngine.setGroundMaterial(t,'ROCK',events,source);
+          if(HydrologyEngine.waterDepth(t)>0){t.terrain='WATER';t.dryTerrain='HIGH_GROUND';}
+          else{t.terrain='HIGH_GROUND';t.dryTerrain='HIGH_GROUND';}
           // An alchemically raised cliff is genuine terrain, but is NOT a
           // naturally deposited mineral vein. Never farm it for free materials.
           t.alchemyTransmuted=t.alchemyTransmuted===true||previous!=='HIGH_GROUND';
@@ -836,7 +838,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         HydrologyEngine.setWaterDepth(t,0,events,source);
         for(const n of plan.receivers)HydrologyEngine.addWater(n,byNeighbor,events);
         events.push(...HydrologyEngine.deformTerrain(map,t.x,t.y,{deltaElevation:Math.ceil(volume)+1,source}));
-        const previous=t.terrain;t.terrain='PLAIN';t.dryTerrain='PLAIN';
+        const previous=t.terrain;HydrologyEngine.setGroundMaterial(t,'SOIL',events,source);t.terrain='PLAIN';t.dryTerrain='PLAIN';
         emitted('TERRAIN_CHANGED',t,{from:previous,to:'PLAIN',displacedWater:volume});
       }
       map.terrainRevision=Number(map.terrainRevision||0)+1;

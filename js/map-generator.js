@@ -82,7 +82,7 @@ export const MapGenerator=(()=>{
   }
 
   function setDry(tile,elevation=0,terrain=null){
-    if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||(tile.elevation>=2?"HIGH_GROUND":"PLAIN");tile.waterDepth=0;tile.waterSurfaceZ=null;
+    if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||"PLAIN";delete tile.material;tile.waterDepth=0;tile.waterSurfaceZ=null;
     delete tile.dryTerrain;delete tile.soilMoisture;delete tile.river;delete tile.ford;delete tile.flowX;delete tile.flowY;delete tile.baseFlowSpeed;delete tile.flowSpeed;delete tile.discharge;delete tile.baseDischarge;
     delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;
   }
@@ -111,7 +111,7 @@ export const MapGenerator=(()=>{
       const e=field[tile.y][tile.x];
       // Raw geological relief informs the river and watershed. Negative land
       // is not pre-filled WATER; source-connected basins receive real D later.
-      setDry(tile,e,e>=2?"HIGH_GROUND":"PLAIN");
+      setDry(tile,e,"PLAIN");
     }
   }
 
@@ -1176,7 +1176,7 @@ export const MapGenerator=(()=>{
     if(!changed)return 0; // No terrain mutation and no fake ramp flag.
     for(const {tile,desired} of grades){
       if(Math.abs(Number(tile.elevation||0)-desired)>.0001||Number(tile.waterDepth||0)>0)
-        setDry(tile,desired,desired>=2?"HIGH_GROUND":"PLAIN");
+        setDry(tile,desired,"PLAIN");
       tile.mountainRamp=true;tile.rampId=`mountain_ramp_${rampIndex}`;
       protectedKeys.add(key(tile.x,tile.y));
     }
@@ -1218,8 +1218,8 @@ export const MapGenerator=(()=>{
   }
 
   function addRocks(map,cfg,rand,protectedKeys){
-    const candidates=map.tiles.filter(t=>!protectedKeys.has(key(t.x,t.y))&&!t.river&&t.terrain==="HIGH_GROUND"&&t.waterDepth<=0),objects=[];
-    for(let i=0;i<cfg.rocks&&candidates.length;i++){const n=Math.floor(rand()*candidates.length),t=candidates.splice(n,1)[0];objects.push({id:`generated_rock_${i}`,x:t.x,y:t.y,type:"ROCK",environment:"STONE",destructible:true,blocksMovement:true,breaksIntoTerrain:"PLAIN"});}
+    const candidates=map.tiles.filter(t=>!protectedKeys.has(key(t.x,t.y))&&!t.river&&!t.hydrologyNaturalChannelPool&&t.terrain==="PLAIN"&&t.waterDepth<=0&&DIRS.some(([dx,dy])=>{const n=tileAt(map,t.x+dx,t.y+dy);return n&&t.elevation>n.elevation;})),objects=[];
+    for(let i=0;i<cfg.rocks&&candidates.length;i++){const n=Math.floor(rand()*candidates.length),t=candidates.splice(n,1)[0];t.material="ROCK";objects.push({id:`generated_rock_${i}`,x:t.x,y:t.y,type:"ROCK",environment:"STONE",destructible:true,blocksMovement:true,breaksIntoTerrain:"PLAIN"});}
     return objects;
   }
 
@@ -1305,7 +1305,7 @@ export const MapGenerator=(()=>{
     return{ok:errors.length===0,errors};
   }
 
-  function stats(map){const e=map.tiles.map(t=>Number(t.elevation||0));return{minElevation:Math.min(...e),maxElevation:Math.max(...e),waterTiles:map.tiles.filter(t=>t.waterDepth>0).length,riverTiles:map.tiles.filter(t=>t.river).length,fordTiles:map.tiles.filter(t=>t.ford).length,forestTiles:map.tiles.filter(t=>t.terrain==="FOREST").length,highGroundTiles:map.tiles.filter(t=>t.terrain==="HIGH_GROUND").length};}
+  function stats(map){const e=map.tiles.map(t=>Number(t.elevation||0));return{minElevation:Math.min(...e),maxElevation:Math.max(...e),waterTiles:map.tiles.filter(t=>t.waterDepth>0).length,riverTiles:map.tiles.filter(t=>t.river).length,fordTiles:map.tiles.filter(t=>t.ford).length,forestTiles:map.tiles.filter(t=>t.terrain==="FOREST").length,highGroundTiles:map.tiles.filter(t=>Number(t.elevation||0)>=2).length};}
 
   function generateVersus({size="MEDIUM",seed=randomSeed(),coreRules={},springMode="RANDOM"}={}){
     const cfg=preset(size),resolvedSeed=Number(seed)>>>0,rand=createRandom(resolvedSeed),map={id:`generated_versus_${cfg.id.toLowerCase()}_${resolvedSeed}`,name:`Generated ${cfg.label}`,width:cfg.width,height:cfg.height,tiles:[],objects:[],generated:true,seed:resolvedSeed,size:cfg.id};

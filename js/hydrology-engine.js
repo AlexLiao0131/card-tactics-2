@@ -1,3 +1,4 @@
+import {TerrainMaterial} from "./terrain-database.js";
 export const HydrologyEngine=(()=>{
   "use strict";
 
@@ -34,13 +35,12 @@ export const HydrologyEngine=(()=>{
   const clean=value=>Math.max(0,Math.round(Number(value||0)*10000)/10000);
   const roundSigned=value=>Math.round(Number(value||0)*10000)/10000;
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
-  const terrainHasSoil=terrain=>terrain==="PLAIN"||terrain==="MUD"||terrain==="FOREST"||terrain==="SAND";
-  const baseTerrain=t=>t?.terrain==="WATER"?(t?.dryTerrain||"PLAIN"):t?.terrain;
-  const soilCapacity=t=>baseTerrain(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
-  const soilMoisture=t=>clamp(t?.soilMoisture??(t?.terrain==="MUD"?SOIL_SATURATION_CAPACITY:0),0,soilCapacity(t));
-  const hasSoil=t=>!!t&&!(t.river===true&&t.hydrologyBedMaterial==="ROCK")&&
-    (terrainHasSoil(t.terrain)||(t.terrain==="WATER"&&terrainHasSoil(t.dryTerrain)));
+  const baseTerrain=t=>TerrainMaterial.baseTerrain(t);
+  const soilCapacity=t=>TerrainMaterial.of(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
+  const soilMoisture=t=>hasSoil(t)?clamp(t?.soilMoisture??(t?.terrain==="MUD"?SOIL_SATURATION_CAPACITY:0),0,soilCapacity(t)):0;
+  const hasSoil=t=>TerrainMaterial.hasSoil(t);
   const infiltrationRate=t=>{
+    if(!hasSoil(t))return 0;
     // Geological substrate is hydrology data, independent of the visible
     // MixMaterial and the WATER/dryTerrain presentation toggle.
     if(t?.river===true){
@@ -48,12 +48,13 @@ export const HydrologyEngine=(()=>{
       if(t.hydrologyBedMaterial==="GRAVEL")return .006;
       if(t.hydrologyBedMaterial==="SILT")return .013;
     }
+    if(TerrainMaterial.of(t)==="SAND")return SAND_INFILTRATION_PER_TURN;
     switch(baseTerrain(t)){
       case "SAND":return SAND_INFILTRATION_PER_TURN;
       case "FOREST":return FOREST_INFILTRATION_PER_TURN;
       case "MUD":return MUD_INFILTRATION_PER_TURN;
       case "PLAIN":return PLAIN_INFILTRATION_PER_TURN;
-      default:return 0;
+      default:return PLAIN_INFILTRATION_PER_TURN;
     }
   };
   const turbidity=t=>clamp(t?.waterTurbidity||0,0,1);
@@ -978,20 +979,34 @@ export const HydrologyEngine=(()=>{
     tile.waterSurfaceZ=tile.waterDepth>0?elevation(tile)+tile.waterDepth:null;
     if(tile.waterDepth<=0)tile.waterTurbidity=0;
     if(tile.waterDepth>0&&tile.terrain!=="WATER"){
-      const base=tile.terrain,moisture=terrainHasSoil(base)?soilMoisture(tile):0;tile.dryTerrain=base;
+      const base=tile.terrain,moisture=hasSoil(tile)?soilMoisture(tile):0;tile.dryTerrain=base;
       // Surface coverage and soil saturation are different stores. Converting a
       // visually wet tile to WATER must not manufacture subsurface water; only the
       // infiltration flux is allowed to increase soilMoisture.
-      if(terrainHasSoil(base))tile.soilMoisture=clean(moisture);
+      if(hasSoil(tile))tile.soilMoisture=clean(moisture);
       tile.terrain="WATER";
       events.push({type:"BASIN_FILLED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterSurfaceZ,dryTerrain:tile.dryTerrain});
     }else if(tile.waterDepth<=0&&tile.terrain==="WATER"&&tile.dryTerrain){
-      const base=tile.dryTerrain,moisture=terrainHasSoil(base)?soilMoisture(tile):0;
+      const base=tile.dryTerrain,moisture=hasSoil(tile)?soilMoisture(tile):0;
       if(base==="PLAIN"||base==="MUD"){tile.terrain=base;tile.soilMoisture=clean(moisture);}
       else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,moisture));}
       delete tile.dryTerrain;
       events.push({type:"BASIN_DRAINED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:0,terrain:tile.terrain});
     }
+  }
+
+  // A genuine substrate conversion may displace existing pore water. Keep
+  // that water in the same conserved D store instead of silently losing it.
+  function setGroundMaterial(tile,material,events=[],source="GROUND_MATERIAL"){
+    if(!tile)return false;
+    const before=TerrainMaterial.of(tile),stored=soilMoisture(tile);
+    tile.material=material;
+    if(before===TerrainMaterial.of(tile))return true;
+    const retained=hasSoil(tile)?Math.min(stored,soilCapacity(tile)):0;
+    tile.soilMoisture=clean(retained);
+    if(stored-retained>EPSILON)setWaterDepth(tile,waterDepth(tile)+stored-retained,events,source);
+    if(before!==TerrainMaterial.of(tile))events.push({type:"GROUND_MATERIAL_CHANGED",x:tile.x,y:tile.y,from:before,to:TerrainMaterial.of(tile),source});
+    return true;
   }
 
   function setWaterDepth(tile,nextDepth,events=[],source="HYDROLOGY"){
@@ -2175,9 +2190,9 @@ export const HydrologyEngine=(()=>{
     PLAIN_INFILTRATION_PER_TURN,FOREST_INFILTRATION_PER_TURN,MUD_INFILTRATION_PER_TURN,SAND_INFILTRATION_PER_TURN,
     EPSILON,FLOW_EPSILON,MAX_FLOW_ITERATIONS,MAX_DRAIN_CYCLES,FLOW_RELAXATION,DISCHARGE_VOLUME_PER_TURN,DEFAULT_SOURCE_DISCHARGE,MIN_CHANNEL_CAPACITY_FACTOR,MAX_CHANNEL_CAPACITY_FACTOR,
     initializeMap,normalizeRiverNetwork,isPhysicalOutlet,outletSpillAudit,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
-    soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
+    hasSoil,soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
     beginEnvironmentTurn,endEnvironmentTurn,abortEnvironmentTurn,
-    setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
+    setGroundMaterial,setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();
 globalThis.HydrologyEngine=HydrologyEngine;

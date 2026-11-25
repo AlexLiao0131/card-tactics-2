@@ -11,12 +11,12 @@ export const LAB_HEIGHT = 14;
 export const LAB_REGIONS = Object.freeze([
   {id:'plain',name:'平地',x0:0,y0:0,x1:4,y1:3,terrain:'PLAIN',elevation:0,color:'#658362'},
   {id:'forest',name:'森林',x0:5,y0:0,x1:9,y1:3,terrain:'FOREST',elevation:0,color:'#326b4d'},
-  {id:'high',name:'高地 H+2',x0:10,y0:0,x1:14,y1:3,terrain:'HIGH_GROUND',elevation:2,color:'#a99a72'},
+  {id:'high',name:'土質高地 H+2',x0:10,y0:0,x1:14,y1:3,terrain:'PLAIN',material:'SOIL',elevation:2,color:'#a99a72'},
   {id:'wall',name:'岩壁',x0:15,y0:0,x1:19,y1:3,terrain:'WALL',elevation:2,color:'#5b626c'},
   {id:'mud',name:'泥地',x0:0,y0:4,x1:4,y1:8,terrain:'MUD',elevation:0,color:'#7a654b'},
   {id:'shallow',name:'淺水 0.45',x0:5,y0:4,x1:9,y1:8,terrain:'WATER',waterDepth:.45,elevation:-.45,color:'#38a4b7'},
   {id:'deep',name:'深水 2.2',x0:10,y0:4,x1:14,y1:8,terrain:'WATER',waterDepth:2.2,elevation:-2.2,color:'#246994'},
-  {id:'cliff',name:'斷崖 H+3',x0:15,y0:4,x1:19,y1:8,terrain:'HIGH_GROUND',elevation:3,color:'#997f63'},
+  {id:'cliff',name:'裸岩斷崖 H+3',x0:15,y0:4,x1:19,y1:8,terrain:'PLAIN',material:'ROCK',elevation:3,color:'#997f63'},
   {id:'plain2',name:'平地',x0:0,y0:9,x1:4,y1:13,terrain:'PLAIN',elevation:0,color:'#658362'},
   {id:'sand',name:'砂地',x0:5,y0:9,x1:9,y1:13,terrain:'SAND',elevation:0,color:'#c4af74'},
   {id:'plain3',name:'平地',x0:10,y0:9,x1:14,y1:13,terrain:'PLAIN',elevation:0,color:'#658362'},
@@ -34,6 +34,7 @@ export function makeBattleTestMap(){
     const region=regionAt(x,y);
     if(!region)throw Error(`BATTLE_TEST_UNDEFINED_TILE:${x},${y}`);
     const entry={x,y,terrain:region.terrain,elevation:region.elevation};
+    if(region.material)entry.material=region.material;
     if(region.terrain==='WATER'){
       entry.waterDepth=region.waterDepth;
       entry.dryTerrain='PLAIN';

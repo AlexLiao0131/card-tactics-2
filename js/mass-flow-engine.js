@@ -1,3 +1,4 @@
+import {TerrainMaterial} from "./terrain-database.js";
 export const MassFlowEngine=(()=>{
   "use strict";
 
@@ -21,14 +22,14 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
   const elevation=tile=>Number(tile?.elevation||0);
   const snow=tile=>Math.max(0,Number(tile?.snowDepth||0));
   const moisture=tile=>Math.max(0,Number(globalThis.HydrologyEngine?.soilMoisture?.(tile)||0));
-  const rockMass=tile=>Math.max(0,Number(tile?.rockMass??((tile?.material==="ROCK"||tile?.terrain==="HIGH_GROUND")?Math.max(.5,elevation(tile)*.35):0)));
+  const rockMass=(tile,map)=>Math.max(0,Number(tile?.rockMass??((TerrainMaterial.isRock(tile)||TerrainMaterial.exposedCliffFace(map,tile))?Math.max(.5,elevation(tile)*.35):0)));
   const normalizedMaterial=value=>String(value||MATERIAL.SOIL).toUpperCase();
 
   function flowPassable(tile){return !!tile&&tile.terrain!=="WALL";}
-  function pickupFor(tile,material){
+  function pickupFor(tile,material,map){
     const cfg=CFG[material]||CFG.SOIL;
     if(material===MATERIAL.SNOW)return Math.min(.45,snow(tile)*cfg.pickup);
-    if(material===MATERIAL.ROCK||material===MATERIAL.DEBRIS)return Math.min(.55,rockMass(tile)*cfg.pickup);
+    if(material===MATERIAL.ROCK||material===MATERIAL.DEBRIS)return Math.min(.55,rockMass(tile,map)*cfg.pickup);
     const sandBonus=tile?.terrain==="SAND"?.12:0;
     return Math.min(.48,moisture(tile)*cfg.pickup+(tile?.terrain==="MUD"?.06:0)+sandBonus);
   }
@@ -50,7 +51,7 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
     for(let i=0;i<Math.max(1,Number(maxSteps||CFG.MAX_STEPS));i++){
       const next=downhill(map,current,visited,material);if(!next)break;
       current=next.tile;visited.add(key(current.x,current.y));
-      const pickup=pickupFor(current,material);carried+=pickup;
+      const pickup=pickupFor(current,material,map);carried+=pickup;
       path.push({x:current.x,y:current.y,elevation:elevation(current),drop:next.drop,pickup:clean(pickup),resistance:clean(next.resistance)});
     }
     return{material,initialMass:clean(baseMass),mass:clean(carried),path,end:current};
@@ -82,6 +83,8 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
   }
   function applySoilSurface(tile,erosion,deposition,events,source){
     const impact=erosion+deposition,before=tile.terrain;if(impact<=.025)return;
+    if(deposition>=.14&&!TerrainMaterial.hasSoil(tile))globalThis.HydrologyEngine.setGroundMaterial(tile,"SOIL",events,source);
+    if(!TerrainMaterial.hasSoil(tile))return;
     if(tile.terrain==="WATER")tile.dryTerrain=deposition>=.14?"MUD":(tile.dryTerrain||"PLAIN");
     else if(tile.terrain==="PLAIN"||tile.terrain==="FOREST"){tile.terrain="MUD";if(before==="FOREST")tile.vegetation=0;}
     else if(tile.terrain==="SAND"&&deposition>=.18)tile.terrain="MUD";
@@ -90,14 +93,14 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
     tile.massFlowResidue=clean(Number(tile.massFlowResidue||0)+impact);
     markTerrainChange(tile,before,events,source,MATERIAL.SOIL);
   }
-  function applyRockSurface(tile,erosion,deposition,events,source,material){
+  function applyRockSurface(tile,erosion,deposition,events,source,material,map){
     const impact=erosion+deposition;if(impact<=.025)return;
     const before=tile.terrain;
-    tile.rockMass=clean(Math.max(0,rockMass(tile)-erosion*.55+deposition*.8));
+    tile.rockMass=clean(Math.max(0,rockMass(tile,map)-erosion*.55+deposition*.8));
     tile.debrisMass=clean(Number(tile.debrisMass||0)+deposition*.95+erosion*.15);
-    if(tile.debrisMass>=.28)tile.material="ROCK";
-    if(before==="FOREST"&&impact>=.18){tile.terrain="PLAIN";tile.vegetation=0;}
-    if(tile.terrain!=="WATER"&&tile.terrain!=="WALL"&&deposition>=.22&&tile.debrisMass>=.35)tile.terrain="HIGH_GROUND";
+    if(tile.debrisMass>=.28&&TerrainMaterial.of(tile)!=="ROCK")globalThis.HydrologyEngine.setGroundMaterial(tile,"ROCK",events,source);
+    if(before==="FOREST"&&impact>=.18){if(tile.terrain==="WATER")tile.dryTerrain="PLAIN";else tile.terrain="PLAIN";tile.vegetation=0;}
+    // Rock deposition changes material, not the tactical altitude classification.
     tile.massFlowResidue=clean(Number(tile.massFlowResidue||0)+impact);
     markTerrainChange(tile,before,events,source,material);
   }
@@ -110,13 +113,13 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
     for(let i=0;i<length;i++){
       const tile=tiles[i],node=flow.path[i],baseErosion=budget*erosionWeights[i],erosion=baseErosion*erosionFactor(map,tile,flow.material),deposition=budget*depositWeights[i],beforeElevation=elevation(tile),beforeTerrain=tile.terrain;
       if(i>0&&Number(node?.pickup||0)>0){
-        if(flow.material===MATERIAL.ROCK||flow.material===MATERIAL.DEBRIS)tile.rockMass=clean(Math.max(0,rockMass(tile)-Number(node.pickup)));
+        if(flow.material===MATERIAL.ROCK||flow.material===MATERIAL.DEBRIS)tile.rockMass=clean(Math.max(0,rockMass(tile,map)-Number(node.pickup)));
         else if(flow.material===MATERIAL.SOIL)tile.soilMoisture=clean(Math.max(0,moisture(tile)-Number(node.pickup)*.45));
       }
       const delta=deposition-erosion;
       if(Math.abs(delta)>.0005)tile.elevation=round(beforeElevation+delta);
       if(flow.material===MATERIAL.SOIL)applySoilSurface(tile,erosion,deposition,events,source);
-      else applyRockSurface(tile,erosion,deposition,events,source,flow.material);
+      else applyRockSurface(tile,erosion,deposition,events,source,flow.material,map);
       markElevation(tile,beforeElevation,events,source,flow.material,erosion,deposition);
       if(Math.abs(elevation(tile)-beforeElevation)>.0005)elevationChanges++;
       if(tile.terrain!==beforeTerrain)terrainChanges++;
