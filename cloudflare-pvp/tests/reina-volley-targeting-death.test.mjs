@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {TacticalEngine} from '../../js/tactical-engine.js';
 const src=name=>readFileSync(new URL('../../js/'+name,import.meta.url),'utf8');
 
 function pickerFixture(){
@@ -105,10 +106,11 @@ function runActualVolleyMenu(aim,{legal=true,usable=true}={}){
   assert.ok(start>0&&end>start,'canonical UI must expose separated selection / confirmation');
   const actions=[],calls={cast:0,back:0,renders:0};
   const ctx={mode:'map-target',selectedSkill:{id:'reina_command_shot',name:'集團齊射',rangerVolley:true},
-    TacticalEngine:{isAreaAimSkill:()=>true},actionController:{aimedAreaTiles:()=>[{x:3,y:1}]},
-    selected:{id:'reina',acted:false,waited:false},pendingAreaAim:aim,Math,Number,
+    TacticalEngine:{...TacticalEngine,isAreaAimSkill:()=>true},actionController:{aimedAreaTiles:()=>[{x:3,y:1}]},
+    selected:{id:'reina',x:1,y:1,facing:'E',acted:false,waited:false},pendingAreaAim:aim,Math,Number,
     canUseSkill:()=>usable,mapTargetTiles:()=>legal?[{x:3,y:1}]:[],
     render:()=>calls.renders++,executeMapSkill:()=>calls.cast++,backFromTargeting:()=>calls.back++,
+    commandMenuUI:{heading:label=>actions.push({label,informational:true})},
     addActionButton:(label,onClick,disabled=false)=>actions.push({label,onClick,disabled})};
   vm.runInNewContext('function run(){\n'+source.slice(start,end)+'\n};run()',ctx);
   return {actions,calls,getAim:()=>ctx.pendingAreaAim,invalidate:()=>{legal=false;}};
@@ -163,4 +165,11 @@ test('only visible, living units get a collider; all others vanish on next sync'
   assert.equal(picker.unitHits.has('visible'),true);
   assert.equal(picker.unitHits.has('dead'),false);
   picker.sync({map,units:[]});assert.equal(picker.unitHits.size,0);
+});
+
+test('selecting area skill automatically seeds its legal aim and never casts until confirmation',()=>{
+  const u=runActualVolleyMenu(null);
+  assert.deepEqual(JSON.parse(JSON.stringify(u.getAim())),{x:3,y:1});
+  assert.equal(u.calls.cast,0);assert.ok(u.actions.some(a=>a.label.includes('拖曳橘色範圍')));
+  assert.ok(u.actions.some(a=>a.label.startsWith('確認集團齊射')));
 });

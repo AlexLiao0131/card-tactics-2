@@ -575,3 +575,23 @@ test('native PVP bridge forwards one revision event once, not an unseen enemy at
   assert.equal(presentationEvents.length,2);
  }finally{f.restore()}
 });
+
+test('server-certified area skill auto-seeds closest forward aim, projects center and footprint, sends only confirmed center',()=>{
+ const f=fixture();try{
+  const s={id:'viola_firestorm',name:'火風暴'},legal=[{x:1,y:3},{x:3,y:3},{x:4,y:3}];
+  const aim={type:'CAST_MAP_SKILL',skillId:s.id,tiles:legal,actionableTiles:legal,areaFootprints:{'1,3':[{x:1,y:3}], '3,3':[{x:3,y:3},{x:3,y:4}], '4,3':[{x:4,y:3},{x:5,y:3}]}};
+  const caster={...soldier,facing:'E',mapSkills:[s],aimOptions:[aim]};
+  f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',10,[caster]));clickActor(f);
+  const frames=[];f.ui.serverSnapshot={revision:10,map:{id:'map',width:10,height:10,tiles:[...legal,{x:3,y:4},{x:5,y:3}]},units:[caster],presentation:{}};
+  f.ui.bridge={renderer:{syncInteractionPresentation(view){frames.push(view);return true;}}};
+  f.ui.targetAction('CAST_MAP_SKILL',{unitId:caster.id,skillId:s.id});
+  assert.deepEqual(f.ui.areaAim,{x:3,y:3});assert.deepEqual(f.commands,[]);
+  const first=frames.at(-1);assert.deepEqual(first.presentation.aimCenter,{x:3,y:3});
+  assert.ok(first.map.tiles.find(t=>t.x===3&&t.y===3).aimCenter);assert.ok(first.map.tiles.find(t=>t.x===3&&t.y===4).aimPreview);
+  assert.ok(first.map.tiles.find(t=>t.x===1&&t.y===3).aimLegal);
+  assert.equal(f.ui.tilePicked({seat:0,x:9,y:9,aimOnly:true}),false);assert.deepEqual(f.ui.areaAim,{x:3,y:3});
+  assert.equal(f.ui.tilePicked({seat:0,x:4,y:3,aimOnly:true}),true);assert.deepEqual(f.commands,[]);
+  f.click('確認火風暴｜影響 2 格');assert.deepEqual(f.commands,[{type:'CAST_MAP_SKILL',unitId:'unit1',skillId:s.id,x:4,y:3}]);
+  assert.equal(f.ui.areaAim,null);assert.equal(frames.at(-1).presentation.areaAimActive,false);
+ }finally{f.restore()}
+});

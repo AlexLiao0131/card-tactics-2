@@ -146,3 +146,13 @@ test('換地圖或取消長按不會保留舊戰場的預覽',()=>{
  x.clearSkillHoldPreview();
  assert.equal(x.history.length,1,'old map must not be redrawn');
 });
+
+test('old hold preview never replaces active draggable area frame',()=>{
+ const {x,original}=paintHarness();
+ assert.equal(x.showSkillHoldPreview({mapId:'test-map',kind:'ALLY',tiles:[{x:1,y:2}]}),true);
+ const aimed={...original,presentation:{areaAimActive:true,aimCenter:{x:1,y:2}}};
+ assert.equal(x.syncInteractionPresentation(aimed),true);
+ assert.equal(x.history.at(-1),aimed);assert.equal(x.skillHoldPreview,null);
+ assert.equal(x.showSkillHoldPreview({mapId:'test-map',kind:'ALLY',tiles:[{x:1,y:2}]}),false);
+ assert.equal(x.history.at(-1),aimed);
+});

@@ -56,16 +56,37 @@ test('shared area geometry matches existing actual fan, tsunami and circle calcu
  assert.deepEqual(TacticalEngine.areaImpactTiles(world.map,v,center,wave),EnvironmentEngine.planTsunami(world.map,v,center,{width:5,surfaceRise:1.25}).cells);
  assert.deepEqual(TacticalEngine.areaImpactTiles(world.map,v,center,skill('viola_firestorm')),TacticalEngine.aoeTiles(world.map,center,2));
 }));
-test('aim drag updates only read-only preview and release does not cast or pan',()=>{
+test('aim drag only owns gestures started inside footprint, retains offset, outside pans, taps are read-only',()=>{
  const save={window:globalThis.window,document:globalThis.document,CustomEvent:globalThis.CustomEvent};
- const node={addEventListener(){},removeEventListener(){},dispatchEvent(){}};globalThis.window=node;globalThis.document=node;globalThis.CustomEvent=class{};
+ const events=[];const node={addEventListener(){},removeEventListener(){},dispatchEvent(e){events.push(e.type)}};globalThis.window=node;globalThis.document=node;globalThis.CustomEvent=class{constructor(type){this.type=type}};
  const canvas={...node,style:{},getBoundingClientRect:()=>({left:10,top:20}),setPointerCapture(){},releasePointerCapture(){}};
- const picks=[];let pans=0,active=true;
- const ctl=new BattleInputController(canvas,{camera:{panByPixels(){pans++}},picker:{pickCurrent:(x,y)=>({x:Math.round(x/10),y:Math.round(y/10)})},onTilePicked:(x,y,opts)=>picks.push({x,y,opts}),canAimDrag:()=>active});
- const ev=(x,y)=>({clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true,button:0,preventDefault(){}});
- try{ctl.onPointerDown(ev(20,30));ctl.onPointerMove(ev(50,60));ctl.onPointerMove(ev(50,60));ctl.onPointerUp(ev(50,60));assert.deepEqual(picks,[{x:4,y:4,opts:{aimOnly:true}}]);assert.equal(pans,0);
- ctl.onPointerDown(ev(20,30));active=false;ctl.onPointerUp(ev(20,30));assert.equal(picks.length,1);
+ const picks=[];let pans=0,active=true,center={x:2,y:2};
+ const ctl=new BattleInputController(canvas,{camera:{panByPixels(){pans++},getViewState:()=>({zoom:1}),setZoom(){},rotate(){}},picker:{pickCurrent:(x,y)=>({x:Math.round(x/10),y:Math.round(y/10)})},onTilePicked:(x,y,opts)=>{picks.push({x,y,opts});if(opts?.aimOnly)center={x,y}},getAreaAim:()=>active?{center,contains:(x,y)=>Math.abs(center.x-x)+Math.abs(center.y-y)<=1}:null});
+ const ev=(x,y,id=1)=>({clientX:x,clientY:y,pointerId:id,pointerType:'touch',isPrimary:id===1,button:0,preventDefault(){}});
+ try{
+  // Finger begins on the left edge, not on the center. No HUD timer is armed.
+  ctl.onPointerDown(ev(20,40));assert.equal(ctl.gesture.type,'AIM');assert.equal(ctl.holdTimer,null);
+  ctl.onPointerMove(ev(50,70));ctl.onPointerMove(ev(50,70));ctl.onPointerUp(ev(50,70));
+  assert.deepEqual(picks,[{x:5,y:5,opts:{aimOnly:true}}]);assert.equal(pans,0);
+  // A new gesture outside the orange area pans; dragging across it must not steal ownership.
+  ctl.onPointerDown(ev(20,30));assert.equal(ctl.gesture.type,'PAN');assert.notEqual(ctl.holdTimer,null);
+  ctl.onPointerMove(ev(60,70));ctl.onPointerUp(ev(60,70));assert.equal(pans,1);assert.equal(picks.length,1);
+  // Tap outside relocates (authority still validates); releasing on orange is not a cast.
+  ctl.onPointerDown(ev(30,40));ctl.onPointerUp(ev(30,40));assert.deepEqual(picks.at(-1),{x:2,y:2,opts:{aimOnly:true}});
+  ctl.onPointerDown(ev(30,40));ctl.onPointerUp(ev(30,40));assert.equal(picks.length,2);
+  // A second finger is always a camera gesture; cancelling is safe.
+  ctl.onPointerDown(ev(30,40));ctl.onPointerDown(ev(60,70,2));assert.equal(ctl.gesture.type,'MULTI_PENDING');
+  ctl.onPointerMove(ev(90,90,2));ctl.onPointerUp(ev(90,90,2));ctl.onPointerUp(ev(30,40));assert.equal(picks.length,2);
+  ctl.onPointerDown(ev(30,40));active=false;ctl.onPointerUp(ev(30,40));assert.equal(picks.length,2);
+  ctl.onPointerDown(ev(30,40));assert.equal(ctl.gesture.type,'PAN');assert.notEqual(ctl.holdTimer,null);ctl.onPointerCancel(ev(30,40));assert.equal(ctl.pointers.size,0);
  }finally{ctl.dispose();Object.assign(globalThis,save);}
+});
+test('initial aim is deterministic, forward-nearest, read only, falls back to legal nonempty footprint',()=>{
+ const actor={x:3,y:3,facing:'E',team:'P'},legal=[{x:3,y:2},{x:2,y:3},{x:5,y:3},{x:4,y:3},{x:4,y:4}];
+ const old=JSON.stringify({actor,legal});assert.deepEqual(TacticalEngine.defaultAreaAim(actor,legal),{x:4,y:3});
+ assert.deepEqual(TacticalEngine.defaultAreaAim(actor,legal,t=>t.x!==4),{x:5,y:3});
+ assert.deepEqual(TacticalEngine.defaultAreaAim(actor,legal.slice(0,2)),{x:3,y:2});
+ assert.equal(TacticalEngine.defaultAreaAim(actor,legal,()=>false),null);assert.equal(JSON.stringify({actor,legal}),old);
 });
 test('persistent hellfire meshes follow visible effect and dispose on cleanse, expiry or concealment',()=>{
  const original=globalThis.BABYLON;class Vec{set(x,y,z){Object.assign(this,{x,y,z})}}class Node{constructor(){this.position=new Vec();this.scaling=new Vec();this.rotation=new Vec();}dispose(){this.disposed=true;}}
@@ -86,3 +107,12 @@ test('Worker aim projection sends firestorm footprint without spending a soul st
  assert.deepEqual(option.areaFootprints[`${center.x},${center.y}`],TacticalEngine.aoeTiles(world.map,center,2).map(t=>({x:t.x,y:t.y})));
  assert.equal(v.resources.soulStone.value,3);assert.equal(v.acted,false);
 }));
+
+test('center crosshair and legal blue tiles are separate existing highlights and clear when aim ends',async()=>{
+ const {HighlightRenderer}=await import('../../js/highlight-renderer.js');
+ const r=Object.create(HighlightRenderer.prototype);r.terrain={};r.environment={publishedCoverGeometry:()=>[]};r.dynamic=new Map();r.fields=new Map();r.areas=new Map();r.materials={aimPreview:{},aimLegal:{},aimCenter:{}};
+ r.indicatorGeometry=()=>({positions:[0,1,0,1,1,0,0,1,1],indices:[0,1,2]});r.syncMesh=(prev,name,parts,material,order)=>({name,parts,order,dispose(){this.disposed=true}});
+ const tiles=[{x:1,y:1,aimPreview:true,aimCenter:true,aimLegal:true},{x:2,y:1,aimLegal:true,attackable:true}];r.sync({map:{tiles}});
+ assert.ok(r.dynamic.has('aimPreview'));assert.ok(r.dynamic.has('aimLegal'));const center=r.dynamic.get('aimCenter');assert.ok(center);assert.equal(center.parts.length,2);assert.ok(center.order>r.dynamic.get('aimPreview').order);assert.equal(center.renderingGroupId,1);
+ r.sync({map:{tiles:[{x:1,y:1},{x:2,y:1}]}});assert.equal(r.dynamic.size,0);assert.equal(center.disposed,true);
+});
