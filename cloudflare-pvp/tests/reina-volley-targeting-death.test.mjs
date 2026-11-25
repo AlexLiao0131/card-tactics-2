@@ -107,12 +107,13 @@ function runActualVolleyMenu(aim,{legal=true,usable=true}={}){
   const actions=[],calls={cast:0,back:0,renders:0};
   const ctx={mode:'map-target',selectedSkill:{id:'reina_command_shot',name:'集團齊射',rangerVolley:true},
     TacticalEngine:{...TacticalEngine,isAreaAimSkill:()=>true},actionController:{aimedAreaTiles:()=>[{x:3,y:1}]},
-    selected:{id:'reina',x:1,y:1,facing:'E',acted:false,waited:false},pendingAreaAim:aim,Math,Number,
+    selected:{id:'reina',x:1,y:1,facing:'E',acted:false,waited:false},pendingAreaAim:aim,areaAimCache:null,areaAimConfirmButton:null,renderRevision:1,Math,Number,
     canUseSkill:()=>usable,mapTargetTiles:()=>legal?[{x:3,y:1}]:[],
     render:()=>calls.renders++,executeMapSkill:()=>calls.cast++,backFromTargeting:()=>calls.back++,
     commandMenuUI:{heading:label=>actions.push({label,informational:true})},
     addActionButton:(label,onClick,disabled=false)=>actions.push({label,onClick,disabled})};
-  vm.runInNewContext('function run(){\n'+source.slice(start,end)+'\n};run()',ctx);
+  const cache=source.slice(source.indexOf('  function areaAimData('),source.indexOf('  function presentationState()'));
+  vm.runInNewContext(cache+'\nfunction run(){\n'+source.slice(start,end)+'\n};run()',ctx);
   return {actions,calls,getAim:()=>ctx.pendingAreaAim,invalidate:()=>{legal=false;}};
 }
 
@@ -172,4 +173,26 @@ test('selecting area skill automatically seeds its legal aim and never casts unt
   assert.deepEqual(JSON.parse(JSON.stringify(u.getAim())),{x:3,y:1});
   assert.equal(u.calls.cast,0);assert.ok(u.actions.some(a=>a.label.includes('拖曳橘色範圍')));
   assert.ok(u.actions.some(a=>a.label.startsWith('確認集團齊射')));
+});
+
+test('local aim drag caches canonical legal tiles and footprints, reuses menu, and confirms live center',()=>{
+ const source=src('tactical-game.js'),cache=source.slice(source.indexOf('  function areaAimData('),source.indexOf('  function presentationState()'));
+ const move=source.slice(source.indexOf('  function aimBattleTile('),source.indexOf('  function clickBattleTile('));
+ const start=source.indexOf('      if(mode==="map-target"&&TacticalEngine.isAreaAimSkill(selectedSkill)){'),end=source.indexOf('      if(actionController.enchantmentFollowup()',start);
+ const tiles=[{x:3,y:1},{x:4,y:1},{x:5,y:1}],map={id:'map',tiles};
+ const counts={legal:0,footprints:0,render:0},buttons=[],queued=[],cast=[];
+ let legal=tiles;
+ const ctx={map,mode:'map-target',phase:'PLAYER',PHASE:{PLAYER:'PLAYER'},matchResult:null,engagementPlayback:null,renderRevision:1,areaAimCache:null,areaAimConfirmButton:null,pendingAreaAim:null,
+   selected:{id:'reina',alive:true,x:1,y:1,facing:'E',acted:false,waited:false},selectedSkill:{id:'reina_command_shot',name:'集團齊射'},
+   TacticalEngine:{...TacticalEngine,isAreaAimSkill:()=>true},actionController:{aimedAreaTiles:(_u,_s,t)=>{counts.footprints++;return [t]}},mapTargetTiles:()=>{counts.legal++;return legal;},canUseSkill:()=>true,
+   render:()=>counts.render++,executeMapSkill:(_a,t)=>cast.push(t),backFromTargeting:()=>{},commandMenuUI:{heading(){}},
+   addActionButton:(label,fn)=>{const b={textContent:label,onClick:fn};buttons.push(b);return b;},CardTacticsRenderer:{queueAreaAim:data=>queued.push(data)}};
+ vm.createContext(ctx);vm.runInContext(cache+'\n'+move+'\nfunction run(){\n'+source.slice(start,end)+'\n};run()',ctx);
+ const button=buttons[0];assert.equal(counts.legal,1);assert.equal(ctx.pendingAreaAim.x,3);
+ for(let i=0;i<30;i++){ctx.aimBattleTile(4,1);ctx.aimBattleTile(5,1);ctx.aimBattleTile(3,1);}
+ assert.equal(counts.legal,1);assert.equal(counts.footprints,3);assert.equal(counts.render,0);assert.equal(buttons.length,2);assert.equal(cast.length,0);
+ assert.equal(ctx.aimBattleTile(6,1),false);ctx.aimBattleTile(5,1);assert.equal(queued.at(-1).center.x,5);
+ button.onClick();button.onClick();assert.deepEqual(cast,[tiles[2]]);assert.equal(counts.legal,2);
+ // A change to the actual legal targets after preview cannot consume resources.
+ ctx.renderRevision++;ctx.areaAimCache=null;ctx.run();ctx.aimBattleTile(4,1);legal=[tiles[0]];buttons.at(-2).onClick();assert.equal(cast.length,1);assert.equal(counts.render,1);
 });

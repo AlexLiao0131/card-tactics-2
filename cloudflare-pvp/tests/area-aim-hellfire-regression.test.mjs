@@ -116,3 +116,38 @@ test('center crosshair and legal blue tiles are separate existing highlights and
  assert.ok(r.dynamic.has('aimPreview'));assert.ok(r.dynamic.has('aimLegal'));const center=r.dynamic.get('aimCenter');assert.ok(center);assert.equal(center.parts.length,2);assert.ok(center.order>r.dynamic.get('aimPreview').order);assert.equal(center.renderingGroupId,1);
  r.sync({map:{tiles:[{x:1,y:1},{x:2,y:1}]}});assert.equal(r.dynamic.size,0);assert.equal(center.disposed,true);
 });
+
+test('moving aim never rebuilds blue range, deployment or persistent field meshes; surface geometry memoizes revisits',async()=>{
+ const {HighlightRenderer}=await import('../../js/highlight-renderer.js');
+ const r=Object.create(HighlightRenderer.prototype);r.terrain={surfaceResolver:{renderedSurfaceGeometryRevision:1}};r.environment={publishedCoverGeometry:()=>[],publishedCoverRevision:1};r.dynamic=new Map();r.fields=new Map();r.areas=new Map();r.materials={aimPreview:{},aimLegal:{},aimCenter:{},PLAYER:{},damage:{}};
+ let geometryCalls=0;const updates=[];r.indicatorGeometry=()=>{geometryCalls++;return{positions:[0,1,0,1,1,0,0,1,1],indices:[0,1,2]}};
+ r.syncMesh=(prev,name,parts,material,order)=>{updates.push(name);return Object.assign(prev||{dispose(){this.disposed=true}},{name,parts,order});};
+ const view=x=>({map:{id:'map',tiles:[{x:0,y:0,deploymentAreaOwner:'PLAYER',activeFields:[{kind:'damage'}]},{x:1,y:0,aimLegal:true,aimPreview:x===1,aimCenter:x===1},{x:2,y:0,aimLegal:true,aimPreview:x===2,aimCenter:x===2}]}});
+ r.sync(view(1));const blue=r.dynamic.get('aimLegal'),deploy=r.areas.get('PLAYER'),field=r.fields.get('damage');updates.length=0;
+ r.syncAim(view(2));const afterFirstMove=geometryCalls;r.syncAim(view(1));r.syncAim(view(2));
+ assert.deepEqual(new Set(updates),new Set(['hl-aimPreview','hl-aimCenter']));assert.equal(geometryCalls,afterFirstMove);
+ assert.equal(r.dynamic.get('aimLegal'),blue);assert.equal(r.areas.get('PLAYER'),deploy);assert.equal(r.fields.get('damage'),field);
+ r.environment.publishedCoverRevision++;r.sync(view(2));assert.ok(geometryCalls>afterFirstMove);
+ r.sync({map:{id:'map',tiles:[]}});assert.equal(r.dynamic.size,0);assert.equal(r.fields.size,0);assert.equal(r.areas.size,0);
+});
+
+test('render frame consumes only the newest aim and never republishes world or HUD',async()=>{
+ const {BabylonRenderer}=await import('../../js/babylon-renderer.js');
+ const frames=[],r=Object.create(BabylonRenderer.prototype);r.highlights={syncAim:view=>frames.push(view)};
+ const tile={x:0,y:0,activeFields:[{kind:'heal'}]},units=[{id:'u'}];
+ const state={revision:4,map:{id:'map',tiles:[tile,{x:1,y:0,aimCenter:true,aimPreview:true,aimLegal:true},{x:2,y:0,aimLegal:true},{x:3,y:0,aimLegal:true}]},presentation:{areaAimActive:true,aimCenter:{x:1,y:0}},units};r.lastState=state;
+ for(const x of [2,1,3])assert.equal(r.queueAreaAim({mapId:'map',revision:4,center:{x,y:0},cells:[{x,y:0}]}),true);
+ assert.equal(frames.length,0);assert.equal(r.flushAreaAim(),true);assert.equal(frames.length,1);assert.equal(r.lastState.presentation.aimCenter.x,3);
+ assert.equal(r.lastState.units,units);assert.equal(r.lastState.map.tiles[0],tile);assert.equal(r.lastState.map.tiles[1].aimPreview,false);assert.equal(r.lastState.map.tiles[1].aimLegal,true);assert.equal(r.flushAreaAim(),false);
+ assert.equal(r.queueAreaAim({mapId:'map',revision:4,center:{x:2,y:0},cells:[{x:2,y:0}]}),true);r.lastState={...state,revision:5};assert.equal(r.flushAreaAim(),false);assert.equal(frames.length,1);
+});
+
+test('pointer burst defers ray picking until render frame and releases the actual final coordinate',()=>{
+ const save={window:globalThis.window,document:globalThis.document,CustomEvent:globalThis.CustomEvent};const node={addEventListener(){},removeEventListener(){},dispatchEvent(){}};globalThis.window=node;globalThis.document=node;globalThis.CustomEvent=class{};
+ const canvas={...node,style:{},getBoundingClientRect:()=>({left:0,top:0}),setPointerCapture(){},releasePointerCapture(){}};
+ let raycasts=0;const picks=[],ctl=new BattleInputController(canvas,{camera:{getViewState:()=>({zoom:1})},picker:{pickCurrent:(x,y)=>{raycasts++;return{x:Math.round(x/10),y:Math.round(y/10)}}},onTilePicked:(x,y)=>picks.push([x,y]),getAreaAim:()=>({center:{x:2,y:2},contains:()=>true})});
+ const ev=(x,y)=>({clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true,button:0,preventDefault(){}});
+ try{ctl.onPointerDown(ev(20,20));for(let x=40;x<=70;x++)ctl.onPointerMove(ev(x,20));assert.equal(raycasts,1);assert.equal(picks.length,0);
+ ctl.flushAimDrag();assert.equal(raycasts,2);assert.deepEqual(picks,[[7,2]]);ctl.onPointerMove(ev(80,20));ctl.onPointerUp(ev(90,20));assert.equal(raycasts,3);assert.deepEqual(picks,[[7,2],[9,2]]);assert.equal(ctl.flushAimDrag(),false);
+ }finally{ctl.dispose();Object.assign(globalThis,save);}
+});

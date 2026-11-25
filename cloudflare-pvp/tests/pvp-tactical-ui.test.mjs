@@ -595,3 +595,15 @@ test('server-certified area skill auto-seeds closest forward aim, projects cente
   assert.equal(f.ui.areaAim,null);assert.equal(frames.at(-1).presentation.areaAimActive,false);
  }finally{f.restore()}
 });
+
+test('PvP drag updates only existing confirm label and queues certified area without rerendering selection',()=>{
+ const f=fixture();try{
+  const s={id:'viola_firestorm',name:'火風暴'},legal=[{x:3,y:3},{x:4,y:3}],aim={type:'CAST_MAP_SKILL',skillId:s.id,tiles:legal,actionableTiles:legal,areaFootprints:{'3,3':[{x:3,y:3}],'4,3':[{x:4,y:3},{x:5,y:3}]}},caster={...soldier,facing:'E',mapSkills:[s],aimOptions:[aim]};
+  f.ui.receiveMatch(game(0,'PLAYER_TACTICAL_PHASE',10,[caster]));clickActor(f);
+  const frames=[],queued=[];f.ui.serverSnapshot={revision:10,map:{id:'map',width:10,height:10,tiles:legal},units:[caster],presentation:{}};
+  f.ui.bridge={renderer:{syncInteractionPresentation(view){frames.push(view);return true;},queueAreaAim(data){queued.push(data);return true;}}};
+  f.ui.targetAction('CAST_MAP_SKILL',{unitId:caster.id,skillId:s.id});const btn=f.button('確認火風暴｜影響 1 格'),count=frames.length;
+  assert.equal(f.ui.tilePicked({seat:0,x:4,y:3,aimOnly:true}),true);assert.equal(frames.length,count);assert.equal(f.button('確認火風暴｜影響 2 格'),btn);assert.equal(queued.length,1);assert.deepEqual(f.commands,[]);
+  btn.click();assert.deepEqual(f.commands,[{type:'CAST_MAP_SKILL',unitId:caster.id,skillId:s.id,x:4,y:3}]);
+ }finally{f.restore()}
+});
