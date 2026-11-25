@@ -148,3 +148,44 @@ test('正式 UnitRenderer.sync 依變身快照移除舊模型、生成新模型�
   assert(pulse.root.disposed===true);
   assert(world.meshes.some(m=>m.name.startsWith('form-moon-ring-')));
 });
+
+// All registered human figures use the same real primitive generator. Reuse
+// the Babylon stand-in above rather than introducing a second renderer.
+test('all FIGURE weapons are opt-in; authored bow variants and side arms are preserved',()=>{
+  for(const [visualId,visual] of Object.entries(globalThis.VISUALS.characters)){
+    if(visual.battle?.kind!=='FIGURE')continue;
+    const {renderer,world}=makeRenderer();
+    const unit={id:'weapon-test',visualId};
+    const definition=renderer.battleVisual(unit),f=definition.figure;
+    const entry=renderer.createFigure(unit,definition);
+    const names=world.meshes.map(m=>m.name);
+    const has=pattern=>names.some(n=>pattern.test(n));
+    assert.equal(has(/^figure-bow-/),f.bow===true&&!f.fieldBow&&!f.holyBow,`${visualId}: recurve bow`);
+    assert.equal(has(/^figure-field-bow-/),!!f.fieldBow,`${visualId}: field bow`);
+    assert.equal(has(/^figure-holy-bow-/),!!f.holyBow,`${visualId}: holy bow`);
+    assert.equal(has(/^figure-(?:quiver-|arrow-|fletching-)/),f.quiver===true,`${visualId}: quiver and arrows`);
+    assert.equal(has(/^figure-side-(?:sword|guard|pommel)-/),f.sideSword===true,`${visualId}: side sword`);
+    assert.equal(has(/^figure-arcane-staff-/),!!f.arcaneStaff,`${visualId}: staff`);
+    assert.equal(entry.kind,'FIGURE');
+  }
+});
+test('Cassandra keeps her actual staff and CAST animation, without invented secondary weapons',()=>{
+  const {renderer,world}=makeRenderer();
+  const unit={id:'cassandra-weapon',visualId:'cassandra_default'};
+  const definition=renderer.battleVisual(unit);
+  const entry=renderer.createFigure(unit,definition);
+  const staff=world.meshes.find(m=>m.name.startsWith('figure-arcane-staff-shaft-'));
+  assert(staff);assert.equal(staff.parent,entry.figureParts.weapon);
+  assert.equal(definition.animations.CAST.procedural,'CAST');
+  assert(!world.meshes.some(m=>/^figure-(?:bow-|field-bow-|holy-bow-|quiver-|arrow-|fletching-|side-sword-|side-guard-|side-pommel-)/.test(m.name)));
+});
+test('unspecified optional weapons are absent; specialized holy bow never duplicates the ordinary bow',()=>{
+  const {renderer,world}=makeRenderer();
+  const def={kind:'FIGURE',height:1.7,figure:{}};
+  renderer.createFigure({id:'unarmed',visualId:'unarmed-regression'},def);
+  assert(!world.meshes.some(m=>/^figure-(?:bow-|quiver-|arrow-|fletching-|side-sword-)/.test(m.name)));
+  const next=makeRenderer();
+  next.renderer.createFigure({id:'holy',visualId:'holy-regression'},{...def,figure:{bow:true,holyBow:true}});
+  assert(next.world.meshes.some(m=>m.name.startsWith('figure-holy-bow-')));
+  assert(!next.world.meshes.some(m=>m.name.startsWith('figure-bow-')));
+});
