@@ -6,6 +6,8 @@
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import {BattleCoreCaptureController} from '../../js/battle-core-capture-controller.js';
 import {SkillDatabase} from '../../js/skill-database.js';
+import {sanctuaryFootprint} from '../../js/battle-area-field-engine.js';
+import {canonicalAreaFieldSkillOptions} from './pvp-field-controller.mjs';
 import {canonicalDirectAttackSkillOptions} from './pvp-headless-engagement.mjs';
 import {canonicalTargetPlan} from './pvp-headless-target-plan.mjs';
 import {canonicalDirectEffectSkillOptions} from './pvp-headless-effect-skills.mjs';
@@ -37,7 +39,7 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
     combatTargets:()=>units.filter(other=>other.alive),
     targetType:skill=>engine.unitRuntime.targetType(skill),
     canUseSkill:(u,s)=>engine.unitRuntime.canUseSkill(u,s),
-    unitAt,coreAt,
+    unitAt,coreAt,sanctuaryTiles:(center,radius)=>sanctuaryFootprint(map,center,radius),
     canTraverseMoveLine:(u,tile)=>TacticalEngine.canTraverseMoveLine(map,u,tile),
     lineTiles:(u,tile)=>TacticalEngine.lineTiles(map,u,tile)
   });
@@ -63,7 +65,7 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
     push('DECLARE_ATTACK',skill,controller.targetRangeTiles(unit,skill),
       {targetUnits:true,planned:true,includeCore:coreSkills.has(skill.id)});
   for(const skill of canonicalDirectEffectSkillOptions(unit,engine)){
-    if(skill.target==='SELF')continue;
+    if(skill.target==='SELF'){if(TacticalEngine.isFixedAreaSkill(skill)){const p=controller.previewSkillArea(unit,skill);const aim=push('CAST_EFFECT_SKILL',skill,p?.tiles||[]);if(aim)aim.fixedArea=coordinates(p?.tiles);}continue;}
     const aim=push('CAST_EFFECT_SKILL',skill,controller.targetRangeTiles(unit,skill),
       {targetUnits:true,planned:true});
     if(!aim)continue;
@@ -82,8 +84,16 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
       aim.actionableTiles=[...new Map([...aim.actionableTiles,...walls].map(t=>[key(t),t])).values()];
     }
   }
-  for(const skill of canonicalImmediateMapSkillOptions(unit,engine))
-    push('CAST_MAP_SKILL',skill,controller.mapTargetTiles(unit,skill),{tileAction:true});
+  for(const skill of canonicalImmediateMapSkillOptions(unit,engine)){
+    const aim=push('CAST_MAP_SKILL',skill,controller.mapTargetTiles(unit,skill),{tileAction:true});
+    if(aim&&TacticalEngine.isAreaAimSkill(skill)){
+      aim.areaFootprints=Object.fromEntries(aim.actionableTiles.map(t=>[`${t.x},${t.y}`,coordinates(controller.aimedAreaTiles(unit,skill,t,{legalTiles:aim.actionableTiles}))]));
+    }else if(aim&&TacticalEngine.isFixedAreaSkill(skill))aim.fixedArea=coordinates(controller.previewSkillArea(unit,skill)?.tiles);
+  }
+  for(const skill of canonicalAreaFieldSkillOptions(unit,engine)){
+    const cells=controller.previewSkillArea(unit,skill)?.tiles||[];
+    const aim=push('CAST_AREA_FIELD',skill,cells);if(aim)aim.fixedArea=coordinates(cells);
+  }
   for(const skill of canonicalEnvironmentContactOptions(unit,engine))
     push('CAST_ENVIRONMENT_CONTACT',skill,controller.environmentTargetTiles(unit,skill),{tileAction:true});
   for(const skill of canonicalDirectAttackSkillOptions(unit)){

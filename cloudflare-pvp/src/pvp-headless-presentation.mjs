@@ -32,7 +32,7 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
         units:game.units,round:game.round,phase:game.phase,
         cardState:game.cards[seat],enemyCardState:game.cards[1-seat],
         selected:null,selectedSkill:null,mode:'idle',renderRevision:revision,
-        smokeFields:game.fieldState?.smokeFields||[],inspectedTile:null,pendingCard:null}),
+        fieldState:game.fieldState,smokeFields:game.fieldState?.smokeFields||[],inspectedTile:null,pendingCard:null}),
       unitAt:(x,y)=>game.units.find(u=>u?.alive&&u.x===x&&u.y===y)||null,
       coreAt:(x,y)=>cores.find(c=>c.hp>0&&c.x===x&&c.y===y)||null
     };

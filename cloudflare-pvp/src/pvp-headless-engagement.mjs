@@ -212,6 +212,7 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
       results.push({role:entry.role,actorId:entry.actor.id,targetId:entry.target.id,
         skillId:entry.skill.id,damage:entry.result.damage,hit:entry.result.hit,
         crit:entry.result.crit,evadeOutcome:entry.result.evadeOutcome??null});
+      globalThis.BattleResolution?.logStatusResults?.(entry,callbacks.pushLog);
       environment.resolveWaterSkillHit(entry);
       // Weapon enchantments have their own official environmental impact
       // controller: fire-arrow blast, terrain ignition and thunder conduction.
