@@ -1291,8 +1291,9 @@ export class UnitRenderer{
       sphere("figure-angel-halo-top-gem",.060,material.gem,[0,2.10,-.075],[.8,1,.48],6,"halo");
     }
 
+    // Optional equipment is opt-in: absent visual flags never create weapons.
     // Quiver and visible arrow tips/fletching.
-    if(figure.quiver!==false){
+    if(figure.quiver===true){
       cylinder("figure-quiver",.56,.14,.18,material.leather,[.275,1.18,-.225],[0,0,-.20],6,"quiver");
       if(figure.quiverDetail){
         cylinder("figure-quiver-rim",.055,.205,.205,material.metal,[.225,1.45,-.225],[0,0,-.20],8,"quiver");
@@ -1338,7 +1339,7 @@ export class UnitRenderer{
     }
 
     // Recurve bow silhouette with a grip and taut string.
-    if(figure.bow!==false&&!figure.fieldBow){
+    if(figure.bow===true&&!figure.fieldBow&&!figure.holyBow){
       const path=[];
       for(let i=0;i<=12;i++){
         const t=i/12,y=.39+t*1.14;
@@ -1397,7 +1398,7 @@ export class UnitRenderer{
     }
 
     // Side sword and pommel, kept simple because it is secondary equipment.
-    if(figure.sideSword!==false){
+    if(figure.sideSword===true){
       box("figure-side-sword",[.065,.66,.055],material.dark,[.345,.59,-.045],[0,0,-.13],"sword");
       box("figure-side-guard",[.15,.035,.065],material.metal,[.30,.88,-.035],[0,0,-.13],"sword");
       cylinder("figure-side-pommel",.12,.055,.055,material.leather,[.27,.95,-.03],[0,0,-.13],6,"sword");
