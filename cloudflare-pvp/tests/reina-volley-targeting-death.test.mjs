@@ -100,17 +100,18 @@ test('canonical cancel leaves resources, target HP, and state untouched',()=>{
 
 function runActualVolleyMenu(aim,{legal=true,usable=true}={}){
   const source=src('tactical-game.js');
-  const start=source.indexOf('      if(mode==="map-target"&&selectedSkill.rangerVolley===true){');
-  const end=source.indexOf('      if(mode==="map-target"&&selectedSkill.fanShot){',start);
+  const start=source.indexOf('      if(mode==="map-target"&&TacticalEngine.isAreaAimSkill(selectedSkill)){');
+  const end=source.indexOf('      if(actionController.enchantmentFollowup()',start);
   assert.ok(start>0&&end>start,'canonical UI must expose separated selection / confirmation');
   const actions=[],calls={cast:0,back:0,renders:0};
-  const ctx={mode:'map-target',selectedSkill:{id:'reina_command_shot',rangerVolley:true},
-    selected:{id:'reina',acted:false,waited:false},pendingVolleyAim:aim,Math,Number,
+  const ctx={mode:'map-target',selectedSkill:{id:'reina_command_shot',name:'集團齊射',rangerVolley:true},
+    TacticalEngine:{isAreaAimSkill:()=>true},actionController:{aimedAreaTiles:()=>[{x:3,y:1}]},
+    selected:{id:'reina',acted:false,waited:false},pendingAreaAim:aim,Math,Number,
     canUseSkill:()=>usable,mapTargetTiles:()=>legal?[{x:3,y:1}]:[],
     render:()=>calls.renders++,executeMapSkill:()=>calls.cast++,backFromTargeting:()=>calls.back++,
     addActionButton:(label,onClick,disabled=false)=>actions.push({label,onClick,disabled})};
   vm.runInNewContext('function run(){\n'+source.slice(start,end)+'\n};run()',ctx);
-  return {actions,calls,getAim:()=>ctx.pendingVolleyAim};
+  return {actions,calls,getAim:()=>ctx.pendingAreaAim,invalidate:()=>{legal=false;}};
 }
 
 test('pressing Cancel never casts or consumes after choosing an aim',()=>{
@@ -122,20 +123,21 @@ test('pressing Cancel never casts or consumes after choosing an aim',()=>{
 test('a map tap only selects; confirmation commits once and clears aim',()=>{
   const u=runActualVolleyMenu({x:3,y:1});assert.equal(u.calls.cast,0);
   const confirm=u.actions.find(x=>x.label.startsWith('確認集團齊射'));assert.ok(confirm);
-  confirm.onClick();assert.equal(u.calls.cast,1);assert.equal(u.getAim(),null);
+  confirm.onClick();confirm.onClick();assert.equal(u.calls.cast,1);assert.equal(u.getAim(),null);
 });
 
 test('invalid / unavailable targets fail without spending resources',()=>{
   for(const options of [{legal:false},{usable:false}]){
     const u=runActualVolleyMenu({x:3,y:1},options);
-    u.actions.find(x=>x.label.startsWith('確認集團齊射')).onClick();
-    assert.equal(u.calls.cast,0);assert.equal(u.getAim(),null);
+    const confirm=u.actions.find(x=>x.label.startsWith('確認集團齊射'));
+    if(confirm){confirm.onClick();assert.equal(u.getAim(),null);}else assert.equal(options.legal,false);
+    assert.equal(u.calls.cast,0);
   }
 });
 
 test('map-target click assigns selected volley center but never directly casts',()=>{
   const s=src('tactical-game.js');
-  assert.match(s,/else if\(selectedSkill\.rangerVolley===true\)\{pendingVolleyAim=tile;render\(\);\}/);
+  assert.match(s,/if\(TacticalEngine\.isAreaAimSkill\(selectedSkill\)\)\{aimBattleTile\(tile.x,tile.y\);\}/);
   assert.doesNotMatch(s,/if\(selectedSkill\.rangerVolley===true\)executeMapSkill\(/);
 });
 
