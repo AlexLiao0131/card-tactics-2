@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {HydrologyEngine as canonicalHydrology} from '../../js/hydrology-engine.js';
 const source=readFileSync(new URL('../../js/tactical-action-controller.js',import.meta.url),'utf8').replace(/^import .*;\s*$/gm,'');
 function battle(type,aim={x:3,y:3},options={}){
  const tiles=Array.from({length:49},(_,n)=>({x:n%7,y:Math.floor(n/7),terrain:'PLAIN',elevation:0,waterDepth:0}));
@@ -19,6 +20,7 @@ function battle(type,aim={x:3,y:3},options={}){
   globalThis:null,AngelWingBarrierEngine:{TYPE:'HOLY_WING_BARRIER'},TERRAINS:{PLAIN:{passable:true},WALL:{passable:false},MUD:{passable:true}},
   TacticalEngine:{range:s=>s.range,tile:(m,x,y)=>at(x,y),teamCanSee:()=>true,canSee:()=>true},
   HydrologyEngine:{
+   setGroundMaterial:canonicalHydrology.setGroundMaterial,waterDepth:canonicalHydrology.waterDepth,
    floodArea:(_map,around)=>{for(const t of around)t.waterDepth++;return[{type:'FLOOD_AREA_RESOLVED'}]},
    deformTerrain:(_map,x,y,{deltaElevation})=>{const t=at(x,y),from=t.elevation;t.elevation+=deltaElevation;return[{type:'ELEVATION_CHANGED',x,y,from,to:t.elevation}]},
    setWaterDepth:(t,v)=>{t.waterDepth=v},addWater:(t,v)=>{t.waterDepth+=v},isWater:t=>Number(t?.waterDepth||0)>0
