@@ -486,6 +486,20 @@ export const HydrologyEngine=(()=>{
     return clean(rate*Math.max(0,Number(volumeScale||0)));
   }
 
+  // Solve the existing outlet rating against the remaining water head:
+  // v = C*dt*sqrt((D-v)/bankfull), bounded by liquid D and capacity.
+  function generatedRiverOutletVolume(tile,depth,volumeScale){
+    const capacity=Math.max(0,Number(tile.outletEffectiveCapacity??tile.channelCapacity??0));
+    const bankfull=Math.max(.20,Number(tile.channelBankfullDepth??NATURAL_WATER_DEPTH));
+    const cap=capacity*Math.max(0,Number(volumeScale||0));
+    const d=Math.max(0,Number(depth||0));
+    const available=Math.max(0,d-Math.max(baselineDepth(tile),frozenDepth(tile)));
+    if(cap<=EPSILON||available<=EPSILON)return 0;
+    const coefficient=cap*cap/bankfull;
+    const release=2*d/(1+Math.sqrt(1+4*d/coefficient));
+    return clean(Math.min(available,cap,release));
+  }
+
   function outletDrainBudgets(map,fed=sourceFedWaterKeys(map),volumeScale=DISCHARGE_VOLUME_PER_TURN){
     const budgets=new Map(),by=new Map((map?.tiles||[]).map(tile=>[key(tile.x,tile.y),tile]));
     const openBoundary=map?.hydrology?.openBoundary===true||map?.generated===true;
@@ -494,13 +508,10 @@ export const HydrologyEngine=(()=>{
         // Rated outlet capacity is a MAXIMUM, never proof that that much
         // water actually arrived. At low stage a partly dry outlet passes
         // less water; rising water restores the full authored capacity.
-        const capacity=Math.max(0,Number(tile.outletEffectiveCapacity??tile.channelCapacity??0));
-        const bankfull=Math.max(.20,Number(tile.channelBankfullDepth??NATURAL_WATER_DEPTH));
-        const stage=waterDepth(tile);
-        const throughRate=map?.hydrology?.generatedRiverProfile===true
-          ?capacity*Math.sqrt(clamp(stage/bankfull,0,1))
-          :Math.max(0,Number(tile.hydrologyOutflowRate??tile.discharge??tile.baseDischarge??0));
-        budgets.set(key(tile.x,tile.y),clean(throughRate*Math.max(0,Number(volumeScale||0))));
+        const volume=map?.hydrology?.generatedRiverProfile===true
+          ?generatedRiverOutletVolume(tile,waterDepth(tile),volumeScale)
+          :clean(Math.max(0,Number(tile.hydrologyOutflowRate??tile.discharge??tile.baseDischarge??0))*Math.max(0,Number(volumeScale||0)));
+        budgets.set(key(tile.x,tile.y),volume);
         continue;
       }
       const eligible=isPhysicalOutlet(map,tile);
@@ -847,6 +858,13 @@ export const HydrologyEngine=(()=>{
     const speed=clamp(Number(tile?.flowSpeed??tile?.baseFlowSpeed??0),0,MAX_BASE_FLOW_SPEED);
     return Math.min(.25,Math.max(.04,speed*speed/9.81));
   }
+  // One transport interval uses the same mobility law in the initial
+  // watershed time estimate and in every actual D transfer.
+  function riverMobileFraction(tile,elapsed=1){
+    const speed=Math.max(.05,Number(tile?.flowSpeed||tile?.baseFlowSpeed||.62));
+    return clamp(1-Math.exp(-speed*1.6*Math.max(0,elapsed)),0,.85);
+  }
+
   function riverRouteHasHead(from,to){
     if(!from||!to)return false;
     if(from.hydrologyTransportInitialized!==true)return true;
@@ -881,33 +899,89 @@ export const HydrologyEngine=(()=>{
     return events;
   }
 
+  // Initial source history is estimated from actual routed Q, channel
+  // residence storage and geometric basin storage, never from a target D.
+  // The maximum default tile-step workload stays within that of the existing
+  // largest preset at 192 steps. Explicit test/scenario limits remain exact.
+  function initialSourcePlan(map){
+    const tiles=map.tiles||[],sources=activeSourceTiles(map);
+    const supply=sources.reduce((sum,t)=>sum+sourceDemandRate(t)*DISCHARGE_VOLUME_PER_TURN,0);
+    const by=new Map(tiles.map(t=>[key(t.x,t.y),t])),reached=new Set();
+    let travelTurns=0;
+    for(const source of sources){
+      const seen=new Set();let cursor=source,travel=0;
+      while(cursor?.river&&!seen.has(cursor)){
+        seen.add(cursor);reached.add(cursor);
+        travel+=1/Math.max(EPSILON,riverMobileFraction(cursor));
+        if(cursor.hydrologyDrain)break;
+        cursor=by.get(key(cursor.x+Math.sign(cursor.flowX||0),cursor.y+Math.sign(cursor.flowY||0)));
+      }
+      travelTurns=Math.max(travelTurns,travel);
+    }
+    let storage=0;
+    for(const tile of tiles){
+      if(reached.has(tile)){
+        const q=Math.max(0,Number(tile.hydrologyOutflowRate??tile.baseDischarge??0));
+        storage+=Math.max(0,q*DISCHARGE_VOLUME_PER_TURN/Math.max(EPSILON,riverMobileFraction(tile))-waterDepth(tile));
+      }else if(tile.hydrologyNaturalChannelPool===true){
+        storage+=Math.max(0,Number(tile.hydrologyNaturalChannelPoolDepth||0)-waterDepth(tile));
+      }else continue;
+      if(hasSoil(tile))storage+=Math.max(0,soilCapacity(tile)-soilMoisture(tile));
+    }
+    const presets=Object.values(globalThis.MapGenerator?.SIZE_PRESETS||{});
+    const largest=Math.max(tiles.length,...presets.map(p=>p.width*p.height));
+    const workLimit=Math.max(GENERATED_RIVER_SETTLE_MAX_TURNS,Math.floor(GENERATED_RIVER_SETTLE_MAX_TURNS*largest/Math.max(1,tiles.length)));
+    const estimatedTurns=supply>EPSILON?Math.ceil(travelTurns+storage/supply):GENERATED_RIVER_SETTLE_MAX_TURNS;
+    return{estimatedTurns,travelTurns:clean(travelTurns),estimatedStorage:clean(storage),sourceVolumePerTurn:clean(supply),
+      workLimit,capTurns:Math.max(GENERATED_RIVER_SETTLE_MAX_TURNS,Math.min(workLimit,estimatedTurns))};
+  }
+
   function settleInitialSources(map,{maxTurns=null,stableTurns=INITIAL_SOURCE_SETTLE_STABLE_TURNS,stepTurns=null}={}){
     const generated=map?.hydrology?.generatedRiverProfile===true;
-    const requestedTurns=maxTurns??(generated?GENERATED_RIVER_SETTLE_MAX_TURNS:INITIAL_SOURCE_SETTLE_MAX_TURNS);
+    const plan=generated?initialSourcePlan(map):null;
+    const requestedTurns=maxTurns??(generated?plan.capTurns:INITIAL_SOURCE_SETTLE_MAX_TURNS);
     const requestedStep=stepTurns??(generated?1:INITIAL_SOURCE_SETTLE_STEP_TURNS);
     const beforeVolume=totalWater(map),capTurns=Math.max(1,Math.floor(Number(requestedTurns||0))),needStable=Math.max(1,Math.floor(Number(stableTurns||0))),step=Math.max(1,Math.floor(Number(requestedStep||0)));
     if(!activeSourceTiles(map).length)return{turns:0,steps:0,stable:true,beforeVolume,afterVolume:beforeVolume};
-    let previous=beforeVolume,stable=0,turns=0,steps=0;
+    let previous=beforeVolume,stable=0,turns=0,steps=0,injected=0,drained=0,lastNet=0,lastDepthDelta=0,lastSoilDelta=0,reachedOutlet=false;
+    const tiles=map.tiles||[];
     while(turns<capTurns){
       const span=Math.min(step,capTurns-turns);
+      const depths=generated?tiles.map(waterDepth):null,moisture=generated?tiles.map(soilMoisture):null,events=[];
       if(generated){
         for(let physicalStep=0;physicalStep<span;physicalStep++){
-          advanceSources(map,{events:[],source:"SOURCE_INITIAL_SETTLE",volumeScale:DISCHARGE_VOLUME_PER_TURN,redistributeAfter:true});
+          advanceSources(map,{events,source:"SOURCE_INITIAL_SETTLE",volumeScale:DISCHARGE_VOLUME_PER_TURN,redistributeAfter:true});
         }
       }else{
-        advanceSources(map,{events:[],source:"SOURCE_INITIAL_SETTLE",volumeScale:DISCHARGE_VOLUME_PER_TURN*span,redistributeAfter:true});
+        advanceSources(map,{events,source:"SOURCE_INITIAL_SETTLE",volumeScale:DISCHARGE_VOLUME_PER_TURN*span,redistributeAfter:true});
       }
       turns+=span;steps++;
       const now=totalWater(map),delta=Math.abs(now-previous);
-      const rivers=(map.tiles||[]).filter(tile=>tile?.river===true);
-      // A stable total volume on an upstream pool does not mean the river
-      // reached its outlet. Wait for the actual source-fed water to get there.
-      const reachedOutlet=rivers.filter(tile=>tile.hydrologyDrain===true)
-        .some(tile=>Number(tile.hydrologyMeasuredOutletRate||0)>FLOW_EPSILON);
-      stable=(!generated||reachedOutlet)&&delta<=FLOW_EPSILON?stable+1:0;previous=now;
+      let stepIn=0,stepOut=0;
+      for(const event of events){
+        if(event.type==="HYDROLOGY_SOURCE_INFLOW")stepIn+=Number(event.volume||0);
+        if(event.type==="RIVER_THROUGHFLOW_DRAINED"||event.type==="WATER_DRAINED_OFF_MAP")stepOut+=Number(event.amount||0);
+      }
+      injected+=stepIn;drained+=stepOut;lastNet=stepIn-stepOut;
+      reachedOutlet=tiles.some(tile=>tile.river===true&&tile.hydrologyDrain===true&&Number(tile.hydrologyMeasuredOutletRate||0)>FLOW_EPSILON);
+      if(generated){
+        lastDepthDelta=0;lastSoilDelta=0;
+        for(let i=0;i<tiles.length;i++){
+          lastDepthDelta=Math.max(lastDepthDelta,Math.abs(waterDepth(tiles[i])-depths[i]));
+          lastSoilDelta=Math.max(lastSoilDelta,Math.abs(soilMoisture(tiles[i])-moisture[i]));
+        }
+      }
+      // An unchanged total is insufficient: water can still be moving between
+      // cells, saturating soil, or accumulating behind an unresolved outlet.
+      const settled=generated?reachedOutlet&&delta<=FLOW_EPSILON&&Math.abs(lastNet)<=FLOW_EPSILON&&lastDepthDelta<=FLOW_EPSILON&&lastSoilDelta<=FLOW_EPSILON:delta<=FLOW_EPSILON;
+      stable=settled?stable+1:0;previous=now;
       if(stable>=needStable)break;
     }
-    return{turns,steps,stable:stable>=needStable,beforeVolume,afterVolume:totalWater(map)};
+    const afterVolume=totalWater(map);
+    return{turns,steps,stable:stable>=needStable,beforeVolume,afterVolume,
+      ...(generated?{plan,stopReason:stable>=needStable?"EQUILIBRIUM":maxTurns!=null?"CALLER_LIMIT":capTurns>=plan.workLimit?"WORK_LIMIT":"ESTIMATED_HISTORY_LIMIT",reachedOutlet,
+        injectedVolume:clean(injected),drainedVolume:clean(drained),massBalanceError:roundSigned(beforeVolume+injected-drained-afterVolume),
+        lastNetVolume:roundSigned(lastNet),maxDepthDelta:clean(lastDepthDelta),maxSoilDelta:clean(lastSoilDelta)}:{})};
   }
 
   function initializeMap(map){
@@ -1667,13 +1741,14 @@ export const HydrologyEngine=(()=>{
     for(const tile of rivers)tile.hydrologyMeasuredOutflowRate=0;
     for(const tile of rivers){
       const available=Math.max(0,waterDepth(tile)-Math.max(baselineDepth(tile),frozenDepth(tile)));
-      const speed=Math.max(.05,Number(tile.flowSpeed||tile.baseFlowSpeed||.62));
-      const mobile=clamp(1-Math.exp(-speed*1.6*elapsed),0,.85);
+      const mobile=riverMobileFraction(tile,elapsed);
       const mainBudget=available*mobile;
       const dx=Math.sign(Number(tile.flowX||0)),dy=Math.sign(Number(tile.flowY||0));
       const downstream=!tile.hydrologyDrain&&Math.abs(dx)+Math.abs(dy)===1
         ?by.get(key(tile.x+dx,tile.y+dy)):null;
-      if(downstream?.river===true&&riverRouteHasHead(tile,downstream)&&available>EPSILON){
+      // Snapshot D bounds travel; the coupled final-stage solve below checks
+      // hydraulic head after the network inflows/outflows, including outlets.
+      if(downstream?.river===true&&available>EPSILON){
         const head=Math.max(0,waterline(tile)-waterline(downstream));
         const gravity=head>EPSILON?Math.sqrt(2*9.81*head)*.45:0;
         const planned=Math.max(0,Number(tile.hydrologyOutflowRate||0));
@@ -1698,7 +1773,10 @@ export const HydrologyEngine=(()=>{
         // Neither this threshold nor the bankfull geometry depends on live D.
         const bankLip=Math.max(sill,Number(tile.channelBankElevation??sill))+
           Math.max(0,Number(tile.hydrologyChannelIncision||0));
-        if(isLake&&!mouths.has(entrance)&&
+        // Real low basin openings do not have an artificial extra shoulder.
+        // All openings still compete for the same conserved D.
+        const openPool=other.hydrologyNaturalChannelPool===true&&elevation(other)<elevation(tile);
+        if(isLake&&!openPool&&!mouths.has(entrance)&&
            waterline(tile)<=bankLip+EPSILON&&
            waterline(other)<=bankLip+EPSILON)continue;
         const difference=waterline(tile)-waterline(other);
@@ -1712,8 +1790,7 @@ export const HydrologyEngine=(()=>{
         const inletWidth=clamp(Number(tile.hydrologyChannelWidthFraction??.4),.15,.85);
         const crossRate=inletWidth*Math.sqrt(2*9.81*fromHead)*.45;
         const bankBudget=Math.max(0,Number(snap.get(key(from.x,from.y))||0)-Math.max(baselineDepth(from),frozenDepth(from)));
-        const bankSpeed=Math.max(.05,Number(from.flowSpeed||from.baseFlowSpeed||.62));
-        const bankMobile=clamp(1-Math.exp(-bankSpeed*1.6*elapsed),0,.85);
+        const bankMobile=riverMobileFraction(from,elapsed);
         offer(from,to,Math.min(bankBudget*bankMobile,crossRate*stepVolume),"LAKE_INLET");
       }
     }
@@ -1726,8 +1803,7 @@ export const HydrologyEngine=(()=>{
       const want=Math.max(EPSILON,Number(requested.get(fk)||0));
       // A single physical travel interval bounds the TOTAL mobilized D,
       // whether it leaves downriver or through one or more lake inlets.
-      const speed=Math.max(.05,Number(from.flowSpeed||from.baseFlowSpeed||.62));
-      const mobile=clamp(1-Math.exp(-speed*1.6*elapsed),0,.85);
+      const mobile=riverMobileFraction(from,elapsed);
       const amount=clean(transfer.amount*Math.min(1,available*mobile/want));
       if(amount<=EPSILON)continue;
       delta.set(fk,Number(delta.get(fk)||0)-amount);
@@ -1754,7 +1830,12 @@ export const HydrologyEngine=(()=>{
         if(transfer.kind!=="RIVER"||transfer.volume<=EPSILON)continue;
         const {from,to}=transfer,fk=key(from.x,from.y),tk=key(to.x,to.y);
         const fromStage=elevation(from)+Number(snap.get(fk)||0)+Number(delta.get(fk)||0);
-        const toStage=elevation(to)+Number(snap.get(tk)||0)+Number(delta.get(tk)||0);
+        const toDepth=Math.max(0,Number(snap.get(tk)||0)+Number(delta.get(tk)||0));
+        // An actual outlet releases in this same physical interval, rather
+        // than acting as a dam until the following turn.
+        const toRelease=to.hydrologyDrain===true&&isPhysicalOutlet(map,to)
+          ?generatedRiverOutletVolume(to,toDepth,stepVolume):0;
+        const toStage=elevation(to)+toDepth-toRelease;
         const excess=toStage-fromStage-riverKineticHead(from);
         if(excess<=FLOW_EPSILON)continue;
         const reduced=clean(Math.min(transfer.volume,excess*.5));
@@ -2019,6 +2100,11 @@ export const HydrologyEngine=(()=>{
     const by=new Map(map.tiles.map(tile=>[key(tile.x,tile.y),tile]));
     const fed=sourceFedWaterKeys(map);
     const outletBudgets=outletDrainBudgets(map,fed,volumeScale);
+    const generatedOutlets=map.hydrology?.generatedRiverProfile===true
+      ?map.tiles.filter(t=>t.river===true&&t.hydrologyDrain===true&&isPhysicalOutlet(map,t)):[];
+    // River outlets are solved once, after same-step inflow. Other physical
+    // outlets retain the existing shared drain budget.
+    for(const tile of generatedOutlets)outletBudgets.set(key(tile.x,tile.y),0);
     // One infiltration budget per physical hydrology step. The flow solver may
     // iterate many times to converge, but those iterations do not advance time.
     const infiltrationBudget=createInfiltrationBudget(map,volumeScale);
@@ -2038,6 +2124,7 @@ export const HydrologyEngine=(()=>{
       maxDelta=flowIteration(map,by,fed,edgeNet,topology);
 
       const absorbed=absorbStandingWater(map,events,source,fed,infiltrationBudget);
+      for(const tile of generatedOutlets)outletBudgets.set(key(tile.x,tile.y),generatedRiverOutletVolume(tile,waterDepth(tile),volumeScale));
       const drained=applyOutlets(map,events,source,fed,outletBudgets,volumeScale);
       totalAbsorbed+=absorbed;
       totalDrained+=drained;
