@@ -193,7 +193,7 @@ export class BabylonRenderer{
     this.vfxManager=new VfxManager(this.scene,{units:this.units});
     this.unitHud=new UnitHudOverlay(this.scene,this.engine,canvas,this.camera.camera);
     this.picker=new GridPicker(this.scene,canvas);
-    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked,canAimDrag:()=>this.lastState?.presentation?.areaAimActive===true});
+    this.input=new BattleInputController(canvas,{camera:this.camera,picker:this.picker,onTilePicked,getAreaAim:()=>{const state=this.lastState;if(state?.presentation?.areaAimActive!==true)return null;return {center:state.presentation.aimCenter,contains:(x,y)=>{const t=state.map.tiles.find(t=>t.x===x&&t.y===y);return !!(t?.aimPreview||t?.aimCenter);}};}});
     this.scene.onDisposeObservable.addOnce(()=>this.input.dispose());
 
     this.performanceStats={frameMs:0,renderMs:0,syncSubsystemMs:{}};
@@ -623,13 +623,14 @@ export class BabylonRenderer{
    * game and PvP share this same HighlightRenderer and release path. */
   showSkillHoldPreview(preview){
     const state=this.lastState;
-    if(!state?.map?.tiles||!preview||state.map.id!==preview.mapId)return false;
+    if(!state?.map?.tiles||!preview||state.map.id!==preview.mapId||state.presentation?.areaAimActive)return false;
     this.skillHoldPreview={...preview};
     return this.paintSkillHoldPreview();
   }
 
   paintSkillHoldPreview(){
     const preview=this.skillHoldPreview,state=this.lastState;
+    if(state?.presentation?.areaAimActive){this.skillHoldPreview=null;return false;}
     if(!preview||!state?.map?.tiles||state.map.id!==preview.mapId){
       this.skillHoldPreview=null;return false;
     }

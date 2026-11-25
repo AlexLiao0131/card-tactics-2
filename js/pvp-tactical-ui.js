@@ -237,6 +237,7 @@ export class PvpTacticalUI {
     // targetRange is the original native preview; attackable is legal contact.
     const skill=knownSkill(this.target?.skillId);
     const areaAimActive=!!(unit&&this.mode==='CAST_MAP_SKILL'&&(!!aim?.areaFootprints||TacticalEngine.isAreaAimSkill(skill)));
+    if(areaAimActive)this.ensureAreaAim(unit,aim);
     const preview=aim?.fixedArea||(areaAimActive&&this.areaAim?aim?.areaFootprints?.[`${this.areaAim.x},${this.areaAim.y}`]:null);
     const previewKeys=new Set((preview||[]).map(t=>`${t.x},${t.y}`));
     const environmentAim=this.mode==='DECLARE_ATTACK'&&unit?.aimOptions?.find(entry=>
@@ -274,13 +275,13 @@ export class PvpTacticalUI {
     const tiles=source.map.tiles.map(tile=>{
       const key=`${tile.x},${tile.y}`;
       return {...tile,reachable:reachable.has(key),
-        targetRange:range.has(key),attackable:attackable.has(key),aimPreview:previewKeys.has(key),
+        targetRange:range.has(key),attackable:attackable.has(key),aimPreview:previewKeys.has(key),aimCenter:areaAimActive&&this.areaAim?.x===tile.x&&this.areaAim?.y===tile.y,aimLegal:areaAimActive&&attackable.has(key),
         deploymentAreaOwner:areaOwner.get(key)??tile.deploymentAreaOwner??null,
         // The canonical server owns legality. Not every colored home area is
         // selectable (some cells are blocked, occupied or enemy-owned).
         deployable:deployable.has(key)};
     });
-    const view={...source,presentation:{...source.presentation,areaAimActive},map:{...source.map,tiles},units:source.units.map(u=>({
+    const view={...source,presentation:{...source.presentation,areaAimActive,aimCenter:areaAimActive?this.areaAim:null},map:{...source.map,tiles},units:source.units.map(u=>({
       ...u,selected:!!(unit&&u.id===unit.id)
     }))};
     // No terrain/water redraw for a local selection. Reuse the exact native
@@ -405,6 +406,13 @@ export class PvpTacticalUI {
        ![-1,1].includes(steps)||(steps<0?!dive.canDive:!dive.canSurface))return false;
     return this.request({type:'ADJUST_DIVE_MODE',unitId:unit.id,steps});
   }
+  ensureAreaAim(actor,aim){
+    const legal=aim?.actionableTiles||[],footprint=t=>!!aim?.areaFootprints?.[`${t.x},${t.y}`]?.length;
+    if(this.areaAim&&legal.some(t=>t.x===this.areaAim.x&&t.y===this.areaAim.y)&&footprint(this.areaAim))return this.areaAim;
+    const facing=this.serverSnapshot?.units?.find(u=>u.id===actor?.id)?.facing;
+    this.areaAim=TacticalEngine.defaultAreaAim({...actor,facing:actor?.facing||facing},legal,footprint);
+    return this.areaAim;
+  }
   targetAction(type,payload){
     this.target={type,...payload};this.mode=type;this.areaAim=null;this.update();
     this.refreshNativePresentation();
@@ -439,16 +447,16 @@ export class PvpTacticalUI {
         if(this.request(payload)){this.cancelTarget();this.update();this.refreshNativePresentation();}
       },{disabled:!cells?.length});
     }else if(this.mode==='CAST_MAP_SKILL'&&(!!aimOption?.areaFootprints||TacticalEngine.isAreaAimSkill(skill))&&actor){
-      const aim=actor.aimOptions?.find(a=>a.type===this.mode&&a.skillId===skill.id),center=this.areaAim;
+      const aim=actor.aimOptions?.find(a=>a.type===this.mode&&a.skillId===skill.id),center=this.ensureAreaAim(actor,aim);
       const cells=center&&aim?.areaFootprints?.[`${center.x},${center.y}`];
       if(cells){
         this.add(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
           const selected=this.selectedUnit(),latest=selected?.aimOptions?.find(a=>a.type==='CAST_MAP_SKILL'&&a.skillId===skill.id);
-          if(this.mode!=='CAST_MAP_SKILL'||this.target?.skillId!==skill.id||selected?.id!==actor.id||this.areaAim!==center||!this.isTacticalPhase()||!latest?.actionableTiles?.some(t=>t.x===center.x&&t.y===center.y)||!latest.areaFootprints?.[`${center.x},${center.y}`])return;
+          if(this.mode!=='CAST_MAP_SKILL'||this.target?.skillId!==skill.id||selected?.id!==actor.id||this.areaAim!==center||!this.isTacticalPhase()||!latest?.actionableTiles?.some(t=>t.x===center.x&&t.y===center.y)||!latest.areaFootprints?.[`${center.x},${center.y}`]?.length)return;
           if(this.request({type:'CAST_MAP_SKILL',unitId:actor.id,skillId:skill.id,x:center.x,y:center.y})){this.cancelTarget();this.update();this.refreshNativePresentation();}
         });
-        this.add('重新瞄準',()=>{this.areaAim=null;this.update();this.refreshNativePresentation();});
-      }else this.add(aim?.areaFootprints?'點選或拖曳地格瞄準':'範圍資料尚未同步，請更新 Worker',()=>{},{disabled:true});
+        this.menuUI.heading('拖曳橘色範圍｜點藍格重新定位');
+      }else this.add(aim?.areaFootprints?'目前沒有合法瞄準地格':'範圍資料尚未同步，請更新 Worker',()=>{},{disabled:true});
     }
     this.add('取消施放',()=>{this.cancelTarget();this.update();this.refreshNativePresentation();});
   }
@@ -905,7 +913,7 @@ export class PvpTacticalUI {
         // authoritative command is submitted ONLY on the confirm button.
         const actor=this.selectedUnit(),aim=(actor?.aimOptions||[]).find(a=>
           a.type==='CAST_MAP_SKILL'&&a.skillId===choice.skillId);
-        if(aim?.actionableTiles?.some(t=>t.x===x&&t.y===y)&&aim.areaFootprints?.[`${x},${y}`]){
+        if(aim?.actionableTiles?.some(t=>t.x===x&&t.y===y)&&aim.areaFootprints?.[`${x},${y}`]?.length){
           if(this.areaAim?.x===x&&this.areaAim?.y===y)return true;
           this.areaAim={x,y};this.update();this.refreshNativePresentation();return true;
         }

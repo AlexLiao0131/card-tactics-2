@@ -9,9 +9,9 @@ const normalizeAngle=value=>Math.atan2(Math.sin(value),Math.cos(value));
 const multiGestureType=gesture=>["MULTI_PENDING","PINCH","ROTATE_TOUCH"].includes(gesture?.type);
 
 export class BattleInputController{
-  constructor(canvas,{camera,picker,onTilePicked,canAimDrag=()=>false}={}){
+  constructor(canvas,{camera,picker,onTilePicked,getAreaAim=()=>null}={}){
     this.canvas=canvas;this.camera=camera;this.picker=picker;this.onTilePicked=onTilePicked??(()=>{});
-    this.pointers=new Map();this.gesture=null;this.canAimDrag=canAimDrag;
+    this.pointers=new Map();this.gesture=null;this.getAreaAim=getAreaAim;
     this.holdTimer=null;this.holdPointerId=null;this.holdActive=false;
     this.install();
   }
@@ -36,12 +36,11 @@ export class BattleInputController{
     this.holdTimer=setTimeout(()=>{
       this.holdTimer=null;
       const pointer=this.pointers.get(id);
-      if(!pointer||pointer.moved||this.pointers.size!==1||!["PAN","AIM"].includes(this.gesture?.type))return;
+      if(!pointer||pointer.moved||this.pointers.size!==1||this.gesture?.type!=="PAN")return;
       const tile=this.picker.pickCurrent();
       if(!tile)return;
       pointer.moved=true;
       this.holdActive=true;
-      if(this.gesture?.type==="AIM")this.gesture.type="INSPECT";
       // Inspection is READ ONLY. Never call clickBattleTile here: during an
       // attack/card phase it could accidentally resolve a real game action.
       window.dispatchEvent(new CustomEvent("cardtactics:battle-inspect-hold",{detail:{x:tile.x,y:tile.y}}));
@@ -50,6 +49,10 @@ export class BattleInputController{
     },HUD_HOLD_MS);
   }
 
+  pickAt(event){
+    const rect=this.canvas.getBoundingClientRect();
+    return this.picker.pickCurrent(event.clientX-rect.left,event.clientY-rect.top);
+  }
   install(){
     // The canvas owns tactical gestures. Safari's text-selection/callout
     // recognizers must not steal a stationary touch from the existing HUD hold.
@@ -80,7 +83,15 @@ export class BattleInputController{
       try{this.canvas.setPointerCapture?.(event.pointerId)}catch(_){}
       if(this.pointers.size>=2){this.clearHold();this.beginMultiTouch();}
       else if(rotatePointer)this.gesture={type:"ROTATE_MOUSE",id:event.pointerId,lastX:event.clientX,accumulatedX:0};
-      else{this.gesture={type:this.canAimDrag()?"AIM":"PAN",id:event.pointerId,lastX:event.clientX,lastY:event.clientY};this.beginHold(event);}
+      else{
+        const aim=this.getAreaAim(),tile=aim?this.pickAt(event):null;
+        const inside=!!(aim?.center&&tile&&aim.contains(tile.x,tile.y));
+        const pointer=this.pointers.get(event.pointerId);pointer.aimMode=!!aim;
+        this.gesture={type:inside?"AIM":"PAN",id:event.pointerId,lastX:event.clientX,lastY:event.clientY,
+          ...(inside?{aimOffsetX:aim.center.x-tile.x,aimOffsetY:aim.center.y-tile.y}:null)};
+        // Holding an already-visible aim footprint must never become HUD inspection.
+        if(!inside)this.beginHold(event);
+      }
     };
 
     this.onPointerMove=event=>{
@@ -127,11 +138,10 @@ export class BattleInputController{
         return;
       }
       if(this.gesture?.type==="AIM"&&this.gesture.id===event.pointerId){
-        if(pointer.moved&&this.canAimDrag()&&!this.holdActive){
-          const rect=this.canvas.getBoundingClientRect();
-          const tile=this.picker.pickCurrent(event.clientX-rect.left,event.clientY-rect.top);
-          const key=tile&&`${tile.x},${tile.y}`;
-          if(tile&&this.gesture.lastAim!==key){this.gesture.lastAim=key;this.onTilePicked(tile.x,tile.y,{aimOnly:true});}
+        if(pointer.moved&&this.getAreaAim()){
+          const tile=this.pickAt(event);
+          if(tile){const x=tile.x+this.gesture.aimOffsetX,y=tile.y+this.gesture.aimOffsetY,key=`${x},${y}`;
+            if(this.gesture.lastAim!==key){this.gesture.lastAim=key;this.onTilePicked(x,y,{aimOnly:true});}}
         }return;
       }
       if(this.gesture?.type!=="PAN"||this.gesture.id!==event.pointerId||!pointer.moved)return;
@@ -151,9 +161,13 @@ export class BattleInputController{
       try{this.canvas.releasePointerCapture?.(event.pointerId)}catch(_){}
       if(this.pointers.size===1){this.resumeSinglePointerPan();return;}
       this.gesture=null;
-      if(wasMulti||wasRotate||pointer.moved||consumed||(wasAim&&!this.canAimDrag()))return;
+      if(wasMulti||wasRotate||pointer.moved||consumed)return;
+      if(pointer.aimMode){
+        if(!this.getAreaAim()||wasAim)return; // tap inside existing frame keeps its center
+        const tile=this.pickAt(event);if(tile)this.onTilePicked(tile.x,tile.y,{aimOnly:true});return;
+      }
       const tile=this.picker.pickCurrent();
-      if(tile)this.onTilePicked(tile.x,tile.y,wasAim?{aimOnly:true}:undefined);
+      if(tile)this.onTilePicked(tile.x,tile.y);
     };
     this.onPointerCancel=event=>{
       if(!this.pointers.has(event.pointerId))return;

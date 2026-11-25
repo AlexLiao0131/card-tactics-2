@@ -1,6 +1,6 @@
 import { TILE_SIZE,ELEVATION_HEIGHT,SURFACE_RENDER_ORDER } from "./coordinate-system.js";
 const keyOf=tile=>`${tile.x},${tile.y}`;
-const highlightKind=tile=>tile.aimPreview?"aimPreview":tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
+const highlightKind=tile=>tile.aimPreview?"aimPreview":tile.aimLegal?"aimLegal":tile.inspected?"inspected":tile.attackable?"attackable":tile.deployable?"deployable":tile.targetRange?"targetRange":tile.reachable?"reachable":null;
 
 export class HighlightRenderer{
   constructor(scene,{terrain,environment}={}){
@@ -11,6 +11,8 @@ export class HighlightRenderer{
     this.dynamic=new Map();this.areas=new Map();this.fields=new Map();this.signatureValue=null;
     this.materials={
       aimPreview:this.mat("aim-preview",new BABYLON.Color3(1,.66,.18),.64),
+      aimLegal:this.mat("aim-legal",new BABYLON.Color3(.18,.55,1),.38),
+      aimCenter:this.mat("aim-center",new BABYLON.Color3(1,.94,.65),.98),
       damage:this.mat("active-damage",new BABYLON.Color3(.94,.15,.12),.32),
       heal:this.mat("active-heal",new BABYLON.Color3(.15,.85,.37),.32),
       buff:this.mat("active-buff",new BABYLON.Color3(.92,.72,.20),.28),
@@ -134,8 +136,8 @@ export class HighlightRenderer{
     for(const tile of tiles){
       const owner=tile.deploymentAreaOwner||"",kind=highlightKind(tile)||"";
       const fieldKinds=[...new Set((tile.activeFields||[]).map(f=>f.kind))].sort().join(',');
-      if(!owner&&!kind&&!fieldKinds)continue;
-      parts.push([tile.x,tile.y,owner,kind,fieldKinds,
+      if(!owner&&!kind&&!fieldKinds&&!tile.aimCenter)continue;
+      parts.push([tile.x,tile.y,owner,kind,fieldKinds,tile.aimCenter===true,
         Number(tile.waterDepth||0).toFixed(4),
         tile.waterSurfaceZ==null?"n":Number(tile.waterSurfaceZ).toFixed(4)].join(":"));
     }
@@ -158,6 +160,17 @@ export class HighlightRenderer{
         const part=this.indicatorGeometry(tile,.058,layers);
         if(part){const group=fields.get(fieldKind)||[];group.push(part);fields.set(fieldKind,group);}
       }
+      if(tile.aimCenter){
+        // One non-pickable crosshair on the published surface, batched with the
+        // existing dynamic highlights. It does not change the gameplay footprint.
+        const surface=this.indicatorGeometry(tile,.095,layers);
+        if(surface?.positions?.length){
+          const x=tile.x*TILE_SIZE,z=tile.y*TILE_SIZE,y=Math.max(...surface.positions.filter((_,i)=>i%3===1));
+          const r=TILE_SIZE*.32,w=TILE_SIZE*.045;
+          const quad=(a,b,c,d)=>({positions:[a,y,b,c,y,b,c,y,d,a,y,d],indices:[0,1,2,0,2,3]});
+          dynamic.set("aimCenter",[quad(x-r,z-w,x+r,z+w),quad(x-w,z-r,x+w,z+r)]);
+        }
+      }
       if(kind){
         const part=this.indicatorGeometry(tile,.070,layers);
         if(part){const group=dynamic.get(kind)||[];group.push(part);dynamic.set(kind,group);}
@@ -175,7 +188,7 @@ export class HighlightRenderer{
     for(const [kind,mesh] of this.fields)if(!fields.has(kind)){mesh.dispose();this.fields.delete(kind);}
     for(const [kind,parts] of dynamic){
       const mesh=this.syncMesh(this.dynamic.get(kind),`hl-${kind}`,parts,
-        this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY+1);
+        this.materials[kind],SURFACE_RENDER_ORDER.TACTICAL_OVERLAY+(kind==="aimCenter"?2:1));
       if(mesh){mesh.renderingGroupId=1;this.dynamic.set(kind,mesh);}
     }
     for(const [owner,mesh] of this.areas)if(!areas.has(owner)){mesh.dispose();this.areas.delete(owner);}

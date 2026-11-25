@@ -360,7 +360,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function currentWorld(){return{map,units,stage,stageState,environmentState,cores};}
   function realWorld(){return perceptionState.session?.real||currentWorld();}
   function presentationWorld(){return perceptionState.session?.active&&perceptionState.session.team===TEAM.ENEMY?perceptionState.session.real:currentWorld();}
-  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===perceptionState.session?.real?null:selected,selectedSkill:w===perceptionState.session?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,fieldState:areaFields.state,areaAimActive:phase===PHASE.PLAYER&&mode==="map-target"&&!!selected&&!selected.acted&&TacticalEngine.isAreaAimSkill(selectedSkill),aimPreview:phase===PHASE.PLAYER&&selected&&mode==="self-area-confirm"?actionController.previewSkillArea(selected,selectedSkill)?.tiles||[]:phase===PHASE.PLAYER&&mode==="map-target"&&selected&&pendingAreaAim&&TacticalEngine.isAreaAimSkill(selectedSkill)?actionController.aimedAreaTiles(selected,selectedSkill,pendingAreaAim):[],renderRevision};}
+  function presentationState(){const w=presentationWorld();return{...w,round,phase,mode,selected:w===perceptionState.session?.real?null:selected,selectedSkill:w===perceptionState.session?.real?null:selectedSkill,inspectedTile,pendingCard,enemyCardState,smokeFields,fieldState:areaFields.state,areaAimActive:phase===PHASE.PLAYER&&mode==="map-target"&&!!selected&&!selected.acted&&TacticalEngine.isAreaAimSkill(selectedSkill),aimCenter:phase===PHASE.PLAYER&&mode==="map-target"&&selected&&!selected.acted&&TacticalEngine.isAreaAimSkill(selectedSkill)&&pendingAreaAim?{x:pendingAreaAim.x,y:pendingAreaAim.y}:null,aimPreview:phase===PHASE.PLAYER&&selected&&mode==="self-area-confirm"?actionController.previewSkillArea(selected,selectedSkill)?.tiles||[]:phase===PHASE.PLAYER&&mode==="map-target"&&selected&&pendingAreaAim&&TacticalEngine.isAreaAimSkill(selectedSkill)?actionController.aimedAreaTiles(selected,selectedSkill,pendingAreaAim):[],renderRevision};}
   function presentationUnitAt(x,y){return presentationWorld().units.find(u=>u.alive&&u.x===x&&u.y===y)||null;}
   function presentationCoreAt(x,y){return presentationWorld().cores.find(core=>core.x===x&&core.y===y)||null;}
   function checkMatchEnd(){return perceptionState.session?.active?false:objectiveController.checkMatchEnd();}
@@ -762,7 +762,9 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function aimBattleTile(x,y){
     if(engagementPlayback?.isActive()||matchResult||phase!==PHASE.PLAYER||mode!=="map-target"||!selected?.alive||selected.acted||selected.waited||!TacticalEngine.isAreaAimSkill(selectedSkill))return false;
     const tile=TacticalEngine.tile(map,x,y);
-    if(!tile||!mapTargetTiles(selected,selectedSkill).includes(tile))return false;
+    if(!tile)return false;
+    const legal=mapTargetTiles(selected,selectedSkill);
+    if(!legal.includes(tile)||!actionController.aimedAreaTiles(selected,selectedSkill,tile,{legalTiles:legal}).length)return false;
     if(pendingAreaAim!==tile){pendingAreaAim=tile;render();}return true;
   }
   function clickBattleTile(x,y){const tile=TacticalEngine.tile(map,Number(x),Number(y));if(!tile)return false;const unit=unitAt(tile.x,tile.y),reachable=selected&&phase===PHASE.PLAYER&&!selected.acted&&!selected.moved&&mode==="command"?TacticalEngine.reachable(map,units,selected):new Map(),targets=selected&&phase===PHASE.PLAYER&&!selected.acted&&mode==="attack"&&selectedSkill&&targetType(selectedSkill)==="SINGLE"?targetableEntities(selected,selectedSkill):[];handleTileClick(tile,unit,coreAt(tile.x,tile.y),reachable,targets);return true;}
@@ -1277,7 +1279,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
       }
       addActionButton("返回魔法",()=>{selectedSkill=null;mode="special-menu";render();});return;
     }
-    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=TacticalEngine.isFixedAreaSkill(selectedSkill)?"self-area-confirm":targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
+    if(mode==="variant-menu"&&selectedSkill){if(commandPanelCollapsed){renderCollapsedCommandButton();return;}addCommandPanelClose();skillVariants(selectedSkill).forEach(variant=>{addActionButton(variant.name||variant.id,()=>{const parent=selectedSkill;if(executeSelfUtilityVariant(selected,parent,variant))return;selectedSkillVariant=variant;pendingAreaAim=null;selectedSkill=attackWithEnchantmentTargets(selected,resolvedSkill(parent,variant));if(selectedSkill?.utilityAction?.type==="ENCHANT_WEAPON"){actionController.beginEnchantment(selected,selectedSkill);return;}mode=TacticalEngine.isFixedAreaSkill(selectedSkill)?"self-area-confirm":targetType(selectedSkill)==="SINGLE"?"attack":"map-target";render();},false,resolvedSkill(selectedSkill,variant));});addActionButton("返回",()=>{const special=selectedSkill?.category!=="ATTACK";selectedSkill=null;selectedSkillVariant=null;mode=special?"special-menu":"attack-menu";render();});return;}
     if(mode==="copy-skill-select"&&pendingCopySkill){
       pendingCopySkill.options.forEach(skill=>addActionButton(`${skill.name}｜血能 ${UnitRuntimeEngine.bloodMemoryCost(skill)}`,()=>{
         EffectEngine.rememberBloodSkill(pendingCopySkill.attacker,skill.id,pendingCopySkill.target);
@@ -1303,17 +1305,20 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }
     if((mode==="map-target"||mode==="attack")&&selectedSkill){
       if(mode==="map-target"&&TacticalEngine.isAreaAimSkill(selectedSkill)){
-        const aim=pendingAreaAim,actor=selected,skill=selectedSkill;
-        const legal=aim&&mapTargetTiles(actor,skill).some(t=>t.x===aim.x&&t.y===aim.y);
-        if(legal){
-          const cells=actionController.aimedAreaTiles(actor,skill,aim);
+        const actor=selected,skill=selectedSkill,legalTiles=mapTargetTiles(actor,skill);
+        const footprint=t=>actionController.aimedAreaTiles(actor,skill,t,{legalTiles});
+        if(!pendingAreaAim||!legalTiles.some(t=>t.x===pendingAreaAim.x&&t.y===pendingAreaAim.y)||!footprint(pendingAreaAim).length)
+          pendingAreaAim=TacticalEngine.defaultAreaAim(actor,legalTiles,t=>footprint(t).length>0);
+        const aim=pendingAreaAim;
+        if(aim){
+          const cells=footprint(aim);
           addActionButton(`確認${skill.name}｜影響 ${cells.length} 格`,()=>{
             if(mode!=="map-target"||selected!==actor||selectedSkill!==skill||pendingAreaAim!==aim)return;
             if(actor.acted||actor.waited||!canUseSkill(actor,skill)||!mapTargetTiles(actor,skill).some(t=>t.x===aim.x&&t.y===aim.y)){pendingAreaAim=null;render();return;}
             pendingAreaAim=null;executeMapSkill(actor,aim,skill);
           });
-          addActionButton("重新瞄準",()=>{pendingAreaAim=null;render();});
-        }else addActionButton("點選或拖曳地格瞄準",()=>{},true);
+          commandMenuUI.heading("拖曳橘色範圍｜點藍格重新定位");
+        }else addActionButton("目前沒有合法瞄準地格",()=>{},true);
         addActionButton("取消施放",()=>{pendingAreaAim=null;backFromTargeting();});return;
       }
       if(actionController.enchantmentFollowup()?.unitId===selected.id){
