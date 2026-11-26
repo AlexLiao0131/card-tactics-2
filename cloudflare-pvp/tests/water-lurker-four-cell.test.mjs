@@ -33,7 +33,7 @@ const spawn=(world,units=[],count=1)=>{
 test('正式怪物資料只有一隻、四格，不拆成四個單位',()=>{
   assert.deepEqual({...MonsterDatabase.get('water_lurker').footprint},{width:2,height:2});
   assert.equal(CHARACTERS.water_lurker.footprint.width,2);
-  assert.equal(VISUALS.characters.water_lurker_default.battle.kind,'BILLBOARD');
+  assert.equal(VISUALS.characters.water_lurker_default.battle.kind,'AQUATIC_MONSTER');
 });
 test('至少四個連續合法水格才能生成',()=>{
   const world=map(1,5);
