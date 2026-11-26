@@ -81,3 +81,44 @@ test('Babylon surface resolver reads geology, not altitude or legacy height labe
  assert.equal(r.baseTerrainOf(tile(0,0,2,{terrain:'HIGH_GROUND',material:'SOIL'})),'PLAIN');
  assert.equal(r.baseTerrainOf(tile(0,0,-1,{terrain:'WATER',dryTerrain:'PLAIN',material:'ROCK'})),'HIGH_GROUND');
 });
+
+// Natural bedrock exposure is separate from movable/blocking rock objects,
+// and from absolute height. Inspect actual generated maps instead of a mock.
+test('projecting cliff spurs expose natural rock without converting all high ground or protected paths',()=>{
+ const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+ let totalNatural=0;
+ for(const size of Object.keys(MapGenerator.SIZE_PRESETS)){
+  const {map,meta}=MapGenerator.generateVersus({size,seed:10101});
+  const by=new Map(map.tiles.map(t=>[`${t.x},${t.y}`,t]));
+  const objects=new Set(map.objects.filter(o=>o.type==='ROCK').map(o=>`${o.x},${o.y}`));
+  const natural=map.tiles.filter(t=>t.material==='ROCK'&&!objects.has(`${t.x},${t.y}`));
+  assert.equal(natural.length,meta.naturalOutcropTiles,size);totalNatural+=natural.length;
+  // Some seeds have no exposed spur; rock walls still render independently.
+  for(const t of natural){
+   const exposed=dirs.map(([dx,dy])=>{const n=by.get(`${t.x+dx},${t.y+dy}`);return !!n&&n.terrain!=='WALL'&&t.elevation-n.elevation>1.0001;});
+   assert.ok(exposed.filter(Boolean).length>=3,size);
+   assert.equal(t.terrain,'PLAIN');assert.ok(TERRAINS[t.terrain].passable);
+   assert.ok(!t.river&&!t.hydrologyNaturalChannelPool&&!t.routeId&&!t.mountainRamp&&!t.captureZone);
+   assert.equal(H.hasSoil(t),false);assert.equal(H.waterDepth(t),0);
+  }
+  assert.ok(map.tiles.some(t=>t.elevation>=2&&TerrainMaterial.hasSoil(t)&&TerrainMaterial.exposedCliffFace(map,t)),size);
+ }
+ assert.ok(totalNatural>0);
+});
+
+test('cliff face uses rock palette regardless of topsoil, retaining waterline and fog effects',async()=>{
+ const {TerrainRenderer}=await import('../../js/terrain-renderer.js');
+ const {VISUAL_TERRAIN_COLORS}=await import('../../js/visual-surface-resolver.js');
+ const renderer=Object.create(TerrainRenderer.prototype);renderer.surfaceResolver=new VisualSurfaceResolver();
+ const soil=tile(0,0,4,{material:'SOIL',soilMoisture:.25}),rock=tile(0,0,4,{material:'ROCK'}),forest=tile(0,0,4,{terrain:'FOREST'}),lower=tile(1,0,1);
+ const dir={dx:1,dy:0};const palette=t=>renderer.cliffPalette(t,lower,dir,new Map([['0,0',t],['1,0',lower]]),3);
+ const dry=palette(soil);
+ assert.deepEqual(dry.wallColor,palette(rock).wallColor);assert.deepEqual(dry.wallColor,palette(forest).wallColor);
+ assert.deepEqual(dry.wallColor,VISUAL_TERRAIN_COLORS.HIGH_GROUND.map(c=>c*(.86-3*.015)));
+ assert.notDeepEqual(renderer.surfaceResolver.colorOf(soil),renderer.surfaceResolver.colorOf(rock));
+ lower.waterDepth=.5;lower.waterSurfaceZ=1.5;
+ assert.deepEqual(palette(soil).wallColor,dry.wallColor);
+ assert.ok(renderer.surfaceResolver.cliffWaterContact(soil,lower).strength>0);
+ assert.ok(palette({...soil,fogged:true}).wallColor.every((c,i)=>c<dry.wallColor[i]));
+ assert.equal(H.hasSoil(soil),true);
+});
