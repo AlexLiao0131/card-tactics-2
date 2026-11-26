@@ -14,11 +14,13 @@ import {canonicalWorldForViewer} from './pvp-perception-controller.mjs';
 // rule as the existing enemy movement paths, and expose only terrain facts.
 export function projectMassFlowPresentation(event,map,units,viewer,environmentState,previousVisible=new Set()){
   if(!event||!['MASS_FLOW','MASS_FLOW_WARNING'].includes(event.type))return null;
-  const path=event.path;
-  if(!Array.isArray(path)||path.length<2||!path.every(p=>p&&Number.isSafeInteger(p.x)&&Number.isSafeInteger(p.y)&&TacticalEngine.tile(map,p.x,p.y)&&TacticalEngine.teamCanSee(map,units,viewer,p,environmentState)))return null;
+  const path=event.path,cells=event.cells||path;
+  const visible=p=>p&&Number.isSafeInteger(p.x)&&Number.isSafeInteger(p.y)&&TacticalEngine.tile(map,p.x,p.y)&&TacticalEngine.teamCanSee(map,units,viewer,p,environmentState);
+  if(!Array.isArray(path)||path.length<2||!path.every(visible)||!Array.isArray(cells))return null;
   const contacts=(Array.isArray(event.contacts)?event.contacts:[]).filter(c=>c&&previousVisible.has(c.unitId)&&path.some(p=>p.x===c.x&&p.y===c.y)).map(c=>({x:c.x,y:c.y}));
+  const project=p=>({x:p.x,y:p.y,elevation:p.elevation,elevationBefore:p.elevationBefore,elevationAfter:p.elevationAfter,snowDepthBefore:p.snowDepthBefore,snowDepthAfter:p.snowDepthAfter,erosion:p.erosion,deposit:p.deposit,suspended:p.suspended,at:p.at});
   return {type:event.type,sequence:event.sequence,material:event.material,x:path[0].x,y:path[0].y,mass:event.mass,contacts,
-    path:path.map(p=>({x:p.x,y:p.y,elevation:p.elevation,elevationBefore:p.elevationBefore,elevationAfter:p.elevationAfter,snowDepthBefore:p.snowDepthBefore,snowDepthAfter:p.snowDepthAfter,erosion:p.erosion,deposit:p.deposit}))};
+    path:path.map(project),cells:cells.filter(visible).map(project)};
 }
 export function projectCanonicalRendererSnapshot(game,seat,revision=0){
   if(seat!==0&&seat!==1)throw new PvpCommandError('BAD_SEAT');
