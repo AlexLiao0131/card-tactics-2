@@ -144,8 +144,9 @@ export class WaterRenderer{
     this.surfaceTopologyLayouts=new Map();
     // Per-tile immutable vertex evaluations. One owner and one invalidation
     // contract: the exact published polygons, conservative Dirty halo, local
-    // source field, and component-wide turbidity. Shared vertex interning is
-    // still performed by addVertex in its original stable order.
+    // source field, and clear-water depth optics. Local turbidity is sampled
+    // after canonical vertex interning, never baked into per-tile geometry.
+    // Shared vertex interning is still performed by addVertex in stable order.
     this.surfaceTriangulationStats={reusedFaces:0,recomputedFaces:0,
       topologyVerifiedFacesReused:0,elapsedMs:0,exactLayoutHits:0,exactLayoutMisses:0};
     this.publishedSurfaceSourcesSignature=null;
@@ -1146,15 +1147,61 @@ export class WaterRenderer{
     const terrain=explicit?null:this.surfaceResolver.sampleHeightAtWorld(point.x,point.z,allMap);
     const depth=explicit?Math.max(0,Number(point.depth)):Math.max(0,Number(point.level)-(terrain==null?Number(point.level):Number(terrain)));
     const t=smooth01(depth/WATER_DEPTH_RANGE);
-    let color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
+    const color=mixColor(WATER_SHALLOW_COLOR,WATER_DEEP_COLOR,t);
+    const alpha=WATER_SHALLOW_ALPHA+(WATER_DEEP_ALPHA-WATER_SHALLOW_ALPHA)*t;
+    return{depth,...this.waterTurbidityVisual(color,alpha,turbidity)};
+  }
+
+  // Keep the authored optical coefficients. No moving sediment mesh, new
+  // shader, hydraulic approximation or second simulation of concentration.
+  waterTurbidityVisual(color,alpha,turbidity){
     const murky=clamp(Number(turbidity||0),0,1);
-    if(murky>EPSILON)color=mixColor(color,WATER_MURKY_COLOR,murky*.58);
-    const alpha=clamp(
-      WATER_SHALLOW_ALPHA+(WATER_DEEP_ALPHA-WATER_SHALLOW_ALPHA)*t+murky*.06,
-      WATER_SHALLOW_ALPHA,
-      .88
-    );
-    return{depth,color,alpha};
+    return{color:mixColor(color,WATER_MURKY_COLOR,murky*.58),
+      alpha:clamp(alpha+murky*.06,WATER_SHALLOW_ALPHA,.88)};
+  }
+
+  // Bilinear samples at the *existing* water vertices, anchored to the
+  // canonical wet polygon owners. Only directly connected local D/Q cells
+  // can contribute: never bleed across a cliff, cascade or optical group.
+  localWaterTurbidity(x,z,owners,byKey,stored){
+    const gx=x/TILE_SIZE,gz=z/TILE_SIZE,ix=Math.floor(gx),iz=Math.floor(gz);
+    const fx=gx-ix,fz=gz-iz,candidates=[];
+    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+      const tile=byKey.get(keyOf(ix+dx,iz+dy));
+      if(tile)candidates.push({tile,weight:(dx?fx:1-fx)*(dy?fz:1-fz)});
+    }
+    const reached=new Set(),queue=[];
+    for(const owner of owners||[]){reached.add(owner);queue.push(owner);}
+    for(let i=0;i<queue.length;i++)for(const {tile} of candidates){
+      if(!reached.has(tile)&&this.surfaceEdgeContinuous(queue[i],tile)){
+        reached.add(tile);queue.push(tile);
+      }
+    }
+    let weight=0,sum=0;
+    for(const sample of candidates){
+      if(!reached.has(sample.tile)||hasAnyWater(sample.tile)!==stored)continue;
+      weight+=sample.weight;sum+=sample.weight*this.turbidity(sample.tile);
+    }
+    if(weight>0)return sum/weight;
+    // Rugged shoulders may extend outside their owner's centre stencil.
+    // Keep the actual owner as the only fallback, not a component average.
+    const fallback=(owners||[]).filter(tile=>hasAnyWater(tile)===stored);
+    return average(fallback.map(tile=>this.turbidity(tile)));
+  }
+
+  applyLocalWaterTurbidity(out,resolved){
+    // No additional per-vertex work for the common wholly clear region.
+    const tiles=resolved.tiles.map(item=>item.tile);
+    if(!tiles.some(tile=>this.turbidity(tile)>0))return;
+    const byKey=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),tile]));
+    for(let i=0;i<out.positions.length/3;i++){
+      const murky=this.localWaterTurbidity(out.positions[i*3],out.positions[i*3+2],
+        out.vertexContactTiles[i],byKey,out.storedVertexAuthority[i]);
+      if(murky<=0)continue;
+      const offset=i*4,visual=this.waterTurbidityVisual(out.colors.slice(offset,offset+3),out.colors[offset+3],murky);
+      out.colors[offset]=visual.color[0];out.colors[offset+1]=visual.color[1];
+      out.colors[offset+2]=visual.color[2];out.colors[offset+3]=visual.alpha;
+    }
   }
 
   onRenderedCliffWaterSeam(tile,point,allMap,localCliffSeams=null){
@@ -1187,7 +1234,7 @@ export class WaterRenderer{
     return false;
   }
 
-  addVertex(out,cache,point,allMap,turbidity,tile,sources=[],knownMotion=null,localCliffSeams=null,prepared=null){
+  addVertex(out,cache,point,allMap,tile,sources=[],knownMotion=null,localCliffSeams=null,prepared=null){
     const y=Number(point.level)*ELEVATION_HEIGHT+SURFACE_OFFSET;
     const seam=this.canonicalWaterPoint({x:Number(point.x),y,z:Number(point.z)});
     // A topological contact uses one XYZ even when the two local D/Q solvers
@@ -1219,7 +1266,7 @@ export class WaterRenderer{
       // second height layer inside the same connected water component.
       if(hasAnyWater(tile)&&!out.storedVertexAuthority[existing]){
         out.positions[existing*3+1]=seam.y;
-        const visual=prepared?.visual||this.waterVertexVisual(point,allMap,turbidity);
+        const visual=prepared?.visual||this.waterVertexVisual(point,allMap);
         if(prepared&&!prepared.visual)prepared.visual=visual;
         out.colors[existing*4]=visual.color[0];
         out.colors[existing*4+1]=visual.color[1];
@@ -1239,7 +1286,7 @@ export class WaterRenderer{
       return existing;
     }
 
-    const visual=prepared?.visual||this.waterVertexVisual(point,allMap,turbidity);
+    const visual=prepared?.visual||this.waterVertexVisual(point,allMap);
     if(prepared&&!prepared.visual)prepared.visual=visual;
     const index=out.positions.length/3;
     out.positions.push(seam.x,seam.y,seam.z);
@@ -1692,13 +1739,13 @@ export class WaterRenderer{
   // geometry, vertex indices, or a second water owner: every published mesh is
   // still assembled by addVertex in one canonical D/Q order. Reusing samples
   // cannot change the stored-D precedence at a shared vertex.
-  preparedSurfaceTileSamples(component,tile,polygons,allMap,turbidity,sources,cliffSeams,reuse){
+  preparedSurfaceTileSamples(component,tile,polygons,allMap,sources,cliffSeams,reuse){
     if(!reuse)return null;
     const start=performance.now(),key=keyOf(tile.x,tile.y);
     const sourcesSignature=JSON.stringify(sources.map(source=>[source.x,source.z,source.rate]));
     const previous=reuse.previous.get(key)?.vertexSamples,stored=hasAnyWater(tile);
     if(previous?.componentId===component.id&&previous.polygons===polygons&&
-      previous.stored===stored&&previous.turbidity===turbidity&&
+      previous.stored===stored&&
       previous.sourcesSignature===sourcesSignature&&!reuse.dirtyKeys.has(key)){
       const owned=reuse.next.get(key)||{componentId:component.id,owned:polygons};
       owned.vertexSamples=previous;reuse.next.set(key,owned);
@@ -1712,7 +1759,7 @@ export class WaterRenderer{
     // without providing a cache hit. addVertex fills only requested samples.
     const samples=polygons.map(polygon=>polygon.map(()=>({})));
     const owned=reuse.next.get(key)||{componentId:component.id,owned:polygons};
-    owned.vertexSamples={componentId:component.id,polygons,stored,turbidity,
+    owned.vertexSamples={componentId:component.id,polygons,stored,
       sourcesSignature,samples};
     reuse.next.set(key,owned);
     reuse.metrics.tilesEvaluated++;
@@ -1787,7 +1834,7 @@ export class WaterRenderer{
   // and canonical sharing rules. If any GPU-representable vertex differs, the
   // caller must use the complete conforming geometry path instead.
   refreshSurfaceAttributes(component,resolved,state,mesh,entry,allMap,vertexReuse=null){
-    if(!mesh||!entry||!this.gpuSurfaceWaves)return false;
+    if(!mesh||!entry)return false;
     const out=this.createSurfaceVertexAccumulator();
     const cache=new Map(),cliffSeams=new Map();
     const sources=component.sources??this.activeHydrologySources(state);
@@ -1796,11 +1843,12 @@ export class WaterRenderer{
     const turbidity=average(baseTiles.map(tile=>this.turbidity(tile)));
     for(const {tile,polygons,motion} of resolved.tiles){
       const samples=this.preparedSurfaceTileSamples(component,tile,polygons,allMap,
-        turbidity,sources,cliffSeams,vertexReuse);
+        sources,cliffSeams,vertexReuse);
       for(let pi=0;pi<polygons.length;pi++)for(let vi=0;vi<polygons[pi].length;vi++)
-        this.addVertex(out,cache,polygons[pi][vi],allMap,turbidity,tile,sources,motion,
+        this.addVertex(out,cache,polygons[pi][vi],allMap,tile,sources,motion,
           cliffSeams,samples?.[pi]?.[vi]);
     }
+    this.applyLocalWaterTurbidity(out,resolved);
     const rest=entry.basePositions;
     if(out.positions.length!==rest.length)return false;
     for(let i=0;i<out.positions.length;i++)
@@ -1828,7 +1876,8 @@ export class WaterRenderer{
     // using the EXISTING indices and ranges; it also updates GPU wave inputs.
     entry.frozenWaveSignature=null;
     const flow=this.componentFlow(component);
-    mesh.metadata.componentTurbidity=turbidity;
+    mesh.metadata.componentTurbidity=turbidity; // diagnostic only, never a vertex input
+    mesh.metadata.turbidityOwner="LOCAL_WATER_VERTEX";
     mesh.metadata.waterSourceUpwelling=sources.length>0;
     mesh.metadata.waveDirection=flow.flowing?{x:flow.x,z:flow.z}:null;
     mesh.metadata.averageFlowSpeed=flow.flowing?flow.speed:0;
@@ -1849,16 +1898,17 @@ export class WaterRenderer{
       const geometry=this.surfaceResolver.getRenderedSurfaceGeometry(tile);
       terrainTriangles+=geometry?.triangles?.length||0;
       const samples=this.preparedSurfaceTileSamples(component,tile,polygons,tileMap,
-        componentTurbidity,sources,localCliffSeams,vertexReuse);
+        sources,localCliffSeams,vertexReuse);
       for(let pi=0;pi<polygons.length;pi++){
         const polygon=polygons[pi];
         waterPolygons++;clippedPoints+=polygon.filter(point=>point.clipped).length;
         const vertices=polygon.map((point,vi)=>this.addVertex(out,cache,point,tileMap,
-          componentTurbidity,tile,sources,motion,localCliffSeams,samples?.[pi]?.[vi]));
+          tile,sources,motion,localCliffSeams,samples?.[pi]?.[vi]));
         wetPolygons.push(vertices);
         polygonOwners.push(keyOf(tile.x,tile.y));
       }
     }
+    this.applyLocalWaterTurbidity(out,resolved);
     const exactLayout=this.surfaceTopologyLayout(component,out,wetPolygons,polygonOwners);
     const cachedLayout=this.surfaceTopologyLayouts.get(component.id);
     let triangulation;
@@ -1939,7 +1989,7 @@ export class WaterRenderer{
     mesh.material=this.surfaceMaterial;mesh.alphaIndex=SURFACE_RENDER_ORDER.STORED_WATER;mesh.useVertexColors=true;mesh.hasVertexAlpha=true;mesh.isPickable=false;mesh.visibility=component.group==="fogged"?.22:1;
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
-      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
+      qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,turbidityOwner:"LOCAL_WATER_VERTEX",vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
       exclusiveSubmergedShoulders,clippedSubmergedShoulders};
     const flow=this.componentFlow(component);
     const {vertexFlowX,vertexFlowZ,vertexFlowSpeeds,waterAnim,waterBaseXZ,waterSource}=
@@ -2960,7 +3010,7 @@ export class WaterRenderer{
       waterDepth(tile).toFixed(4),
       hasAnyWater(tile)?visualSurface(tile).toFixed(4):"dry",
       Number(tile.flowX||0),Number(tile.flowY||0),Number(tile.flowSpeed||0).toFixed(3),
-      Number(tile.waterTurbidity||0).toFixed(3),
+      this.turbidity(tile),
       tile.hydrologySource===true&&tile.hydrologySourceDisabled!==true?1:0,
       Number(tile.hydrologySourceInflow||0).toFixed(4),
       tile.hydrologyCascadeToX??"n",tile.hydrologyCascadeToY??"n",Number(tile.hydrologyCascadeDrop||0).toFixed(3),

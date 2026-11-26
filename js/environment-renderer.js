@@ -667,6 +667,21 @@ export class EnvironmentRenderer{
     this.massFlowEffects=[];
   }
 
+  // Query the same final D/Q triangles already used by ice/snow, including
+  // real clipped shores. A wet tile label alone is not a wet footprint.
+  massFlowUnderWater(x,y,z){
+    const published=this.water?.publishedWaterTileTriangles;
+    if(!published?.size)return false;
+    const ix=Math.round(x/TILE_SIZE),iz=Math.round(z/TILE_SIZE);
+    // Published rugged cliff shoulders can extend beyond the nominal cell.
+    for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){
+      if(!published.has(this.surfaceResolver.keyOf(ix+dx,iz+dz)))continue;
+      const surface=this.publishedWaterYAt({x:ix+dx,y:iz+dz},x,z);
+      if(surface!=null&&surface>y)return true;
+    }
+    return false;
+  }
+
   createMassFlow(event,state,previousState){
     const kind=event.material==="SNOW"?"SNOW":event.material==="SOIL"?"SOIL":"ROCK";
     const byKey=new Map((state?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t]));
@@ -732,7 +747,13 @@ export class EnvironmentRenderer{
         for(let r=0;r<3;r++)for(let c=0;c<3;c++){
           const n=r*4+c;
           const triangles=((p.x+p.y+r+c)&1)===0?[[n,n+1,n+5],[n,n+5,n+4]]:[[n,n+1,n+4],[n+1,n+5,n+4]];
-          for(const tri of triangles)if(tri.some(v=>positions[v*3+1]-target[v*3+1]>.001))indices.push(...tri);
+          for(const tri of triangles){
+            if(!tri.some(v=>positions[v*3+1]-target[v*3+1]>.001))continue;
+            // Submerged sediment/erosion is already expressed by canonical
+            // ground material and water optics, not a travelling solid cap.
+            if(kind==="SOIL"&&tri.every(v=>this.massFlowUnderWater(target[v*3],target[v*3+1],target[v*3+2])))continue;
+            indices.push(...tri);
+          }
         }
         if(!indices.length)continue;
         const mesh=new BABYLON.Mesh("mass-flow-erosion-fragment",this.scene),data=new BABYLON.VertexData(),normals=[];
@@ -782,7 +803,7 @@ export class EnvironmentRenderer{
         for(const item of effect.pieces){
           if(item.contact){
             const q=clamp(effect.age/.36,0,1),m=item.mesh,c=item.contact;
-            if(q>=1){m.setEnabled(false);continue;}
+            if(q>=1||(effect.kind!=="SNOW"&&this.massFlowUnderWater(c.x,c.y,c.z))){m.setEnabled(false);continue;}
             const size=effect.scale*TILE_SIZE*(.28+.65*q);
             m.setEnabled(true);m.position.set(c.x,c.y+size*.36,c.z);
             m.rotation.set(0,0,0);m.scaling.set(size,size*.7,size);m.visibility=1-q;continue;
@@ -798,7 +819,14 @@ export class EnvironmentRenderer{
           const bounce=part===1&&effect.kind==="ROCK"?Math.abs(Math.sin(q*Math.PI*2))*TILE_SIZE*.18:0;
           const size=effect.scale*TILE_SIZE*(part===0?.48:part===1?.16:.55);
           const settle=clamp(1-Math.max(0,u-steps)/.65,0,1);
-          m.setEnabled(true);m.position.set(a.x+dx*q-dz/len*side,height+size*(part===2?.5:.22)+bounce,a.z+dz*q+dx/len*side);
+          const x=a.x+dx*q-dz/len*side,z=a.z+dz*q+dx/len*side;
+          // Soil/mud and rock dust stop being solid VFX when they enter the
+          // published wet footprint. Only discrete rock fragments keep their
+          // physical falling presentation. Hydrology owns suspended sediment.
+          if((effect.kind==="SOIL"||(effect.kind==="ROCK"&&part!==1))&&this.massFlowUnderWater(x,height,z)){
+            m.setEnabled(false);continue;
+          }
+          m.setEnabled(true);m.position.set(x,height+size*(part===2?.5:.22)+bounce,z);
           m.scaling.set(size,size*(part===0?.42:part===2?.64:.85)*settle,size*(part===0?1.45:1));
           m.rotation.set(part===1?effect.age*7+i:0,Math.atan2(dx,dz)+(part===1?effect.age*5:0),0);
           m.visibility=part===2?Math.max(0,1-t):settle;
