@@ -72,7 +72,7 @@ function stability(state,tile,map=null,knownRoots=null){
 function riskBucket(tile,kind){tile.massFlowRisk??={};tile.massFlowRisk[kind]??={warningTurn:null,cooldownUntil:0};return tile.massFlowRisk[kind];}
 function resetRisk(tile,kind){const bucket=riskBucket(tile,kind);bucket.warningTurn=null;}
 function markCooldown(flow,kind,turn){for(const p of flow?.path||[]){const tile=p.tile||p._tile||null;void tile;}}
-function ensureTileState(map,state){
+function ensureTileState(map,state,events=[]){
   const turn=turnOf(state);
   for(const tile of map?.tiles||[]){
     const firstThisTurn=Number(tile._environmentStateTurn)!==turn;
@@ -86,7 +86,7 @@ function ensureTileState(map,state){
     if(firstThisTurn){
       tile.rockFracture=rockMaterial(tile,map)?clean(Number(tile.rockFracture||0)*CFG.ROCK_FRACTURE_DECAY):0;
       tile.disturbance=clean(Number(tile.disturbance||0)*CFG.DISTURBANCE_DECAY);
-      if(Number(tile.waterTurbidity||0)>0)tile.waterTurbidity=clean(Math.max(0,Number(tile.waterTurbidity||0)-CFG.TURBIDITY_SETTLE_PER_TURN));
+      globalThis.HydrologyEngine?.settleSediment?.(tile,CFG.TURBIDITY_SETTLE_PER_TURN,events);
       tile._environmentStateTurn=turn;
     }
   }
@@ -95,14 +95,8 @@ function createFlow(map,start,kind,mass){return globalThis.MassFlowEngine?.trace
 function applyFlowTerrain(map,state,flow,events,source){
   if(!flow)return null;
   const result=MassFlowEngine.apply(map,flow,{events,source});
-  for(const p of flow.path||[]){
-    const t=tileAt(map,p.x,p.y);if(!t)continue;
-    if(flow.material==="SNOW"&&globalThis.ClimateEngine?.syncTileVisuals)ClimateEngine.syncTileVisuals(state,t);
-    if(water(t)>.001&&(flow.material==="SOIL"||flow.material==="ROCK"||flow.material==="DEBRIS")){
-      const added=flow.material==="SOIL"?.42:.28;
-      t.waterTurbidity=clean(clamp(Number(t.waterTurbidity||0)+Math.min(.6,Number(flow.mass||0)*added),0,1));
-      events.push({type:"WATER_TURBIDITY_CHANGED",x:t.x,y:t.y,turbidity:t.waterTurbidity,material:flow.material,source});
-    }
+  for(const p of flow.cells||flow.path||[]){
+    const t=tileAt(map,p.x,p.y);if(t&&flow.material==="SNOW"&&globalThis.ClimateEngine?.syncTileVisuals)ClimateEngine.syncTileVisuals(state,t);
   }
   return result;
 }
@@ -160,16 +154,16 @@ function selectCandidates(candidates,source){
 }
 function applyCandidate(map,state,candidate,events){
   const turn=turnOf(state),{kind,flow,tile,source}=candidate;
-  if(kind==="ROCK")tile.rockMass=clean(Math.max(0,Number(candidate.available||rockMass(tile,map))-Number(candidate.released||0)));
   const terrain=applyFlowTerrain(map,state,flow,events,source);
-  for(const p of flow.path||[]){const t=tileAt(map,p.x,p.y);if(!t)continue;const bucket=riskBucket(t,kind);bucket.warningTurn=null;bucket.cooldownUntil=turn+CFG.NATURAL_FLOW_COOLDOWN_TURNS;}
+  if(!terrain?.changed||flow.mass<=0)return;
+  for(const p of flow.cells||flow.path||[]){const t=tileAt(map,p.x,p.y);if(!t)continue;const bucket=riskBucket(t,kind);bucket.warningTurn=null;bucket.cooldownUntil=turn+CFG.NATURAL_FLOW_COOLDOWN_TURNS;}
   if(kind==="SNOW")events.push(MassFlowEngine.event(flow,{source,damage:16+flow.mass*18,forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.4)))}));
   else if(kind==="SOIL")events.push(MassFlowEngine.event(flow,{source,damage:12+flow.mass*20,forceDistance:Math.max(1,Math.min(3,Math.ceil(flow.mass/1.2))),extra:{terrainEvolution:terrain}}));
   else events.push(MassFlowEngine.event(flow,{source,damage:20+flow.mass*24,forceDistance:Math.max(1,Math.min(4,Math.ceil(flow.mass/1.1))),extra:{terrainEvolution:terrain}}));
 }
 function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
   const started=globalThis.performance?.now?.()??0;
-  const events=[];if(!map||!state)return events;ensureTileState(map,state);
+  const events=[];if(!map||!state)return events;ensureTileState(map,state,events);
   for(const tile of map.tiles||[]){
     if(tile.frozenSoil&&!tile._frozenSoil)events.push({type:"SOIL_FROZEN",x:tile.x,y:tile.y,temperature:tile.temperature,soilMoisture:moisture(tile)});
     if(!tile.frozenSoil&&tile._frozenSoil)events.push({type:"SOIL_THAWED",x:tile.x,y:tile.y,temperature:tile.temperature,soilMoisture:moisture(tile)});
@@ -189,8 +183,8 @@ function resolve(map,state,{source="ENVIRONMENT_TICK"}={}){
   for(const candidate of selected)applyCandidate(map,state,candidate,events);
   if(source==="ENVIRONMENT_TICK"&&selected.length)state._naturalMassFlowResolvedTurn=turnOf(state);
 
-  if(events.some(e=>e.type==="ELEVATION_CHANGED"&&e.source&&String(e.source).includes("FAILURE")))globalThis.HydrologyEngine?.redistribute?.(map,{source:"MASS_FLOW",events});
-  ensureTileState(map,state);
+  if(events.some(e=>e.type==="ELEVATION_CHANGED"&&e.source&&(String(e.source).includes("FAILURE")||e.source==="SEDIMENT_SETTLEMENT")))globalThis.HydrologyEngine?.redistribute?.(map,{source:"MASS_FLOW",events});
+  ensureTileState(map,state,events);
   events.push({type:"ENVIRONMENT_RESOLVED",source,tiles:map.tiles?.length||0,massFlows:events.filter(e=>e.type==="MASS_FLOW").length,warnings:events.filter(e=>e.type==="MASS_FLOW_WARNING").length});
   if(started)globalThis.CardTacticsDiagnostics?.recordPerf?.('environmentResolveMs',(globalThis.performance?.now?.()??started)-started);
   return events;

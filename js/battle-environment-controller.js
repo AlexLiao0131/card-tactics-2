@@ -395,15 +395,16 @@ function create(ctx){
   return{completed:true};
  }
  function resolveMassFlow(event){
-  const s=state(),path=event.path||[],initial=(s.units||[]).filter(u=>u?.alive&&path.some(p=>p.x===u.x&&p.y===u.y));let count=0;
+  const s=state(),path=event.path||[],cells=event.cells||path,initial=(s.units||[]).filter(u=>u?.alive&&cells.some(p=>p.x===u.x&&p.y===u.y));let count=0;
   // Preserve authoritative path before movement/damage animations enter the same event queue.
-  const presentation=path.length>=2?globalThis.UnitAnimationEngine?.emitPresentation?.("MASS_FLOW",{...event,path:path.map(p=>({...p})),contacts:[]}):null;
+  const presentation=path.length>=2?globalThis.UnitAnimationEngine?.emitPresentation?.("MASS_FLOW",{...event,path:path.map(p=>({...p})),cells:cells.map(p=>({...p})),contacts:[]}):null;
   const material=event.material||"SNOW",name=material==="SOIL"?"土石流":(material==="ROCK"||material==="DEBRIS")?"山崩／落石":"雪崩";
   for(const unit of initial){
     if(!unit.alive)continue;
     const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!eventContacts(unit,tile,event))continue;
-    const index=path.findIndex(p=>p.x===unit.x&&p.y===unit.y),distance=Math.min(Math.max(0,Math.round(Number(event.forceDistance||1))),path.length-index-1);
-    if(index>=0&&presentation)presentation.contacts.push({unitId:unit.id,x:unit.x,y:unit.y});
+    const index=path.findIndex(p=>p.x===unit.x&&p.y===unit.y),distance=index<0?0:Math.min(Math.max(0,Math.round(Number(event.forceDistance||1))),path.length-index-1);
+    if(index<0)continue; // lateral deposits are handled by BurialEngine, not full channel impact
+    if(presentation)presentation.contacts.push({unitId:unit.id,x:unit.x,y:unit.y});
     let struck=false;
     for(let step=0;step<distance&&unit.alive;step++){
       const from=path[index+step],to=path[index+step+1];
@@ -652,13 +653,14 @@ function create(ctx){
   else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="ICE_THAW")ctx.pushLog(`解凍｜${event.changedTiles||0} 格冰面變薄。`,"DETAIL");
   else if(event.type==="MASS_FLOW_WARNING"){const label=event.material==="SNOW"?"雪崩":event.material==="SOIL"?"土石流":"山崩";ctx.pushLog(`⚠️ (${event.x},${event.y}) 坡面出現${label}失穩徵兆｜若條件持續，下一個環境回合可能崩落。`,"SYSTEM");}
+  else if(event.type==="SEDIMENT_SETTLED")ctx.pushLog(`(${event.x},${event.y}) 泥沙沉積｜河床抬升 ${Number(event.amount||0).toFixed(4)}。`,"DETAIL");
   else if(event.type==="WATER_TURBIDITY_CHANGED")ctx.pushLog(`(${event.x},${event.y}) 水體受到${event.material==="SOIL"?"泥砂":"碎石"}混入，水色變混濁。`,"DETAIL");
   else if(event.type==="UNIT_BURIED"){const stage=event.fullyBuried?"完全滅頂":event.immobilized?"陷入堆積物":"部分掩埋";ctx.pushLog(`${event.name} 被${stage}｜埋深 ${Number(event.depth||0).toFixed(2)} / 身高 ${Number(event.bodyHeight||0).toFixed(2)}。`,event.immobilized?"BATTLE":"DETAIL");}
-  else if(event.type==="MASS_FLOW_TERRAIN_CHANGED")ctx.pushLog(`地貌變化｜${event.material==="SOIL"?"土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"山崩／落石":"質量流"}影響 ${event.tiles||0} 格｜高程改變 ${event.elevationChanges||0} 格｜地形類型改變 ${event.terrainChanges||0} 格。`,"DETAIL");
-  else if(event.type==="MASS_FLOW"){const label=event.material==="SOIL"?"⛰️ 土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"🪨 山崩／落石":"❄️ 雪崩";ctx.pushLog(`${label}由 (${event.x},${event.y}) 發生｜路徑 ${event.path?.length||0} 格｜質量 ${Number(event.mass||0).toFixed(2)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
+  else if(event.type==="MASS_FLOW_TERRAIN_CHANGED")ctx.pushLog(`地貌變化｜${event.material==="SOIL"?"土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"山崩／落石":"質量流"}影響 ${event.tiles||0} 格｜高程改變 ${event.elevationChanges||0} 格｜地形類型改變 ${event.terrainChanges||0} 格｜侵蝕 ${Number(event.totalErosion||0).toFixed(3)}｜堆積 ${Number(event.totalDeposit||0).toFixed(3)}｜懸浮 ${Number(event.totalSuspended||0).toFixed(3)}｜最大降幅 ${Math.max(0,...(event.cells||event.path||[]).map(p=>Number(p.elevationBefore||0)-Number(p.elevationAfter||0))).toFixed(3)}｜最大抬升 ${Math.max(0,...(event.cells||event.path||[]).map(p=>Number(p.elevationAfter||0)-Number(p.elevationBefore||0))).toFixed(3)}。`,"DETAIL");
+  else if(event.type==="MASS_FLOW"){const label=event.material==="SOIL"?"⛰️ 土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"🪨 山崩／落石":"❄️ 雪崩";const cells=event.cells||event.path||[],snow=event.material==="SNOW",lower=Math.max(0,...cells.map(p=>snow?Number(p.snowDepthBefore||0)-Number(p.snowDepthAfter||0):Number(p.elevationBefore||0)-Number(p.elevationAfter||0))),rise=Math.max(0,...cells.map(p=>snow?Number(p.snowDepthAfter||0)-Number(p.snowDepthBefore||0):Number(p.elevationAfter||0)-Number(p.elevationBefore||0)));ctx.pushLog(`${label}由 (${event.x},${event.y}) 發生｜路徑 ${event.path?.length||0} 格｜影響 ${cells.length} 格｜質量 ${Number(event.mass||0).toFixed(3)}｜最大${snow?"雪深減少":"高程下降"} ${lower.toFixed(3)}｜最大${snow?"雪深增加":"高程抬升"} ${rise.toFixed(3)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
   else if(event.type==="SOIL_FROZEN")ctx.pushLog(`🧊 (${event.x},${event.y}) 含水土壤凍結｜形成凍土。`,"DETAIL");
   else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
-  else if(event.type==="AVALANCHE")ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜衝擊 ${event.damage||0}。`,"SYSTEM");
+  else if(event.type==="AVALANCHE"){const cells=event.cells||event.path||[],lower=Math.max(0,...cells.map(p=>Number(p.snowDepthBefore||0)-Number(p.snowDepthAfter||0))),rise=Math.max(0,...cells.map(p=>Number(p.snowDepthAfter||0)-Number(p.snowDepthBefore||0)));ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜影響 ${cells.length} 格｜最大雪深減少 ${lower.toFixed(3)}｜最大雪深增加 ${rise.toFixed(3)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
  }
  return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveTsunamiWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});
 }

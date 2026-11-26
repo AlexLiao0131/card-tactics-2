@@ -248,7 +248,7 @@ export const ClimateEngine=(()=>{
     const flow=MassFlowEngine.trace(map,start,"SNOW",released,{maxSteps:Math.min(12,Number(map.width||0)+Number(map.height||0))});
     if(!flow||flow.path.length<2)return[];
     const events=[];MassFlowEngine.apply(map,flow,{events,source});
-    for(const p of flow.path){const t=tileAt(map,p.x,p.y);if(t&&state)syncTileVisuals(state,t);}
+    for(const p of flow.cells||flow.path){const t=tileAt(map,p.x,p.y);if(t&&state)syncTileVisuals(state,t);}
     const damage=Math.round((18+flow.mass*18)*Math.max(.75,Math.min(1.5,Number(strength||1)))),forceDistance=Math.max(1,Math.min(3,Math.round(flow.mass/1.4)));
     events.push(MassFlowEngine.event(flow,{type:"AVALANCHE",source,damage,forceDistance,extra:{strength:Number(strength||1)}}));
     return events;

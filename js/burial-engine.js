@@ -49,7 +49,7 @@ export const BurialEngine=(()=>{
     const flowType=type==="SNOW"?"MASS_FLOW_SNOW_REDISTRIBUTED":"MASS_FLOW_TERRAIN_CHANGED";
     for(const event of events||[]){
       if(event?.type!==flowType)continue;
-      for(const point of event.path||[])cells.add(key(point.x,point.y));
+      for(const point of event.cells||event.path||[])cells.add(key(point.x,point.y));
     }
     return cells;
   }

@@ -61,7 +61,69 @@ export const HydrologyEngine=(()=>{
       default:return PLAIN_INFILTRATION_PER_TURN;
     }
   };
-  const turbidity=t=>clamp(t?.waterTurbidity||0,0,1);
+  // Canonical suspended solid volume. Legacy saves are migrated from their
+  // concentration once; waterTurbidity remains the derived optical value.
+  const sedimentMass=t=>Math.max(0,Number(t?.suspendedSediment??(waterDepth(t)*clamp(t?.waterTurbidity||0,0,1)))||0);
+  const turbidity=t=>waterDepth(t)>EPSILON?clamp(sedimentMass(t)/waterDepth(t),0,1):0;
+  function setSediment(tile,mass){
+    const amount=Math.max(0,Number(mass)||0);
+    if(amount>0||tile.suspendedSediment!=null)tile.suspendedSediment=amount;
+    tile.waterTurbidity=waterDepth(tile)>EPSILON?clamp(amount/waterDepth(tile),0,1):0;
+  }
+  function captureSediment(tile){const m=sedimentMass(tile);if(m>0||tile.suspendedSediment!=null)tile.suspendedSediment=m;return m;}
+  function suspendSediment(tile,requested,events=[],source="MASS_FLOW",material="SOIL"){
+    if(!tile||liquidDepth(tile)<=EPSILON)return 0;
+    const prior=sedimentMass(tile),amount=Math.floor(Math.max(0,Math.min(Number(requested)||0,liquidDepth(tile)-prior))*10000+1e-7)/10000;
+    if(!amount)return 0;
+    setSediment(tile,prior+amount);
+    events.push({type:"WATER_TURBIDITY_CHANGED",x:tile.x,y:tile.y,turbidity:tile.waterTurbidity,suspended:amount,material,source});return amount;
+  }
+  // The previous per-turn concentration loss now becomes actual bed volume.
+  // Use the existing rate supplied by EnvironmentResolver; no new decay rate.
+  function settleSediment(tile,rate,events=[],source="SEDIMENT_SETTLEMENT"){
+    const prior=sedimentMass(tile);if(prior<=0)return 0;
+    const depth=waterDepth(tile),requested=depth<=EPSILON?prior:Math.min(prior,Math.max(prior-depth,depth*Math.max(0,Number(rate)||0)));
+    const before=elevation(tile),amount=Math.floor(requested*10000+1e-7)/10000;
+    if(!amount)return 0;
+    tile.elevation=roundSigned(before+amount);setSediment(tile,prior-amount);
+    tile.sedimentDeposit=clean(Number(tile.sedimentDeposit||0)+amount);
+    // A new fine-grained bed coating uses the existing soil-deposition
+    // material transition threshold. A small deposit is not an entire rock bed.
+    if(tile.sedimentDeposit>=.14){
+      if(TerrainMaterial.bedComposition(tile))setGroundMaterial(tile,"SILT",events,source);
+      else if(!TerrainMaterial.hasSoil(tile))setGroundMaterial(tile,"SOIL",events,source);
+    }
+    events.push({type:"ELEVATION_CHANGED",x:tile.x,y:tile.y,from:before,to:tile.elevation,deltaElevation:amount,erosion:0,deposit:amount,source,material:"SOIL"});
+    events.push({type:"SEDIMENT_SETTLED",x:tile.x,y:tile.y,amount,turbidity:tile.waterTurbidity,source});
+    return amount;
+  }
+  function remobilizeSediment(map,edgeNet,volumeScale,events){
+    if(!(map.tiles||[]).some(t=>Number(t.sedimentDeposit||0)>EPSILON))return;
+    const outgoing=new Map();
+    for(const edge of edgeNet.values()){
+      if(Math.abs(edge.net)<=EPSILON||edge.maxHead<=EPSILON)continue;
+      const from=edge.net>0?edge.first:edge.second,k=key(from.x,from.y);
+      outgoing.set(k,Number(outgoing.get(k)||0)+Math.abs(edge.net));
+    }
+    for(const tile of map.tiles||[]){
+      const loose=Math.max(0,Number(tile.sedimentDeposit||0));if(loose<=EPSILON||liquidDepth(tile)<=EPSILON)continue;
+      // Generated-river throughflow is measured separately from lake/land D
+      // transfers. Use its actual outflow, not potential discharge capacity.
+      const river=map.hydrology?.generatedRiverProfile===true&&tile.river===true?Math.max(0,Number(tile.hydrologyMeasuredOutflowRate||0))*volumeScale:0;
+      const moved=Number(outgoing.get(key(tile.x,tile.y))||0)+river;
+      if(moved<=EPSILON)continue;
+      const portion=moved/(liquidDepth(tile)+moved),before=elevation(tile);
+      const amount=suspendSediment(tile,loose*portion,events,"SEDIMENT_REENTRAINMENT","SOIL");if(!amount)continue;
+      tile.sedimentDeposit=clean(Math.max(0,loose-amount));tile.elevation=roundSigned(before-amount);sync(tile,events);
+      events.push({type:"ELEVATION_CHANGED",x:tile.x,y:tile.y,from:before,to:tile.elevation,deltaElevation:-amount,erosion:amount,deposit:0,source:"SEDIMENT_REENTRAINMENT",material:"SOIL"});
+      events.push({type:"SEDIMENT_REENTRAINED",x:tile.x,y:tile.y,amount,source:"SEDIMENT_REENTRAINMENT"});
+    }
+  }
+  function exportSediment(tile,amount,events,source){
+    const prior=sedimentMass(tile),depth=waterDepth(tile),removed=depth>EPSILON?prior*Math.min(1,amount/depth):0;
+    if(removed>0){setSediment(tile,prior-removed);events.push({type:"SEDIMENT_DRAINED_OFF_MAP",x:tile.x,y:tile.y,amount:removed,source});}
+  }
+
 
   function tileAt(map,x,y){return map?.tiles?.find(t=>t.x===x&&t.y===y)||null}
   function surfaceWaterVolume(map){return(map?.tiles||[]).reduce((sum,t)=>sum+waterDepth(t),0)}
@@ -1055,7 +1117,7 @@ export const HydrologyEngine=(()=>{
     if(!tile)return;
     const d=waterDepth(tile);tile.waterDepth=d<=EPSILON?0:clean(d);
     tile.waterSurfaceZ=tile.waterDepth>0?elevation(tile)+tile.waterDepth:null;
-    if(tile.waterDepth<=0)tile.waterTurbidity=0;
+    setSediment(tile,sedimentMass(tile));
     if(tile.waterDepth>0&&tile.terrain!=="WATER"){
       const base=tile.terrain,moisture=hasSoil(tile)?soilMoisture(tile):0;tile.dryTerrain=base;
       // Surface coverage and soil saturation are different stores. Converting a
@@ -1093,7 +1155,7 @@ export const HydrologyEngine=(()=>{
   }
 
   function setWaterDepth(tile,nextDepth,events=[],source="HYDROLOGY"){
-    if(!tile)return 0;const before=waterDepth(tile),next=clean(Math.max(frozenDepth(tile),Number(nextDepth||0)));tile.waterDepth=next;
+    if(!tile)return 0;const sediment=captureSediment(tile),before=waterDepth(tile),next=clean(Math.max(frozenDepth(tile),Number(nextDepth||0)));tile.waterDepth=next;setSediment(tile,sediment);
     if(Math.abs(next-before)>EPSILON)events.push({type:next>before?"WATER_ACCUMULATED":"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:next,waterSurfaceZ:next>0?elevation(tile)+next:null,source});
     sync(tile,events);return next-before;
   }
@@ -1118,12 +1180,10 @@ export const HydrologyEngine=(()=>{
   function pairEquilibrium(a,b,minA=0,minB=0){
     if(!canHoldWater(a)||!canHoldWater(b))return 0;
     const va=waterDepth(a),vb=waterDepth(b),total=va+vb;if(total<=EPSILON)return 0;
-    const sediment=turbidity(a)*va+turbidity(b)*vb;
+    const sediment=sedimentMass(a)+sedimentMass(b);
     const{nextA,nextB}=pairTargetDepths(a,b,va,vb,minA,minB);
     const delta=Math.max(Math.abs(nextA-va),Math.abs(nextB-vb));a.waterDepth=nextA;b.waterDepth=nextB;
-    const concentration=total>EPSILON?clamp(sediment/total,0,1):0;
-    if(nextA>EPSILON)a.waterTurbidity=clean(concentration);else a.waterTurbidity=0;
-    if(nextB>EPSILON)b.waterTurbidity=clean(concentration);else b.waterTurbidity=0;
+    setSediment(a,sediment*nextA/total);setSediment(b,sediment*nextB/total);
     return delta;
   }
 
@@ -1169,7 +1229,7 @@ export const HydrologyEngine=(()=>{
   // of string-key Map operations/temporary objects during long lake equalization.
   function flowIteration(map,by,fed,edgeNet,topology){
     const {tiles,floors,edges}=topology,n=tiles.length;
-    const snapshots=tiles.map(tile=>({depth:waterDepth(tile),turbidity:turbidity(tile)}));
+    const snapshots=tiles.map(tile=>({depth:waterDepth(tile),sediment:sedimentMass(tile)}));
     const proposals=[],outgoing=new Float64Array(n);
     for(const [ai,bi]of edges){
       const a=tiles[ai],b=tiles[bi],aSnap=snapshots[ai],bSnap=snapshots[bi];
@@ -1194,18 +1254,17 @@ export const HydrologyEngine=(()=>{
       const scale=Math.min(1,available/requested),amount=proposal.amount*scale;
       if(amount<=EPSILON)continue;
       depthDelta[fi]-=amount;depthDelta[ti]+=amount;
-      const sediment=amount*Number(snap.turbidity||0);
+      const sediment=snap.depth>EPSILON?amount*snap.sediment/snap.depth:0;
       sedimentDelta[fi]-=sediment;sedimentDelta[ti]+=sediment;
       accumulateEdgeTransfer(edgeNet,tiles[fi],tiles[ti],amount,proposal.fromSurface,proposal.toSurface);
     }
 
     for(let i=0;i<n;i++){
       const tile=tiles[i],snap=snapshots[i],delta=depthDelta[i];
-      if(Math.abs(delta)<=EPSILON)continue;
+      if(Math.abs(delta)<=EPSILON&&Math.abs(sedimentDelta[i])<=Number.EPSILON)continue;
       const next=Math.max(floors[i],snap.depth+delta);
-      const sedimentMass=Math.max(0,snap.depth*snap.turbidity+sedimentDelta[i]);
       tile.waterDepth=next;
-      tile.waterTurbidity=next>EPSILON?clean(clamp(sedimentMass/next,0,1)):0;
+      setSediment(tile,snap.sediment+sedimentDelta[i]);
       maxDelta=Math.max(maxDelta,Math.abs(next-snap.depth));
     }
     return maxDelta;
@@ -1660,7 +1719,7 @@ export const HydrologyEngine=(()=>{
       if(remainingBudget<=EPSILON)continue;
       const requested=Math.min(available,remainingBudget),excess=saturateSoil(tile,requested,events,source),used=requested-excess;
       if(used>EPSILON){
-        tile.waterDepth=clean(Math.max(floor,before-used));absorbed+=used;
+        const sediment=captureSediment(tile);tile.waterDepth=clean(Math.max(floor,before-used));setSediment(tile,sediment);absorbed+=used;
         if(budget instanceof Map)budget.set(k,clean(Math.max(0,remainingBudget-used)));
         events.push({type:"WATER_INFILTRATED",x:tile.x,y:tile.y,amount:clean(used),waterDepth:tile.waterDepth,remainingInfiltrationBudget:budget instanceof Map?Number(budget.get(k)||0):null,source});
       }
@@ -1857,9 +1916,16 @@ export const HydrologyEngine=(()=>{
       }
       if(!adjusted)break;
     }
+    // Use the corrected, actual transfer amounts, not the proposed river Q.
+    const sedimentBefore=new Map([...by].map(([k,t])=>[k,sedimentMass(t)])),sedimentDelta=new Map();
+    for(const {from,to,volume} of transfers){
+      const fk=key(from.x,from.y),tk=key(to.x,to.y),depth=Number(snap.get(fk)||0);
+      const amount=depth>EPSILON?volume*Number(sedimentBefore.get(fk)||0)/depth:0;
+      sedimentDelta.set(fk,Number(sedimentDelta.get(fk)||0)-amount);sedimentDelta.set(tk,Number(sedimentDelta.get(tk)||0)+amount);
+    }
     for(const [k,change] of delta){
       const tile=by.get(k);
-      if(tile)setWaterDepth(tile,Math.max(0,Number(snap.get(k)||0)+change),events,source);
+      if(tile){setWaterDepth(tile,Math.max(0,Number(snap.get(k)||0)+change),events,source);setSediment(tile,Number(sedimentBefore.get(k)||0)+Number(sedimentDelta.get(k)||0));}
     }
     if(transfers.length)events.push({type:"RIVER_STORED_FLOW",source,edges:transfers.length,
       moved:clean(moved),lakeExchanged:clean(lakeExchanged),
@@ -1894,7 +1960,7 @@ export const HydrologyEngine=(()=>{
         }
       }
 
-      const carried=new Map(component.map(tile=>[key(tile.x,tile.y),0]));
+      const carried=new Map(component.map(tile=>[key(tile.x,tile.y),0])),carriedSediment=new Map();
       const ordered=[...component].sort((a,b)=>
         Number(distance.get(key(b.x,b.y))||0)-Number(distance.get(key(a.x,a.y))||0)||
         a.y-b.y||a.x-b.x
@@ -1923,7 +1989,9 @@ export const HydrologyEngine=(()=>{
 
         // Incoming stored floodwater joins this channel reach. Whatever cannot pass
         // its spare capacity remains here as elevated river stage.
-        tile.waterDepth=clean(floor+retained);
+        const prior=sedimentMass(tile)+Number(carriedSediment.get(k)||0);
+        const sedimentPass=prior*pass/Math.max(EPSILON,waterDepth(tile)+incoming);
+        tile.waterDepth=clean(floor+retained);setSediment(tile,prior-sedimentPass);
         sync(tile,events);
 
         if(pass<=EPSILON)continue;
@@ -1931,6 +1999,7 @@ export const HydrologyEngine=(()=>{
 
         if(tile.hydrologyDrain===true){
           drained+=pass;
+          if(sedimentPass>0)events.push({type:"SEDIMENT_DRAINED_OFF_MAP",x:tile.x,y:tile.y,amount:sedimentPass,source});
           events.push({
             type:"RIVER_FLOOD_WATER_DRAINED",
             x:tile.x,y:tile.y,
@@ -1959,14 +2028,14 @@ export const HydrologyEngine=(()=>{
 
         if(!downstream){
           // No valid downstream route: keep the water in this reach.
-          tile.waterDepth=clean(waterDepth(tile)+pass);
+          tile.waterDepth=clean(waterDepth(tile)+pass);setSediment(tile,prior);
           sync(tile,events);
           moved-=pass;
           continue;
         }
 
         const dk=key(downstream.x,downstream.y);
-        carried.set(dk,Number(carried.get(dk)||0)+pass);
+        carried.set(dk,Number(carried.get(dk)||0)+pass);carriedSediment.set(dk,Number(carriedSediment.get(dk)||0)+sedimentPass);
       }
 
       if(drained>EPSILON||moved>EPSILON){
@@ -2017,7 +2086,7 @@ export const HydrologyEngine=(()=>{
       const amount=clean(Math.min(available,remaining));
       if(amount<=EPSILON)continue;
       budgets.set(k,clean(Math.max(0,remaining-amount)));
-      tile.waterDepth=clean(waterDepth(tile)-amount);
+      exportSediment(tile,amount,events,source);const retained=sedimentMass(tile);tile.waterDepth=clean(waterDepth(tile)-amount);setSediment(tile,retained);
       drained+=amount;
       if(tile.river===true&&tile.hydrologyDrain===true&&map?.hydrology?.generatedRiverProfile===true){
         tile.hydrologyMeasuredOutletVolume=clean(Number(tile.hydrologyMeasuredOutletVolume||0)+amount);
@@ -2144,7 +2213,7 @@ export const HydrologyEngine=(()=>{
     let changed=0;
     const overbank=[];
     for(const tile of map.tiles){
-      tile.waterDepth=waterDepth(tile)<=EPSILON?0:clean(tile.waterDepth);
+      const sediment=captureSediment(tile);tile.waterDepth=waterDepth(tile)<=EPSILON?0:clean(tile.waterDepth);setSediment(tile,sediment);
       const old=Number(beforeDepth.get(key(tile.x,tile.y))||0),now=waterDepth(tile);
 
       if(Math.abs(now-old)>FLOW_EPSILON){
@@ -2173,6 +2242,7 @@ export const HydrologyEngine=(()=>{
         tile.hydrologyMeasuredOutletRate=clean(Number(tile.hydrologyMeasuredOutletVolume||0)/time);
       }
     }
+    remobilizeSediment(map,edgeNet,Math.max(0,Number(volumeScale)||0),events);
     commitEdgeFlows(map,edgeNet,{source,volumeScale});
 
     if(overbank.length){
@@ -2228,7 +2298,7 @@ export const HydrologyEngine=(()=>{
       // source can replenish along an entire river reach.
       const evaporatedVolume=rate*DISCHARGE_VOLUME_PER_TURN*wetFraction;
       const removed=Math.min(removable,evaporatedVolume);if(removed<=EPSILON)continue;
-      tile.waterDepth=clean(before-removed);evaporated+=removed;changedTiles++;events.push({type:"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterDepth>0?elevation(tile)+tile.waterDepth:null,source});sync(tile,events);}
+      const sediment=captureSediment(tile);tile.waterDepth=clean(before-removed);setSediment(tile,sediment);evaporated+=removed;changedTiles++;events.push({type:"WATER_REDUCED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:tile.waterDepth>0?elevation(tile)+tile.waterDepth:null,source});sync(tile,events);}
     if(changedTiles){redistribute(map,{source,events});events.push({type:"SURFACE_WATER_EVAPORATED",source,changedTiles,amount:clean(evaporated)});}return events;
   }
 
@@ -2244,7 +2314,7 @@ export const HydrologyEngine=(()=>{
       const before=waterDepth(tile),required=Math.max(before,targetSurface-elevation(tile));
       const delivered=Math.max(0,required-before);
       const remaining=typeof intercept==="function"?Math.max(0,Math.min(delivered,Number(intercept(tile,delivered,events)))):delivered;
-      tile.waterDepth=before+remaining;
+      const sediment=captureSediment(tile);tile.waterDepth=before+remaining;setSediment(tile,sediment);
       injectedVolume+=delivered;
     }
     redistribute(map,{source,events});events.push({type:"FLOOD_AREA_RESOLVED",source,targetSurface,injectedVolume,tiles:(map?.tiles||[]).map(tile=>({x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:waterDepth(tile),waterSurfaceZ:waterSurfaceZ(tile),soilMoisture:soilMoisture(tile)}))});return events;
@@ -2265,9 +2335,9 @@ export const HydrologyEngine=(()=>{
       const received=typeof intercept==="function"?Math.max(0,Math.min(amount,Number(intercept(tile,amount,events)))):amount;
       if(received<=EPSILON)continue;
       inputWater+=received;
-      if(isWater(tile)){const before=waterDepth(tile);tile.waterDepth=before+received;events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
+      if(isWater(tile)){const sediment=captureSediment(tile),before=waterDepth(tile);tile.waterDepth=before+received;setSediment(tile,sediment);events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
       const excess=hasSoil(tile)&&!TerrainMaterial.bedComposition(tile)?saturateSoil(tile,received,events,rainSource):received;
-      if(excess>EPSILON){const before=waterDepth(tile);tile.waterDepth=before+excess;events.push({type:"SURFACE_RUNOFF",x:tile.x,y:tile.y,amount:excess,source:rainSource});}
+      if(excess>EPSILON){const sediment=captureSediment(tile),before=waterDepth(tile);tile.waterDepth=before+excess;setSediment(tile,sediment);events.push({type:"SURFACE_RUNOFF",x:tile.x,y:tile.y,amount:excess,source:rainSource});}
     }
     events.push({type:"RAIN_PRECIPITATION_WATER_INPUT",source:rainSource,volume:clean(inputWater)});
     redistribute(map,{source:rainSource,events,riverPulse:true});return events;
@@ -2288,7 +2358,7 @@ export const HydrologyEngine=(()=>{
     initializeMap,normalizeRiverNetwork,isPhysicalOutlet,outletSpillAudit,refreshRiverChannelCapacity,refreshOutletHydraulics,outletProfile,outletDrainBudgets,reconcileRiverDischarge,releaseStoredRiverWater,riverFlowBudget,activeSourceTiles,updateSourceYields,advanceSources,settleInitialSources,sourceRecessionActive,deactivateSource,advanceSourceRecession,edgeFlowState,reconcilePersistentEdgeDischarge,clearEdgeFlows,tileAt,elevation,waterDepth,waterSurfaceZ,isWater,connectedWaterBody,sourceFedWaterKeys,captureSourceBaselines,fillCapacity,
     hasSoil,soilCapacity,soilMoisture,infiltrationRate,surfaceWaterVolume,soilWaterVolume,totalWater,waterInventory,frozenDepth,liquidDepth,
     beginEnvironmentTurn,endEnvironmentTurn,abortEnvironmentTurn,
-    setGroundMaterial,setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
+    sedimentMass,suspendSediment,settleSediment,setGroundMaterial,setWaterDepth,addWater,removeWater,redistribute,evaporateUnfedWater,floodArea,deformTerrain,applyRain,drySoil
   });
 })();
 globalThis.HydrologyEngine=HydrologyEngine;

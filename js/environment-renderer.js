@@ -652,7 +652,7 @@ export class EnvironmentRenderer{
         :BABYLON.MeshBuilder.CreateSphere("mass-flow-front",{diameter:1,segments:6},this.scene);
       mesh.isPickable=false;item={mesh,part,busy:false};this.massFlowPool.push(item);
     }
-    item.busy=true;item.contact=null;item.mesh.material=this.massFlowMaterial(kind,part);
+    item.busy=true;item.contact=null;item.fan=null;item.mesh.material=this.massFlowMaterial(kind,part);
     item.mesh.setEnabled(false);return item;
   }
 
@@ -693,8 +693,9 @@ export class EnvironmentRenderer{
     const duration=warning?1.8:.45+(path.length-1)*.28;
     const effect={kind,path,age:0,duration,warning,pieces:[],patches:[],lines:[]};
     const previousByKey=new Map((previousState?.map?.id===state?.map?.id?previousState?.map?.tiles||[]:[]).map(t=>[`${t.x},${t.y}`,t]));
+    const cells=(event.cells||path).filter(p=>Number.isInteger(p.x)&&Number.isInteger(p.y)&&byKey.has(`${p.x},${p.y}`));
     const oldByKey=new Map(byKey);
-    for(const p of path){
+    for(const p of cells){
       const k=`${p.x},${p.y}`,t=byKey.get(k),previous=previousByKey.get(k);
       oldByKey.set(k,{...t,elevation:Number(p.elevationBefore??p.elevation??previous?.elevation??t.elevation),
         snowDepth:Number(p.snowDepthBefore??previous?.snowDepth??t.snowDepth??0)});
@@ -733,8 +734,8 @@ export class EnvironmentRenderer{
       // collapsing surface fragment uses the same pre/post 4x4 height sampler;
       // only eroded portions above the final terrain are drawn. No cliff mesh
       // topology interpolation and no per-frame map rebuild.
-      for(let i=0;i<path.length;i++){
-        const p=path[i],k=`${p.x},${p.y}`,tile=byKey.get(k),old=oldByKey.get(k);
+      for(let i=0;i<cells.length;i++){
+        const p=cells[i],k=`${p.x},${p.y}`,tile=byKey.get(k),old=oldByKey.get(k);
         const lost=kind==="SNOW"?Number(old.snowDepth)>Number(tile.snowDepth):Number(old.elevation)>Number(tile.elevation);
         if(!lost)continue;
         const before=this.surfaceResolver.patchGrid(old,oldByKey).flat();
@@ -760,7 +761,7 @@ export class EnvironmentRenderer{
         BABYLON.VertexData.ComputeNormals(positions,indices,normals);
         data.positions=positions;data.indices=indices;data.normals=normals;data.applyToMesh(mesh,true);
         mesh.material=this.massFlowMaterial(kind,0);mesh.isPickable=false;
-        effect.patches.push({mesh,positions,target,indices,normals,buffer:positions.slice(),at:i,lastQ:-1});
+        effect.patches.push({mesh,positions,target,indices,normals,buffer:positions.slice(),at:Math.max(0,Math.min(path.length-1,Number(p.at??i)||0)),lastQ:-1});
       }
       // A local splash at a canonical contact starts in the same presentation
       // frame as the original forced movement/hit. No delayed gameplay.
@@ -777,6 +778,14 @@ export class EnvironmentRenderer{
       for(let i=0;i<Math.min(remaining,path.length*3);i++){
         const item=this.borrowMassFlowMesh(kind,i%3);if(!item)continue;
         item.index=i;effect.pieces.push(item);
+      }
+      const pathKeys=new Set(path.map(p=>`${p.x},${p.y}`));
+      const sides=cells.filter(p=>!pathKeys.has(`${p.x},${p.y}`)&&Number(p.deposit)>0&&Number.isInteger(p.at)&&path[p.at]&&Math.abs(p.x-path[p.at].x)+Math.abs(p.y-path[p.at].y)===1);
+      // Reassign existing pieces rather than growing the allocation budget.
+      const free=effect.pieces.filter(item=>!item.contact);
+      for(let i=0;i<Math.min(sides.length,Math.floor(free.length/2));i++){
+        const p=sides[i],a=path[p.at],item=free[free.length-1-i],from=byKey.get(`${a.x},${a.y}`),to=byKey.get(`${p.x},${p.y}`);
+        item.fan={at:p.at,x0:a.x*TILE_SIZE,z0:a.y*TILE_SIZE,x1:p.x*TILE_SIZE,z1:p.y*TILE_SIZE,y0:heightAt(from,byKey,0,0),y1:heightAt(to,byKey,0,0),deposit:Number(p.deposit)};
       }
       effect.scale=Math.min(1.35,Math.max(.35,Math.sqrt(Math.max(0,Number(event.mass||0)))));
       this.massFlowStats.started++;
@@ -807,6 +816,14 @@ export class EnvironmentRenderer{
             const size=effect.scale*TILE_SIZE*(.28+.65*q);
             m.setEnabled(true);m.position.set(c.x,c.y+size*.36,c.z);
             m.rotation.set(0,0,0);m.scaling.set(size,size*.7,size);m.visibility=1-q;continue;
+          }
+          if(item.fan){
+            const f=item.fan,q=front-f.at,m=item.mesh,part=item.part;
+            if(q<0||q>=1){m.setEnabled(false);continue;}
+            const x=f.x0+(f.x1-f.x0)*q,z=f.z0+(f.z1-f.z0)*q,y=f.y0+(f.y1-f.y0)*q;
+            if(effect.kind!=="SNOW"&&this.massFlowUnderWater(x,y,z)){m.setEnabled(false);continue;}
+            const size=Math.cbrt(f.deposit)*TILE_SIZE;
+            m.setEnabled(true);m.position.set(x,y+size*.15,z);m.scaling.set(size,size*(1-q),size);m.rotation.set(0,0,0);m.visibility=1-q;continue;
           }
           const i=item.index,part=item.part,m=item.mesh,u=front-i*.12;
           if(u<0||u>steps+.65){m.setEnabled(false);continue;}
