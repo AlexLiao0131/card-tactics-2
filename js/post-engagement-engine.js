@@ -4,11 +4,22 @@ export const PostEngagementEngine=(()=>{
   const groundZ=(map,unit)=>FallEngine.groundZ(map,unit);
   const syncGroundZ=(map,unit)=>FallEngine.syncGroundZ(map,unit);
   const isAirborneState=state=>globalThis.TrajectoryEngine?.isAirborneState?.(state)??(state==="AIRBORNE"||state==="FALLING");
-  function direction(source,target,type){let dx=Math.sign(target.x-source.x),dy=Math.sign(target.y-source.y);if(dx&&dy){if(Math.abs(target.x-source.x)>=Math.abs(target.y-source.y))dy=0;else dx=0;}if(type==="PULL"){dx=-dx;dy=-dy}return{dx,dy}}
+  function direction(source,target,type){
+    const center=u=>{const f=TacticalEngine.footprintOf(u);return{x:Number(u.x)+(f.width-1)/2,y:Number(u.y)+(f.height-1)/2}};
+    const a=center(source),b=center(target),x=b.x-a.x,y=b.y-a.y;
+    let dx=Math.sign(x),dy=Math.sign(y);if(dx&&dy){if(Math.abs(x)>=Math.abs(y))dy=0;else dx=0;}
+    if(type==="PULL"){dx=-dx;dy=-dy}return{dx,dy}
+  }
   function damageUnit(unit,amount){if(!unit?.alive)return 0;const d=globalThis.EffectEngine?.applyDamage?.(unit,amount,{kind:"EXTERNAL"})?.hpLoss??0;if(unit.hp===0)unit.alive=false;return d}
   const fallDamage=drop=>FallEngine.fallDamage(drop);
   const resolveLanding=args=>FallEngine.resolveLanding({...args,applyDamage:damageUnit});
-  function gridOccupant(units,x,y,target){return CollisionEngine.occupantAt?.(units,x,y,{excludeId:target?.id})||(units||[]).find(u=>u?.alive&&u.id!==target?.id&&u.x===x&&u.y===y)||null}
+  function gridOccupant(units,x,y,target){
+    for(const cell of TacticalEngine.occupiedCells(target,{x,y})){
+      const occupant=CollisionEngine.occupantAt(units,cell.x,cell.y,{excludeId:target?.id});
+      if(occupant)return occupant;
+    }
+    return null;
+  }
   function landingSafe(units,x,y,target){return !gridOccupant(units,x,y,target)}
   function fallbackDirection(map,units,target,distance,{z,airborne}={}){
     return DIRS.map((d,index)=>{let x=target.x,y=target.y,space=0;for(let i=0;i<distance;i++){const nx=x+d[0],ny=y+d[1],to=TacticalEngine.tile(map,nx,ny);if(!to)break;const occupied=gridOccupant(units,nx,ny,target);const surface=CollisionEngine.surfaceAt({map,units,x:nx,y:ny,z:Number(z),excludeId:target.id});if(surface||(!airborne&&occupied))break;if(!airborne&&TacticalEngine.elevationDelta(TacticalEngine.tile(map,x,y),to)>1)break;x=nx;y=ny;space++}return{d,index,space}}).sort((a,b)=>b.space-a.space||a.index-b.index)[0]?.d||[0,0];
@@ -54,7 +65,14 @@ export const PostEngagementEngine=(()=>{
       if(inspection.blocked){const surface={kind:"TERRAIN_FACE",solid:true,height:inspection.surface,hardness:2,response:"STOP",impactMultiplier:1},damage=CollisionEngine.impactDamage({remainingForce:remaining,mover:target,surface});damageUnit(target,damage);collisions.push({kind:"TERRAIN",x:nx,y:ny,surface,damage,stopped:true});break}
 
       const occupant=gridOccupant(units,nx,ny,target);
-      const surface=CollisionEngine.surfaceAt({map,units,x:nx,y:ny,z:inspection.z,excludeId:target.id});
+      let surface=null;
+      for(const cell of TacticalEngine.occupiedCells(target,{x:nx,y:ny})){
+        surface=CollisionEngine.surfaceAt({map,units,x:cell.x,y:cell.y,z:inspection.z,excludeId:target.id});
+        if(surface)break;
+      }
+      // Grounded motion cannot enter an occupied cell even when the occupant's
+      // vertical hit volume is elsewhere (e.g. a diving monster).
+      if(!surface&&occupant&&!isAirborneState(trajectory.state))break;
       if(surface){
         const damage=CollisionEngine.impactDamage({remainingForce:remaining,mover:target,surface});damageUnit(target,damage);
         const hit=surface.unit;

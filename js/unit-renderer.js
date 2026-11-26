@@ -19,6 +19,384 @@ function facingFromDelta(dx,dy,fallback="S"){
 function lerp(a,b,t){return Number(a||0)+(Number(b||0)-Number(a||0))*t;}
 function clamp01(value){return Math.max(0,Math.min(1,Number(value||0)));}
 
+// Articulated aquatic visual builder. The only live unit registry, root,
+// event queue and disposal owner is UnitRenderer; this helper owns materials.
+class AquaticMonsterRig{
+  constructor(scene,units){
+    this.scene=scene;this.units=units;this.materials=[];
+    this.initialized=false;this.seenGrabContacts=new Set();this.visibleUnitIds=new Set();
+    this.surfaceTiles=new Map();this.offsets=new Map();this.mapId=null;
+    scene.onDisposeObservable?.addOnce?.(()=>{this.restoreOffsets();for(const m of this.materials)m.dispose();});
+  }
+  ensureMaterials(){
+    if(this.initialized)return;
+    this.initialized=true;
+    const scene=this.scene;
+    const tint=(name,base,glow=null,alpha=1)=>{
+      const m=new BABYLON.StandardMaterial('neutral-lurker-'+name,scene);
+      m.diffuseColor=new BABYLON.Color3(...base);
+      m.specularColor=new BABYLON.Color3(.26,.35,.38);
+      if(glow)m.emissiveColor=new BABYLON.Color3(...glow);
+      m.alpha=alpha;m.backFaceCulling=false;this.materials.push(m);return m;
+    };
+    this.skin=tint('skin',[.19,.18,.30],[.028,.021,.050]);
+    // Slightly brighter mantle makes the surfaced head readable in night/fog
+    // without altering the established dark-purple tentacle materials.
+    this.mantleSkin=tint('mantle',[.29,.25,.41],[.075,.055,.088]);
+    this.underside=tint('underside',[.39,.27,.43],[.045,.025,.052]);
+    this.sucker=tint('suckers',[.63,.43,.57]);
+    this.eye=tint('eye',[.88,.69,.29],[.62,.33,.07]);
+    this.ripple=tint('ripple',[.23,.60,.73],[.16,.45,.60],.43);
+    this.foam=tint('foam',[.73,.93,.92],[.31,.45,.48],.55);
+  }
+  part(parent,name,shape,options,material,unitId,{pick=true}={}){
+    const mesh=BABYLON.MeshBuilder[shape](name,options,this.scene);
+    mesh.parent=parent;mesh.material=material;
+    mesh.isPickable=pick;
+    mesh.metadata={kind:'unit',unitId,castShadow:false,waterLurker:true};
+    mesh.receiveShadows=false;
+    return mesh;
+  }
+  build(unit){
+    this.ensureMaterials();
+    const id=String(unit.id),root=new BABYLON.TransformNode('neutral-water-lurker-'+id,this.scene);
+    root.metadata={kind:'unit',unitId:id,waterLurker:true,visualKind:'AQUATIC_MONSTER'};
+    root.rotation.y=FACING_ANGLE[normalizeFacing(unit.facing)];
+    // The old mantle was entirely below the water surface (-.72 tiles) and
+    // could never be seen. A body rig now rises into a readable OCTOPUS head:
+    // surface = upper half visible; dive = head and face genuinely submerged.
+    const headRig=new BABYLON.TransformNode('lurker-head-rig-'+id,this.scene);
+    headRig.parent=root;
+    const head=this.part(headRig,'lurker-raised-mantle-'+id,'CreateSphere',
+      {diameter:1,segments:24},this.mantleSkin,id);
+    head.scaling.set(TILE_SIZE*1.52,1.25*TILE_SIZE,TILE_SIZE*1.38);
+    head.position.y=-.17*TILE_SIZE;
+    const face=this.part(headRig,'lurker-face-'+id,'CreateSphere',
+      {diameter:1,segments:18},this.underside,id);
+    face.scaling.set(TILE_SIZE*.95,TILE_SIZE*.62,TILE_SIZE*.86);
+    face.position.set(0,-.30*TILE_SIZE,.37*TILE_SIZE);
+    const brow=this.part(headRig,'lurker-brow-'+id,'CreateSphere',
+      {diameter:1,segments:14},this.skin,id,{pick:false});
+    brow.scaling.set(.91*TILE_SIZE,.19*TILE_SIZE,.28*TILE_SIZE);
+    brow.position.set(0,.08*TILE_SIZE,.55*TILE_SIZE);
+    const beak=this.part(headRig,'lurker-beak-'+id,'CreateSphere',
+      {diameter:1,segments:12},this.skin,id,{pick:false});
+    beak.scaling.set(.23*TILE_SIZE,.29*TILE_SIZE,.22*TILE_SIZE);
+    beak.position.set(0,-.51*TILE_SIZE,.78*TILE_SIZE);
+    const base=this.part(root,'lurker-underbody-'+id,'CreateSphere',
+      {diameter:1,segments:18},this.underside,id);
+    base.scaling.set(TILE_SIZE*1.48,.58*TILE_SIZE,TILE_SIZE*1.39);
+    base.position.y=-.77*TILE_SIZE;
+    const siphons=[];
+    for(const side of [-1,1]){
+      const siphon=this.part(headRig,'lurker-siphon-'+id+'-'+side,'CreateCylinder',
+        {height:TILE_SIZE*.35,diameterTop:TILE_SIZE*.12,diameterBottom:TILE_SIZE*.23,tessellation:12},
+        this.underside,id,{pick:false});
+      siphon.position.set(side*.56*TILE_SIZE,-.40*TILE_SIZE,.15*TILE_SIZE);
+      siphon.rotation.z=side*.50;siphons.push(siphon);
+    }
+    const arms=[];
+    const number=5;
+    for(let n=0;n<number;n++){
+      const angle=n*Math.PI*2/number+.36;
+      const joint=new BABYLON.TransformNode('lurker-arm-pivot-'+id+'-'+n,this.scene);
+      joint.parent=root;
+      const spread=n%2===0?.72:.93;
+      joint.position.set(Math.cos(angle)*spread*TILE_SIZE,-.24*TILE_SIZE,
+        Math.sin(angle)*spread*TILE_SIZE);
+      joint.rotation.y=angle;
+      const pivots=[];let parent=joint;
+      for(let j=0;j<5;j++){
+        const length=TILE_SIZE*(j===0?.38:j===1?.35:j===2?.30:.25);
+        const width=TILE_SIZE*(.18-j*.027);
+        const pivot=new BABYLON.TransformNode('lurker-joint-'+id+'-'+n+'-'+j,this.scene);
+        pivot.parent=parent;
+        if(j>0)pivot.position.y=TILE_SIZE*(j===1?.38:j===2?.35:j===3?.30:.25);
+        const segment=this.part(pivot,'lurker-tentacle-'+id+'-'+n+'-'+j,'CreateCylinder',
+          {height:length,diameterTop:width*.72,diameterBottom:width,tessellation:9},this.skin,id);
+        segment.position.y=length/2;
+        if(j<4){
+          const pad=this.part(pivot,'lurker-sucker-'+id+'-'+n+'-'+j,'CreateSphere',
+            {diameter:1,segments:7},this.sucker,id,{pick:false});
+          pad.scaling.set(width*.62,length*.25,width*.29);
+          pad.position.set(0,length*.57,width*.40);
+        }
+        pivots.push(pivot);parent=pivot;
+      }
+      const ring=this.part(root,'lurker-water-ring-'+id+'-'+n,'CreateTorus',
+        {diameter:TILE_SIZE*.76,thickness:.025*TILE_SIZE,tessellation:24},this.ripple,id,{pick:false});
+      ring.rotation.x=Math.PI/2;
+      ring.position.set(joint.position.x,.018,joint.position.z);
+      const spray=this.part(root,'lurker-foam-'+id+'-'+n,'CreateTorus',
+        {diameter:TILE_SIZE*.43,thickness:.020*TILE_SIZE,tessellation:20},this.foam,id,{pick:false});
+      spray.rotation.x=Math.PI/2;
+      spray.position.set(joint.position.x,.028,joint.position.z);
+      arms.push({joint,pivots,ring,spray,n});
+    }
+    const eyes=[];
+    for(const side of [-1,1]){
+      const socket=this.part(headRig,'lurker-eye-socket-'+id+'-'+side,'CreateSphere',
+        {diameter:.31*TILE_SIZE,segments:14},this.skin,id,{pick:false});
+      socket.scaling.set(.85,1,.70);
+      socket.position.set(side*.29*TILE_SIZE,.01*TILE_SIZE,.66*TILE_SIZE);
+      const e=this.part(headRig,'lurker-glowing-eye-'+id+'-'+side,'CreateSphere',
+        {diameter:.19*TILE_SIZE,segments:14},this.eye,id);
+      e.position.set(side*.29*TILE_SIZE,.04*TILE_SIZE,.79*TILE_SIZE);
+      const pupil=this.part(headRig,'lurker-pupil-'+id+'-'+side,'CreateSphere',
+        {diameter:.068*TILE_SIZE,segments:8},this.skin,id,{pick:false});
+      pupil.position.set(side*.29*TILE_SIZE,.04*TILE_SIZE,.885*TILE_SIZE);
+      eyes.push(e);
+    }
+    // The third ORIGINAL arm becomes the grappling arm during a real PULL.
+    // Its curved replacement is built only once per visible monster and only
+    // moved by node transforms per frame. Real Babylon meshes are instanced:
+    // no Tube/MeshBuilder geometry rebuild in the animation loop.
+    const gripRig=new BABYLON.TransformNode('lurker-grip-rig-'+id,this.scene);
+    gripRig.parent=root;gripRig.setEnabled(false);
+    const links=[],pads=[];
+    const stem=this.part(gripRig,'lurker-grip-stem-'+id,'CreateCylinder',
+      {height:1,diameterTop:1,diameterBottom:1,tessellation:8},this.skin,id,{pick:false});
+    const sucker=this.part(gripRig,'lurker-grip-sucker-'+id,'CreateSphere',
+      {diameter:1,segments:7},this.sucker,id,{pick:false});
+    for(let i=0;i<22;i++){
+      const link=i===0?stem:stem.createInstance?.('lurker-grip-link-'+id+'-'+i)||
+        this.part(gripRig,'lurker-grip-link-'+id+'-'+i,'CreateCylinder',
+          {height:1,diameterTop:1,diameterBottom:1,tessellation:8},this.skin,id,{pick:false});
+      link.parent=gripRig;link.isPickable=false;link.metadata={kind:'unit',unitId:id,waterLurker:true,castShadow:false};
+      if(!link.rotationQuaternion&&BABYLON.Quaternion)link.rotationQuaternion=new BABYLON.Quaternion(0,0,0,1);
+      links.push(link);
+    }
+    for(let i=0;i<8;i++){
+      const pad=i===0?sucker:sucker.createInstance?.('lurker-grip-pad-'+id+'-'+i)||
+        this.part(gripRig,'lurker-grip-pad-'+id+'-'+i,'CreateSphere',
+          {diameter:1,segments:7},this.sucker,id,{pick:false});
+      pad.parent=gripRig;pad.isPickable=false;pad.metadata={kind:'unit',unitId:id,waterLurker:true,castShadow:false};
+      pads.push(pad);
+    }
+    return{root,arms,head,headRig,face,base,eyes,id,unitId:id,
+      gripRig,gripLinks:links,gripPads:pads,pendingGrabs:[],grab:null,
+      phase:arms.map((_,i)=>i*1.43),state:'IDLE',diveBlend:0,targetDive:0,
+      lastPoseTime:null,targetYaw:root.rotation.y,kind:'AQUATIC_MONSTER',height:1.25*TILE_SIZE,
+      width:1.52*TILE_SIZE,meshes:root.getChildMeshes(),lift:0};
+  }
+  // Result-derived pairing: ATTACK + a subsequent, actual FORCED_MOVE for
+  // the same visible target, toward this 2x2 monster. A miss, resisted PULL,
+  // collision without movement, or a hidden target has no such pairing.
+  queueOfficialGrabs(events){
+    const actions=(events||[]).filter(e=>e?.type==='UNIT_ANIMATION'&&
+      e.state==='ATTACK'&&e.skillId==='water_tentacle'&&e.targetId&&
+      this.units.entries.get(String(e.unitId))?.kind==='AQUATIC_MONSTER');
+    const moves=(events||[]).filter(e=>e?.type==='UNIT_ANIMATION'&&
+      e.state==='WALK'&&e.kind==='FORCED_MOVE'&&Array.isArray(e.path)&&e.path.length>1);
+    for(const action of actions){
+      const fx=this.units.entries.get(String(action.unitId));
+      if(!fx||!this.visibleUnitIds.has(String(action.targetId)))continue;
+      const before=move=>move.path[0],after=move=>move.path.at(-1);
+      const center={x:Number(action.x??fx.lastUnit.x)+(Number(fx.lastUnit.footprint?.width||2)-1)/2,
+        y:Number(action.y??fx.lastUnit.y)+(Number(fx.lastUnit.footprint?.height||2)-1)/2};
+      const distance=point=>Math.hypot(Number(point.x)-center.x,Number(point.y)-center.y);
+      const move=moves.find(e=>String(e.unitId)===String(action.targetId)&&
+        Number(e.sequence)>Number(action.sequence)&&
+        e.path.every(pt=>Number.isFinite(Number(pt.x))&&Number.isFinite(Number(pt.y)))&&
+        distance(after(e))+.001<distance(before(e)));
+      if(!move)continue;
+      const key=`${this.mapId}:${String(action.unitId)}:${String(action.sequence)}:${String(move.sequence)}`;
+      if(this.seenGrabContacts.has(key))continue;
+      this.seenGrabContacts.add(key);
+      // A single monster has one physical grip appendage. Subsequent attacks
+      // queue rather than overwriting a currently rendered victim.
+      fx.pendingGrabs.push({action,move,targetId:String(action.targetId),startedAt:null});
+      if(fx.pendingGrabs.length>3)fx.pendingGrabs.shift();
+    }
+    while(this.seenGrabContacts.size>128)this.seenGrabContacts.delete(this.seenGrabContacts.values().next().value);
+  }
+  // This is a VIEW-only overlay on UnitRenderer's existing interpolated root.
+  // The next UnitRenderer.updateFrame resets its base pose, so lift/struggle
+  // never mutates the unit x/y/z, movement path, collision or saved snapshot.
+  targetRenderEntry(id){return this.units?.entries?.get(String(id))||this.units?.entries?.get(id)||null}
+  restoreOffsets(){
+    for(const [entry,pose] of this.offsets){
+      if(!entry.root.isDisposed?.()){entry.root.position.y=pose.y;entry.root.rotation.z=pose.z;}
+    }
+    this.offsets.clear();
+  }
+  release(fx){fx.grab=null;fx.gripRig.setEnabled(false);fx.arms[Math.floor(fx.arms.length/2)].joint.setEnabled(true);}
+  matchingMove(fx,grab){
+    const target=this.targetRenderEntry(grab.targetId),active=this.units.activeAnimations.get(grab.targetId);
+    if(!target||!this.visibleUnitIds.has(grab.targetId)||target.lastUnit?.selected||target.lastUnit?.alive===false||
+       !this.visibleUnitIds.has(fx.id)||fx.lastUnit?.alive===false)return null;
+    return active?.event?.state==='WALK'&&active.event.kind==='FORCED_MOVE'&&
+      active.event.sequence===grab.move.sequence?active:null;
+  }
+  startVisibleGrab(fx){
+    if(fx.grab||!fx.pendingGrabs.length)return;
+    while(fx.pendingGrabs.length){
+      const next=fx.pendingGrabs[0],target=this.targetRenderEntry(next.targetId);
+      if(!target||!this.visibleUnitIds.has(next.targetId)||target.lastUnit?.selected||!this.visibleUnitIds.has(fx.id)){
+        fx.pendingGrabs.shift();continue;
+      }
+      const active=this.matchingMove(fx,next);
+      if(active){fx.grab=next;fx.pendingGrabs.shift();return;}
+      const queued=this.units.animationQueues.get(next.targetId)||[];
+      if(queued.some(e=>e.sequence===next.move.sequence&&e.kind==='FORCED_MOVE'))return;
+      fx.pendingGrabs.shift();
+    }
+  }
+  // Position and rotate a cached cylinder so its local +Y follows a segment.
+  // Quaternion(UP->direction) avoids Euler gimbal flips around the victim.
+  poseGripLink(mesh,a,b,width){
+    const dx=b.x-a.x,dy=b.y-a.y,dz=b.z-a.z,len=Math.hypot(dx,dy,dz);
+    if(len<.00001){mesh.setEnabled(false);return}
+    mesh.setEnabled(true);
+    mesh.position.set((a.x+b.x)/2,(a.y+b.y)/2,(a.z+b.z)/2);
+    mesh.scaling.set(width,len+width*.18,width);
+    const vx=dz/len,vz=-dx/len,w=1+dy/len;
+    if(mesh.rotationQuaternion){
+      if(w<.00001)mesh.rotationQuaternion.set(1,0,0,0);
+      else{const inverse=1/Math.hypot(vx,vz,w);mesh.rotationQuaternion.set(vx*inverse,0,vz*inverse,w*inverse)}
+    }else{
+      // Small renderer mocks do not carry Babylon's quaternion constructor.
+      mesh.rotation.x=Math.atan2(dz,Math.hypot(dx,dy));
+      mesh.rotation.z=Math.atan2(-dx,dy);
+    }
+  }
+  drawOfficialGrab(fx,now){
+    this.startVisibleGrab(fx);
+    const grab=fx.grab,rig=fx.gripRig;
+    const realArm=fx.arms[Math.floor(fx.arms.length/2)];
+    if(!grab){rig.setEnabled(false);realArm.joint.setEnabled(true);return;}
+    const target=this.targetRenderEntry(grab.targetId),active=this.matchingMove(fx,grab);
+    if(!active||!target?.root||target.root.isDisposed?.()||this.offsets.has(target)){
+      this.release(fx);return;
+    }
+    const progress=Math.max(0,Math.min(1,(now-active.startedAt)/active.duration));
+    if(progress>=1){this.release(fx);return;}
+    rig.setEnabled(true);realArm.joint.setEnabled(false);
+    const smooth=t=>{const v=Math.max(0,Math.min(1,t));return v*v*(3-2*v)};
+    const grasp=smooth((progress-.17)/.25)*(1-smooth((progress-.83)/.17));
+    const lifted=Math.sin(Math.PI*smooth((progress-.31)/.67))*grasp;
+    const height=Math.max(.7,Number(target.height||target.definition?.height||1.7));
+    const raise=Math.min(.72*TILE_SIZE,height*.46)*lifted;
+    // Directly follow the REAL UnitRenderer pose, including the official
+    // FORCED_MOVE animation's interpolated X/Z and terrain elevation.
+    // One bounded pose overlay after all official poses; never parent a victim
+    // to the monster or leave a transform behind on a sync/cancel/death.
+    this.offsets.set(target,{y:target.root.position.y,z:target.root.rotation.z});
+    target.root.position.y+=raise;
+    target.root.rotation.z+=Math.sin(progress*Math.PI*9)*.095*grasp;
+    // UnitRenderer roots are world-space and independent. Invert the monster's
+    // yaw to calculate grip points in its own rotating local coordinate space.
+    const base=target.root.position,centered=target.kind==='CAPSULE'?0:height*.64;
+    const dxWorld=base.x-fx.root.position.x,dzWorld=base.z-fx.root.position.z;
+    const yaw=fx.root.rotation.y,cos=Math.cos(yaw),sin=Math.sin(yaw);
+    const torso={x:cos*dxWorld-sin*dzWorld,y:base.y+centered-fx.root.position.y,
+      z:sin*dxWorld+cos*dzWorld};
+    const dx=torso.x,dz=torso.z,length=Math.max(.001,Math.hypot(dx,dz)),ux=dx/length,uz=dz/length;
+    const radius=Math.max(.17*TILE_SIZE,Math.min(.38*TILE_SIZE,Number(target.width||height*.40)*.65));
+    const radial=radius*(1+.62*(1-grasp));
+    const start={x:ux*.73*TILE_SIZE,y:(-.22-.55*fx.diveBlend)*TILE_SIZE,z:uz*.73*TILE_SIZE};
+    const entry={x:torso.x+ux*radial,y:torso.y-.22*height,z:torso.z+uz*radial};
+    const points=[],lead=8,total=fx.gripLinks.length;
+    // Smooth water-to-torso reach, followed by >1 genuine 3D turns around
+    // the torso. The pad instances face inward, toward the character.
+    for(let i=0;i<=lead;i++){
+      const t=i/lead,u=1-t;
+      const control={x:(start.x+entry.x)*.5,y:Math.max(start.y,entry.y)+.34*TILE_SIZE,z:(start.z+entry.z)*.5};
+      points.push({x:u*u*start.x+2*u*t*control.x+t*t*entry.x,
+        y:u*u*start.y+2*u*t*control.y+t*t*entry.y,
+        z:u*u*start.z+2*u*t*control.z+t*t*entry.z});
+    }
+    const theta=Math.atan2(uz,ux);
+    for(let i=1;i<=total-lead;i++){
+      const t=i/(total-lead),angle=theta+t*Math.PI*2.4;
+      points.push({x:torso.x+radial*Math.cos(angle),
+        y:torso.y+height*(-.22+t*.39),z:torso.z+radial*Math.sin(angle)});
+    }
+    const shown=Math.max(1,Math.ceil(total*smooth(progress/.28)*(1-smooth((progress-.91)/.09))));
+    for(let i=0;i<total;i++){
+      const mesh=fx.gripLinks[i];
+      if(i>=shown){mesh.setEnabled(false);continue;}
+      // Width tapers toward the last visible curled tip.
+      const width=TILE_SIZE*(.17-.085*i/total);
+      this.poseGripLink(mesh,points[i],points[i+1],width);
+    }
+    for(let i=0;i<fx.gripPads.length;i++){
+      const pad=fx.gripPads[i],at=lead+Math.floor((total-lead-1)*i/fx.gripPads.length);
+      if(at>=shown){pad.setEnabled(false);continue;}
+      const pt=points[at+1],toward={x:torso.x-pt.x,z:torso.z-pt.z},n=Math.max(.0001,Math.hypot(toward.x,toward.z));
+      pad.setEnabled(true);
+      pad.position.set(pt.x+toward.x/n*radius*.14,pt.y,pt.z+toward.z/n*radius*.14);
+      pad.scaling.set(TILE_SIZE*.10,TILE_SIZE*.05,TILE_SIZE*.10);
+    }
+  }
+  prepare(snapshot){
+    const mapId=snapshot?.map?.id??null;
+    if(this.mapId!==mapId){this.seenGrabContacts.clear();for(const fx of this.units.entries.values())if(fx.kind==='AQUATIC_MONSTER'){fx.pendingGrabs=[];this.release(fx);}}
+    this.mapId=mapId;
+    this.visibleUnitIds=new Set((snapshot?.units||[]).filter(u=>u?.alive!==false).map(u=>String(u.id)));
+    const hasMonster=(snapshot?.units||[]).some(u=>u?.visualId==='water_lurker_default')||
+      [...this.units.entries.values()].some(e=>e.kind==='AQUATIC_MONSTER');
+    this.surfaceTiles=hasMonster?new Map((snapshot?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t])):new Map();
+  }
+  surfaceY(unit,point=unit){
+    const width=Math.max(1,Number(unit?.footprint?.width||2)),height=Math.max(1,Number(unit?.footprint?.height||2));
+    const x=Number(point.x),y=Number(point.y),ix=Math.floor(x),iy=Math.floor(y),qx=x-ix,qy=y-iy;
+    const average=(ax,ay)=>{
+      let sum=0,count=0;
+      for(let dy=0;dy<height;dy++)for(let dx=0;dx<width;dx++){
+        const tile=this.surfaceTiles.get(`${ax+dx},${ay+dy}`);
+        if(tile?.waterSurfaceZ!=null&&Number.isFinite(Number(tile.waterSurfaceZ))){sum+=Number(tile.waterSurfaceZ);count++;}
+      }
+      return count?sum/count:Number(unit.verticalSurfaceZ??point.z??unit.z??0);
+    };
+    return ((average(ix,iy)*(1-qx)+average(ix+1,iy)*qx)*(1-qy)+
+      (average(ix,iy+1)*(1-qx)+average(ix+1,iy+1)*qx)*qy)*ELEVATION_HEIGHT;
+  }
+  syncEntry(fx,unit){
+    fx.verticalMode=String(unit.verticalMode||unit.verticalState?.mode||'SWIMMING').toUpperCase();
+    fx.targetDive=fx.verticalMode==='DIVING'?1:0;
+    if(unit.alive===false){fx.pendingGrabs=[];this.release(fx);}
+  }
+  pose(fx,now,state,progress){
+      const attack=state==='ATTACK'?1-progress:0,recoil=state==='HURT'?1-progress:0;
+      const elapsed=fx.lastPoseTime==null?0:Math.max(0,Math.min(120,now-fx.lastPoseTime));
+      fx.lastPoseTime=now;
+      if(elapsed===0)fx.diveBlend=fx.targetDive;
+      else fx.diveBlend+=(fx.targetDive-fx.diveBlend)*Math.min(1,elapsed/330);
+      const delta=Math.atan2(Math.sin(fx.targetYaw-fx.root.rotation.y),Math.cos(fx.targetYaw-fx.root.rotation.y));
+      fx.root.rotation.y+=delta*Math.min(1,elapsed/180);
+      const submerged=fx.diveBlend;
+      const motion=Math.sin(now*.0011)*.045-recoil*.11;
+      // At the surface the crown breaches the waterline and the full face is
+      // visible. DIVING moves the entire head beneath the same waterline.
+      fx.headRig.position.y=(-.035-1.53*submerged)*TILE_SIZE+motion;
+      fx.head.rotation.z=Math.sin(now*.00053)*.018;
+      fx.base.position.y=(-.77-.25*submerged)*TILE_SIZE+motion*.35;
+      for(const arm of fx.arms){
+        const phase=now*.00155+fx.phase[arm.n],active=attack&&arm.n===Math.floor(fx.arms.length/2);
+        // The tips may remain visible when diving, while their roots retract.
+        arm.joint.position.y=(-.24-.68*submerged)*TILE_SIZE;
+        arm.joint.rotation.z=Math.sin(phase)*.14+(active?-.70*Math.sin(attack*Math.PI):0);
+        arm.joint.rotation.x=Math.cos(phase*.8)*.11;
+        for(let i=0;i<arm.pivots.length;i++){
+          const p=arm.pivots[i];
+          p.rotation.z=Math.sin(phase-i*.46)*(.12+i*.048)+
+            (active?.36*Math.sin((1-attack)*Math.PI*2):0);
+          p.rotation.x=Math.cos(phase*.81+i*.62)*.12;
+        }
+        arm.ring.scaling.setAll(1+.12*Math.sin(phase));
+        arm.spray.scaling.setAll(1+.06*Math.cos(phase));
+      }
+  }
+  poseGrabs(now){
+    for(const fx of this.units.entries.values())if(fx.kind==='AQUATIC_MONSTER')this.drawOfficialGrab(fx,now);
+  }
+  diagnostics(){const entries=[...this.units.entries.values()].filter(fx=>fx.kind==='AQUATIC_MONSTER');return{visible:entries.length,
+    grabbing:entries.filter(fx=>!!fx.grab).length,queuedGrabs:entries.reduce((n,fx)=>n+fx.pendingGrabs.length,0),
+    meshes:entries.reduce((n,fx)=>n+fx.meshes.length,0)}}
+}
+
+
 export class UnitRenderer{
   constructor(scene){
     this.scene=scene;
@@ -26,6 +404,7 @@ export class UnitRenderer{
     this.meshes=new Map();
     this.animationQueues=new Map();
     this.activeAnimations=new Map();
+    this.aquaticMonsterRig=null; // allocate only when a visible aquatic monster needs it
     // Temporary silver-white shape-change presentation. Lifetime is bounded;
     // the canonical form and movement always belong to UnitRuntimeEngine.
     this.formMorphs=new Map();
@@ -2116,6 +2495,7 @@ export class UnitRenderer{
           ?this.createBird(unit,definition,signature)
           :kind==="QUADRUPED"
             ?this.createQuadruped(unit,definition)
+            :kind==='AQUATIC_MONSTER'?(this.aquaticMonsterRig??=new AquaticMonsterRig(this.scene,this)).build(unit)
             :this.createCapsule(unit);
     const facingMarker=this.createFacingMarker(unit);
     const animationBadge=this.createAnimationBadge(unit);
@@ -2147,6 +2527,7 @@ export class UnitRenderer{
     this.activeAnimations.delete(id);
     const entry=this.entries.get(id);
     if(!entry)return;
+    if(entry.kind==='AQUATIC_MONSTER')this.aquaticMonsterRig.release(entry);
     entry.dispose?.();
     entry.animationBadge?.dispose?.();
     entry.verticalCue?.dispose?.();
@@ -2165,7 +2546,8 @@ export class UnitRenderer{
   applyFacing(entry,unit,definition,facingOverride=null,animationState="IDLE",resolvedAnimation=null){
     const facing=normalizeFacing(facingOverride??unit?.facing),angle=FACING_ANGLE[facing];
     entry.facingMarker.root.rotation.y=angle;
-    if(entry.kind!=="BILLBOARD")entry.root.rotation.y=angle;
+    if(entry.kind==='AQUATIC_MONSTER')entry.targetYaw=angle;
+    else if(entry.kind!=="BILLBOARD")entry.root.rotation.y=angle;
 
     const animation=resolvedAnimation||this.animationDefinition(unit,animationState);
     const ownsFacing=!!(animation?.facingAssets||definition?.facingAssets);
@@ -2217,6 +2599,10 @@ export class UnitRenderer{
       if(!previouslyRenderedIds.has(id))continue;
       if(!visibleIds.has(id)&&event.state!=="DEATH")continue;
       const queue=this.animationQueues.get(id)||[];
+      // The same committed event can be offered again on a render retry.
+      // A repeated sequence must not extend an active movement or replay it.
+      if(Number.isSafeInteger(event.sequence)&&
+         (this.activeAnimations.get(id)?.event?.sequence===event.sequence||queue.some(e=>e.sequence===event.sequence)))continue;
       if(event.state==="DEATH")queue.splice(0);
       queue.push({...event});
       this.animationQueues.set(id,queue);
@@ -2246,13 +2632,19 @@ export class UnitRenderer{
   }
 
   positionFor(entry,point){
+    if(entry.kind==='AQUATIC_MONSTER'){
+      const unit=entry.lastUnit||point,f=unit.footprint||{width:2,height:2};
+      return new BABYLON.Vector3((Number(point.x)+(f.width-1)/2)*TILE_SIZE,
+        this.aquaticMonsterRig.surfaceY(unit,point),(Number(point.y)+(f.height-1)/2)*TILE_SIZE);
+    }
     const x=Number(point?.x||0)*TILE_SIZE,z=Number(point?.y||0)*TILE_SIZE;
     const baseY=Number(point?.renderZ??point?.z??0)*ELEVATION_HEIGHT,lift=Number(entry.lift||0);
     const y=entry.kind==="CAPSULE"?baseY+entry.height/2+lift:baseY+lift;
     return new BABYLON.Vector3(x,y,z);
   }
 
-  markerPositionFor(point){
+  markerPositionFor(point,entry=null){
+    if(entry?.kind==='AQUATIC_MONSTER')return this.positionFor(entry,point);
     return new BABYLON.Vector3(Number(point?.x||0)*TILE_SIZE,Number(point?.renderZ??point?.z??0)*ELEVATION_HEIGHT,Number(point?.y||0)*TILE_SIZE);
   }
 
@@ -2623,14 +3015,14 @@ export class UnitRenderer{
       // diagnostics; a TELEPORT has no in-between visual positions.
       const point=points[points.length-1];
       entry.root.position.copyFrom(this.positionFor(entry,point));
-      entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
+      entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point,entry));
       return;
     }
     const scaled=clamp01(progress)*(points.length-1),index=Math.min(points.length-2,Math.floor(scaled)),local=scaled-index;
     const a=points[index],b=points[index+1];
     const point={x:lerp(a.x,b.x,local),y:lerp(a.y,b.y,local),z:lerp(a.z,b.z,local)};
     entry.root.position.copyFrom(this.positionFor(entry,point));
-    entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point));
+    entry.facingMarker.root.position.copyFrom(this.markerPositionFor(point,entry));
     const leap=String(event?.kind||'').toUpperCase()==='LEAP';
     // FIGURE, BIRD and CAPSULE all use the same official coordinate system.
     // An arc in terrain-level units travels from the *original* height to the
@@ -2639,6 +3031,7 @@ export class UnitRenderer{
       Math.max(0,Number(event.arcHeight??.9))*ELEVATION_HEIGHT;
     const facing=facingFromDelta(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y),event.facing||unit.facing);
     this.applyFacing(entry,unit,entry.definition,facing,"WALK");
+    if(entry.kind==='AQUATIC_MONSTER')return;
     if(leap){
       // The unit is in flight, not taking WALK steps on an invisible floor.
       // Pose uses the existing FIGURE articulated pivots; no Magda-only mesh.
@@ -2832,6 +3225,10 @@ export class UnitRenderer{
     const procedural=String(definition?.procedural||"").toUpperCase();
     const facing=normalizeFacing(event?.facing??unit?.facing),vector=FACING_VECTOR[facing]||FACING_VECTOR.S;
     if(state==="WALK"&&event?.path?.length){this.applyWalk(entry,unit,event,progress,definition);return;}
+    if(entry.kind==='AQUATIC_MONSTER'){
+      if(state==='DEATH'){entry.root.position.y-=progress*entry.height;entry.root.scaling.setAll(Math.max(.01,1-progress));}
+      return;
+    }
     const aquaticPose=entry.kind==="FIGURE"?this.applyFigureAquaticPose(entry,unit,progress,{moving:false,now}):false;
     if(entry.kind==="FIGURE")this.applyFigureWingPose(entry,unit,progress,{now});
     if(state==="ATTACK"&&event?.backstepLanding){
@@ -3136,6 +3533,7 @@ export class UnitRenderer{
   }
 
   updateFrame(now=performance.now()){
+    this.aquaticMonsterRig?.restoreOffsets();
     // Deleting a finished DEATH entry during Map iteration is safe and avoids
     // allocating a fresh array of all visible units every rendered frame.
     for(const[id,entry]of this.entries){
@@ -3159,12 +3557,13 @@ export class UnitRenderer{
       if(active&&state!=="WALK"&&Number.isFinite(event.x)&&
         Number.isFinite(event.y)&&Number.isFinite(event.z)){
         entry.root.position.copyFrom(this.positionFor(entry,event));
-        entry.facingMarker.root.position.copyFrom(this.markerPositionFor(event));
+        entry.facingMarker.root.position.copyFrom(this.markerPositionFor(event,entry));
       }
       const facing=event.facing??unit.facing;
       this.applyFacing(entry,unit,entry.definition,facing,state,definition);
       this.setBillboardAsset(entry,unit,state,facing,progress,definition);
       this.applyProcedural(entry,unit,state,progress,now,event,definition);
+      if(entry.kind==='AQUATIC_MONSTER')this.aquaticMonsterRig.pose(entry,now,state,progress);
       // Authoritative resource snapshot drives the catkin pose in all modes.
       // Overlay the pose AFTER the existing animation; no new mesh or material.
       const feral=unit.characterId==='cat_thief_hero'?unit.resources?.ferality:null;
@@ -3186,6 +3585,7 @@ export class UnitRenderer{
       this.updateAnimationBadge(entry,unit,state);
     }
     this.syncShieldPassengers();
+    this.aquaticMonsterRig?.poseGrabs(now);
     this.updateFormMorphs(now);
   }
 
@@ -3209,6 +3609,10 @@ export class UnitRenderer{
   }
 
   sync(state,events=[]){
+    this.aquaticMonsterRig?.restoreOffsets();
+    if(!this.aquaticMonsterRig&&(state?.units||[]).some(u=>this.battleVisual(u)?.kind==='AQUATIC_MONSTER'))
+      this.aquaticMonsterRig=new AquaticMonsterRig(this.scene,this);
+    this.aquaticMonsterRig?.prepare(state);
     // Snapshot.units is already filtered by TacticalEngine's authoritative
     // viewer visibility. Never inspect the unfiltered game-state roster here.
     const visible=new Set((state?.units||[]).map(unit=>String(unit.id)));
@@ -3230,13 +3634,14 @@ export class UnitRenderer{
       if(!entry)entry=this.createEntry(unit,definition,signature);
       entry.lastUnit={...unit};
       entry.definition=definition;
+      if(entry.kind==='AQUATIC_MONSTER')this.aquaticMonsterRig.syncEntry(entry,unit);
       this.applyFacing(entry,unit,definition,null,"IDLE");
 
       if(entry.kind==="CAPSULE")entry.root.material=this.materials[unit.team]??this.materials.NEUTRAL;
 
       const verticalMode=String(unit.verticalMode||""),submerged=verticalMode==="DIVING"||verticalMode==="SINKING";
       const scale=(unit.selected?1.13:unit.finished?.92:1)*(submerged?.9:1);
-      entry.baseScale=scale;
+      entry.baseScale=entry.kind==='AQUATIC_MONSTER'?1:scale;
       // Stealth affects the figure, while the friendly facing/locator marker
       // remains readable. Render opacity does not grant detection to enemies.
       const stealthOpacity=unit.stealthed&&unit.friendlyToViewer?.50:1;
@@ -3251,13 +3656,13 @@ export class UnitRenderer{
       // continue to own optical opacity for all visual kinds.
       const actionOpacity=unit.finished&&entry.kind==="BILLBOARD"
         ?(unit.friendlyToViewer?.88:.62):1;
-      this.setVisibility(entry,actionOpacity*stealthOpacity*verticalOpacity);
+      this.setVisibility(entry,actionOpacity*stealthOpacity*(entry.kind==='AQUATIC_MONSTER'?1:verticalOpacity));
       if(unit.friendlyToViewer&&unit.stealthed)
         for(const marker of entry.facingMarker?.meshes||[])marker.visibility=Math.max(.85,verticalOpacity);
       this.updateVerticalCue(entry,unit);
 
       entry.basePosition.copyFrom(this.positionFor(entry,unit));
-      entry.baseMarkerPosition.copyFrom(this.markerPositionFor(unit));
+      entry.baseMarkerPosition.copyFrom(this.markerPositionFor(unit,entry));
       if(!this.activeAnimations.has(unit.id)){
         entry.root.position.copyFrom(entry.basePosition);
         entry.facingMarker.root.position.copyFrom(entry.baseMarkerPosition);
@@ -3283,6 +3688,14 @@ export class UnitRenderer{
         while(this.formMorphReceipts.size>256)this.formMorphReceipts.delete(this.formMorphReceipts.values().next().value);}
       this.startFormMorph(entry,event);
     }
+    this.aquaticMonsterRig?.queueOfficialGrabs(events);
+    // Drop bindings immediately when the official snapshot no longer permits
+    // them; a later frame must not revive a hidden/dead/selected victim.
+    for(const fx of this.entries.values())if(fx.kind==='AQUATIC_MONSTER'){
+      if(fx.grab&&!this.aquaticMonsterRig.matchingMove(fx,fx.grab))this.aquaticMonsterRig.release(fx);
+      fx.pendingGrabs=fx.pendingGrabs.filter(g=>this.aquaticMonsterRig.visibleUnitIds.has(g.targetId)&&
+        !this.entries.get(g.targetId)?.lastUnit?.selected);
+    }
     this.syncNightReadability(state);
     // The one BabylonRenderer render loop advances unit poses immediately
     // before scene.render(). Running updateFrame() inside sync() duplicated
@@ -3302,6 +3715,7 @@ export class UnitRenderer{
     for(const active of this.activeAnimations.values())states[active.event.state]=(states[active.event.state]||0)+1;
     return{
       units:this.entries.size,
+      aquaticMonsters:this.aquaticMonsterRig?.diagnostics()||{visible:0,grabbing:0,queuedGrabs:0,meshes:0},
       activeAnimations:this.activeAnimations.size,
       queuedAnimations:[...this.animationQueues.values()].reduce((n,q)=>n+q.length,0),
       animationDebug:this.animationDebug,

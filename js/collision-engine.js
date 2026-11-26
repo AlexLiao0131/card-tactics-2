@@ -15,7 +15,7 @@ export const CollisionEngine=(()=>{
   const activeCollision=unit=>(unit?.effects||[]).map(e=>e?.collision?{...e.collision,effectId:e.id}:null).filter(Boolean).sort((a,b)=>Number(b.priority||0)-Number(a.priority||0))[0]||null;
 
   function occupantAt(units,x,y,{excludeId=null}={}){
-    return (units||[]).find(u=>u?.alive&&u.id!==excludeId&&u.x===x&&u.y===y)||null;
+    return TacticalEngine.occupantAt(units,x,y,excludeId);
   }
   function canOccupy({units,x,y,excludeId=null}={}){
     return !occupantAt(units,x,y,{excludeId});
@@ -23,10 +23,12 @@ export const CollisionEngine=(()=>{
   function occupancyConflicts(units){
     const by=new Map(),conflicts=[];
     for(const unit of units||[]){
-      if(!unit?.alive)continue;
-      const k=`${unit.x},${unit.y}`,other=by.get(k);
-      if(other)conflicts.push({x:unit.x,y:unit.y,unitIds:[other.id,unit.id]});
-      else by.set(k,unit);
+      if(!unit?.alive||unit.occupiesTile===false)continue;
+      for(const cell of TacticalEngine.occupiedCells(unit)){
+        const k=`${cell.x},${cell.y}`,other=by.get(k);
+        if(other)conflicts.push({x:cell.x,y:cell.y,unitIds:[other.id,unit.id]});
+        else by.set(k,unit);
+      }
     }
     return conflicts;
   }

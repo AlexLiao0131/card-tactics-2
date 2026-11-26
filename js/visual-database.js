@@ -3,10 +3,8 @@ export const VISUALS={
     viola_default:{portrait:"assets/images/cards/heroes/viola.png",card:"assets/images/cards/heroes/viola.png",tactical:"assets/images/cards/heroes/viola.png",
       battle:{kind:"FIGURE",baseFacing:"E",height:1.70,figure:{style:"DIMENSION_SCHOLAR",longHair:true,pointedEars:true,cape:true,skirtPanels:true,scholarRobe:true,corsetDetail:true,arcaneStaff:true,bow:false,quiver:false,sideSword:false,clothSleeves:true,colors:{skin:"#a67967",hair:"#e4dce8",hairDark:"#8d809f",shirt:"#352047",tabard:"#573477",skirt:"#2c193e",cape:"#291936",capeDark:"#191021",leather:"#33263e",gold:"#d3ac6b",metal:"#d2aa72",accent:"#9c63d5",gem:"#ab65ee",weapon:"#c5a16d"}},animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},WALK:{duration:260,loop:true,procedural:"STEP"},ATTACK:{duration:500,procedural:"CAST"},CAST:{duration:650,procedural:"CAST"},HURT:{duration:260,procedural:"RECOIL"},DEATH:{duration:900,procedural:"FALL"}}}},
     felguard_default:{battle:{kind:"FIGURE",baseFacing:"E",height:2.05,figure:{style:"HEAVY_GUARD",heavyArmor:true,demonHorns:true,fieldWarAxe:true,bow:false,quiver:false,sideSword:false,beltDetail:true,colors:{skin:"#a64d4f",hair:"#2c1828",shirt:"#342638",tabard:"#3e233f",pants:"#241d29",leather:"#38262c",gold:"#ba9061",metal:"#63516d",accent:"#a56adb",weapon:"#8e819a"}},animations:{IDLE:{duration:1000,loop:true,procedural:"BREATHE"},WALK:{duration:330,loop:true,procedural:"STEP"},ATTACK:{duration:650,procedural:"LUNGE"},HURT:{duration:280,procedural:"RECOIL"},DEATH:{duration:900,procedural:"FALL"}}}},
-    // The 2x2 marine monster is drawn as a persistent 3D Babylon mesh by the
-    // existing VfxManager. This transparent holder prevents a second capsule.
-    water_lurker_default:{battle:{kind:"BILLBOARD",baseFacing:"S",height:.01,width:.01,
-      asset:"assets/images/characters/water_lurker/transparent.png",
+    // Persistent articulated monster, owned by the same UnitRenderer as heroes.
+    water_lurker_default:{battle:{kind:"AQUATIC_MONSTER",baseFacing:"S",height:2.5,width:3.04,
       animations:{IDLE:{duration:1100,loop:true,procedural:"BREATHE"},
         WALK:{duration:320,loop:true,procedural:"STEP"},
         ATTACK:{duration:800,loop:false,procedural:"LUNGE"},
