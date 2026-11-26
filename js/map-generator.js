@@ -1264,6 +1264,29 @@ export const MapGenerator=(()=>{
     return objects;
   }
 
+  // Natural outcrops belong to the finished relief, not absolute altitude.
+  // At a projecting rock spur (cliff faces on three or more sides), the
+  // continuous rock substrate can outcrop. Ordinary cliff lips and
+  // corners retain their soil cover to avoid widespread impermeable banks.
+  // Keep established forest cover, engineered access and water geology intact.
+  // Run after obstacle placement; this is passable substrate, not a new rock
+  // object, and does not consume the map's random stream or change geometry.
+  function exposeNaturalOutcrops(map,protectedKeys){
+    const by=new Map(map.tiles.map(t=>[key(t.x,t.y),t]));
+    let count=0;
+    for(const t of map.tiles){
+      if(t.terrain!=="PLAIN"||t.material||t.river||t.hydrologyNaturalChannelPool||
+         t.mountainRamp||t.routeId||t.captureZone||t.core||t.waterDepth>0||protectedKeys.has(key(t.x,t.y)))continue;
+      const exposed=(dx,dy)=>{
+        const n=by.get(key(t.x+dx,t.y+dy));
+        return !!n&&n.terrain!=="WALL"&&Number(t.elevation||0)-Number(n.elevation||0)>1.0001;
+      };
+      if(DIRS.filter(([dx,dy])=>exposed(dx,dy)).length<3)continue;
+      t.material="ROCK";count++;
+    }
+    return count;
+  }
+
   function baseArea(map,owner,b){const out=[],left=owner==="PLAYER",core=left?b.playerCore:b.enemyCore;for(let y=b.mid-b.half;y<=b.mid+b.half;y++)for(let i=0;i<b.depth;i++){const x=left?i:map.width-1-i;if(inBounds(map.width,map.height,x,y)&&!(x===core.x&&y===core.y))out.push({x,y});}return out;}
 
   function movementHeight(tile){if(!tile)return 0;const depth=Math.max(0,Number(tile.waterDepth||0));return depth>0?Number(tile.elevation||0)+depth:Number(tile.elevation||0);}
@@ -1368,6 +1391,7 @@ export const MapGenerator=(()=>{
     const mountainAccess=ensureMountainAccessibility(map,protectedKeys,baseInfo);
     const drainage=authorGeneratedWatershed(map);
     const rocks=addRocks(map,cfg,rand,protectedKeys,baseInfo,river.sourceObjects||[]);
+    const naturalOutcropTiles=exposeNaturalOutcrops(map,protectedKeys);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
     const cores=[
@@ -1382,7 +1406,7 @@ export const MapGenerator=(()=>{
     const summary=stats(map);
     const finalReachable=reachableTiles(map,map.objects,baseInfo.playerCore);
     const remainingInaccessible=highGroundComponents(map).filter(component=>!component.some(t=>finalReachable.has(key(t.x,t.y)))).length;
-    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:remainingInaccessible,conditionedDrainageTiles:drainage.conditionedTiles,connectedDeepPools:drainage.connectedDeepPools,watershedExcavated:drainage.channelExcavation,watershedBreaches:drainage.breachedChannels,watershedMaxFill:drainage.maximumRaise,watershedFillVolume:drainage.conditionedVolume,validation:"PASS",...summary}};
+    return{map,cores,deploymentPoints,meta:{generated:true,seed:resolvedSeed,size:cfg.id,label:cfg.label,width:map.width,height:map.height,routes:routes.length,riverCrossings:river.crossings.length,naturalOutcropTiles,mountainRamps:mountainAccess.ramps,mountainRampTiles:mountainAccess.changedTiles,inaccessibleHighGround:remainingInaccessible,conditionedDrainageTiles:drainage.conditionedTiles,connectedDeepPools:drainage.connectedDeepPools,watershedExcavated:drainage.channelExcavation,watershedBreaches:drainage.breachedChannels,watershedMaxFill:drainage.maximumRaise,watershedFillVolume:drainage.conditionedVolume,validation:"PASS",...summary}};
   }
 
   return Object.freeze({SIZE_PRESETS,preset,randomSeed,generateVersus,validateBattlefield});

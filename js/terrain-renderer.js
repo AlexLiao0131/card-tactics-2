@@ -1,5 +1,5 @@
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
-import { VisualSurfaceResolver } from "./visual-surface-resolver.js";
+import { VisualSurfaceResolver,VISUAL_TERRAIN_COLORS } from "./visual-surface-resolver.js";
 
 const DIRS=Object.freeze([
   {id:"N",dx:0,dy:-1},
@@ -522,8 +522,10 @@ export class TerrainRenderer{
 
   cliffPalette(tile,neighbor,dir,byKey,drop){
     const fog=tile.fogged?.62:1;
-    const edgeColor=this.surfaceResolver.transitionColorAt(tile,byKey,dir.dx*.46,dir.dy*.46);
-    const exposedRock=mixColor(edgeColor,[.34,.32,.27],.38);
+    // Cliff geometry exposes the rock substrate below the topsoil. Use the
+    // existing rock palette; the upper surface keeps its own soil/forest color.
+    // Actual adjacent water contact still drives the shared wet-wall shader.
+    const exposedRock=VISUAL_TERRAIN_COLORS.HIGH_GROUND;
     const wallColor=shade(exposedRock,Math.max(.76,.86-Math.min(.08,drop*.015))*fog);
     const bankWaterDepth=Math.max(this.surfaceResolver.waterDepthOf(tile),this.surfaceResolver.waterDepthOf(neighbor));
     const wetWallFactor=Math.max(0,Math.min(1,bankWaterDepth/.65));
