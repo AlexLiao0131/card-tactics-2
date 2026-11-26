@@ -1,3 +1,4 @@
+import {TerrainMaterial} from "./terrain-database.js";
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 import { VisualSurfaceResolver,VISUAL_TERRAIN_COLORS } from "./visual-surface-resolver.js";
 
@@ -206,7 +207,7 @@ export class TerrainRenderer{
     const inputs=[];
     for(const tile of tiles){
       if(!dependencies.has(keyOf(tile.x,tile.y)))continue;
-      inputs.push([tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,
+      inputs.push([tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,TerrainMaterial.bedSignature(tile),
         tile.elevation,tile.waterDepth,tile.waterSurfaceZ,tile.snowDepth,
         tile.iceThickness,tile.soilMoisture,tile.debrisMass,tile.river,
         tile.flowX,tile.flowY,tile.flowSpeed]);
@@ -334,13 +335,13 @@ export class TerrainRenderer{
   }
 
   syncMaterialMap(tiles,byKey){
-    const signature=tiles.map(tile=>[tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,this.surfaceResolver.elevationOf(tile),Number(tile.waterDepth||0)>0?1:0].join(":")).join("|");
+    const signature=tiles.map(tile=>[tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,TerrainMaterial.bedSignature(tile),this.surfaceResolver.elevationOf(tile),Number(tile.waterDepth||0)>0?1:0].join(":")).join("|");
     if(signature===this.textureSignature)return;
     const minX=Math.min(...tiles.map(t=>Number(t.x))),minY=Math.min(...tiles.map(t=>Number(t.y)));
     const spanX=Math.max(...tiles.map(t=>Number(t.x)))-minX+1,spanY=Math.max(...tiles.map(t=>Number(t.y)))-minY+1;
     const width=spanX*4,height=spanY*4;
     const nextMaterialInputs=new Map(tiles.map(tile=>[keyOf(tile.x,tile.y),[
-      tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,
+      tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,TerrainMaterial.bedSignature(tile),
       this.surfaceResolver.elevationOf(tile),Number(tile.waterDepth||0)>0?1:0
     ].join(":" )]));
     const sameLayout=this.materialPixels?.length===width*height*4&&
@@ -467,7 +468,7 @@ export class TerrainRenderer{
 
   tileColorSignature(tile){
     return [tile.x,tile.y,String(tile.terrain||""),String(tile.dryTerrain||""),
-      String(tile.material||""),Math.max(0,Number(tile.waterDepth||0)),
+      String(tile.material||""),TerrainMaterial.bedSignature(tile),Number(tile.soilCapacity??0),Math.max(0,Number(tile.waterDepth||0)),
       this.surfaceResolver.waterSurfaceOf(tile),
       Math.max(0,Number(tile.soilMoisture||0)),tile.fogged?1:0].join(":");
   }

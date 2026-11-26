@@ -123,7 +123,7 @@ function harvestCandidates(map,x,y){
     const heightDelta=Number(neighbor.elevation||0)-Number(origin.elevation||0);
     // Riverbed sediment is already a distinct one-time CRYSTAL_SAND source;
     // never double-dip a single river cell as both sand and bedrock.
-    const rockStratum=neighbor.river!==true&&(TerrainMaterial.isRock(neighbor)||adjacent&&heightDelta>1.0001&&TerrainMaterial.exposedCliffFace(map,neighbor));
+    const rockStratum=!eligibleBed(neighbor)&&(TerrainMaterial.isRock(neighbor)||adjacent&&heightDelta>1.0001&&TerrainMaterial.exposedCliffFace(map,neighbor));
     const naturalRock=rockStratum&&neighbor.alchemyTransmuted!==true&&
       neighbor.captureZone!==true&&!neighbor.core&&neighbor.terrain!=='WALL';
     if(naturalRock&&(!adjacent||heightDelta>=-1.0001)){

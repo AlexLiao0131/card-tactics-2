@@ -1,3 +1,5 @@
+import {TerrainMaterial} from "./terrain-database.js";
+const BED_MATERIALS=TerrainMaterial.bedMaterials;
 export const MapGenerator=(()=>{
   "use strict";
 
@@ -82,7 +84,7 @@ export const MapGenerator=(()=>{
   }
 
   function setDry(tile,elevation=0,terrain=null){
-    if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||"PLAIN";delete tile.material;tile.waterDepth=0;tile.waterSurfaceZ=null;
+    if(!tile)return;tile.elevation=Number(elevation||0);tile.terrain=terrain||"PLAIN";delete tile.material;delete tile.hydrologyBedMaterial;delete tile.hydrologyBedComposition;tile.waterDepth=0;tile.waterSurfaceZ=null;
     delete tile.dryTerrain;delete tile.soilMoisture;delete tile.river;delete tile.ford;delete tile.flowX;delete tile.flowY;delete tile.baseFlowSpeed;delete tile.flowSpeed;delete tile.discharge;delete tile.baseDischarge;
     delete tile.hydrologySource;delete tile.hydrologyDrain;delete tile.hydrologyChannelBaseElevation;delete tile.hydrologyCascadeToX;delete tile.hydrologyCascadeToY;delete tile.hydrologyCascadeDrop;delete tile.hydrologyAuthoredSource;delete tile.hydrologySourceInflow;delete tile.hydrologyRequestedSourceInflow;delete tile.hydrologySourceDisabled;delete tile.sourceKind;delete tile.sourceObjectId;
   }
@@ -540,9 +542,12 @@ export const MapGenerator=(()=>{
       if(cells.some(c=>reserved.has(key(c.tile.x,c.tile.y))||neighbors(c.tile).some(n=>reserved.has(key(n.x,n.y))))||
          centers.some(center=>Math.abs(center.x-river.x)+Math.abs(center.y-river.y)<4))continue;
       const before=Number(bank.elevation);
-      for(const {tile,bed} of cells){
+      for(const {tile,bed,interior} of cells){
         tile.elevation=Number(bed.toFixed(4));tile.waterDepth=0;tile.waterSurfaceZ=null;
         tile.hydrologyNaturalChannelPool=true;
+        // Sheltered basin interiors retain fine sediment; the excavated
+        // shoulders expose coarser bed material. No dependence on sea level.
+        tile.hydrologyBedMaterial=interior?"SILT":"GRAVEL";
         tile.hydrologyNaturalChannelPoolDepth=Number((sill-tile.elevation).toFixed(4));
         reserved.add(key(tile.x,tile.y));
       }
@@ -1377,6 +1382,29 @@ export const MapGenerator=(()=>{
     return{ok:errors.length===0,errors};
   }
 
+  function authorBedComposition(map){
+    const by=new Map(map.tiles.map(t=>[key(t.x,t.y),t]));
+    const beds=map.tiles.filter(t=>BED_MATERIALS.includes(t.hydrologyBedMaterial));
+    const connected=(a,b)=>!!a&&!!b&&BED_MATERIALS.includes(b.hydrologyBedMaterial)&&
+      Math.abs(Number(a.elevation)-Number(b.elevation))<=1.0001;
+    for(const tile of beds){
+      const counts={};
+      const add=(t,area)=>{const k=t.hydrologyBedMaterial;counts[k]=(counts[k]||0)+area;};
+      // Integrate the existing half-tile smoothstep seam over four equal
+      // quadrants. Mean blend is 1/4 (integral of smoothstep is 1/2,
+      // multiplied by 1/2 at the shared border). Bilinear areas are thus
+      // 9/16, 3/16, 3/16, 1/16. These are geometry, NOT calibrated rates.
+      // Never blend across a cliff or onto land outside the authored bed.
+      for(const dx of [-1,1])for(const dy of [-1,1]){
+        const rawX=by.get(key(tile.x+dx,tile.y)),rawY=by.get(key(tile.x,tile.y+dy)),corner=by.get(key(tile.x+dx,tile.y+dy));
+        const x=connected(tile,rawX)?rawX:tile,y=connected(tile,rawY)?rawY:tile;
+        const diagonal=(x!==tile&&connected(x,corner))||(y!==tile&&connected(y,corner))?corner:x!==tile?x:y;
+        add(tile,9);add(x,3);add(y,3);add(diagonal,1);
+      }
+      tile.hydrologyBedComposition=Object.fromEntries(BED_MATERIALS.filter(k=>counts[k]).map(k=>[k,counts[k]/64]));
+    }
+  }
+
   function stats(map){const e=map.tiles.map(t=>Number(t.elevation||0));return{minElevation:Math.min(...e),maxElevation:Math.max(...e),waterTiles:map.tiles.filter(t=>t.waterDepth>0).length,riverTiles:map.tiles.filter(t=>t.river).length,fordTiles:map.tiles.filter(t=>t.ford).length,forestTiles:map.tiles.filter(t=>t.terrain==="FOREST").length,highGroundTiles:map.tiles.filter(t=>Number(t.elevation||0)>=2).length};}
 
   function generateVersus({size="MEDIUM",seed=randomSeed(),coreRules={},springMode="RANDOM"}={}){
@@ -1392,6 +1420,7 @@ export const MapGenerator=(()=>{
     const drainage=authorGeneratedWatershed(map);
     const rocks=addRocks(map,cfg,rand,protectedKeys,baseInfo,river.sourceObjects||[]);
     const naturalOutcropTiles=exposeNaturalOutcrops(map,protectedKeys);
+    authorBedComposition(map);
 
     const hp=Math.max(1,Number(coreRules.hp??600)),shield=Math.max(0,Number(coreRules.shield??0)),defense=Math.max(0,Number(coreRules.defense??0));
     const cores=[

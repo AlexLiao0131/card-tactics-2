@@ -13,13 +13,24 @@ globalThis.TERRAINS=TERRAINS;
 // HIGH_GROUND remains a compatibility label for authored rock terrain only;
 // procedural ground is soil unless an actual material is explicitly authored.
 export const HIGH_GROUND_RANGED_ACCURACY=10;
+// Bed categories already used by the river solver. Fractions describe exposed
+// tile area, not layers of imaginary groundwater. All fractions sum to one.
+const BED_MATERIALS=Object.freeze(["ROCK","GRAVEL","SILT","SOIL","SAND"]);
+const PURE_BED=Object.freeze(Object.fromEntries(BED_MATERIALS.map(kind=>[kind,Object.freeze({[kind]:1})])));
 export const TerrainMaterial=Object.freeze({
+  bedMaterials:BED_MATERIALS,
+  bedComposition(tile){return tile?.hydrologyBedComposition||PURE_BED[tile?.hydrologyBedMaterial]||null;},
+  bedSignature(tile){const mix=this.bedComposition(tile);return mix?BED_MATERIALS.map(k=>mix[k]||0).join(","):"";},
+  bedLabel(tile){const mix=this.bedComposition(tile);if(!mix)return null;
+    const authored=tile.hydrologyBedMaterial;if(authored&&mix[authored]>.5)return authored;
+    let best=BED_MATERIALS[0];for(const k of BED_MATERIALS)if((mix[k]||0)>(mix[best]||0))best=k;return best;},
   baseTerrain(tile){return tile?.terrain==="WATER"?(tile.dryTerrain||"PLAIN"):tile?.terrain;},
   of(tile){
     if(!tile)return null;
     const base=this.baseTerrain(tile);
     if(base==="WALL")return "ROCK";
-    if(tile.river===true&&tile.hydrologyBedMaterial==="ROCK")return "ROCK";
+    const bed=this.bedLabel(tile);
+    if(bed)return bed==="ROCK"?"ROCK":bed==="SAND"?"SAND":"SOIL";
     const explicit=String(tile.material||"").toUpperCase();
     if(explicit==="ROCK"||explicit==="STONE")return "ROCK";
     if(explicit==="SOIL"||explicit==="SAND")return explicit;
@@ -27,7 +38,7 @@ export const TerrainMaterial=Object.freeze({
     if(base==="SAND")return "SAND";
     return ["PLAIN","MUD","FOREST"].includes(base)?"SOIL":null;
   },
-  hasSoil(tile){return ["SOIL","SAND"].includes(this.of(tile));},
+  hasSoil(tile){const bed=this.bedComposition(tile);return bed?(bed.ROCK||0)<1:["SOIL","SAND"].includes(this.of(tile));},
   isRock(tile){return this.of(tile)==="ROCK";},
   // An exposed cliff face is geological rock beneath a possible soil cover;
   // it does NOT turn the entire upper tile into impermeable bare rock.

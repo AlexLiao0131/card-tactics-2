@@ -38,6 +38,12 @@ export function makeBattleTestMap(){
     if(region.terrain==='WATER'){
       entry.waterDepth=region.waterDepth;
       entry.dryTerrain='PLAIN';
+      // Existing water depth fixtures remain unchanged. Author pure columns
+      // and equal-area samples for manual comparison, not a new game balance.
+      const kinds=['ROCK','GRAVEL','SILT','SAND'];
+      const col=x-region.x0;
+      if(col<kinds.length)entry.hydrologyBedMaterial=kinds[col];
+      else entry.hydrologyBedComposition=Object.fromEntries(kinds.map(k=>[k,1/kinds.length]));
     }
     terrain.push(entry);
   }

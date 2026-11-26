@@ -83,7 +83,10 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
   }
   function applySoilSurface(tile,erosion,deposition,events,source){
     const impact=erosion+deposition,before=tile.terrain;if(impact<=.025)return;
-    if(deposition>=.14&&!TerrainMaterial.hasSoil(tile))globalThis.HydrologyEngine.setGroundMaterial(tile,"SOIL",events,source);
+    if(deposition>=.14){
+      if(TerrainMaterial.bedComposition(tile))globalThis.HydrologyEngine.setGroundMaterial(tile,"SILT",events,source);
+      else if(!TerrainMaterial.hasSoil(tile))globalThis.HydrologyEngine.setGroundMaterial(tile,"SOIL",events,source);
+    }
     if(!TerrainMaterial.hasSoil(tile))return;
     if(tile.terrain==="WATER")tile.dryTerrain=deposition>=.14?"MUD":(tile.dryTerrain||"PLAIN");
     else if(tile.terrain==="PLAIN"||tile.terrain==="FOREST"){tile.terrain="MUD";if(before==="FOREST")tile.vegetation=0;}
@@ -98,7 +101,7 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
     const before=tile.terrain;
     tile.rockMass=clean(Math.max(0,rockMass(tile,map)-erosion*.55+deposition*.8));
     tile.debrisMass=clean(Number(tile.debrisMass||0)+deposition*.95+erosion*.15);
-    if(tile.debrisMass>=.28&&TerrainMaterial.of(tile)!=="ROCK")globalThis.HydrologyEngine.setGroundMaterial(tile,"ROCK",events,source);
+    if(tile.debrisMass>=.28&&(TerrainMaterial.of(tile)!=="ROCK"||TerrainMaterial.hasSoil(tile)))globalThis.HydrologyEngine.setGroundMaterial(tile,"ROCK",events,source);
     if(before==="FOREST"&&impact>=.18){if(tile.terrain==="WATER")tile.dryTerrain="PLAIN";else tile.terrain="PLAIN";tile.vegetation=0;}
     // Rock deposition changes material, not the tactical altitude classification.
     tile.massFlowResidue=clean(Number(tile.massFlowResidue||0)+impact);

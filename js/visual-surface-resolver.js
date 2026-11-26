@@ -1,4 +1,5 @@
 import {TerrainMaterial} from "./terrain-database.js";
+const BED_MATERIALS=TerrainMaterial.bedMaterials;
 import { TILE_SIZE,ELEVATION_HEIGHT } from "./coordinate-system.js";
 
 const EPSILON=1e-8;
@@ -47,6 +48,9 @@ export const MICRO_REGION_LAYOUT=Object.freeze([
   Object.freeze({id:"SE",row:2,col:2,ox:1/3, oz:1/3, dirs:[[1,0],[0,1],[1,1]]})
 ]);
 
+const BED_COLORS=Object.freeze({ROCK:VISUAL_TERRAIN_COLORS.HIGH_GROUND,GRAVEL,SILT:SILT_BANK,SOIL:VISUAL_TERRAIN_COLORS.MUD,SAND:VISUAL_TERRAIN_COLORS.SAND});
+const BED_WET_COLORS=Object.freeze({...BED_COLORS,ROCK:WET_ROCK,SOIL:WET_MUD,SAND:WET_SAND});
+const bedColor=(mix,palette)=>[0,1,2].map(i=>BED_MATERIALS.reduce((sum,k)=>sum+Number(mix[k]||0)*palette[k][i],0));
 const keyOf=(x,y)=>`${x},${y}`;
 const elevationOf=tile=>Number(tile?.elevation||0);
 const waterDepthOf=tile=>Math.max(0,Number(tile?.waterDepth||0));
@@ -75,6 +79,8 @@ const averageColors=colors=>{
 function baseTerrainOf(tile){
   const base=TerrainMaterial.baseTerrain(tile);
   if(base==="WALL")return "WALL";
+  const bed=TerrainMaterial.bedLabel(tile);
+  if(bed)return bed==="ROCK"||bed==="GRAVEL"?"HIGH_GROUND":bed==="SAND"?"SAND":"MUD";
   const material=TerrainMaterial.of(tile);
   if(material==="ROCK")return "HIGH_GROUND";
   if(material==="SAND")return "SAND";
@@ -979,7 +985,7 @@ export class VisualSurfaceResolver{
   }
 
   dryColor(tile){
-    return VISUAL_TERRAIN_COLORS[baseTerrainOf(tile)]||VISUAL_TERRAIN_COLORS.DEFAULT;
+    const bed=TerrainMaterial.bedComposition(tile);return bed?bedColor(bed,BED_COLORS):VISUAL_TERRAIN_COLORS[baseTerrainOf(tile)]||VISUAL_TERRAIN_COLORS.DEFAULT;
   }
 
   surfaceBlendAmount(value){
@@ -991,6 +997,8 @@ export class VisualSurfaceResolver{
   materialWeightsAt(tile,byKey,ox=0,oz=0){
     // Texture identity only; moisture/depth/fog tint remains in surfaceColorAt.
     const weightsOf=value=>{
+      const bed=TerrainMaterial.bedComposition(value);
+      if(bed)return[0,(bed.SILT||0)+(bed.SOIL||0),(bed.ROCK||0)+(bed.GRAVEL||0),bed.SAND||0];
       const terrain=baseTerrainOf(value);
       if(terrain==="SAND")return[0,0,0,1];
       if(terrain==="HIGH_GROUND"||terrain==="WALL")return[0,0,1,0];
@@ -1002,7 +1010,7 @@ export class VisualSurfaceResolver{
     const local=weightsOf(tile);
 
     // Keep submerged beds independent of neighbouring dry materials.
-    if(waterDepthOf(tile)>0)return local;
+    if(TerrainMaterial.bedComposition(tile)||waterDepthOf(tile)>0)return local;
 
     const px=Math.max(-.5,Math.min(.5,Number(ox||0)));
     const pz=Math.max(-.5,Math.min(.5,Number(oz||0)));
@@ -1032,7 +1040,7 @@ export class VisualSurfaceResolver{
 
   moistureAmount(tile){
     const terrain=baseTerrainOf(tile);
-    const cap=terrain==="SAND"?.22:.45;
+    const cap=Number(tile?.soilCapacity??(terrain==="SAND"?.22:.45));
     return clamp01(Math.max(0,Number(tile?.soilMoisture||0))/cap);
   }
 
@@ -1041,6 +1049,7 @@ export class VisualSurfaceResolver{
     const base=this.dryColor(tile);
     const wet=clamp01(amount);
     if(wet<=0)return base;
+    const bed=TerrainMaterial.bedComposition(tile);if(bed)return mixColor(base,bedColor(bed,BED_WET_COLORS),wet);
     if(terrain==="SAND")return mixColor(base,WET_SAND,.72*wet);
     if(terrain==="FOREST")return mixColor(base,WET_FOREST,.58*wet);
     if(terrain==="HIGH_GROUND"||tile?.material==="ROCK")return mixColor(base,WET_ROCK,.48*wet);
@@ -1057,6 +1066,8 @@ export class VisualSurfaceResolver{
     else if(terrain==="FOREST")shallowTarget=FOREST_SOIL;
     else if(terrain==="HIGH_GROUND"||tile?.material==="ROCK")shallowTarget=WET_ROCK;
     else if(terrain==="MUD")shallowTarget=SILT_BANK;
+
+    const mix=TerrainMaterial.bedComposition(tile);if(mix)shallowTarget=bedColor(mix,BED_WET_COLORS);
 
     // Underwater material is derived from the bed itself, never from a dry
     // neighbour. This keeps grass colour from bleeding into submerged slopes.

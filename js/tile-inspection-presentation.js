@@ -27,6 +27,8 @@ export const TileInspectionPresentation=(()=>{
     const title=depth>0?`${terrain.name||tile.terrain}｜地面 H${fmt(ground)}｜水面 H${fmt(surface)}`:`${terrain.name||tile.terrain}｜H${fmt(ground)}`,meta=depth>0?`水深 ${fmt(depth)}｜MOVE ${move}｜EVA ${eva}`:`MOVE ${move}｜EVA ${eva}`,summary={title,meta,status:effects.map(e=>EFFECT[e.type]||e.type).join("・")};
     const labels=climateLabels(environmentState),climate=environmentState?EnvironmentEngine.climateSnapshot?.(environmentState):null;
     const details=[`地圖格 (${tile.x},${tile.y})`,`地形：${terrain.name||tile.terrain}｜地面 H${fmt(ground)}`,`地表材質：${({SOIL:"土壤",SAND:"砂質",ROCK:"岩石"})[TerrainMaterial.of(tile)]||"其他"}｜環境：${ENV[material]||material}｜氣候：${labels.join("＋")}`];
+    const bed=TerrainMaterial.bedComposition(tile);
+    if(bed){const names={ROCK:"岩床",GRAVEL:"礫石",SILT:"淤泥",SOIL:"土壤",SAND:"砂質"};details.push(`底質：${Object.entries(bed).map(([k,v])=>`${names[k]||k} ${fmt(v*100)}%`).join("、")}｜每環境步滲透上限 ${Number(HydrologyEngine.infiltrationRate(tile)).toFixed(4)}`);}
     const wind=climate?.wind||environmentState?.wind;if(wind)details.push(`風向：${windName(wind)}｜風力 ${fmt(wind.strength)}`);
     if(climate?.temperature!=null)details.push(`基準氣溫：${fmt(climate.temperature)}°C`);
     if(depth>0)details.push(`水深：${fmt(depth)}｜水面 H${fmt(surface)}｜Surface Water ${fmt(depth)}`);

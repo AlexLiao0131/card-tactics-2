@@ -1,4 +1,5 @@
 import {TerrainMaterial} from "./terrain-database.js";
+const BED_MATERIALS=TerrainMaterial.bedMaterials;
 export const HydrologyEngine=(()=>{
   "use strict";
 
@@ -36,18 +37,21 @@ export const HydrologyEngine=(()=>{
   const roundSigned=value=>Math.round(Number(value||0)*10000)/10000;
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,Number(value||0)));
   const baseTerrain=t=>TerrainMaterial.baseTerrain(t);
-  const soilCapacity=t=>TerrainMaterial.of(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;
-  const soilMoisture=t=>hasSoil(t)?clamp(t?.soilMoisture??(t?.terrain==="MUD"?SOIL_SATURATION_CAPACITY:0),0,soilCapacity(t)):0;
+  // Preserve the existing effective bed coefficients. Gravel/silt previously
+  // used the ordinary soil reservoir; no independent porosity calibration
+  // exists. Area-weight that reservoir, rather than inventing one.
+  const bedCapacity=Object.freeze({ROCK:0,GRAVEL:SOIL_SATURATION_CAPACITY,SILT:SOIL_SATURATION_CAPACITY,SOIL:SOIL_SATURATION_CAPACITY,SAND:SAND_SOIL_CAPACITY});
+  const bedInfiltration=Object.freeze({ROCK:0,GRAVEL:.006,SILT:.013,SOIL:PLAIN_INFILTRATION_PER_TURN,SAND:SAND_INFILTRATION_PER_TURN});
+  const weightedBed=(mix,v)=>(mix.ROCK||0)*v.ROCK+(mix.GRAVEL||0)*v.GRAVEL+(mix.SILT||0)*v.SILT+(mix.SOIL||0)*v.SOIL+(mix.SAND||0)*v.SAND;
+  const soilCapacity=t=>{const bed=TerrainMaterial.bedComposition(t);return bed?clean(weightedBed(bed,bedCapacity)):TerrainMaterial.of(t)==="SAND"?SAND_SOIL_CAPACITY:SOIL_SATURATION_CAPACITY;};
+  const soilMoisture=t=>hasSoil(t)?clamp(t?.soilMoisture??(t?.terrain==="MUD"?soilCapacity(t):0),0,soilCapacity(t)):0;
   const hasSoil=t=>TerrainMaterial.hasSoil(t);
   const infiltrationRate=t=>{
     if(!hasSoil(t))return 0;
     // Geological substrate is hydrology data, independent of the visible
     // MixMaterial and the WATER/dryTerrain presentation toggle.
-    if(t?.river===true){
-      if(t.hydrologyBedMaterial==="ROCK")return 0;
-      if(t.hydrologyBedMaterial==="GRAVEL")return .006;
-      if(t.hydrologyBedMaterial==="SILT")return .013;
-    }
+    const bed=TerrainMaterial.bedComposition(t);
+    if(bed)return weightedBed(bed,bedInfiltration);
     if(TerrainMaterial.of(t)==="SAND")return SAND_INFILTRATION_PER_TURN;
     switch(baseTerrain(t)){
       case "SAND":return SAND_INFILTRATION_PER_TURN;
@@ -987,8 +991,8 @@ export const HydrologyEngine=(()=>{
   function initializeMap(map){
     for(const tile of map?.tiles||[]){
       tile.waterTurbidity=clean(clamp(tile.waterTurbidity||0,0,1));
-      if(tile.terrain==="MUD"){tile.soilMoisture=clean(tile.soilMoisture==null?SOIL_SATURATION_CAPACITY:soilMoisture(tile));continue;}
-      if(tile.terrain==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,Number(tile.soilMoisture||0)));
+      if(tile.terrain==="MUD"){tile.soilMoisture=clean(tile.soilMoisture==null?(hasSoil(tile)?soilCapacity(tile):0):soilMoisture(tile));continue;}
+      if(tile.terrain==="SAND")tile.soilMoisture=clean(Math.min(soilCapacity(tile),Number(tile.soilMoisture||0)));
       if(tile.terrain!=="WATER")continue;
       if(!Number.isFinite(Number(tile.waterDepth))||Number(tile.waterDepth)<=0){
         tile.waterDepth=NATURAL_WATER_DEPTH;
@@ -1063,7 +1067,7 @@ export const HydrologyEngine=(()=>{
     }else if(tile.waterDepth<=0&&tile.terrain==="WATER"&&tile.dryTerrain){
       const base=tile.dryTerrain,moisture=hasSoil(tile)?soilMoisture(tile):0;
       if(base==="PLAIN"||base==="MUD"){tile.terrain=base;tile.soilMoisture=clean(moisture);}
-      else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(SAND_SOIL_CAPACITY,moisture));}
+      else{tile.terrain=base;if(base==="SAND")tile.soilMoisture=clean(Math.min(soilCapacity(tile),moisture));}
       delete tile.dryTerrain;
       events.push({type:"BASIN_DRAINED",x:tile.x,y:tile.y,elevation:elevation(tile),waterDepth:0,terrain:tile.terrain});
     }
@@ -1073,13 +1077,18 @@ export const HydrologyEngine=(()=>{
   // that water in the same conserved D store instead of silently losing it.
   function setGroundMaterial(tile,material,events=[],source="GROUND_MATERIAL"){
     if(!tile)return false;
-    const before=TerrainMaterial.of(tile),stored=soilMoisture(tile);
+    const before=TerrainMaterial.of(tile),oldBed=TerrainMaterial.bedSignature(tile),stored=soilMoisture(tile);
+    if(oldBed){
+      if(!BED_MATERIALS.includes(material))return false;
+      tile.hydrologyBedMaterial=material;
+      delete tile.hydrologyBedComposition;
+    }
     tile.material=material;
-    if(before===TerrainMaterial.of(tile))return true;
+    if(before===TerrainMaterial.of(tile)&&oldBed===TerrainMaterial.bedSignature(tile))return true;
     const retained=hasSoil(tile)?Math.min(stored,soilCapacity(tile)):0;
     tile.soilMoisture=clean(retained);
     if(stored-retained>EPSILON)setWaterDepth(tile,waterDepth(tile)+stored-retained,events,source);
-    if(before!==TerrainMaterial.of(tile))events.push({type:"GROUND_MATERIAL_CHANGED",x:tile.x,y:tile.y,from:before,to:TerrainMaterial.of(tile),source});
+    if(before!==TerrainMaterial.of(tile)||oldBed!==TerrainMaterial.bedSignature(tile))events.push({type:"GROUND_MATERIAL_CHANGED",x:tile.x,y:tile.y,from:before,to:TerrainMaterial.of(tile),source});
     return true;
   }
 
@@ -2257,7 +2266,7 @@ export const HydrologyEngine=(()=>{
       if(received<=EPSILON)continue;
       inputWater+=received;
       if(isWater(tile)){const before=waterDepth(tile);tile.waterDepth=before+received;events.push({type:"WATER_ACCUMULATED",x:tile.x,y:tile.y,elevation:elevation(tile),fromDepth:before,waterDepth:tile.waterDepth,waterSurfaceZ:elevation(tile)+tile.waterDepth,source:rainSource});continue;}
-      const excess=hasSoil(tile)?saturateSoil(tile,received,events,rainSource):received;
+      const excess=hasSoil(tile)&&!TerrainMaterial.bedComposition(tile)?saturateSoil(tile,received,events,rainSource):received;
       if(excess>EPSILON){const before=waterDepth(tile);tile.waterDepth=before+excess;events.push({type:"SURFACE_RUNOFF",x:tile.x,y:tile.y,amount:excess,source:rainSource});}
     }
     events.push({type:"RAIN_PRECIPITATION_WATER_INPUT",source:rainSource,volume:clean(inputWater)});
