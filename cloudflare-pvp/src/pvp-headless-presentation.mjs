@@ -10,6 +10,16 @@ import {TacticalEngine} from '../../js/tactical-engine.js';
 import {withCanonicalEngines} from './pvp-engine-context.mjs';
 import {PvpCommandError} from '../../shared/pvp-command-contract.mjs';
 import {canonicalWorldForViewer} from './pvp-perception-controller.mjs';
+// Autonomous mass flows have no unit identity. Use the same physical LOS
+// rule as the existing enemy movement paths, and expose only terrain facts.
+export function projectMassFlowPresentation(event,map,units,viewer,environmentState,previousVisible=new Set()){
+  if(!event||!['MASS_FLOW','MASS_FLOW_WARNING'].includes(event.type))return null;
+  const path=event.path;
+  if(!Array.isArray(path)||path.length<2||!path.every(p=>p&&Number.isSafeInteger(p.x)&&Number.isSafeInteger(p.y)&&TacticalEngine.tile(map,p.x,p.y)&&TacticalEngine.teamCanSee(map,units,viewer,p,environmentState)))return null;
+  const contacts=(Array.isArray(event.contacts)?event.contacts:[]).filter(c=>c&&previousVisible.has(c.unitId)&&path.some(p=>p.x===c.x&&p.y===c.y)).map(c=>({x:c.x,y:c.y}));
+  return {type:event.type,sequence:event.sequence,material:event.material,x:path[0].x,y:path[0].y,mass:event.mass,contacts,
+    path:path.map(p=>({x:p.x,y:p.y,elevation:p.elevation,elevationBefore:p.elevationBefore,elevationAfter:p.elevationAfter,snowDepthBefore:p.snowDepthBefore,snowDepthAfter:p.snowDepthAfter,erosion:p.erosion,deposit:p.deposit}))};
+}
 export function projectCanonicalRendererSnapshot(game,seat,revision=0){
   if(seat!==0&&seat!==1)throw new PvpCommandError('BAD_SEAT');
   if(!game?.battlefield?.map||!Array.isArray(game.units))
@@ -62,7 +72,15 @@ export function projectCanonicalRendererSnapshot(game,seat,revision=0){
       const previous=new Set(record.visibleBefore?.[seat]||[]);
       const safe=[];
       for(const event of record.events){
-        if(!event||!previous.has(event.unitId))continue;
+        if(!event)continue;
+        // Mass flows are autonomous environmental events, not hidden unit actions.
+        // Send only entirely visible paths, whitelisting terrain-only properties.
+        if(event.type==='MASS_FLOW'||event.type==='MASS_FLOW_WARNING'){
+          const projected=projectMassFlowPresentation(event,map,game.units,viewer,game.environmentState,previous);
+          if(projected)safe.push(projected);
+          continue;
+        }
+        if(!previous.has(event.unitId))continue;
         if(event.type==='OPHI_FOREST_SOUL_COLLECT'&&
            !TacticalEngine.teamCanSee(map,game.units,viewer,
              {x:event.x,y:event.y},game.environmentState))continue;
