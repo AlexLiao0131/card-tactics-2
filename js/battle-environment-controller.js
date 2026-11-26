@@ -396,11 +396,14 @@ function create(ctx){
  }
  function resolveMassFlow(event){
   const s=state(),path=event.path||[],initial=(s.units||[]).filter(u=>u?.alive&&path.some(p=>p.x===u.x&&p.y===u.y));let count=0;
+  // Preserve authoritative path before movement/damage animations enter the same event queue.
+  const presentation=path.length>=2?globalThis.UnitAnimationEngine?.emitPresentation?.("MASS_FLOW",{...event,path:path.map(p=>({...p})),contacts:[]}):null;
   const material=event.material||"SNOW",name=material==="SOIL"?"土石流":(material==="ROCK"||material==="DEBRIS")?"山崩／落石":"雪崩";
   for(const unit of initial){
     if(!unit.alive)continue;
     const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!eventContacts(unit,tile,event))continue;
     const index=path.findIndex(p=>p.x===unit.x&&p.y===unit.y),distance=Math.min(Math.max(0,Math.round(Number(event.forceDistance||1))),path.length-index-1);
+    if(index>=0&&presentation)presentation.contacts.push({unitId:unit.id,x:unit.x,y:unit.y});
     let struck=false;
     for(let step=0;step<distance&&unit.alive;step++){
       const from=path[index+step],to=path[index+step+1];
@@ -576,6 +579,7 @@ function create(ctx){
   for(const wave of list.filter(event=>event.type==="ROGUE_WAVE"))affected+=resolveRogueWave(wave);
   for(const wave of list.filter(event=>event.type==="TSUNAMI_WAVE"))affected+=resolveTsunamiWave(wave);
   for(const vortex of list.filter(event=>event.type==="WHIRLPOOL_PULSE"))affected+=resolveWhirlpool(vortex);
+  for(const warning of list.filter(event=>event.type==="MASS_FLOW_WARNING"))globalThis.UnitAnimationEngine?.emitPresentation?.("MASS_FLOW_WARNING",{...warning,path:(warning.path||[]).map(p=>({...p}))});
   for(const flow of list.filter(event=>event.type==="MASS_FLOW"))affected+=resolveMassFlow(flow);for(const avalanche of list.filter(event=>event.type==="AVALANCHE"))affected+=resolveMassFlow({...avalanche,material:"SNOW"});
   const burialEvents=globalThis.BurialEngine?.applyEnvironmentEvents?.(s.units,s.map,list)||[];for(const burial of burialEvents){logEnvironmentEvent(burial);affected++;}
   for(const unit of (s.units||[]).filter(unit=>unit?.alive&&globalThis.BurialEngine?.state?.(unit)))BurialEngine.syncRenderPose(unit,s.map);

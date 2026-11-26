@@ -995,8 +995,9 @@ export class PvpTacticalUI {
         previous.revision<packet.revision?previous.units:[]).map(unit=>String(unit.id)));
       const currentIds=new Set((packet.snapshot?.units||[]).map(unit=>String(unit.id)));
       const events=(packet.snapshot?.presentation?.battleEvents||[])
-        .filter(event=>previousIds.has(String(event.unitId))&&
-          (currentIds.has(String(event.unitId))||event.afterDeath||event.state==='DEATH'));
+        .filter(event=>event.type==='MASS_FLOW'||event.type==='MASS_FLOW_WARNING'||
+          (previousIds.has(String(event.unitId))&&
+          (currentIds.has(String(event.unitId))||event.afterDeath||event.state==='DEATH')));
       const stream=packet.snapshot?.presentation;
       if(this.lastEventAuditRevision!==packet.revision){
         this.lastEventAuditRevision=packet.revision;

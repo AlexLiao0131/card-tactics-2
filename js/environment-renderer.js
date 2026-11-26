@@ -164,6 +164,8 @@ export class EnvironmentRenderer{
     this.weatherTime=0;
     this.impactAccumulator=0;
     this.lightningBursts=[];
+    this.massFlowEffects=[];this.massFlowMaterials=new Map();this.massFlowPool=[];this.massFlowTokens=new Set();
+    this.massFlowStats={started:0,warnings:0,completed:0};
     this.lastLightningToken="";
     // Physical structure lights are stable. Unlimited flame/character cells use
     // one aggregated colour field instead of one GPU PointLight per map tile.
@@ -300,6 +302,7 @@ export class EnvironmentRenderer{
       }
       this.syncFriendlyVisibility(this.lastState);
       this.updateWeatherFrame(dt);
+      this.updateMassFlows(dt);
     });
   }
 
@@ -625,8 +628,198 @@ export class EnvironmentRenderer{
     this.meteorBursts=keep;
   }
 
-  syncPresentationEvents(events,state){
+  // One bounded environmental playback, driven by the canonical path. Visual
+  // effects never write to the gameplay map or the published terrain resolver.
+  massFlowMaterial(kind,part){
+    const id=kind+":"+part;
+    if(this.massFlowMaterials.has(id))return this.massFlowMaterials.get(id);
+    const palettes={SOIL:[[.33,.19,.09],[.51,.34,.19],[.34,.30,.24]],
+      ROCK:[[.35,.31,.27],[.55,.48,.39],[.55,.49,.42]],
+      SNOW:[[.83,.90,.94],[.97,.98,1],[.72,.83,.91]]};
+    const mat=new BABYLON.StandardMaterial("mass-flow-"+id,this.scene);
+    mat.diffuseColor=new BABYLON.Color3(...(palettes[kind]||palettes.ROCK)[part]);
+    mat.specularColor=new BABYLON.Color3(.035,.035,.035);mat.backFaceCulling=false;
+    if(part===2){mat.alpha=.36;mat.disableDepthWrite=true;}
+    this.massFlowMaterials.set(id,mat);return mat;
+  }
+
+  borrowMassFlowMesh(kind,part){
+    let item=this.massFlowPool.find(m=>!m.busy&&m.part===part);
+    if(!item){
+      if(this.massFlowPool.length>=72)return null;
+      const mesh=part===1
+        ?BABYLON.MeshBuilder.CreatePolyhedron("mass-flow-debris",{type:1,size:1},this.scene)
+        :BABYLON.MeshBuilder.CreateSphere("mass-flow-front",{diameter:1,segments:6},this.scene);
+      mesh.isPickable=false;item={mesh,part,busy:false};this.massFlowPool.push(item);
+    }
+    item.busy=true;item.contact=null;item.mesh.material=this.massFlowMaterial(kind,part);
+    item.mesh.setEnabled(false);return item;
+  }
+
+  releaseMassFlow(effect){
+    for(const item of effect.pieces||[]){item.busy=false;item.mesh.setEnabled(false);}
+    for(const patch of effect.patches||[])patch.mesh.dispose();
+    for(const line of effect.lines||[])line.dispose();
+  }
+
+  clearMassFlows(){
+    for(const effect of this.massFlowEffects)this.releaseMassFlow(effect);
+    this.massFlowEffects=[];
+  }
+
+  createMassFlow(event,state,previousState){
+    const kind=event.material==="SNOW"?"SNOW":event.material==="SOIL"?"SOIL":"ROCK";
+    const byKey=new Map((state?.map?.tiles||[]).map(t=>[`${t.x},${t.y}`,t]));
+    const path=event.path;
+    if(!Array.isArray(path)||path.length<2||!path.every(p=>Number.isInteger(p.x)&&Number.isInteger(p.y)&&byKey.has(`${p.x},${p.y}`)))return;
+    if(path.some((p,i)=>i>0&&Math.abs(p.x-path[i-1].x)+Math.abs(p.y-path[i-1].y)!==1))return;
+    if(this.massFlowEffects.length>=4)this.releaseMassFlow(this.massFlowEffects.shift());
+    const warning=event.type==="MASS_FLOW_WARNING";
+    const duration=warning?1.8:.45+(path.length-1)*.28;
+    const effect={kind,path,age:0,duration,warning,pieces:[],patches:[],lines:[]};
+    const previousByKey=new Map((previousState?.map?.id===state?.map?.id?previousState?.map?.tiles||[]:[]).map(t=>[`${t.x},${t.y}`,t]));
+    const oldByKey=new Map(byKey);
+    for(const p of path){
+      const k=`${p.x},${p.y}`,t=byKey.get(k),previous=previousByKey.get(k);
+      oldByKey.set(k,{...t,elevation:Number(p.elevationBefore??p.elevation??previous?.elevation??t.elevation),
+        snowDepth:Number(p.snowDepthBefore??previous?.snowDepth??t.snowDepth??0)});
+    }
+    // Sample the SAME rendered ground/snow height at fixed route points once.
+    // Linear centre-to-centre elevation would tunnel through steep cliff lips.
+    const heightAt=(tile,lookup,ox,oz)=>{
+      const h=this.surfaceResolver.sampleRenderedHeight(tile,lookup,ox,oz);
+      if(kind!=="SNOW")return h*ELEVATION_HEIGHT;
+      const amount=this.layerAmountAt("SNOW",tile,lookup,ox,oz);
+      return this.layerVertexY("SNOW",tile,{height:h,x:(tile.x+ox)*TILE_SIZE,z:(tile.y+oz)*TILE_SIZE},amount);
+    };
+    effect.nodes=path.map(p=>({x:p.x*TILE_SIZE,z:p.y*TILE_SIZE}));
+    effect.segments=path.slice(0,-1).map((p,i)=>{
+      const next=path[i+1],dx=next.x-p.x,dz=next.y-p.y;
+      return Array.from({length:9},(_,j)=>{
+        const q=j/8,cell=q<=.5?p:next,k=`${cell.x},${cell.y}`;
+        const ox=p.x+dx*q-cell.x,oz=p.y+dz*q-cell.y;
+        const old=oldByKey.get(k),tile=byKey.get(k);
+        return{start:heightAt(old,oldByKey,ox,oz),end:heightAt(tile,byKey,ox,oz)};
+      });
+    });
+    // Register immediately so errors cannot leave borrowed meshes permanently busy.
+    this.massFlowEffects.push(effect);
+    try{
+      if(warning){
+        const p=path[0],tile=byKey.get(`${p.x},${p.y}`);
+        const points=[[-.37,-.30],[-.13,-.08],[-.24,.06],[.08,.20],[.32,.37]].map(([ox,oz])=>
+          new BABYLON.Vector3((p.x+ox)*TILE_SIZE,
+            this.surfaceResolver.sampleRenderedHeight(tile,byKey,ox,oz)*ELEVATION_HEIGHT+.025,(p.y+oz)*TILE_SIZE));
+        const crack=BABYLON.MeshBuilder.CreateLines("mass-flow-warning",{points},this.scene);
+        crack.color=new BABYLON.Color3(...(kind==="SNOW"?[.46,.62,.71]:[.24,.15,.09]));crack.isPickable=false;effect.lines.push(crack);
+        this.massFlowStats.warnings++;return;
+      }
+      // The final TerrainRenderer mesh is still the single authority. A local
+      // collapsing surface fragment uses the same pre/post 4x4 height sampler;
+      // only eroded portions above the final terrain are drawn. No cliff mesh
+      // topology interpolation and no per-frame map rebuild.
+      for(let i=0;i<path.length;i++){
+        const p=path[i],k=`${p.x},${p.y}`,tile=byKey.get(k),old=oldByKey.get(k);
+        const lost=kind==="SNOW"?Number(old.snowDepth)>Number(tile.snowDepth):Number(old.elevation)>Number(tile.elevation);
+        if(!lost)continue;
+        const before=this.surfaceResolver.patchGrid(old,oldByKey).flat();
+        const after=this.surfaceResolver.patchGrid(tile,byKey).flat();
+        const positions=[],target=[],indices=[];
+        for(let n=0;n<before.length;n++){
+          const a=before[n],b=after[n],y=heightAt(tile,byKey,b.ox,b.oz);
+          positions.push(b.x,Math.max(y,heightAt(old,oldByKey,a.ox,a.oz))+.012,b.z);target.push(b.x,y+.012,b.z);
+        }
+        for(let r=0;r<3;r++)for(let c=0;c<3;c++){
+          const n=r*4+c;
+          const triangles=((p.x+p.y+r+c)&1)===0?[[n,n+1,n+5],[n,n+5,n+4]]:[[n,n+1,n+4],[n+1,n+5,n+4]];
+          for(const tri of triangles)if(tri.some(v=>positions[v*3+1]-target[v*3+1]>.001))indices.push(...tri);
+        }
+        if(!indices.length)continue;
+        const mesh=new BABYLON.Mesh("mass-flow-erosion-fragment",this.scene),data=new BABYLON.VertexData(),normals=[];
+        BABYLON.VertexData.ComputeNormals(positions,indices,normals);
+        data.positions=positions;data.indices=indices;data.normals=normals;data.applyToMesh(mesh,true);
+        mesh.material=this.massFlowMaterial(kind,0);mesh.isPickable=false;
+        effect.patches.push({mesh,positions,target,indices,normals,buffer:positions.slice(),at:i,lastQ:-1});
+      }
+      // A local splash at a canonical contact starts in the same presentation
+      // frame as the original forced movement/hit. No delayed gameplay.
+      const contactKeys=new Set();
+      for(const c of Array.isArray(event.contacts)?event.contacts:[]){
+        if(!c)continue;const k=`${c.x},${c.y}`;
+        if(contactKeys.has(k)||!path.some(p=>p.x===c.x&&p.y===c.y))continue;
+        contactKeys.add(k);if(effect.pieces.length>=12)break;
+        const item=this.borrowMassFlowMesh(kind,2);if(!item)continue;
+        item.contact={x:c.x*TILE_SIZE,z:c.y*TILE_SIZE,y:heightAt(byKey.get(k),byKey,0,0)};effect.pieces.push(item);
+      }
+      // Visual budgets only, unrelated to mass-flow physics or damage.
+      const remaining=18-effect.pieces.length;
+      for(let i=0;i<Math.min(remaining,path.length*3);i++){
+        const item=this.borrowMassFlowMesh(kind,i%3);if(!item)continue;
+        item.index=i;effect.pieces.push(item);
+      }
+      effect.scale=Math.min(1.35,Math.max(.35,Math.sqrt(Math.max(0,Number(event.mass||0)))));
+      this.massFlowStats.started++;
+    }catch(error){this.releaseMassFlow(effect);this.massFlowEffects=this.massFlowEffects.filter(e=>e!==effect);throw error;}
+  }
+
+  updateMassFlows(dt){
+    const keep=[];
+    for(const effect of this.massFlowEffects){
+      effect.age+=dt;const t=clamp(effect.age/effect.duration,0,1);
+      if(effect.warning){
+        for(const line of effect.lines)line.visibility=.3+.7*Math.abs(Math.sin(t*Math.PI*3));
+      }else{
+        const steps=effect.nodes.length-1,front=t*(steps+1);
+        for(const patch of effect.patches){
+          const q=clamp((front-patch.at)*1.5,0,1);
+          if(q===patch.lastQ)continue;patch.lastQ=q;
+          if(q>=1){patch.mesh.setEnabled(false);continue;}
+          for(let i=1;i<patch.buffer.length;i+=3)patch.buffer[i]=patch.positions[i]+(patch.target[i]-patch.positions[i])*q;
+          BABYLON.VertexData.ComputeNormals(patch.buffer,patch.indices,patch.normals);
+          patch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,patch.buffer,true,false);
+          patch.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,patch.normals,false,false);
+        }
+        for(const item of effect.pieces){
+          if(item.contact){
+            const q=clamp(effect.age/.36,0,1),m=item.mesh,c=item.contact;
+            if(q>=1){m.setEnabled(false);continue;}
+            const size=effect.scale*TILE_SIZE*(.28+.65*q);
+            m.setEnabled(true);m.position.set(c.x,c.y+size*.36,c.z);
+            m.rotation.set(0,0,0);m.scaling.set(size,size*.7,size);m.visibility=1-q;continue;
+          }
+          const i=item.index,part=item.part,m=item.mesh,u=front-i*.12;
+          if(u<0||u>steps+.65){m.setEnabled(false);continue;}
+          const at=Math.min(steps-1,Math.floor(Math.min(u,steps))),q=clamp(u-at,0,1);
+          const a=effect.nodes[at],b=effect.nodes[at+1],dx=b.x-a.x,dz=b.z-a.z,len=Math.hypot(dx,dz)||1;
+          const side=(hash01("flow"+i)-.5)*TILE_SIZE*.7;
+          const samples=effect.segments[at],f=q*(samples.length-1),index=Math.min(samples.length-2,Math.floor(f)),u2=f-index;
+          const sampleY=p=>p.start+(p.end-p.start)*clamp(front-at-q,0,1);
+          const height=sampleY(samples[index])*(1-u2)+sampleY(samples[index+1])*u2;
+          const bounce=part===1&&effect.kind==="ROCK"?Math.abs(Math.sin(q*Math.PI*2))*TILE_SIZE*.18:0;
+          const size=effect.scale*TILE_SIZE*(part===0?.48:part===1?.16:.55);
+          const settle=clamp(1-Math.max(0,u-steps)/.65,0,1);
+          m.setEnabled(true);m.position.set(a.x+dx*q-dz/len*side,height+size*(part===2?.5:.22)+bounce,a.z+dz*q+dx/len*side);
+          m.scaling.set(size,size*(part===0?.42:part===2?.64:.85)*settle,size*(part===0?1.45:1));
+          m.rotation.set(part===1?effect.age*7+i:0,Math.atan2(dx,dz)+(part===1?effect.age*5:0),0);
+          m.visibility=part===2?Math.max(0,1-t):settle;
+        }
+      }
+      if(t>=1){this.releaseMassFlow(effect);this.massFlowStats.completed++;}else keep.push(effect);
+    }
+    this.massFlowEffects=keep;
+  }
+
+  syncPresentationEvents(events,state,previousState=null){
     for(const event of events||[]){
+      if(event?.type==="MASS_FLOW"||event?.type==="MASS_FLOW_WARNING"){
+        const token=`${state?.map?.id}:${state?.revision}:${event.sequence??`${event.type}:${event.x},${event.y}`}`;
+        if(!this.massFlowTokens.has(token)){
+          this.createMassFlow(event,state,previousState);
+          this.massFlowTokens.add(token);
+          while(this.massFlowTokens.size>128)this.massFlowTokens.delete(this.massFlowTokens.values().next().value);
+        }
+        continue;
+      }
       // Shared environment spell visuals, not duplicate bespoke Babylon VFX.
       // These are authorized UNIT_ANIMATION coordinates from the established
       // single-player / PvP presentation stream; no gameplay mutations.
@@ -2165,12 +2358,14 @@ export class EnvironmentRenderer{
   }
 
   sync(state,presentationEvents=[]){
+    const previousState=this.lastState;
+    if(previousState?.map?.id!==state?.map?.id||Number(state?.round||0)<Number(previousState?.round||0)){this.clearMassFlows();this.massFlowTokens.clear();}
     this.lastState=state;
     this.timedEnvironmentSync("atmosphere",()=>this.syncAtmosphere(state));
     this.timedEnvironmentSync("surfaceLayers",()=>this.syncSurfaceLayers(state));
     this.timedEnvironmentSync("visibilityHaze",()=>this.syncVisibilityHaze(state));
     this.timedEnvironmentSync("weatherParticles",()=>this.syncWeatherParticles(state));
-    this.timedEnvironmentSync("presentationEvents",()=>this.syncPresentationEvents(presentationEvents,state));
+    this.timedEnvironmentSync("presentationEvents",()=>this.syncPresentationEvents(presentationEvents,state,previousState));
     this.timedEnvironmentSync("tornadoClusters",()=>this.syncTornadoClusters(state));
     this.timedEnvironmentSync("smokeClusters",()=>this.syncSmokeClusters(state));
     this.timedEnvironmentSync("fireFields",()=>this.syncFireFields(state));
@@ -2234,6 +2429,7 @@ export class EnvironmentRenderer{
       firePresentation:{radianceFields:this.fireFields.size,flickeringFlames:true,adjacentHeatGlow:true},
       snowPresentation:{screenFallDominant:true,windDeflection:true,blizzardDiagonalFall:true},
       rainImpactPool:{size:this.rainImpacts.length,active:this.rainImpacts.filter(item=>item.active).length},
+      massFlowPresentation:{...this.massFlowStats,active:this.massFlowEffects.length,pool:this.massFlowPool.length},
       lightningBursts:this.lightningBursts.length,
       meteorBursts:this.meteorBursts.length,
       fireGlows:this.fireGlows.size,

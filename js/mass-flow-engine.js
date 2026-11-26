@@ -154,7 +154,7 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
       tiles[i].snowDepth=clean(snow(tiles[i])+carried*weights[i]);
       tiles[i].snowWaterEquivalent=waterOf(tiles[i])+carriedWater*weights[i];
     }
-    for(const tile of tiles){const from=Number(before.get(key(tile.x,tile.y))||0),to=snow(tile);if(Math.abs(to-from)>.0005){snowChanges++;events.push({type:"SNOW_DEPTH_CHANGED",x:tile.x,y:tile.y,from,to,source,material:MATERIAL.SNOW});}}
+    for(let i=0;i<tiles.length;i++){const tile=tiles[i],from=Number(before.get(key(tile.x,tile.y))||0),to=snow(tile),node=flow.path[i];node.snowDepthBefore=from;node.snowDepthAfter=to;if(Math.abs(to-from)>.0005){snowChanges++;events.push({type:"SNOW_DEPTH_CHANGED",x:tile.x,y:tile.y,from,to,source,material:MATERIAL.SNOW});}}
     flow.mass=clean(carried);
     events.push({type:"MASS_FLOW_SNOW_REDISTRIBUTED",material:MATERIAL.SNOW,source,tiles:length,snowChanges,mass:flow.mass,path:flow.path.map(p=>({...p}))});
     return{changed:snowChanges>0,snowChanges};
