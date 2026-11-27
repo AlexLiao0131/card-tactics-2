@@ -50,6 +50,7 @@ export class MapObjectRenderer{
       generic:this.mat("prop-generic",new BABYLON.Color3(.38,.34,.28))
     };
     this.surfaceMaterial=this.mat("prop-vertex-surface",BABYLON.Color3.White());
+    this.gpuWindMaterial=this.makeGpuWindMaterial();
     // One shared emissive material for all four pieces, not one light per tile.
     this.holyWingWallMaterial=new BABYLON.StandardMaterial('holy-wing-wall',this.scene);
     this.holyWingWallMaterial.diffuseColor=new BABYLON.Color3(1,.88,.50);
@@ -61,13 +62,60 @@ export class MapObjectRenderer{
     this.vegetationTime=0;this.vegetationFrameTime=0;this.vegetationWasCalm=true;this.vegetationWind=null;
     this.windBatchMetrics={positionUploads:0,boundsResolves:0,animatedGroups:0,
       directPositionUploads:0,fallbackPositionUploads:0,
-      deferredSourceVertexWrites:0,sourcePoseSynchronizations:0};
+      deferredSourceVertexWrites:0,sourcePoseSynchronizations:0,gpuGroups:0,gpuUniformTicks:0,gpuAttributeUploads:0};
     // Stage 12J: keep a direct registry of the few meshes that actually sway.
     // The old loop walked every map object and rebuilt an inverse world matrix
     // for every tree/bush at 30 Hz even though those transforms only change on sync.
     this.vegetationSways=new Set();
     this.vegetationObserver=scene.onBeforeRenderObservable.add(()=>this.updateVegetationWind(Math.min(.1,Math.max(0,scene.getEngine().getDeltaTime()/1000))));
     scene.onDisposeObservable.addOnce(()=>scene.onBeforeRenderObservable.remove(this.vegetationObserver));
+  }
+
+  makeGpuWindMaterial(){
+    // A custom vertex program without the same shadow-depth deformation is not
+    // safe. Fall back to the original CPU path when either API is unavailable.
+    if(typeof BABYLON.CustomMaterial!=="function"||typeof BABYLON.ShadowDepthWrapper!=="function")return null;
+    const material=new BABYLON.CustomMaterial("prop-vertex-wind",this.scene);
+    this.gpuWindClock=new BABYLON.Vector4(0,0,0,0);
+    material.diffuseColor=BABYLON.Color3.White();material.specularColor=new BABYLON.Color3(.025,.025,.025);
+    material.AddUniform("propWindClock","vec4",this.gpuWindClock);
+    for(const name of ["propWindLocal","propWindX","propWindZ"])material.AddAttribute(name);
+    material.Vertex_Definitions(`attribute vec4 propWindLocal; attribute vec4 propWindX; attribute vec4 propWindZ;`);
+    material.Vertex_Before_PositionUpdated(`{
+      vec2 localWind=vec2(dot(propWindLocal.xy,propWindClock.yz),dot(propWindLocal.zw,propWindClock.yz));
+      float localLength=length(localWind);
+      if(localLength>0.0)localWind/=localLength;
+      float strength=propWindClock.w;
+      float primary=.58+.30*sin(propWindClock.x*(propWindZ.w+strength*.16)+propWindX.w);
+      float gust=.12*sin(propWindClock.x*(3.4+strength*.22)+propWindX.w*1.73);
+      positionUpdated.xyz+=strength*max(.18,primary+gust)*(propWindX.xyz*localWind.x+propWindZ.xyz*localWind.y);
+    }`);
+    material.shadowDepthWrapper=new BABYLON.ShadowDepthWrapper(material,this.scene);
+    material.onError=(_effect,errors)=>{this.gpuWindCompileFailure=String(errors||"WIND_SHADER_ERROR").slice(0,240);};
+    return material;
+  }
+
+  writeGpuWindMember(batch,member){
+    if(!batch.windAttributes)return;
+    const sway=member.mesh.metadata?.leafSway,m=member.worldMatrix;
+    if(!sway||!m)return;
+    const basis=sway.localWindBasis||{xx:1,xz:0,zx:0,zz:1};
+    const {local,x,z}=batch.windAttributes;
+    for(let i=0;i<member.count;i++){
+      const o=(member.offset+i)*4,w=Number(sway.weights[i]||0)*Number(sway.amplitude??.022);
+      local.set([basis.xx,basis.xz,basis.zx,basis.zz],o);
+      x.set([m[0]*w,m[1]*w,m[2]*w,sway.phase],o);
+      z.set([m[8]*w,m[9]*w,m[10]*w,sway.speed??1.9],o);
+    }
+  }
+
+  uploadGpuWindAttributes(batch){
+    if(!batch.windAttributes)return;
+    for(const [kind,data] of [["propWindLocal",batch.windAttributes.local],["propWindX",batch.windAttributes.x],["propWindZ",batch.windAttributes.z]]){
+      if(batch.mesh.getVertexBuffer?.(kind))batch.mesh.updateVerticesData(kind,data,false,false);
+      else batch.mesh.setVerticesData(kind,data,true,4);
+      this.windBatchMetrics.gpuAttributeUploads++;
+    }
   }
 
   mat(name,color){const material=new BABYLON.StandardMaterial(name,this.scene);material.diffuseColor=color;material.specularColor=BABYLON.Color3.Black();return material;}
@@ -197,7 +245,7 @@ export class MapObjectRenderer{
       if(!sway||!m)continue;
       let weight=0;
       for(const value of sway.weights)weight=Math.max(weight,Math.abs(Number(value)||0));
-      const radius=strength*Math.abs(Number(sway.amplitude)||0)*weight*2;
+      const radius=strength*Math.abs(Number(sway.amplitude??.022))*weight*2;
       dx=Math.max(dx,radius*Math.hypot(m[0],m[8]));
       dy=Math.max(dy,radius*Math.hypot(m[1],m[9]));
       dz=Math.max(dz,radius*Math.hypot(m[2],m[10]));
@@ -230,6 +278,18 @@ export class MapObjectRenderer{
   }
 
   updateVegetationWind(dt){
+    if(this.gpuWindCompileFailure&&this.gpuWindMaterial){
+      // Shader compilation is device-dependent. Return every existing batch
+      // to its original material and CPU deformation path as one transaction.
+      for(const batch of this.staticBatches.values())if(batch.windAttributes){
+        batch.windAttributes=null;batch.mesh.material=this.surfaceMaterial;
+        for(const name of ["propWindLocal","propWindX","propWindZ"])batch.mesh.removeVerticesData?.(name);
+        batch.windBoundsDirty=true;
+      }
+      this.gpuWindMaterial=null;this.gpuWindClock=null;this.vegetationWasCalm=false;
+      this.windBatchMetrics.gpuGroups=0;
+      globalThis.CardTacticsDiagnostics?.push?.("VEGETATION_GPU_FALLBACK",{reason:this.gpuWindCompileFailure});
+    }
     this.vegetationTime+=dt;this.vegetationFrameTime+=dt;
     if(this.vegetationFrameTime<1/30)return;this.vegetationFrameTime=0;
     const wind=this.vegetationWind||{},rawStrength=Math.max(0,Number(wind.strength||0)),strength=globalThis.EnvironmentEngine?.windVisualStrength?.(rawStrength)??Math.min(8,rawStrength);
@@ -240,9 +300,16 @@ export class MapObjectRenderer{
     const measured=globalThis.CardTacticsDiagnostics?.isEnabled?.()===true;
     const start=measured?performance.now():0;
     const changedSwayBatches=new Set();
+    if(this.gpuWindClock){
+      this.gpuWindClock.set(this.vegetationTime,wx,wz,strength);
+      let gpuGroups=0;
+      for(const batch of this.staticBatches.values())if(batch.windAttributes){this.ensureWindBatchBounds(batch,strength);gpuGroups++;}
+      this.windBatchMetrics.gpuGroups=gpuGroups;this.windBatchMetrics.gpuUniformTicks++;
+    }
     for(const mesh of this.vegetationSways){
       if(mesh.isDisposed?.()||mesh.isEnabled?.()===false||Number(mesh.visibility??1)<=.001)continue;
       const sway=mesh.metadata?.leafSway;if(!sway)continue;
+      if(this.batchedSwayMembers.get(mesh)?.batch?.windAttributes)continue;
       const basis=sway.localWindBasis;
       let lx=basis?wx*basis.xx+wz*basis.xz:wx,lz=basis?wx*basis.zx+wz*basis.zz:wz;
       const localLength=Math.hypot(lx,lz);if(localLength>0){lx/=localLength;lz/=localLength;}
@@ -665,8 +732,8 @@ export class MapObjectRenderer{
     const {mesh,count,offset}=member;
     // Reconstruct a hidden leaf source only when its row membership or
     // placement requires real CPU geometry. This is not a second animation.
-    this.syncVegetationSourcePose(mesh);
-    const positions=mesh.metadata?.leafSway?.positions||mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
+    if(!batch.windAttributes)this.syncVegetationSourcePose(mesh);
+    const positions=(batch.windAttributes?mesh.metadata?.leafSway?.rest:mesh.metadata?.leafSway?.positions)||mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)||[];
     const m=member.worldMatrix;
     for(let i=0;i<count;i++){
       const p=i*3,d=(offset+i)*3,x=positions[p]||0,y=positions[p+1]||0,z=positions[p+2]||0;
@@ -703,6 +770,7 @@ export class MapObjectRenderer{
   writeStaticMember(batch,member){
     this.refreshBatchMemberTransform(member);
     this.writeBatchMemberPositions(batch,member);
+    this.writeGpuWindMember(batch,member);
     this.writeBatchMemberNormals(batch,member);
     this.writeBatchMemberColors(batch,member);
   }
@@ -713,6 +781,7 @@ export class MapObjectRenderer{
     const batch={members,positions:new Float32Array(vertexCount*3),
       normals:new Float32Array(vertexCount*3),colors:new Float32Array(vertexCount*4),
       indices:new (vertexCount>65535?Uint32Array:Uint16Array)(indexCount)};
+    if(group.windSway&&this.gpuWindMaterial)batch.windAttributes={local:new Float32Array(vertexCount*4),x:new Float32Array(vertexCount*4),z:new Float32Array(vertexCount*4)};
     let vertex=0,index=0;
     for(const member of members){
       member.offset=vertex;
@@ -723,11 +792,12 @@ export class MapObjectRenderer{
     const mesh=new BABYLON.Mesh(`map-objects-batch-${name}`,this.scene),data=new BABYLON.VertexData();
     data.positions=batch.positions;data.normals=batch.normals;
     data.colors=batch.colors;data.indices=batch.indices;data.applyToMesh(mesh,true);
-    mesh.material=this.surfaceMaterial;mesh.isPickable=false;mesh.useVertexColors=true;
+    mesh.material=batch.windAttributes?this.gpuWindMaterial:this.surfaceMaterial;mesh.isPickable=false;mesh.useVertexColors=true;
     mesh.hasVertexAlpha=false;mesh.receiveShadows=true;mesh.visibility=group.opacity;
     mesh.metadata={kind:"map-object-static-batch",castShadow:group.casts,
       windSwayBatch:group.windSway,localLightNames:group.lightNames,sourceMeshes:members.length};
     batch.mesh=mesh;
+    if(batch.windAttributes){this.uploadGpuWindAttributes(batch);this.ensureWindBatchBounds(batch,this.gpuWindClock.w);}
     // Source meshes are never destroyed: weather, ground placement and
     // individual object interactions continue to modify the original buffers.
     for(const member of members)member.mesh.isVisible=false;
@@ -757,7 +827,7 @@ export class MapObjectRenderer{
         if(!flags)continue;
         if(flags&BATCH_POSITION){
           this.refreshBatchMemberTransform(member);
-          this.writeBatchMemberPositions(prior,member);positionChanged=true;
+          this.writeBatchMemberPositions(prior,member);this.writeGpuWindMember(prior,member);positionChanged=true;
         }
         if(flags&BATCH_NORMAL){this.writeBatchMemberNormals(prior,member);normalChanged=true;}
         if(flags&BATCH_COLOR){this.writeBatchMemberColors(prior,member);colorChanged=true;}
@@ -765,6 +835,7 @@ export class MapObjectRenderer{
       if(positionChanged){
         prior.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,prior.positions,false,false);
         prior.windBoundsDirty=true;
+        if(prior.windAttributes){this.uploadGpuWindAttributes(prior);this.ensureWindBatchBounds(prior,this.gpuWindClock.w);}
         if(!group.windSway)prior.mesh.refreshBoundingInfo();
       }
       if(normalChanged)prior.mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,prior.normals,false,false);
@@ -786,6 +857,7 @@ export class MapObjectRenderer{
         this.batchedSwayMembers.set(member.mesh,{batch,member});windSwaySources++;
       }
     }
+    this.windBatchMetrics.gpuGroups=[...this.staticBatches.values()].filter(b=>b.windAttributes).length;
     this.staticBatchStats={groups:this.staticBatches.size,sourceMeshes,
       drawCallsAvoided:sourceMeshes-this.staticBatches.size,rebuilds,removed,refreshed,
       windSwayGroups,windSwaySources};
@@ -861,6 +933,6 @@ export class MapObjectRenderer{
   diagnostics(){
     const byType={};for(const entry of this.nodes.values()){const type=entry.node.metadata?.objectType||"UNKNOWN";byType[type]=(byType[type]||0)+1;}
     return{total:this.nodes.size,byType,lastSyncUpdates:this.lastSyncUpdates,
-      staticBatch:{...this.staticBatchStats},windBatch:{...this.windBatchMetrics},sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
+      staticBatch:{...this.staticBatchStats},windBatch:{...this.windBatchMetrics,gpuAvailable:!!this.gpuWindMaterial,gpuFailure:this.gpuWindCompileFailure??null},sharedSurfaceSampling:true,sharedVertexMaterial:true,proceduralPropMaterials:true,perObjectVisualCache:true,durabilityRebuild:false,springsTerrainAnchored:true};
   }
 }

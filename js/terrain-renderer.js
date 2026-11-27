@@ -118,6 +118,8 @@ export class TerrainRenderer{
     this.surfaceColors=null;
     this.cliffColors=null;
     this.cliffWaterData=null;
+    this.landformFragments={surface:new Map(),cliffs:new Map()};
+    this.landformWork={surfaceRebuilt:0,surfaceReused:0,cliffRebuilt:0,cliffReused:0,topologyReused:0,topologyUploads:0};
     this.updateCounts={surfaceBuilds:0,cliffBuilds:0,colorUpdates:0,
       surfaceMeshReuses:0,cliffMeshReuses:0,grassMeshReuses:0,grassBufferUpdates:0};
     this.surfaceResolver=new VisualSurfaceResolver();
@@ -128,7 +130,22 @@ export class TerrainRenderer{
     this.grassSignature="";this.grassMesh=null;this.grassBlades=[];
     this.grassInvalidation={checks:0,skipped:0,rebuilds:0,selectedClumps:0,dependencyTiles:0};
     this.grassTime=0;this.grassFrameTime=0;this.grassWasCalm=true;
-    this.grassMaterial=new BABYLON.StandardMaterial("terrain-grass",scene);
+    this.grassGpuWind=typeof BABYLON.CustomMaterial==="function";
+    this.grassWindMetrics={uniformTicks:0,positionUploads:0,attributeUploads:0};
+    this.grassMaterial=this.grassGpuWind?new BABYLON.CustomMaterial("terrain-grass",scene):new BABYLON.StandardMaterial("terrain-grass",scene);
+    if(this.grassGpuWind){
+      this.grassWindClock=new BABYLON.Vector4(0,0,0,0);
+      const m=this.grassMaterial;
+      m.AddUniform("grassWindClock","vec4",this.grassWindClock);m.AddAttribute("grassWindBlade");
+      m.Vertex_Definitions(`attribute vec2 grassWindBlade;`);
+      m.onError=(_effect,errors)=>{this.grassGpuFailure=String(errors||"GRASS_SHADER_ERROR").slice(0,240);};
+      m.Vertex_Before_PositionUpdated(`{
+        float strength=grassWindClock.w;
+        float wave=.52+.32*sin(grassWindClock.x*(1.5+strength*.46)+grassWindBlade.y)+.16*sin(grassWindClock.x*(3.1+max(0.0,strength-2.0)*.52)+grassWindBlade.y*2.0);
+        float bend=grassWindBlade.x*min(.92,strength*.145)*wave;
+        positionUpdated.xz+=grassWindClock.yz*bend;
+      }`);
+    }
     this.grassMaterial.diffuseColor=BABYLON.Color3.White();
     this.grassMaterial.specularColor=BABYLON.Color3.Black();
     this.grassMaterial.backFaceCulling=false;this.grassMaterial.twoSidedLighting=true;
@@ -214,8 +231,7 @@ export class TerrainRenderer{
     }
     // The published terrain geometry registry remains the sole root-height
     // authority. A new geometry publication always invalidates grass roots.
-    const signature=JSON.stringify([this.surfaceResolver.renderedSurfaceGeometryRevision,
-      selected.map(({tile,i})=>[tile.x,tile.y,i]),inputs]);
+    const signature=JSON.stringify([selected.map(({tile,i})=>[tile.x,tile.y,i,this.surfaceResolver.getRenderedSurfaceGeometry(tile)?.revision??null]),inputs]);
     return{signature,selected,byKey,dependencyTiles:inputs.length};
   }
 
@@ -301,6 +317,13 @@ export class TerrainRenderer{
       this.updateCounts.grassBufferUpdates++;
     }else data.applyToMesh(mesh,true);
     if(this.grassMesh)this.updateCounts.grassMeshReuses++;
+    if(this.grassGpuWind){
+      const weights=new Float32Array(positions.length/3*2);
+      for(const blade of this.grassBlades)for(let v=0;v<5;v++){
+        const offset=(blade.base/3+v)*2;weights[offset]=blade.height*(v<2?0:v===4?1:.42);weights[offset+1]=blade.phase;
+      }
+      mesh.setVerticesData("grassWindBlade",weights,true,2);this.grassWindMetrics.attributeUploads++;
+    }
     mesh.setEnabled(true);
     mesh.material=this.grassMaterial;mesh.useVertexColors=true;mesh.isPickable=false;mesh.receiveShadows=true;
     mesh.metadata={kind:"terrain-grass",visualOnly:true,bladeCount:this.grassBlades.length,variantCounts,clumpsByTerrain};
@@ -312,6 +335,15 @@ export class TerrainRenderer{
   }
 
   animateGrass(dt,force=false){
+    if(this.grassGpuFailure&&this.grassGpuWind){
+      this.grassGpuWind=false;this.grassWasCalm=false;
+      const material=new BABYLON.StandardMaterial("terrain-grass-cpu",this.scene);
+      material.diffuseColor=BABYLON.Color3.White();material.specularColor=BABYLON.Color3.Black();
+      material.backFaceCulling=false;material.twoSidedLighting=true;material.maxSimultaneousLights=8;
+      this.grassMaterial=material;
+      if(this.grassMesh){this.grassMesh.material=material;this.grassMesh.removeVerticesData?.("grassWindBlade");}
+      globalThis.CardTacticsDiagnostics?.push?.("GRASS_GPU_FALLBACK",{reason:this.grassGpuFailure});
+    }
     this.grassTime+=dt;this.grassFrameTime+=dt;
     if(!this.grassMesh||this.grassMesh.isEnabled?.()===false||(!force&&this.grassFrameTime<1/30))return;
     this.grassFrameTime=0;
@@ -321,6 +353,7 @@ export class TerrainRenderer{
     this.grassWasCalm=strength===0;
     const length=Math.hypot(Number(wind.x||0),Number(wind.y||0))||1;
     const wx=Number(wind.x||0)/length,wz=Number(wind.y||0)/length;
+    if(this.grassGpuWind){this.grassWindClock.set(this.grassTime,wx,wz,strength);this.grassWindMetrics.uniformTicks++;return;}
     const out=this.grassPositions,rest=this.grassRest;
     for(const blade of this.grassBlades){
       const wave=.52+.32*Math.sin(this.grassTime*(1.5+strength*.46)+blade.phase)+.16*Math.sin(this.grassTime*(3.1+Math.max(0,strength-2)*.52)+blade.phase*2);
@@ -332,6 +365,7 @@ export class TerrainRenderer{
       }
     }
     this.grassMesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,out,false,false);
+    this.grassWindMetrics.positionUploads++;
   }
 
   syncMaterialMap(tiles,byKey){
@@ -449,6 +483,7 @@ export class TerrainRenderer{
     this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];this.grassSignature="";
     this.surfaceResolver.clearRenderedSurfaceGeometry();
     this.surfaceResolver.clearRenderedCliffGeometry();
+    this.landformFragments.surface.clear();this.landformFragments.cliffs.clear();
     for(const mesh of this.meshes.values())mesh.dispose();
     this.meshes.clear();
     this.signatureValue="";
@@ -593,11 +628,84 @@ export class TerrainRenderer{
     return true;
   }
 
+  landformTileKey(tile,byKey,boundaryBase){
+    const inputs=[];
+    for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){
+      const other=byKey.get(keyOf(tile.x+dx,tile.y+dy));
+      inputs.push(other?this.surfaceResolver.elevationOf(other):null);
+    }
+    const boundary=DIRS.some(d=>!byKey.has(keyOf(tile.x+d.dx,tile.y+d.dy)));
+    return JSON.stringify([this.surfaceResolver.maxVisualSlopeDelta,boundary?boundaryBase:null,this.textureBounds,inputs]);
+  }
+
+  appendLandformFragment(target,fragment,kind){
+    const vertex=target.positions.length/3,color=target.colors.length;
+    for(const name of ["positions","normals","colors",kind==="surface"?"uvs":"waterContacts"])
+      for(const value of fragment.out[name])target[name].push(value);
+    for(const i of fragment.out.indices)target.indices.push(vertex+i);
+    if(kind==="surface"){
+      const b=fragment.binding;
+      if(fragment.bindingOffset!==color||!fragment.committedBinding){
+        fragment.bindingOffset=color;fragment.committedBinding={...b,vertices:b.vertices.map(v=>({...v,offset:v.offset+color}))};
+      }
+      this.surfaceColorBindings.push(fragment.committedBinding);
+    }else{
+      if(fragment.bindingOffset!==color||!fragment.committedBindings){
+        fragment.bindingOffset=color;fragment.committedBindings=fragment.bindings.map(b=>({...b,ranges:b.ranges.map(r=>({...r,start:r.start+color,end:r.end+color}))}));
+      }
+      this.cliffColorBindings.push(...fragment.committedBindings);
+    }
+  }
+
+  recolorLandformFragment(fragment,tile,byKey,kind){
+    if(kind==="surface"){
+      const b=fragment.binding,fog=tile.fogged?.62:1;
+      const colors=b.samples.map(sample=>shade(this.surfaceResolver.surfaceColorAt(tile,byKey,sample.ox,sample.oz),fog*elevationShade(sample.height)));
+      for(const v of b.vertices){const c=shade(colors[v.sample],v.lightFactor);for(let i=0;i<3;i++)fragment.out.colors[v.offset+i]=c[i];}
+    }else for(const b of fragment.bindings){
+      const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+b.dir.dx,tile.y+b.dir.dy);
+      const palette=this.cliffPalette(tile,neighbor,b.dir,byKey,b.drop),contact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
+      for(const r of b.ranges)for(let i=r.start;i<r.end;i+=4){
+        const c=palette[r.kind];for(let j=0;j<3;j++)fragment.out.colors[i+j]=c[j];
+        fragment.out.waterContacts[i/2]=contact.level*ELEVATION_HEIGHT;fragment.out.waterContacts[i/2+1]=contact.strength;
+      }
+    }
+  }
+
+  landformColorKey(tile,colorInputs){
+    const values=[];for(let y=-2;y<=2;y++)for(let x=-2;x<=2;x++)
+      values.push(colorInputs.get(keyOf(tile.x+x,tile.y+y))??null);
+    return JSON.stringify(values);
+  }
+
+  commitLandformMesh(mesh,previousMesh,out,kind){
+    const data=new BABYLON.VertexData();
+    data.positions=out.positions;data.indices=out.indices;data.normals=out.normals;
+    if(kind==="surface")data.uvs=out.uvs;
+    const indices=previousMesh?.getIndices?.();
+    const same=!!indices&&indices.length===out.indices.length&&previousMesh.getTotalVertices?.()===out.positions.length/3&&out.indices.every((v,i)=>indices[i]===v);
+    if(same){
+      // Keep the index buffer and existing mesh owner. Position/normal data
+      // stay CPU-readable for Babylon bounds, lights and diagnostics.
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,out.positions,true,false);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind,out.normals,false,false);
+      if(kind==="surface"){
+        const before=mesh.getVerticesData?.(BABYLON.VertexBuffer.UVKind);
+        if(!before||before.length!==out.uvs.length||out.uvs.some((v,i)=>Math.fround(v)!==Math.fround(before[i])))
+          mesh.updateVerticesData(BABYLON.VertexBuffer.UVKind,out.uvs,false,false);
+      }
+      this.landformWork.topologyReused++;
+    }else{data.applyToMesh(mesh,true);this.landformWork.topologyUploads++;}
+    return same;
+  }
+
   buildSurface(tiles,byKey,previousMesh=null){
     this.surfaceResolver.clearRenderedSurfaceGeometry();
     this.surfaceColorBindings=[];
     this.updateCounts.surfaceBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
+    const merged={positions:[],indices:[],normals:[],colors:[],uvs:[]};
+    let out=merged;const previous=this.landformFragments.surface,next=new Map();
+    const colorInputs=new Map(tiles.map(t=>[keyOf(t.x,t.y),this.tileColorSignature(t)]));
     const minElevation=tiles.length?Math.min(...tiles.map(tile=>this.surfaceResolver.elevationOf(tile))):0;
     const boundaryBase=minElevation-this.surfaceResolver.maxVisualSlopeDelta-.75;
     let skippedDegenerate=0;
@@ -623,6 +731,18 @@ export class TerrainRenderer{
     };
 
     for(const tile of tiles){
+      const key=keyOf(tile.x,tile.y),geometryKey=this.landformTileKey(tile,byKey,boundaryBase),colorKey=this.landformColorKey(tile,colorInputs);
+      let fragment=previous.get(key);
+      if(fragment?.geometryKey===geometryKey){
+        if(fragment.colorKey!==colorKey)this.recolorLandformFragment(fragment,tile,byKey,"surface");
+        fragment.colorKey=colorKey;next.set(key,fragment);
+        this.surfaceResolver.renderedSurfaceGeometry.set(key,fragment.published);
+        this.appendLandformFragment(merged,fragment,"surface");
+        ruggedSurfaceEdges+=fragment.ruggedSurfaceEdges;skippedDegenerate+=fragment.skippedDegenerate;minNormalY=Math.min(minNormalY,fragment.minNormalY);
+        this.landformWork.surfaceReused++;continue;
+      }
+      out={positions:[],indices:[],normals:[],colors:[],uvs:[]};
+      const edgeStart=ruggedSurfaceEdges,skipStart=skippedDegenerate;
       currentTileTriangles=[];
       const fog=tile.fogged?.62:1;
       // The surface consumes only the canonical 4x4 render patch. Computing
@@ -631,7 +751,6 @@ export class TerrainRenderer{
       const patch=this.surfaceResolver.patchGrid(tile,byKey);
       const samples=patch.flat();
       out.binding={key:keyOf(tile.x,tile.y),samples,vertices:[]};
-      this.surfaceColorBindings.push(out.binding);
       const grid=patch.map((row,rowIndex)=>row.map((sample,colIndex)=>({
         point:{
           sample:rowIndex*4+colIndex,
@@ -694,19 +813,19 @@ export class TerrainRenderer{
         }
         ruggedSurfaceEdges++;
       }
-      this.surfaceResolver.registerRenderedSurfaceGeometry(tile,{triangles:currentTileTriangles});
+      const published=this.surfaceResolver.registerRenderedSurfaceGeometry(tile,{triangles:currentTileTriangles});
+      let localMinNormalY=1;for(let i=1;i<out.normals.length;i+=3)localMinNormalY=Math.min(localMinNormalY,out.normals[i]);
+      fragment={geometryKey,colorKey,out,binding:out.binding,published,ruggedSurfaceEdges:ruggedSurfaceEdges-edgeStart,skippedDegenerate:skippedDegenerate-skipStart,minNormalY:localMinNormalY};
+      next.set(key,fragment);this.appendLandformFragment(merged,fragment,"surface");this.landformWork.surfaceRebuilt++;
     }
+    this.landformFragments.surface=next;out=merged;
     currentTileTriangles=null;
 
     const mesh=previousMesh||new BABYLON.Mesh("terrain-surface",this.scene);
-    const data=new BABYLON.VertexData();
-    data.positions=out.positions;
-    data.indices=out.indices;
-    data.normals=out.normals;
-    data.uvs=out.uvs;
-    data.applyToMesh(mesh,true);
+    const same=this.commitLandformMesh(mesh,previousMesh,out,"surface");
     this.surfaceColors=new Float32Array(out.colors);
-    mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,true);
+    if(same)mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,false,false);
+    else mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.surfaceColors,true);
 
     mesh.material=this.surfaceMaterial;
     mesh.useVertexColors=true;
@@ -787,7 +906,9 @@ export class TerrainRenderer{
     this.cliffColors=null;
     this.cliffWaterData=null;
     this.updateCounts.cliffBuilds++;
-    const out={positions:[],indices:[],normals:[],colors:[],waterContacts:[]};
+    const merged={positions:[],indices:[],normals:[],colors:[],waterContacts:[]};
+    let out=merged;const previous=this.landformFragments.cliffs,next=new Map();
+    const colorInputs=new Map(tiles.map(t=>[keyOf(t.x,t.y),this.tileColorSignature(t)]));
     // One region per authored cliff edge. This is geometry metadata for the
     // existing spatial light allocator, not another mesh or lighting pass.
     const lightRegions=[];
@@ -802,6 +923,17 @@ export class TerrainRenderer{
 
     let ruggedEdges=0;
     for(const tile of tiles){
+      const key=keyOf(tile.x,tile.y),geometryKey=this.landformTileKey(tile,byKey,boundaryBase),colorKey=this.landformColorKey(tile,colorInputs);
+      let fragment=previous.get(key);
+      if(fragment?.geometryKey===geometryKey){
+        if(fragment.colorKey!==colorKey)this.recolorLandformFragment(fragment,tile,byKey,"cliffs");
+        fragment.colorKey=colorKey;next.set(key,fragment);
+        for(const published of fragment.published)this.surfaceResolver.renderedCliffGeometry.set(published.key,published);
+        this.appendLandformFragment(merged,fragment,"cliffs");lightRegions.push(...fragment.lightRegions);ruggedEdges+=fragment.published.length;
+        this.landformWork.cliffReused++;continue;
+      }
+      out={positions:[],indices:[],normals:[],colors:[],waterContacts:[]};
+      const bindings=[],published=[],regionStart=lightRegions.length;
       const top=this.surfaceResolver.elevationOf(tile);
       for(const dir of DIRS){
         const neighbor=this.surfaceResolver.tileAt(byKey,tile.x+dir.dx,tile.y+dir.dy);
@@ -822,7 +954,7 @@ export class TerrainRenderer{
         out.waterContact=this.surfaceResolver.cliffWaterContact(tile,neighbor);
         const {wallColor}=out.palette;
         out.binding={key:keyOf(tile.x,tile.y),dir,drop,ranges:[]};
-        this.cliffColorBindings.push(out.binding);
+        bindings.push(out.binding);
 
         // Build the exact rows once. These are the coordinates actually submitted
         // to the cliff mesh and therefore the only valid visual contract for water.
@@ -907,24 +1039,23 @@ export class TerrainRenderer{
             neighborX:neighbor?Number(neighbor.x):null,neighborY:neighbor?Number(neighbor.y):null,
             outwardX:dir.dx,outwardZ:dir.dy});
         }
-        this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
+        published.push(this.surfaceResolver.registerRenderedCliffGeometry(tile,dir,{
           lip:wallLip,foot:wallFoot,segments:wallSegments,outward:{x:dir.dx,z:dir.dy},drop
-        });
+        }));
         ruggedEdges++;
       }
+      fragment={geometryKey,colorKey,out,bindings,published,lightRegions:lightRegions.slice(regionStart)};
+      next.set(key,fragment);this.appendLandformFragment(merged,fragment,"cliffs");this.landformWork.cliffRebuilt++;
     }
+    this.landformFragments.cliffs=next;out=merged;
 
     if(!out.positions.length)return null;
     const mesh=previousMesh||new BABYLON.Mesh("terrain-cliffs",this.scene);
-    const data=new BABYLON.VertexData();
-    data.positions=out.positions;
-    data.indices=out.indices;
-    data.normals=out.normals;
-    data.applyToMesh(mesh,true);
+    const same=this.commitLandformMesh(mesh,previousMesh,out,"cliffs");
     this.cliffColors=new Float32Array(out.colors);
-    mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);
     this.cliffWaterData=new Float32Array(out.waterContacts);
-    mesh.setVerticesData("cliffWaterContact",this.cliffWaterData,true,2);
+    if(same){mesh.updateVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,false,false);mesh.updateVerticesData("cliffWaterContact",this.cliffWaterData,false,false);}
+    else{mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind,this.cliffColors,true);mesh.setVerticesData("cliffWaterContact",this.cliffWaterData,true,2);}
 
     mesh.material=this.cliffMaterial;
     mesh.useVertexColors=true;
@@ -1010,6 +1141,7 @@ export class TerrainRenderer{
     return{
       meshes:this.meshes.size,
       updates:{...this.updateCounts},
+      landformWork:{...this.landformWork},
       materialInvalidation:{...this.colorInvalidationAudit},
       surfaceMaterial:"MixMaterial",
       cliffMaterial:"CustomMaterial(StandardLighting+TriPlanar)",
@@ -1017,7 +1149,7 @@ export class TerrainRenderer{
       grassBlades:this.grassBlades.length,
       grassClumpLimit:896,
       grassInvalidation:{...this.grassInvalidation},
-      grassAnimationHz:30,
+      grassAnimationHz:30,grassWind:{...this.grassWindMetrics,gpuAvailable:this.grassGpuWind,gpuFailure:this.grassGpuFailure??null},
       materialMixSize:this.surfaceMaterial.mixTexture1.getSize(),
       polygonalSurface:true,
       tileBoxes:false,

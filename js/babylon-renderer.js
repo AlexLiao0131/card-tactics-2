@@ -168,8 +168,11 @@ export class BabylonRenderer{
     // from environment-sync spikes without altering lighting or shadows.
     this.shadowPassStart=0;
     this.shadowPassCpuMs=0;
+    this.shadowCache={dirty:true,lastRefreshAt:-Infinity,lastView:null,hasUnitCasters:false,hasWindCasters:false,
+      scheduled:0,reused:0,actualPasses:0,fullRate:0,staticReuses:0};
+    this.engine.onContextRestoredObservable?.add(()=>{this.shadowCache.dirty=true;});
     const shadowTarget=this.shadowGenerator.getShadowMap();
-    shadowTarget?.onBeforeBindObservable?.add(()=>{this.shadowPassStart=performance.now();});
+    shadowTarget?.onBeforeBindObservable?.add(()=>{this.shadowPassStart=performance.now();this.shadowCache.actualPasses++;});
     shadowTarget?.onAfterUnbindObservable?.add(()=>{
       if(this.shadowPassStart){this.shadowPassCpuMs+=performance.now()-this.shadowPassStart;this.shadowPassStart=0;}
     });
@@ -222,6 +225,7 @@ export class BabylonRenderer{
       this.vfxManager.updateFrame();
       const renderStart=performance.now();
       this.shadowPassCpuMs=0;
+      this.prepareShadowRefresh(renderStart);
       this.scene.render();
       const renderMs=performance.now()-renderStart;
       this.performanceStats.renderMs=Math.round(renderMs*100)/100;
@@ -495,6 +499,7 @@ export class BabylonRenderer{
 
   collectShadowCasters(){
     const casters=[],seen=new Set();
+    let hasUnitCasters=false,hasWindCasters=false;
     // Ownership is already explicit in the Renderer: observe its actual
     // submitted geometry rather than estimating caster cost from all scene meshes.
     // This audit is gated because the battlefield does not need extra per-mesh
@@ -506,6 +511,8 @@ export class BabylonRenderer{
       if(mesh?.metadata?.castShadow===false||!this.shadowMeshVisible(mesh)||seen.has(mesh.uniqueId))return;
       seen.add(mesh.uniqueId);
       casters.push(mesh);
+      if(source.startsWith("UNIT_"))hasUnitCasters=true;
+      if(source==="MAP_SWAY_BATCH"||mesh.metadata?.leafSway)hasWindCasters=true;
       if(!auditEnabled)return;
       // A swaying leaf remains independently deformable; do not mistake it
       // for one of the rigid map-object batches in the shadow budget.
@@ -546,13 +553,39 @@ export class BabylonRenderer{
       // of individual Mesh names or per-frame snapshots.
       heaviestUnits:[...byUnit.values()].sort((a,b)=>b.casters-a.casters).slice(0,12)
     }:null;
+    if(this.shadowCache){this.shadowCache.hasUnitCasters=hasUnitCasters;this.shadowCache.hasWindCasters=hasWindCasters;}
     return casters;
+  }
+
+  prepareShadowRefresh(now){
+    const target=this.shadowGenerator?.getShadowMap?.(),cache=this.shadowCache;
+    if(!target||!cache||typeof target.resetRefreshCounter!=="function")return;
+    const cam=this.scene.activeCamera,light=this.sun;
+    const vec=v=>v?[v.x,v.y,v.z]:null;
+    const view=JSON.stringify([vec(cam?.position),vec(cam?.target),cam?.alpha,cam?.beta,cam?.radius,
+      cam?.orthoLeft,cam?.orthoRight,cam?.orthoTop,cam?.orthoBottom,cam?.minZ,cam?.maxZ,
+      vec(light?.position),vec(light?.direction),target.getSize?.().width,target.getSize?.().height]);
+    const wind=this.mapObjects?.vegetationWind,windActive=cache.hasWindCasters&&Number(wind?.strength||0)>0;
+    const active=Boolean(this.units?.activeAnimations?.size||this.units?.animationQueues?.size||this.units?.formMorphs?.size||this.camera?.focusMotion);
+    const moving=cache.hasUnitCasters||windActive;
+    // Actual combat uses the original full-rate map. Idle poses and foliage
+    // share the existing 30 Hz vegetation cadence; no map update in true calm
+    // with only static casters. Camera/light changes and snapshots invalidate.
+    const forced=cache.dirty||cache.lastView!==view||light?.needProjectionMatrixCompute?.()===true||cache.wasActive===true&&!active;
+    cache.wasActive=active;
+    const due=forced||active||(moving&&now-cache.lastRefreshAt>=1000/30);
+    // Keep a single shadow target and the existing light/filter settings.
+    // RenderTargetTexture's documented render-once mode retains its depth.
+    if(target.refreshRate!==0)target.refreshRate=0;
+    if(due){target.resetRefreshCounter();cache.lastRefreshAt=now;cache.lastView=view;cache.dirty=false;cache.scheduled++;if(active)cache.fullRate++;}
+    else{cache.reused++;if(!moving)cache.staticReuses++;}
   }
 
   syncShadows(){
     const shadowMap=this.shadowGenerator?.getShadowMap?.();
     if(!shadowMap)return;
 
+    if(this.shadowCache)this.shadowCache.dirty=true;
     const casters=this.collectShadowCasters();
     const renderList=shadowMap.renderList||(shadowMap.renderList=[]);
     // A growing renderList alone cannot prove a leak. For diagnostics, compare
@@ -905,7 +938,8 @@ export class BabylonRenderer{
       input:this.input.diagnostics(),
       sky:this.skyState||null,
       lighting:this.lightingState||null,
-      shadows:this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0},
+      shadows:{...(this.shadowState||{enabled:true,mapSize:1024,casters:0,receivers:0}),cache:{...this.shadowCache}},
+      terrain:this.terrain.diagnostics(),
       rendererErrors:Object.fromEntries(this.subsystemErrors),
       presentationCommits:this.presentationCommitHistory.slice(),
       mapObjects:this.mapObjects.diagnostics(),
