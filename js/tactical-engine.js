@@ -293,6 +293,29 @@ export const TacticalEngine=(()=>{
       u.facing=facingToward(from,result.at(-1),ensureFacing(u));}
     return result;
   }
+  // Multi-turn route advice reuses the exact movement edges and costs. It
+  // returns only a destination already admitted by this turn's reachable set.
+  // No simulated move, visibility change, facing update or extended turn budget.
+  function strategicDestination(map,units,unit,goals,legal,{goalRadius=0}={}){
+    if(!legal?.size||!goals?.length)return null;
+    const start=K(unit.x,unit.y),best=new Map([[start,0]]),previous=new Map(),queue=[{x:unit.x,y:unit.y,spent:0}];
+    let end=null;
+    while(queue.length){
+      queue.sort((a,b)=>a.spent-b.spent);const n=queue.shift(),nk=K(n.x,n.y);
+      if(n.spent!==best.get(nk))continue;
+      if(goals.some(g=>D(n,g)<=goalRadius)){end=nk;break;}
+      for(const edge of movementEdges(map,units,unit,tile(map,n.x,n.y))){
+        const k=K(edge.to.x,edge.to.y),spent=n.spent+edge.spent;
+        if(!best.has(k)||spent<best.get(k)){best.set(k,spent);previous.set(k,nk);queue.push({x:edge.to.x,y:edge.to.y,spent});}
+      }
+    }
+    // Farthest legally reachable point along this one connected route. If a
+    // charm or other rule forbids its prefix, it is not a legal plan this turn.
+    const route=[];for(let k=end;k&&k!==start;k=previous.get(k))route.push(k);
+    if(!route.length)return null;
+    for(const k of route){if(legal.has(k)){const[x,y]=k.split(',').map(Number);return{x,y};}}
+    return null;
+  }
   // Shared targeting geometry. Previously owned by tactical-game.js alone;
   // the authoritative server and browser now use exactly the same footprint.
   function aoeTiles(map,center,radius){
@@ -653,6 +676,6 @@ export const TacticalEngine=(()=>{
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function combatTerrain(m,a,d,s,environmentState=null){const contact=contactPair(m,a,d,s,environmentState),contactActor=contact?.a||a,contactDefender=contact?.b||d;const at=tile(m,contactActor.x,contactActor.y),dt=tile(m,contactDefender.x,contactDefender.y),type=attackType(a,s),acc=at&&dt&&(type==="SHOT"||type==="MAGIC")&&elevation(at)>elevation(dt)?HIGH_GROUND_RANGED_ACCURACY:0,eva=TERRAINS[dt?.terrain]?.evasion||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(contactActor,contactDefender);return {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance};}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);const {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance}=combatTerrain(m,a,d,s,opt.environmentState||null),arc=relativeArc(contactDefender,contactActor);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,strategicDestination,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

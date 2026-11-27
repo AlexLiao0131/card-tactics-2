@@ -402,6 +402,21 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const s=state();return TacticalEngine.canTarget(s.map,unit,target,skill,s.environmentState);
     }
 
+    function coreAttackDamage(unit,target,skill,enchantment=null){
+      const stat=String(skill.offenseStat||"").toUpperCase()==="ATK"?Number(unit.character.combat.atk||0):skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
+      const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-(skill.pureHoly?0:Number(target.core.defense||30))));
+      // Core uses its existing single defense field (it has no armor element,
+      // MDEF, parry or shield). Do not route it through a fake unit battle.
+      const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
+      const inherent=skill.skipInherentMagic?null:unit.character.weapons?.[skill.weapon]?.inherentMagic;
+      const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.powerFromSkill?skill.power:inherent.power||0)-(inherent.unresistable?0:Number(target.core.defense||30)))):0;
+      return raw+bonus+inherentBonus;
+    }
+    function previewCoreAttack(unit,target,skill){
+      if(!target?.core||!unit?.alive)return 0;
+      const effective=ctx.effectiveSkill(unit,skill);
+      return coreAttackDamage(unit,target,effective,globalThis.EffectEngine?.weaponEnchantment?.(unit,effective.weapon)||null);
+    }
     function resolveDirectTargetAttack(unit,target,skill){
       const {map,environmentState}=state();
       if(!unit?.alive||unit.acted||!target?.alive||!TacticalEngine.canTarget(map,unit,target,skill,environmentState))return skillFailure(unit,skill,"TARGET_OR_TURN_INVALID",target);
@@ -414,16 +429,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const bloodMult=UnitRuntimeEngine.attackEnhancement(unit,skill);
       TacticalEngine.faceToward(unit,target);
       globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE",projectileKind:unit.character?.weapons?.[skill.weapon]?.weaponKind||null});
-      const stat=String(skill.offenseStat||"").toUpperCase()==="ATK"?Number(unit.character.combat.atk||0):skill.attackType==="MAGIC"?Number(unit.character.combat.matk||unit.character.combat.atk||0):Number(unit.character.combat.atk||0);
-      const raw=Math.max(1,Math.round(stat*Number(skill.power||1)-(skill.pureHoly?0:Number(target.core.defense||30))));
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(unit,skill.weapon)||null;
-      // Core uses its existing single defense field (it has no armor element,
-      // MDEF, parry or shield). Do not route it through a fake unit battle.
-      const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
-      const inherent=skill.skipInherentMagic?null:unit.character.weapons?.[skill.weapon]?.inherentMagic;
-      const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.powerFromSkill?skill.power:inherent.power||0)-(inherent.unresistable?0:Number(target.core.defense||30)))):0;
+      const damage=coreAttackDamage(unit,target,skill,enchantment);
       const coreHpBefore=Math.max(0,Number(target.core?.hp||0));
-      ctx.damageCore(target.core.owner,Math.round((raw+bonus+inherentBonus)*bloodMult),`${unit.character.name}【${skill.name}】`);
+      ctx.damageCore(target.core.owner,Math.round(damage*bloodMult),`${unit.character.name}【${skill.name}】`);
       const coreDamage=Math.max(0,coreHpBefore-Number(target.core?.hp||0));
       if(coreDamage>0&&Number(skill.holyPowerOnHit||0)>0)UnitRuntimeEngine.changeHolyPower(unit,skill.holyPowerOnHit);
       // Core damage uses the canonical Core reducer, not BattleResolution's
@@ -2083,7 +2092,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const stop=Math.max(1,Number(skill.approach.stopDistance||1));
       const candidates=map.tiles.filter(t=>Math.abs(t.x-defender.x)+Math.abs(t.y-defender.y)===stop&&
         !ctx.unitAt(t.x,t.y));
-      const paths=candidates.map(t=>TacticalEngine.pathTo(map,units,attacker,t.x,t.y))
+      const paths=candidates.map(t=>TacticalEngine.pathTo(map,units,{...attacker},t.x,t.y))
         .filter(path=>path.length).sort((a,b)=>a.length-b.length);
       return paths[0]||null;
     }
@@ -2353,6 +2362,34 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return true;
     }
 
+    // Autonomous choices use the exact same commits, not player menus. No RNG
+    // or resource writes are performed during enumeration by the AI controller.
+    function executeAutonomousSkill({attacker,target,skill,center,weaponSlot,buffId}={}){
+      if(!canCommitActiveAction(attacker)||!ctx.canUseSkill(attacker,skill))return false;
+      const {map,units,environmentState}=state();
+      if(weaponSlot){
+        if(target?.id===attacker.id)return false; // self follow-up requires a separate legal attack choice
+        return executeEnchantmentChoice(attacker,skill,target?.id,weaponSlot);
+      }
+      if(center){
+        const self=skill.target==="SELF"&&center.x===attacker.x&&center.y===attacker.y;
+        if(!self&&!mapTargetTiles(attacker,skill).some(t=>t.x===center.x&&t.y===center.y))return false;
+        return executeMapSkill(attacker,center,skill);
+      }
+      if(!target?.alive||(!skill.bloodBurst&&!TacticalEngine.canTarget(map,attacker,target,skill,environmentState)))return false;
+      if(skill.approach){if(!approachForSkill(attacker,target,skill))return false;skill=committedApproachSkill(skill);if(!attacker.alive)return true;}
+      if(skill.danceAura)return executeDanceAura(attacker,skill);
+      if(skill.deathDance)return executeDanceOfDeath(attacker,skill);
+      if(skill.channel)return executeChannelSkill(attacker,skill);
+      if(skill.utilityAction){
+        const type=skill.utilityAction.type;
+        if(["ENCHANT_WEAPON","CARRY_ALLY","CARRY_ENEMY","SCHEDULE_TURN_SIMULATION"].includes(type))return false;
+        return executeUtilitySkill(attacker,target,skill);
+      }
+      if(skill.effects||skill.relationEffects||skill.bloodBurst)return executeEffectSkill(attacker,target,skill,{buffId});
+      return false;
+    }
+
     /** One read-only skill hold projection. It never spends resources, writes
      * state, reveals unseen enemies, or emits animations. All actual legal
      * targets come from the original official targeting helpers above. */
@@ -2433,9 +2470,9 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 
     return Object.freeze({
       reset,pendingMove:()=>pendingMove,bloodShadowLanding,
-      attackPlanForTarget,targetableEntities,targetRangeTiles,previewSkillArea,aimedAreaTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,
+      attackPlanForTarget,targetableEntities,targetRangeTiles,previewSkillArea,aimedAreaTiles,environmentTargetTiles,executeEnvironmentTargetSkill,approachTargetForAttack,resolveDirectTargetAttack,previewCoreAttack,
       mapTargetTiles,executeMapSkill,beginPendingMove,commitPendingMove,cancelPendingMove,
-      backFromTargeting,finishActiveSkill,executeEffectSkill,executeUtilitySkill,approachForSkill,prepareAttack,
+      backFromTargeting,finishActiveSkill,executeEffectSkill,executeUtilitySkill,executeAutonomousSkill,isMapTransitSkill:skill=>MAP_TRANSIT_ACTIONS.has(skill?.utilityAction?.type),planApproachForSkill,approachForSkill,committedApproachSkill,prepareAttack,
       enchantmentSelection:()=>pendingEnchantment,enchantmentFollowup:()=>enchantmentFollowup,
       beginEnchantment,enchantmentCandidates,commitCandidateEnchantment,executeEnchantmentChoice,
       executeChannelSkill,

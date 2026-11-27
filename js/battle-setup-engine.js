@@ -212,8 +212,10 @@ export const BattleSetupEngine=(()=>{
 
     // Same validated deck authority used by the player. AI is never allowed to
     // mutate the deck after BattleSetupEngine has created its own card zones.
-    const requestedEnemyDeck=Array.isArray(battleSetup?.enemyDeck)?battleSetup.enemyDeck:(stage.enemyDeck||[]);
-    if(Array.isArray(battleSetup?.enemyDeck)){
+    const autoOpponent=stage.mode==="VERSUS"&&stage.ruleset==="CORE_CAPTURE"&&!Array.isArray(battleSetup?.enemyDeck);
+    const requestedEnemyDeck=Array.isArray(battleSetup?.enemyDeck)?battleSetup.enemyDeck:autoOpponent?
+      DeckEngine.buildOpponentDeck({random,startingCrystals:Number(stage.enemyCardRules?.startingCrystals??stage.cardRules?.startingCrystals??4)}):(stage.enemyDeck||[]);
+    if(Array.isArray(battleSetup?.enemyDeck)||autoOpponent){
       const validation=DeckEngine.validate(requestedEnemyDeck);
       if(!validation.valid)throw new Error(`敵方整備牌組不合法：${validation.errors.join(" ")}`);
     }

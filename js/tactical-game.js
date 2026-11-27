@@ -1,3 +1,4 @@
+import {officialEngagementForecast} from './battle-engagement-forecast.js';
 import {BattleRoundRuleEngine} from './battle-round-rule-engine.js';
 import {BattlefieldFieldEngine} from './battlefield-field-engine.js';
 import {NeutralActorEngine} from './neutral-actor-engine.js';
@@ -116,6 +117,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     const requestSerial=++geminiSerial;
     session.lastError=null;
     const controller=new AbortController();
+    const startedAt=performance.now();
     const timeoutMs=geminiTimeoutFor(endpoint,payload?.phase);
     const timeout=setTimeout(()=>controller.abort(),timeoutMs);
     session.inflight??=new Set();
@@ -158,6 +160,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     }finally{
       clearTimeout(timeout);
       session.inflight?.delete(controller);
+      globalThis.CardTacticsDiagnostics?.push?.("GEMINI_REQUEST_TIMING",{phase:payload?.phase,ms:Math.round(performance.now()-startedAt),timeoutMs,error:session.lastError});
     }
   }
   function recordGeminiResult(phase,result,legalActions=[]){
@@ -289,43 +292,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
           geminiSession=session;
           // One authoritative card/loadout/skill database. Only actually playable
           // enemy card categories enter the model's pool; no fabricated powers.
-          const allowed=Object.values(globalThis.CARDS||{}).filter(card=>CardDatabase.canPersist(card)&&
-            (CardDatabase.isCharacter(card)||(CardDatabase.isSpell(card)&&card.effect?.type==="WEATHER")))
-            .map(card=>{
-              const entry={id:card.id,name:card.name,cost:Number(card.cost||0),
-                kind:card.unitType==="HERO"?"HERO":CardDatabase.isCharacter(card)?"UNIT":"SPELL",
-                faction:card.faction||"NEUTRAL"};
-              if(CardDatabase.isCharacter(card)){
-                const character=LoadoutDatabase.resolveCharacter(card.characterId,card.loadoutId||null);
-                const combat=character?.combat||{};
-                entry.role=character?.archetype||"UNIT";
-                entry.stats=Object.fromEntries(["hp","atk","matk","def","mdef","move"]
-                  .filter(k=>Number.isFinite(Number(combat[k]))).map(k=>[k,Number(combat[k])]));
-                entry.skills=(character?.skillIds||[]).map(id=>SkillDatabase.get(id)).filter(Boolean).map(skill=>({
-                  name:skill.name,id:skill.id,category:skill.category,target:skill.target,
-                  power:skill.power,mp:skill.manaCost||0,range:skill.range?
-                    [skill.range.min,skill.range.max]:null,
-                  mechanic:String(skill.description||"").slice(0,100),
-                  tags:(skill.affixes||[]).slice(0,5)
-                }));
-                entry.passives=(character?.passives||[]).map(id=>{
-                  const passive=SkillDatabase.getPassive(id);
-                  if(!passive)return{id};
-                  const rules={};
-                  for(const key of ["terrainTraits","modifiers","turnEndEffect","nightVision",
-                    "encounterDominion","damageTakenRules","movementRules","powerMultiplier",
-                    "speedBonus","resourceRules","defenseProfiles"]){
-                    if(passive[key]!=null)rules[key]=passive[key];
-                  }
-                  return{id,name:passive.name,description:String(passive.description||"").slice(0,130),
-                    rules:JSON.stringify(rules).slice(0,260)};
-                });
-                entry.equipment={armor:character?.armorId||null,weapons:Object.values(character?.weaponIds||{})};
-                if(character?.companionIds?.length)entry.companions=[...character.companionIds];
-              }else entry.effect={type:card.effect?.type,weather:card.effect?.weather,
-                duration:card.effect?.durationTurns};
-              return entry;
-            });
+          const allowed=DeckEngine.opponentCardPool().map(card=>DeckEngine.opponentCardProfile(card));
           if(!allowed.length)throw Error("合法卡池為空，請檢查卡牌資料庫。");
           const stage=StageDatabase.get(window.CardTacticsBattleSetup?.stageId||"versus_core_battle");
           const rules=stage?.enemyCardRules||stage?.cardRules||{};
@@ -650,7 +617,17 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     });
     if(!completed)render();
   }
-  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activatePersistentArea,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills).map(s=>UnitRuntimeEngine.skillForUnit(unit,s)),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),mapSkillTiles:(u,s)=>actionController.mapTargetTiles(u,s),performMapSkill:(u,t,s)=>actionController.executeMapSkill(u,t,s),performEffectSkill:(u,t,s)=>actionController.executeEffectSkill(u,t,s),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,round,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
+  function createBattleContext(){return{sanctuaryTiles,activateSanctuary,activatePersistentArea,activateSmoke,geminiDecide,geminiMulligan,geminiPlan,geminiEnabled:()=>!!geminiSession?.enabled,TEAM,PHASE,state:()=>({map,units,stage,round,phase,matchResult,enemyCardState,environmentState}),map:()=>map,onUnitCreated,living,turnActors,resetActions,canUseSkill,targetType,combatTargets:combatTargetEntities,scheduleTurnSimulation,hallucinationActiveFor,coreForOwner,canUnitCapture,executeCapture,enterTile,checkMatchEnd:()=>engagementPlayback?.isActive()?false:checkMatchEnd(),beginPlayerTurn,pushLog,render,maybeAutoEndPlayerTurn:()=>engagementPlayback?.isActive()?false:maybeAutoEndPlayerTurn(),clearSelection,clearEnemyReaction,skillList:unit=>SkillDatabase.list(window.EffectEngine?EffectEngine.skillIds(unit):unit.character.skills).map(s=>UnitRuntimeEngine.skillForUnit(unit,s)),bloodShadowLanding:(u,t)=>actionController.bloodShadowLanding(u,t),performBloodShadow:(u,t,s)=>actionController.prepareAttack(u,t,s),performBloodBurst:(u,s)=>actionController.executeEffectSkill(u,u,s),mapSkillTiles:(u,s)=>actionController.mapTargetTiles(u,s),performMapSkill:(u,t,s)=>actionController.executeMapSkill(u,t,s),performEffectSkill:(u,t,s)=>actionController.executeEffectSkill(u,t,s),
+      aiForecast:(u,t,s)=>officialEngagementForecast({map,attacker:u,defender:t,skill:s}),
+      aiCoreForecast:(u,t,s)=>actionController.previewCoreAttack(u,t,s),
+      aiIsMapTransitSkill:s=>actionController.isMapTransitSkill(s),
+      aiApproachPlan:(u,t,s)=>actionController.planApproachForSkill(u,t,s),
+      aiCommitApproach:(u,t,s)=>actionController.approachForSkill(u,t,s)?actionController.committedApproachSkill(s):null,
+      aiSkillTargets:(u,s)=>actionController.targetableEntities(u,s),
+      aiPreviewArea:(u,s)=>actionController.previewSkillArea(u,s),
+      aiAreaTiles:(u,s,t,legal)=>TacticalEngine.isAreaAimSkill(s)?actionController.aimedAreaTiles(u,s,t,{legalTiles:legal}):TacticalEngine.areaImpactTiles(map,u,t,s),
+      aiEnchantmentTargets:(u,s)=>actionController.enchantmentCandidates(u,s),
+      aiExecuteSkill:(action)=>actionController.executeAutonomousSkill(action),setPhase:value=>{phase=value;},setEnemyView:value=>{enemyView=hallucinationActiveFor(TEAM.ENEMY)?{active:true,kind:value?.kind||"ACTION",message:"敵方行動中…",cardId:null,unitId:null}:value;},emitState:()=>window.dispatchEvent(new CustomEvent("cardtactics:state")),pendingEnemyAttack:()=>pendingEnemyAttack,setPendingEnemyAttack:attack=>{if(attack&&attack!==pendingEnemyAttack){engagementFocusSerial++;EffectEngine.interruptChannel(attack.defender,"ENGAGEMENT");}pendingEnemyAttack=attack;pendingReactionType=null;},resolveDirectTargetAttack:(...args)=>actionController.resolveDirectTargetAttack(...args),actionState:()=>({map,units,stage,round,selected,mode,selectedSkill,selectedSkillVariant,environmentState}),setMode:value=>{mode=value;},setSelectedSkill:value=>{selectedSkill=value;},setSelectedSkillVariant:value=>{selectedSkillVariant=value;},setCommandPanelCollapsed:value=>{commandPanelCollapsed=value;},getPendingEngagement:()=>pendingEngagement,setPendingEngagement:value=>{if(value&&value!==pendingEngagement)engagementFocusSerial++;pendingEngagement=value;},getSupportSelection:()=>supportSelection,setSupportSelection:value=>{supportSelection=value;},getPendingCopySkill:()=>pendingCopySkill,setPendingCopySkill:value=>{pendingCopySkill=value;},unitAt,coreAt,traverseUnitPath,applyForcedMovement,consumeSkill,effectiveSkill,damageCore,handleDefeated,damageUnitFlat,canUseSkill,targetType,logBattleAction,logPostEffect,logEnvironmentEvent,applyEnvironmentHazardToUnit,resolveEnvironmentEvents:(...args)=>environmentController.resolveEnvironmentEvents(...args),enterTile,clearEngagement,allFinished,lineTiles,aoeTiles,canTraverseMoveLine,createEnemyCardUnit:(card,tile)=>{const unit=UnitRuntimeEngine.createFromCard({id:`ec${unitSerial++}`,team:TEAM.ENEMY,card,x:tile.x,y:tile.y,map});if(!unit)return null;unit.cardId=card.id;unit.deployedRound=round;unit.moved=true;unit.acted=true;unit.waited=true;return unit;}};}
   function runEnemyPhase(){
     tickSanctuaries(TEAM.ENEMY);beginHallucinationTurn(TEAM.ENEMY);
     const dual=globalThis.NeutralActorEngine;

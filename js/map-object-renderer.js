@@ -299,11 +299,12 @@ export class MapObjectRenderer{
       // stays unchanged. This prevents frustum/shadow culling regressions.
       const boundsChanging=batch.windBoundsStrength!==strength||batch.windBoundsDirty===true;
       const positionBuffer=batch.mesh.getVertexBuffer?.(BABYLON.VertexBuffer.PositionKind);
-      const direct=!boundsChanging&&!!positionBuffer&&
-        typeof batch.mesh.updateVerticesDataDirectly==="function"&&
+      const directOwner=typeof batch.mesh.updateVerticesDataDirectly==="function"?batch.mesh:
+        typeof batch.mesh.geometry?.updateVerticesDataDirectly==="function"?batch.mesh.geometry:null;
+      const direct=!boundsChanging&&!!positionBuffer&&!!directOwner&&
         positionBuffer.isUpdatable?.()!==false;
       if(direct){
-        batch.mesh.updateVerticesDataDirectly(BABYLON.VertexBuffer.PositionKind,batch.positions,0,false);
+        directOwner.updateVerticesDataDirectly(BABYLON.VertexBuffer.PositionKind,batch.positions,0,false);
         this.windBatchMetrics.directPositionUploads++;
       }else{
         batch.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,batch.positions,false,false);
