@@ -18,6 +18,38 @@ const roundHistory=[],perfPeaks=Object.create(null),spikeNotifiedAt=Object.creat
 let lastEvidence=null,lastWaterSeamWarningKey="",lastWaterSeamCaptureAt=0;
 const tileAnnotations=[];
 const hydrologyBalanceHistory=[];
+// Session totals are independent of the existing 120-sample rolling averages.
+// No extra render loop, GPU readback, mesh enumeration or physics simulation.
+const workloadHistory=[];
+let workload=newWorkload(),lastFrameWindow=null;
+function newWorkload(){return {timings:{},frames:{windows:0,count:0,wallMs:0,frameCpuMs:0,sceneCpuMs:0,shadowCpuMs:0},geometry:{commits:0,surfaceBuilds:0,cliffBuilds:0,waterUpdates:0,waterBuilt:0,waterAttributes:0,waterVertices:0,waterUploadBytesEstimated:0,waterPolygonDirtyTiles:0},hydrology:{calls:0,iterations:0,changedTiles:0,elapsedMs:0}};}
+function recordFrameWindow(window){
+  if(!enabled||!window||window.count<=0)return;
+  // Exclude a window spanning the disabled/clear boundary, not just its last frame.
+  if(window.start<workloadSince)return;
+  const f=workload.frames;f.windows++;f.count+=window.count;f.wallMs+=window.wallMs;
+  f.frameCpuMs+=window.frameTotal;f.sceneCpuMs+=window.renderTotal;f.shadowCpuMs+=window.shadowTotal;
+  lastFrameWindow={count:window.count,wallMs:numeric(window.wallMs),frameCpuMs:numeric(window.frameTotal),sceneCpuMs:numeric(window.renderTotal),shadowCpuMs:numeric(window.shadowTotal)};
+}
+let workloadSince=started;
+function recordGeometryCommit(terrainDelta,waterUpdate){
+  if(!enabled)return;
+  const g=workload.geometry;g.commits++;
+  for(const key of ["surfaceBuilds","cliffBuilds"])g[key]+=Math.max(0,Number(terrainDelta?.[key]||0));
+  if(waterUpdate){g.waterUpdates++;g.waterBuilt+=Number(waterUpdate.built||0);g.waterAttributes+=Number(waterUpdate.attributesUpdated||0);g.waterVertices+=Number(waterUpdate.verticesUpdated||0);g.waterUploadBytesEstimated+=Number(waterUpdate.estimatedUploadBytes||0);g.waterPolygonDirtyTiles+=Number(waterUpdate.polygonDirtyTiles||0);}
+}
+function recordHydrologyWork(elapsed,iterations,changed){
+  if(!enabled)return;
+  const h=workload.hydrology;h.calls++;h.elapsedMs+=elapsed;h.iterations+=iterations;h.changedTiles+=changed;
+}
+function workloadSnapshot(){
+  const f=workload.frames;
+  return {timings:Object.fromEntries(Object.entries(workload.timings).map(([k,v])=>[k,{calls:v.calls,totalMs:numeric(v.totalMs),meanMs:numeric(v.totalMs/v.calls)}])),
+    frames:{...f,frameCpuMs:numeric(f.frameCpuMs),sceneCpuMs:numeric(f.sceneCpuMs),shadowCpuMs:numeric(f.shadowCpuMs),wallMs:numeric(f.wallMs),meanFrameCpuMs:f.count?numeric(f.frameCpuMs/f.count):null},
+    geometry:{...workload.geometry},hydrology:{...workload.hydrology,elapsedMs:numeric(workload.hydrology.elapsedMs)},lastFrameWindow};
+}
+function resetWorkload(){workload=newWorkload();workloadSince=performance.now();lastFrameWindow=null;workloadHistory.length=0;}
+
 
 function readStorage(key){try{return localStorage.getItem(key);}catch(_){return null;}}
 function writeStorage(key,value){try{localStorage.setItem(key,value);return true;}catch(err){storageWarning=String(err?.name||err||"Storage unavailable");return false;}}
@@ -58,12 +90,16 @@ function store(force=false){
   lastStoredAt=ms;
   const record={schema:2,sessionId,startedAt:new Date(Date.now()-(performance.now()-started)).toISOString(),
     updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX),
-    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,gpu:gpuSnapshot()};
+    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,workload:workloadSnapshot(),workloadHistory,gpu:gpuSnapshot()};
   return writeStorage(STORE_KEY,JSON.stringify(record));
 }
 function recordPerf(name,elapsed){
   if(!enabled)return;
   const ms=Number(elapsed);if(!Number.isFinite(ms)||ms<0)return;
+  // Existing timing callbacks only. Frame callbacks report peaks, not sums.
+  if(name.startsWith("renderSync.")||name.startsWith("waterSync.")||name.startsWith("environmentSync.")||name==="environmentResolveMs"||name==="hydrology.redistribute"){
+    const total=workload.timings[name]||(workload.timings[name]={calls:0,totalMs:0});total.calls++;total.totalMs+=ms;
+  }
   const stat=perfCounters[name]||(perfCounters[name]={samples:0,lastMs:0,maxMs:0,totalMs:0});
   stat.samples++;stat.lastMs=Math.round(ms*100)/100;stat.maxMs=Math.max(stat.maxMs,stat.lastMs);stat.totalMs+=ms;
   // Record the true session high-water mark separately: the rolling aggregate
@@ -332,7 +368,7 @@ function checkpoint(){
   const runtime=window.CardTacticsRuntime,env=runtime?.debug?.state?.(),map=runtime?.getBattleMap?.(),tiles=map?.tiles;
   if(!env||!Array.isArray(tiles))return null;
   const weather=env.weather||"CLEAR",climate=env.climate||null;
-  let storedD=0,soil=0,wet=0,deep=0,maxDepth=0,snow=0,snowSWE=0,ice=0,flowing=0;
+  let storedD=0,soil=0,wet=0,deep=0,maxDepth=0,snow=0,snowSWE=0,ice=0,flowing=0,suspended=0,deposit=0,murky=0;
   for(const tile of tiles){
     const depth=Number(globalThis.HydrologyEngine?.waterDepth?.(tile)??tile?.waterDepth??0);
     const d=Number.isFinite(depth)?Math.max(0,depth):0;
@@ -342,6 +378,9 @@ function checkpoint(){
     snowSWE+=Number(tile?.snowWaterEquivalent??tile?.snowDepth??0);
     ice+=Number(tile?.iceThickness||0);
     if(Number(tile?.flowSpeed||0)>0.1)flowing++;
+    suspended+=Math.max(0,Number(tile?.suspendedSediment??(d*Number(tile?.waterTurbidity||0)))||0);
+    deposit+=Math.max(0,Number(tile?.sedimentDeposit||0));
+    if(d>0&&Number(tile?.waterTurbidity||0)>0)murky++;
   }
   const visual=window.CardTacticsRenderer,scene=visual?.scene;
   const lightSources=visual?.lastState?.presentation?.environment?.lightSources||[];
@@ -353,7 +392,7 @@ function checkpoint(){
     climate:climate?{precipitation:climate.precipitation?.type,intensity:numeric(climate.precipitation?.intensity),fog:numeric(climate.fog?.intensity),thunder:numeric(climate.thunder?.intensity),heat:numeric(climate.heat?.intensity),wind:climate.wind?{direction:climate.wind.direction,strength:numeric(climate.wind.strength)}:null}:null,
     hydrology:{storedD:numeric(storedD),soil:numeric(soil),wetTiles:wet,deepTiles:deep,maxDepth:numeric(maxDepth),snow:numeric(snow),snowWaterEquivalent:numeric(snowSWE),ice:numeric(ice),
       // Frozen water is already included in storedD; it is not added again.
-      liquidSurface:numeric(storedD-ice),totalWaterEquivalent:numeric(storedD+soil+snowSWE),flowingTiles:flowing},
+      liquidSurface:numeric(storedD-ice),totalWaterEquivalent:numeric(storedD+soil+snowSWE),flowingTiles:flowing,suspendedSediment:numeric(suspended),sedimentDeposit:numeric(deposit),murkyTiles:murky},
     waterRebuild:visual?.water?.waterRebuildDiagnostics?.()??null,
     // Cached geometry audit: O(1) between actual surface rebuilds. Its
     // "open boundary" count includes legitimate shorelines, not just cracks.
@@ -447,6 +486,12 @@ function sample(){
       }
     }
     lastWater=water;lastCheckpoint=sample;
+    // Bounded samples use the existing five-second checkpoint. No extra timer.
+    if(window.CardTacticsRenderer?.canvas?.parentElement?.classList?.contains("active")){
+      const v=window.CardTacticsRenderer,w=workloadSnapshot();
+      workloadHistory.push({at:sample.at,round:sample.round,weather:sample.weather,timeOfDay:sample.timeOfDay,map:sample.map,fps:sample.fps,frames:w.frames,geometry:w.geometry,hydrology:w.hydrology,sediment:{suspended:water.suspendedSediment,deposit:water.sedimentDeposit,murkyTiles:water.murkyTiles},gpu:{status:sample.gpu?.status,lastMs:sample.gpu?.lastMs},drawCallsPerFrame:v.performanceStats?.drawCallsPerFrame??null,meshes:sample.scene?.meshes??null,massFlowActive:v.environment?.massFlowEffects?.length??null});
+      if(workloadHistory.length>60)workloadHistory.shift();
+    }
     keepRoundHistory(sample);
     const seams=sample.waterSeams;
     if(seams?.warningCount>0){
@@ -496,7 +541,7 @@ function report(){
   const data={generatedAt:now(),userAgent:navigator.userAgent,enabled,sessionId,
     uptimeSeconds:Math.round((performance.now()-started)/1000),fps,
     runtime:runtime(),renderer:renderer(),memory:memory(),gpu:gpuSnapshot(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
-    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,
+    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,workload:workloadSnapshot(),workloadHistory,
     battleLog:{count:window.CardTacticsRuntime?.getBattleLog?.()?.entries?.length??null,max:window.BattleLog?.MAX_ENTRIES??null},
     presentation:audit(),storageWarning:storageWarning||null,
     previousSession:previousSession?{status:previousStatus,...previousSession}:null,
@@ -509,7 +554,7 @@ async function copy(){
   try{await navigator.clipboard.writeText(value);return true;}
   catch(_){const ta=document.createElement("textarea");ta.value=value;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();const ok=document.execCommand("copy");ta.remove();return ok;}
 }
-function clear(){events.length=0;roundHistory.length=0;tileAnnotations.length=0;hydrologyBalanceHistory.length=0;
+function clear(){resetWorkload();events.length=0;roundHistory.length=0;tileAnnotations.length=0;hydrologyBalanceHistory.length=0;
   for(const key of Object.keys(perfCounters))delete perfCounters[key];
   for(const key of Object.keys(perfPeaks))delete perfPeaks[key];
   for(const key of Object.keys(spikeNotifiedAt))delete spikeNotifiedAt[key];
@@ -523,7 +568,7 @@ function mount(){
   const box=document.createElement("section");box.id="diagnosticsPanel";box.className="diagnostics-panel";
   box.innerHTML=`<h3>開發者診斷</h3>
     <label><span>啟用診斷與異常中斷紀錄</span><input id="diagnosticsToggle" type="checkbox"></label>
-    <p class="diagnostics-note">記錄戰鬥、技能失敗、天氣、水文、光照資源及錯誤。手機閃退時無法當場寫入；下次開啟可查看最後儲存的檢查點。僅儲存在本機，不會自動上傳。</p>
+    <p class="diagnostics-note">記錄戰鬥、技能失敗、天氣、水文、光照資源、累計渲染負載及錯誤。手機閃退時無法當場寫入；下次開啟可查看最後儲存的檢查點。僅儲存在本機，不會自動上傳。</p>
     <pre id="diagnosticsSummary"></pre>
     <details><summary>查看最近事件與上次紀錄</summary><pre id="diagnosticsTimeline" style="max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
     <div class="diagnostics-actions"><button id="diagnosticsCapture" type="button">擷取當下渲染現場（不截圖）</button><button id="diagnosticsCopy" type="button">複製診斷報告（含上次紀錄）</button><button id="diagnosticsClear" type="button">清除紀錄</button></div>`;
@@ -531,7 +576,7 @@ function mount(){
   // BattleUI owns the single LOG button; Diagnostics capture stays in Settings.
   const toggle=box.querySelector("#diagnosticsToggle"),summary=box.querySelector("#diagnosticsSummary"),timeline=box.querySelector("#diagnosticsTimeline"),copyBtn=box.querySelector("#diagnosticsCopy");
   toggle.checked=enabled;
-  toggle.onchange=()=>{enabled=toggle.checked;writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);refresh();};
+  toggle.onchange=()=>{enabled=toggle.checked;if(enabled)workloadSince=performance.now();writeStorage(PREF_KEY,enabled?"1":"0");if(enabled){push("DIAGNOSTICS",{enabled});sample();store(true);}else removeStorage(STORE_KEY);refresh();};
   box.querySelector("#diagnosticsClear").onclick=()=>{clear();refresh();};
   box.querySelector("#diagnosticsCapture").onclick=()=>{
     const evidence=capture("SETTINGS_VISUAL");
@@ -540,7 +585,7 @@ function mount(){
   };
   copyBtn.onclick=async()=>{const ok=await copy(),old=copyBtn.textContent;copyBtn.textContent=ok?"已複製":"複製失敗";setTimeout(()=>copyBtn.textContent=old,1200);};
   function refresh(){
-    const m=memory(),c=lastCheckpoint,v=window.CardTacticsRenderer?.diagnostics?.();
+    const m=memory(),c=lastCheckpoint,v=window.CardTacticsRenderer?.diagnostics?.(),w=workloadSnapshot();
     summary.textContent=[
       `FPS ${fps}｜本次事件 ${events.length}/${MAX}｜診斷${enabled?"開":"關"}`,
       recoveredIncident?`保留的異常中斷：${recoveredIncident.updatedAt}（未確認原因）`:"",
@@ -549,6 +594,10 @@ function mount(){
       c?`水文 D ${c.hydrology.storedD}｜濕格 ${c.hydrology.wetTiles}｜最大深度 ${c.hydrology.maxDepth}｜雪 ${c.hydrology.snow}`:"",
       c?.scene?`Babylon meshes ${c.scene.meshes}｜materials ${c.scene.materials}｜textures ${c.scene.textures}｜lights ${c.scene.lights}｜physical ${c.lighting?.physicalLights??"-"}`:"",
       v?.performance?`最近每幀 Draw Calls ≈ ${v.performance.drawCallsPerFrame??"無可靠資料"}｜渲染 ${v.performance.renderMeanMs??"-"} ms` :"",
+      `累計渲染 ${w.frames.count} 幀｜主執行緒幀耗時 ${w.frames.meanFrameCpuMs??"—"} ms/幀｜幀耗時累計 ${numeric(w.frames.frameCpuMs/1000)} 秒`,
+      `地形重算 ${w.geometry.surfaceBuilds}｜岩壁重算 ${w.geometry.cliffBuilds}｜水面更新 ${w.geometry.waterUpdates}｜估計儲水面提交 ${numeric(w.geometry.waterUploadBytesEstimated/1048576)} MiB`,
+      `本機水文結算 ${w.hydrology.calls} 次｜迭代 ${w.hydrology.iterations}｜累計 ${numeric(w.hydrology.elapsedMs/1000)} 秒（PVP 伺服器運算不在此數值內）`,
+      c?`泥沙懸浮 ${c.hydrology.suspendedSediment}｜河床沉積 ${c.hydrology.sedimentDeposit}｜混濁格 ${c.hydrology.murkyTiles}`:"",
       `GPU 計時 ${gpuSnapshot().status}｜${gpuSnapshot().lastMs??"—"} ms（每 2 秒採樣；不可讀取使用率／溫度／功率）`,
       `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類｜問題格取證 ${tileAnnotations.length} 組`,
       c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜疑似缺水邊 ${c.waterSeams.internalBoundaries?.internalMissingSurfaceEdges??"-"}｜幾何警訊 ${c.waterSeams.warningCount}`:"",
@@ -569,6 +618,6 @@ function mount(){
   refresh();
 }
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",mount);else mount();
-window.CardTacticsDiagnostics={push,gameAction,recordPerf,recordHydrologyBalance,recordTileAnnotation,report,copy,capture,clear,isEnabled:()=>enabled};
+window.CardTacticsDiagnostics={push,gameAction,recordPerf,recordFrameWindow,recordGeometryCommit,recordHydrologyWork,recordHydrologyBalance,recordTileAnnotation,report,copy,capture,clear,isEnabled:()=>enabled};
 if(enabled){push("SESSION_START",{previousStatus:previousStatus||null});sample();store(true);}
 })();

@@ -2150,6 +2150,8 @@ export const HydrologyEngine=(()=>{
       return events;
     }
 
+    const profiler=globalThis.CardTacticsDiagnostics;
+    const profileStart=profiler?.isEnabled?.()?globalThis.performance?.now?.():null;
     // Outlet accounting belongs to this one physical flow step.
     if(map?.hydrology?.generatedRiverProfile===true){
       for(const tile of map.tiles||[])if(tile.hydrologyDrain===true){
@@ -2278,6 +2280,7 @@ export const HydrologyEngine=(()=>{
     if(flowBudget.sourceCount||flowBudget.outletCount){
       events.push({type:"RIVER_FLOW_BUDGET",source,...flowBudget});
     }
+    if(profileStart!=null){const elapsed=globalThis.performance.now()-profileStart;profiler.recordHydrologyWork?.(elapsed,Math.min(iterations+1,iterationLimit),changed);profiler.recordPerf?.("hydrology.redistribute",elapsed);}
     return events;
   }
 

@@ -267,6 +267,7 @@ export class BabylonRenderer{
         globalThis.CardTacticsDiagnostics?.recordPerf?.("frame.cpuElapsed",this.performanceStats.framePeakMs);
         globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.renderElapsed",this.performanceStats.renderPeakMs);
         globalThis.CardTacticsDiagnostics?.recordPerf?.("scene.shadowPassSubmit",this.performanceStats.shadowPassCpuPeakMs);
+        globalThis.CardTacticsDiagnostics?.recordFrameWindow?.({start:sample.start,wallMs:performance.now()-sample.start,count:sample.count,frameTotal:sample.frameTotal,renderTotal:sample.renderTotal,shadowTotal:sample.shadowTotal});
         sample.start=performance.now();sample.count=0;
         sample.frameTotal=0;sample.framePeak=0;sample.renderTotal=0;sample.renderPeak=0;
         sample.shadowTotal=0;sample.shadowPeak=0;
@@ -709,6 +710,10 @@ export class BabylonRenderer{
       cliffGeometryVersion:this.terrain.surfaceResolver.renderedCliffGeometryRevision
     });
     const before=owners();
+    const profile=globalThis.CardTacticsDiagnostics;
+    const measuring=profile?.isEnabled?.()===true;
+    const terrainBefore=measuring?{surfaceBuilds:this.terrain.updateCounts.surfaceBuilds,cliffBuilds:this.terrain.updateCounts.cliffBuilds}:null;
+    const waterBefore=measuring?this.water.surfaceRebuildDetail:null;
     const failedStages=[];
     // One ordered synchronous publication cycle; only a completely successful
     // cycle may advance the committed revision. Consumers keep the existing
@@ -751,6 +756,11 @@ export class BabylonRenderer{
 
     publish("actionAnchor",()=>this.syncActionAnchor(state));
     const after=owners();
+    if(measuring){
+      const counts=this.terrain.updateCounts,detail=this.water.surfaceRebuildDetail;
+      const waterUpdate=detail&&detail!==waterBefore?{...this.water.surfaceMeshUpdate,polygonDirtyTiles:detail.polygonDirtyTiles}:null;
+      profile.recordGeometryCommit?.({surfaceBuilds:counts.surfaceBuilds-terrainBefore.surfaceBuilds,cliffBuilds:counts.cliffBuilds-terrainBefore.cliffBuilds},waterUpdate);
+    }
     const changes=Object.keys(after).filter(key=>before[key]!==after[key]);
     const complete=failedStages.length===0;
     if(complete)this.lastCompletedPresentationRevision=state?.revision??null;
