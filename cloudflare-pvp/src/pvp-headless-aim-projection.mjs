@@ -6,6 +6,7 @@
 import {TacticalEngine} from '../../js/tactical-engine.js';
 import {BattleCoreCaptureController} from '../../js/battle-core-capture-controller.js';
 import {SkillDatabase} from '../../js/skill-database.js';
+import {StageDatabase} from '../../js/stage-database.js';
 import {sanctuaryFootprint} from '../../js/battle-area-field-engine.js';
 import {canonicalAreaFieldSkillOptions} from './pvp-field-controller.mjs';
 import {canonicalDirectAttackSkillOptions} from './pvp-headless-engagement.mjs';
@@ -24,8 +25,13 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
   const map=game.battlefield.map,units=game.units,environmentState=game.environmentState;
   const unitAt=(x,y)=>units.find(other=>other.alive&&other.occupiesTile!==false&&other.x===x&&other.y===y)||null;
   const coreAt=(x,y)=>game.battlefield.cores.find(core=>core.hp>0&&core.x===x&&core.y===y)||null;
+  const stage=StageDatabase.get(game.stageId);
+  if(stage){stage.cores=game.battlefield.cores;stage.deploymentPoints=game.battlefield.deploymentPoints;}
+  const world={map,units,environmentState,cores:game.battlefield.cores,stage};
   const visible=units.filter(other=>other.alive&&
-    (other.team===unit.team||TacticalEngine.teamCanIdentifyUnit({map,units,environmentState},unit.team,other,environmentState)));
+    (other.team===unit.team||TacticalEngine.teamCanIdentifyUnit(world,unit.team,other,environmentState)));
+  // Only already-authorized contacts can appear in the aiming mask.
+  const opticalCandidates=TacticalEngine.aimOpticallyHiddenIds(map,unit,visible,[],environmentState);
   // Use official CoreCombatTarget rather than a browser-owned fake unit.
   // The read-only methods never invoke the log/victory callbacks.
   const coreHost=BattleCoreCaptureController.create({TEAM:{PLAYER:'P',ENEMY:'E'},
@@ -47,14 +53,19 @@ export function projectCanonicalAimOptions(game,seat,unit,engine,{coreAttackSkil
   const push=(type,skill,tiles,{targetUnits=false,tileAction=false,planned=false,includeCore=false}={})=>{
     if(!skill||!engine.unitRuntime.canUseSkill(unit,skill))return;
     const ranged=coordinates(tiles),inside=new Set(ranged.map(t=>`${t.x},${t.y}`));
-    const legal=tileAction?ranged:targetUnits?visible.filter(other=>
+    const legalUnits=targetUnits?visible.filter(other=>
       (planned?!!canonicalTargetPlan(game,unit,other,skill,engine,{planner:controller}):
         TacticalEngine.canTarget(map,unit,other,skill,environmentState))&&
-      inside.has(`${other.x},${other.y}`)).map(other=>({x:other.x,y:other.y})):[];
+      inside.has(`${other.x},${other.y}`)):[];
+    const legal=tileAction?ranged:coordinates(legalUnits);
     if(includeCore&&coreTarget&&inside.has(`${coreTarget.x},${coreTarget.y}`)&&
         canonicalTargetPlan(game,unit,coreTarget,skill,engine,{extraTargets:[coreTarget]}))
       legal.push({x:coreTarget.x,y:coreTarget.y});
     const aim={type,skillId:skill.id,tiles:ranged,actionableTiles:legal};
+    if(targetUnits&&opticalCandidates.length){
+      const legalIds=new Set(legalUnits.map(other=>other.id));
+      aim.opticallyHiddenUnitIds=opticalCandidates.filter(id=>!legalIds.has(id));
+    }
     options.push(aim);return aim;
   };
   // Same candidate origins as solo; the Worker performs the actual planned
