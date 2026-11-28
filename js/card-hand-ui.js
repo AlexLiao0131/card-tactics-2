@@ -189,12 +189,16 @@ export function ensureHeroCardStyles(){
 
 export function heroCardFace(card,{variant="hand"}={}){
   if(!isHeroCard(card))return"";
-  const model=heroDisplay(card),src=esc(model.artwork),name=esc(card.name);
+  const model=heroDisplay(card),tier=variant==="preview"?"preview":"card";
+  const src=esc(globalThis.VisualDatabase?.artworkUrl?.(model.artwork,tier)||model.artwork),name=esc(card.name);
+  // Only the active hand and explicitly opened preview are eager. Large
+  // collections and pack-result grids retain browser-native lazy loading.
+  const loading=variant==="hand"||variant==="preview"?"eager":"lazy";
   const icon=heroRoleIcon(model.character?.archetype);
   const resourceLine=model.extraResources.map(resource=>`<span class="hero-card__resource" data-resource="${esc(resource.id)}" title="${esc(resource.label)} 初始值">${esc(resource.label)} ${esc(resource.initial)}/${esc(resource.max)}</span>`).join("");
   return `<span class="hero-card hero-card--${esc(variant)}${resourceLine?" hero-card--has-resources":""}" data-hero-card="${esc(card.id)}" aria-label="${name}，消耗 ${esc(card.cost)} 水晶，HP ${esc(model.hp)}，MP ${esc(model.mp)}">
     <span class="hero-card__background" aria-hidden="true"></span>
-    <span class="hero-card__art"><span class="hero-card__missing">立繪待上傳</span><img class="hero-card__figure" src="${src}" alt="" draggable="false" loading="lazy"></span>
+    <span class="hero-card__art"><span class="hero-card__missing">立繪待上傳</span><img class="hero-card__figure" src="${src}" alt="" draggable="false" decoding="async" loading="${loading}"></span>
     <span class="hero-card__frame" aria-hidden="true"></span>
     <span class="hero-card__cost" title="消耗水晶數">${esc(card.cost)}</span>
     <span class="hero-card__name">${name}</span>
@@ -459,10 +463,10 @@ export class CardHandUI{
     const enemyMotion=phase==="ENEMY_TURN"?(view?.kind==="DRAW"?"enemy-draw":view?.kind==="CARD_SELECT"?"enemy-select":"enemy-thinking"):"";
     const enemyHtml=remote?`<div class="opponent-hand">${Array.from({length:remote.opponentHandCount},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-(remote.opponentHandCount-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">對手手牌 ${remote.opponentHandCount} 張｜${remote.canAct?"輪到你操作":"等待對手"}</div>`
       :enemy?`<div class="opponent-hand ${enemyMotion}">${Array.from({length:enemy.zones?.hand?.length||0},(_,i)=>`<i class="opponent-card-back" style="--fan:${i-((enemy.zones?.hand?.length||1)-1)/2};--i:${i}"></i>`).join("")}</div><div class="opponent-meta">敵方　💎 ${enemy.crystals||0}/${enemy.crystalCapacity||0}　牌庫 ${enemy.zones?.deck?.length||0}</div>${phase==="ENEMY_TURN"?`<div class="opponent-message">${esc(view?.message||"敵方思考中…")}</div>`:""}`:"";
-    const hand=cards.map((c,i)=>{const art=cardArt(c),off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=remote?(remote.phase==='TACTICAL_PHASE'||!remote.canAct||!!pending||(opening?c.mulliganEligible===false:
+    const hand=cards.map((c,i)=>{const rawArt=cardArt(c),art=globalThis.VisualDatabase?.artworkUrl?.(rawArt,"card")||rawArt,off=i-(cards.length-1)/2,selected=this.mulligan.has(i),disabled=remote?(remote.phase==='TACTICAL_PHASE'||!remote.canAct||!!pending||(opening?c.mulliganEligible===false:
       !globalThis.CardPhaseEngine.canPlay(state,c))):
       (opening?c.mulliganEligible===false:!(phase==="CARD_PHASE"&&(r.canPlayCard?.(c.id)??globalThis.CardPhaseEngine.canPlay(state,c)))),hero=isHeroCard(c);return`<button class="fan-card ${hero?"hero-fan-card":""} ${selected?"mulligan-selected":""} ${pending?.id===c.id?"pending":""}" data-card="${esc(c.id)}" data-hand-index="${i}" style="--fan:${off};--i:${i}" ${disabled?"disabled":""}>${hero?heroCardFace(c,{variant:"hand"}):`${art?`<span class="fan-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="fan-sheen"></span><span class="fan-cost">${c.cost}</span><span class="fan-name">${esc(c.name)}</span><small>${opening?(selected?"將換掉":"保留"):(c.type==="CHARACTER"?(c.unitType==="HERO"?"HERO":"UNIT"):(c.spellType||"SPELL"))}</small>`}</button>`}).join("");
-    const art=preview?cardArt(preview):null,heroPreview=isHeroCard(preview);
+    const rawPreviewArt=preview?cardArt(preview):null,art=globalThis.VisualDatabase?.artworkUrl?.(rawPreviewArt,"preview")||rawPreviewArt,heroPreview=isHeroCard(preview);
     const previewHtml=!opening&&!targeting&&preview?`<div class="card-preview ${heroPreview?"hero-preview":""}">${heroPreview?heroCardFace(preview,{variant:"preview"}):`<div class="preview-card-face">${art?`<span class="preview-art" style="background-image:url('${art.replace(/'/g,"%27")}')"></span>`:""}<span class="preview-cost">${preview.cost}</span><strong>${esc(preview.name)}</strong><small>${esc(preview.type)}</small><p>${esc(describe(preview))}</p></div>`}<div class="preview-actions"><button id="confirmCardUse" ${remote&&!remote.canAct?"disabled":""}>使用</button>${heroPreview?`<button id="openHeroCardInfo" type="button">詳細資訊</button>`:""}<button id="cancelCardPreview">取消</button></div></div>`:"";
     const mulliganHtml=opening?`<div class="mulligan-guide"><strong>起手換牌</strong><span>選擇不要的牌；整場僅一次。</span></div><div class="mulligan-actions"><button id="confirmMulligan" ${this.mulligan.size&&(!remote||remote.canAct)?"":"disabled"}>換掉 ${this.mulligan.size} 張</button><button id="keepOpeningHand" ${remote&&!remote.canAct?"disabled":""}>全部保留</button></div>`:"";
     const targetingHtml=targeting?`<div class="card-targeting-bar"><button id="cancelCardTarget">← 取消</button><strong>${esc(pending.name)}</strong><span>${pending.type==="CHARACTER"?"請選擇出生區中的部署格":"請在戰場選擇目標"}</span></div>`:"";

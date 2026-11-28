@@ -918,7 +918,47 @@ export const VISUALS={
   }
 };
 
+// The Pages build substitutes only this data literal in its staged copy.
+// The source tree (and local/branch deployments) remains PNG-compatible.
+const CARD_ART_BUILD=/*__CT2_CARD_ART_MANIFEST__*/null;
+
 export const VisualDatabase=(()=>{
+  const artworkEntries=CARD_ART_BUILD?.entries||{};
+  const optimizedOriginals=new Map();
+  for(const entry of Object.values(artworkEntries)){
+    for(const tier of ["hud","card","preview"]){
+      const url=entry[tier];
+      if(typeof url==="string"&&url.startsWith("assets/generated/card-art/")&&!optimizedOriginals.has(url))
+        optimizedOriginals.set(url,entry.original);
+    }
+  }
+  // Resolve only registered local artwork. Exact case wins when both originals
+  // exist; an uppercase-only PNG is discovered without a failing HTTP request.
+  function artworkKey(path){
+    if(typeof path!=="string"||!path)return null;
+    try{
+      let relative=path;
+      if(typeof document!=="undefined"){
+        const root=new URL("./",document.baseURI),url=new URL(path,root);
+        if(url.origin!==root.origin||!url.pathname.startsWith(root.pathname))return null;
+        relative=url.pathname.slice(root.pathname.length);
+      }
+      else relative=relative.replace(/^\.\//,"").split(/[?#]/,1)[0];
+      return decodeURIComponent(relative);
+    }catch(_error){return null;}
+  }
+  function artworkUrl(path,tier="card"){
+    const key=artworkKey(path);if(!key)return path;
+    if(!["hud","card","preview"].includes(tier))return path;
+    let entry=Object.hasOwn(artworkEntries,key)?artworkEntries[key]:null;
+    if(!entry&&/\.png$/i.test(key)){
+      const stem=key.slice(0,-4);
+      const alternate=[stem+".png",stem+".PNG"].find(candidate=>Object.hasOwn(artworkEntries,candidate));
+      if(alternate)entry=artworkEntries[alternate];
+    }
+    return entry?.[tier]||entry?.original||path;
+  }
+  function originalArtworkFor(path){return optimizedOriginals.get(artworkKey(path))||null;}
   function group(name){return VISUALS[name]||null;}
   function get(groupName,id){return group(groupName)?.[id]||null;}
   function asset(groupName,id,key){return get(groupName,id)?.[key]??null;}
@@ -933,8 +973,8 @@ export const VisualDatabase=(()=>{
 
   function character(id){return get("characters",id);}
   function characterBattle(id){return character(id)?.battle||null;}
-  // Reuse the EXISTING full-size card paintings. HUD crops them in CSS; no
-  // generated thumbnails, fallback network guesses, or second asset registry.
+  // The existing HUD registry selects the source identity. The derived image
+  // manifest only supplies a smaller representation; CSS crop is unchanged.
   const hudPortraits=Object.freeze({
     viola:"viola.png",safiya:"safiya.png",alchemist:"alchemist.png",
     avreshi:"avreshi.png",magda:"magda.png",livia:"livia.png",leon:"leon.png",cassandra:"cassandra.png",
@@ -946,7 +986,7 @@ export const VisualDatabase=(()=>{
   });
   function characterHudPortrait(characterId){
     const name=hudPortraits[String(characterId||"")];
-    return name?`assets/images/cards/heroes/${name}`:null;
+    return name?artworkUrl(`assets/images/cards/heroes/${name}`,"hud"):null;
   }
   function card(id){return get("cards",id);}
   function terrainMaterial(id){return get("terrainMaterials",id)||presentation("terrain",id);}
@@ -956,7 +996,7 @@ export const VisualDatabase=(()=>{
 
   return{
     group,get,asset,presentation,register,
-    character,characterBattle,characterHudPortrait,card,terrainMaterial,object,effect,animation
+    character,characterBattle,characterHudPortrait,artworkUrl,originalArtworkFor,card,terrainMaterial,object,effect,animation
   };
 })();
 
@@ -964,9 +1004,8 @@ globalThis.VISUALS=VISUALS;
 globalThis.VisualDatabase=VisualDatabase;
 
 // GitHub Pages is case-sensitive, while artwork may arrive as .png or .PNG.
-// The SAME entry in VisualDatabase serves card faces, previews and unit HUDs;
-// one shared failed-IMG retry handles both spellings for every local game asset.
-// Do not duplicate image files or change any authoritative visual path.
+// A single failed-IMG owner handles generated-art fallback and the existing
+// local PNG case retry. Original authoring files and visual identities remain.
 function installGamePngCaseFallback(){
   if(typeof document==="undefined"||typeof document.addEventListener!=="function")return;
   document.addEventListener("error",event=>{
@@ -976,6 +1015,12 @@ function installGamePngCaseFallback(){
     try{requested=new URL(image.src,document.baseURI);}catch(_error){return;}
     if(requested.origin!==new URL(document.baseURI).origin||
        !requested.pathname.split("/").includes("assets"))return;
+    const original=VisualDatabase.originalArtworkFor(requested.href);
+    if(original){
+      image.src=new URL(original,document.baseURI).href;
+      event.stopImmediatePropagation?.();
+      return;
+    }
     const extension=requested.pathname.slice(-4);
     if(extension!==".png"&&extension!==".PNG")return;
     // One alternate attempt per picture/path, including if its IMG node is
