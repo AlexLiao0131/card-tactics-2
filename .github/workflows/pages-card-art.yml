@@ -1,1 +1,58 @@
+name: Deploy Pages with optimized card artwork
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: card-tactics-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PNG / WebP encoder
+        run: python -m pip install Pillow==12.3.0
+      - name: Validate artwork pipeline
+        run: python scripts/test-card-art.py
+      - name: Restore image encoding cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ct2-card-art-cache
+          key: card-art-v1-${{ runner.os }}-${{ hashFiles('scripts/build-card-art.py', 'assets/images/cards/**', 'assets/images/characters/**') }}
+          restore-keys: |
+            card-art-v1-${{ runner.os }}-
+      - name: Stage tracked files without modifying main
+        shell: bash
+        run: |
+          set -euo pipefail
+          SITE="$RUNNER_TEMP/ct2-pages-site"
+          mkdir -p "$SITE"
+          git archive --format=tar HEAD | tar -xf - -C "$SITE"
+          python scripts/build-card-art.py --site "$SITE" --cache "$RUNNER_TEMP/ct2-card-art-cache"
+          test -f "$SITE/index.html"
+      - name: Upload static Pages site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/ct2-pages-site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
