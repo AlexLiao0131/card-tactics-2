@@ -438,7 +438,7 @@
           const tile=steps.shift();
           if(!habitatAllows(actor,tile)){actor.moved=true;return done?.();}
           const result=measured("enemyAI.traverseUnitStep",()=>ctx.traverseUnitPath(actor,[tile],{kind:"UNIT"}));
-          ctx.pushLog(`${actor.character.name} 移動至 (${actor.x},${actor.y})。`,"DETAIL");
+          ctx.pushLog(`${actor.character.name} 移動至 (${actor.x},${actor.y})。`,"DETAIL",{units:[actor]});
           showStep("MOVE",`${actor.character.name} 移動 → (${actor.x},${actor.y})`,{unitId:actor.id});
           if(!result?.completed||!actor.alive){actor.moved=true;return done?.();}
           afterStep(next,260);
@@ -534,7 +534,7 @@
         afterStep(()=>{
           if(!attack.attacker.alive||!attack.defender.alive){afterStep(continuePhase,0);return;}
           ctx.setPendingEnemyAttack(attack);ctx.setMode("enemy-reaction");
-          ctx.pushLog(`${attack.attacker.character.name} 對 ${attack.defender.character.name} 發動 ${attack.skill.name}。`);
+          ctx.pushLog(`${attack.attacker.character.name} 對 ${attack.defender.character.name} 發動 ${attack.skill.name}。`,"BATTLE",{units:[attack.attacker,attack.defender]});
           ctx.render();ctx.emitState();
         },450);
       };
@@ -542,7 +542,7 @@
       const finishPhase=()=>{
         const state=ctx.state();
         if(ctx.checkMatchEnd()){ctx.render();return;}
-        ctx.pushLog(`Round ${state.round}｜敵方／野怪行動結束。`);
+        ctx.pushLog(`Round ${state.round}｜敵方／野怪行動結束。`,"SYSTEM",{public:true});
         ctx.beginPlayerTurn();
       };
 
@@ -638,7 +638,7 @@
         if(!cards){done?.();return;}
         const handSize=Number(state.stage.enemyCardRules?.handSize||state.stage.cardRules?.handSize||5);
         const drawn=CardPhaseEngine.begin(cards,{handSize});
-        ctx.pushLog(`Round ${state.round}｜敵方卡牌階段開始｜💎 ${cards.crystals}。`,"SYSTEM");
+        ctx.pushLog(`Round ${state.round}｜敵方卡牌階段開始。`,"SYSTEM",{public:true});
         if(drawn.length)ctx.pushLog(`敵方抽牌 ${drawn.length} 張。`,"SYSTEM");
         showStep("DRAW",drawn.length?`敵方抽牌 ${drawn.length} 張｜💎 ${cards.crystals}/${cards.crystalCapacity}`:`敵方檢視手牌｜💎 ${cards.crystals}/${cards.crystalCapacity}`);
         const rejected=new Set();
@@ -727,7 +727,7 @@
           const unit=ctx.createEnemyCardUnit(card,tile);
           if(!unit||!CardPhaseEngine.commit(cards,card,unit)){rejected.add(`${card.id}:${tile.x},${tile.y}`);afterStep(decide,0);return;}
           state.units.push(unit);ctx.onUnitCreated?.(unit);
-          ctx.pushLog(`敵方使用「${card.name}」部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶。`,"SYSTEM");
+          ctx.pushLog(`敵方使用「${card.name}」部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶。`,"SYSTEM",{units:[unit]});
           ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});
           showStep("DEPLOY",`${card.name} 部署 → (${tile.x},${tile.y})｜本回合待命`,{cardId:card.id,unitId:unit.id});
           afterStep(decide,550);
@@ -749,7 +749,7 @@
 
       const runPhase=()=>{
         const state=ctx.state(),marker=generation;activeActor=null;
-        ctx.setPhase(ctx.PHASE.ENEMY);ctx.clearSelection();ctx.clearEnemyReaction();ctx.pushLog(`Round ${state.round}｜敵方回合開始。`);
+        ctx.setPhase(ctx.PHASE.ENEMY);ctx.clearSelection();ctx.clearEnemyReaction();ctx.pushLog(`Round ${state.round}｜敵方回合開始。`,"SYSTEM",{public:true});
         const proceed=()=>runCardPhase(()=>{
           if(marker!==generation)return;
           if(ctx.checkMatchEnd()){ctx.render();return;}

@@ -291,6 +291,7 @@ export class BattleUI{
     this.onlineSnapshot=snapshot;this.onlineStage=stage;
     this.onlinePhase=phase;this.onlineSeat=seat;
     this.onlineLogEntries=Array.isArray(battleLog)?battleLog:[];
+    if(globalThis.CardTacticsDiagnostics?.isEnabled?.())try{globalThis.CardTacticsDiagnostics.recordOnlineBattleLog?.(this.onlineLogEntries,{round:snapshot?.round,phase,seat});}catch(_){}
     if(this.heldInspection?.unit&&!snapshot.units?.some(u=>u.id===this.heldInspection.unit.id))
       this.setContextOpen(false);
     presentBattleOverview({snapshot,cores,stage,phase,seat,online:true});

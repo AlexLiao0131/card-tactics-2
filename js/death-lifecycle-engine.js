@@ -23,7 +23,7 @@ export const DeathLifecycleEngine=(()=>{
         const ratio=(globalThis.SkillDatabase?.passiveList?.(owner?.character?.passives||[])||[]).reduce((n,p)=>n+Number(p.summonDeathMana||0),0);
         if(owner&&ratio>0){const restored=globalThis.UnitRuntimeEngine?.restoreMana?.(owner,ratio)||0;
           globalThis.UnitAnimationEngine?.emitPresentation?.("SOUL_RETURN",{unitId:owner.id,x:owner.x,y:owner.y,targetX:unit.x,targetY:unit.y});
-          ctx.pushLog(`${unit.character.name} 靈魂歸還 → ${owner.character.name}｜MP +${restored}。`,"BATTLE");}
+          ctx.pushLog(`${unit.character.name} 靈魂歸還 → ${owner.character.name}｜MP +${restored}。`,"BATTLE",{units:[unit,owner]});}
       }
 
       // A defeated unit is counted once across reaction chains, DOT and VFX.
@@ -43,7 +43,7 @@ export const DeathLifecycleEngine=(()=>{
       const cards=ctx.cardStateFor(unit);
       if(unit.cardId&&cards){
         CardPhaseEngine.characterDefeated(cards,unit.cardId);
-        ctx.pushLog(`${unit.character.name} 戰敗，角色卡進入墓地。`,"SYSTEM");
+        ctx.pushLog(`${unit.character.name} 戰敗，角色卡進入墓地。`,"SYSTEM",{units:[unit]});
       }
 
       if(ctx.allowRewards?.()!==false&&globalThis.EncounterRewardEngine?.resolveDefeat){
@@ -52,12 +52,12 @@ export const DeathLifecycleEngine=(()=>{
 
       if(ctx.allowRewards?.()!==false&&globalThis.RewardEngine?.resolveDefeat){
         const reward=RewardEngine.resolveDefeat(unit,source,cause);
-        if(reward?.ok)ctx.pushLog(`擊破獎勵｜${unit.character.name}｜Gold +${reward.amount}｜目前 ${reward.total} G。`,"SYSTEM");
+        if(reward?.ok)ctx.pushLog(`擊破獎勵｜${unit.character.name}｜Gold +${reward.amount}｜目前 ${reward.total} G。`,"SYSTEM",{units:[unit]});
       }
 
       const companions=globalThis.UnitRuntimeEngine?.despawnCompanionsForOwner?.(unit)||[];
       for(const companion of companions){
-        ctx.pushLog(`${companion.character?.name||"伴隨單位"} 因 ${unit.character.name} 離場而撤出戰場。`,"SYSTEM");
+        ctx.pushLog(`${companion.character?.name||"伴隨單位"} 因 ${unit.character.name} 離場而撤出戰場。`,"SYSTEM",{units:[unit,companion]});
       }
 
       ctx.onDefeated?.(unit,source,cause);

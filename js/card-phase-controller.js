@@ -55,21 +55,21 @@ function create(ctx){
     if(resolvingPresentation||s.phase!==PHASE.CARD||ctx.getPendingCard())return false;
     if(s.cardState?.mulliganAvailable&&!s.cardState?.mulliganDone)return false;
     if(hasPlayableCard())return false;
-    ctx.pushLog(`Round ${s.round}｜目前已無可使用卡牌，自動結束卡牌階段。`,"SYSTEM");
+    ctx.pushLog(`Round ${s.round}｜目前已無可使用卡牌，自動結束卡牌階段。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});
     return end({automatic:true});
   }
   function begin({initial=false}={}){
     resolvingPresentation=false;presentationGeneration++;
     const s=state(),cardState=s.cardState;
     if(cardState.zones.deck.length===0&&cardState.zones.hand.length===0){cardState.crystals=Math.min(cardState.maxCrystals||10,cardState.startingCrystals||4);ctx.setPendingCard(null);CardPhaseEngine.end(cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜牌庫已抽完，跳過卡牌階段，直接進入戰棋階段。`,"SYSTEM");ctx.render();ctx.emitState();return;}
-    ctx.setPhase(PHASE.CARD);ctx.clearSelection();const drawn=CardPhaseEngine.begin(cardState,{handSize:Number(s.stage.cardRules?.handSize||5)});ctx.pushLog(`Round ${s.round}｜卡牌階段開始｜💎 ${cardState.crystals}。`,"SYSTEM");
-    if(cardState.lastExpiredTurnCards?.length)ctx.pushLog(`TURN 卡到期｜${cardState.lastExpiredTurnCards.length} 張離開本回合卡區。`,"DETAIL");if(drawn.length)ctx.pushLog(`抽牌 ${drawn.length} 張。`,"SYSTEM");ctx.setPendingCard(null);
+    ctx.setPhase(PHASE.CARD);ctx.clearSelection();const drawn=CardPhaseEngine.begin(cardState,{handSize:Number(s.stage.cardRules?.handSize||5)});ctx.pushLog(`Round ${s.round}｜卡牌階段開始｜💎 ${cardState.crystals}。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});
+    if(cardState.lastExpiredTurnCards?.length)ctx.pushLog(`TURN 卡到期｜${cardState.lastExpiredTurnCards.length} 張離開本回合卡區。`,"DETAIL");if(drawn.length)ctx.pushLog(`抽牌 ${drawn.length} 張。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});ctx.setPendingCard(null);
     if(!maybeAutoEnd()){ctx.render();ctx.emitState();}
   }
-  function end({automatic=false}={}){const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM");if(ctx.maybeAutoEndPlayerTurn?.())return true;ctx.render();ctx.emitState();return true;}
+  function end({automatic=false}={}){const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return false;ctx.setPendingCard(null);CardPhaseEngine.end(s.cardState);ctx.setPhase(PHASE.PLAYER);ctx.clearSelection();ctx.pushLog(`Round ${s.round}｜${automatic?"自動進入":"進入"}戰棋階段。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});if(ctx.maybeAutoEndPlayerTurn?.())return true;ctx.render();ctx.emitState();return true;}
   function select(cardId){
     const s=state();if(resolvingPresentation||s.phase!==PHASE.CARD)return cardFailure(CardDatabase.get(cardId),"NOT_CARD_PHASE");const card=CardDatabase.get(cardId);if(!canResolve(card))return cardFailure(card,"CARD_NOT_PLAYABLE_RESOURCE_OR_TARGET");
-    if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM");ctx.render();return true;}
+    if(CardDatabase.isCharacter(card)){ctx.setPendingCard(card);ctx.pushLog(`選擇 ${card.name}，請在亮起的我方部署區手動選擇出生格。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});ctx.render();return true;}
     if(!CardDatabase.isSpell(card))return false;
     if(card.effect?.type==="STEAL_HAND"){
       const opponent=s.enemyCardState?.zones?.hand;
@@ -88,7 +88,7 @@ function create(ctx){
     if(card.effect?.type==="WEATHER"){
       if(!CardPhaseEngine.commit(s.cardState,card))return false;const weather=card.effect.weather==="RAIN"?"HEAVY_RAIN":card.effect.weather,duration=Math.max(1,Number(card.effect.durationTurns||EnvironmentEngine.WEATHER_TURNS?.[weather]||1)),events=s.environmentState?EnvironmentEngine.setWeather(s.environmentState,weather,s.map,{duration,applyPulse:false,source:"CARD"}):[];ctx.pushLog(`施放卡牌魔法「${card.name}」｜消耗 ${card.cost} 水晶。`,"SYSTEM");events.forEach(ctx.logEnvironmentEvent);ctx.resolveEnvironmentEvents?.(events,{reason:"氣候造成水位／地表狀態變化"});ctx.pushLog(`氣候調整：${weatherName(weather)}｜${duration} 回合｜目前 ${climateSummary(s.environmentState)}。`,"SYSTEM");ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
     }
-    if(commandKind(card)==="TARGETED"){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM");ctx.render();return true;}
+    if(commandKind(card)==="TARGETED"){ctx.setPendingCard(card);ctx.pushLog(`選擇卡牌魔法「${card.name}」｜請點選戰場上的施放中心。`,"SYSTEM",{viewerTeam:TEAM.PLAYER});ctx.render();return true;}
     return false;
   }
   function nextPresentationFrame(){
@@ -216,7 +216,7 @@ function create(ctx){
     const itemIds=globalThis.ItemInventoryEngine?.claimBattleLoadout?.(card.id)||[];
     globalThis.ItemRuntimeEngine?.initializeUnitInventory?.(unit,itemIds,{owned:true,source:"PREPARATION"});
     s.units.push(unit);ctx.onUnitCreated?.(unit);UnitRuntimeEngine.reconcileCompanions(s.units);
-    ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶${itemIds.length?`｜攜帶道具 ${itemIds.length} 件`:""}。`,"SYSTEM");
+    ctx.pushLog(`${card.name} 部署至 (${tile.x},${tile.y})｜本回合待命｜消耗 ${card.cost} 水晶${itemIds.length?`｜攜帶道具 ${itemIds.length} 件`:""}。`,"SYSTEM",{units:[unit]});
     ctx.applyEnvironmentHazardToUnit(unit,{reason:"部署進入環境",waterTrigger:"ENTER"});globalThis.EncounterRewardEngine?.resolveDominion?.(unit,s.units,{playerCardState:()=>s.cardState,pushLog:ctx.pushLog});ctx.setPendingCard(null);ctx.checkMatchEnd();if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;
   }
   function cancel(){if(resolvingPresentation||!ctx.getPendingCard())return false;ctx.setPendingCard(null);if(!maybeAutoEnd()){ctx.render();ctx.emitState();}return true;}

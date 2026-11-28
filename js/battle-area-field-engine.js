@@ -114,12 +114,12 @@ export function createBattleAreaFieldEngine({state,map,units,round,effect,pushLo
       if(field.mode==='HEALING'&&unit.team===field.team){
         const healed=rules.saintHealing({source,target:unit,amount:skill.sanctuary.healing.amount}).amount;
         const dispelled=rules.apply({source,target:unit,effect:{type:'DISPEL',classification:'POSITIVE'}}).removed||0;
-        pushLog(`聖域・庇護 → ${unit.character.name}｜治療 ${healed}、淨化 ${dispelled}。`,'BATTLE');
+        pushLog(`聖域・庇護 → ${unit.character.name}｜治療 ${healed}、淨化 ${dispelled}。`,'BATTLE',{units:[source,unit]});
       }else if(field.mode==='PUNISHMENT'&&unit.team!==field.team){
         const judgement=skill.sanctuary.punishment;
         const outcome=rules.apply({source,target:unit,effect:{type:'MAGIC_DAMAGE',amount:judgement.amount,
           element:judgement.element,traitMultipliers:judgement.traitMultipliers}});
-        pushLog(`聖域・懲戒 → ${unit.character.name}｜${outcome.amount||0} 神聖傷害。`,'BATTLE');
+        pushLog(`聖域・懲戒 → ${unit.character.name}｜${outcome.amount||0} 神聖傷害。`,'BATTLE',{units:[source,unit]});
         if(unit.hp<=0){unit.alive=false;handleDefeated(unit,source,skill);}
       }
     }

@@ -53,7 +53,7 @@ export function tickRoundStatusEffects({units,effectEngine,onDefeated,pushLog}){
     const events=effectEngine.tick(unit,{units:roster})||[];
     for(const event of events){if(event.type!=='DAMAGE_OVER_TIME')continue;
       const status=pending.find(e=>e.id===event.effectId);
-      pushLog?.(`${unit.character?.name||unit.id}｜${status?.name||event.effectId||'持續傷害'}｜DOT ${Number(event.amount||0)} HP${status?.remaining!=null?`｜剩 ${Math.max(0,status.remaining)} 回合`:''}`,'BATTLE');
+      pushLog?.(`${unit.character?.name||unit.id}｜${status?.name||event.effectId||'持續傷害'}｜DOT ${Number(event.amount||0)} HP${status?.remaining!=null?`｜剩 ${Math.max(0,status.remaining)} 回合`:''}`,'BATTLE',{units:[unit]});
     }
     if(unit.alive||Number(unit.hp)>0)continue;
     // The effect may expire inside tick(), so retain the original source ID.

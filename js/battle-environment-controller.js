@@ -256,20 +256,20 @@ function create(ctx){
  function teamLabel(team){if(team===ctx.TEAM?.PLAYER||team==="P")return"PLAYER";if(team===ctx.TEAM?.ENEMY||team==="E")return"ENEMY";return"NEUTRAL";}
  function applyWaterInteraction(unit,{trigger="CHECK",reason="水域"}={}){
   const s=state();if(!unit?.alive||!globalThis.WaterInteractionEngine)return{damage:0,state:null};const tile=TacticalEngine.tile(s.map,unit.x,unit.y),result=WaterInteractionEngine.resolve(unit,tile,{trigger});
-  if(result.ice?.broke)ctx.pushLog(`${unit.character.name} 踩裂冰面｜冰厚 ${Number(result.ice.thickness||0).toFixed(2)} < ${result.ice.weight} 所需 ${Number(result.ice.threshold||0).toFixed(2)}。`,"BATTLE");
+  if(result.ice?.broke)ctx.pushLog(`${unit.character.name} 踩裂冰面｜冰厚 ${Number(result.ice.thickness||0).toFixed(2)} < ${result.ice.weight} 所需 ${Number(result.ice.threshold||0).toFixed(2)}。`,"BATTLE",{units:[unit]});
   if(result.changed){
-    if(result.state===WaterInteractionEngine.STATE.ICE)ctx.pushLog(`${unit.character.name} 踏上結冰水面｜冰厚 ${Number(result.iceThickness||0).toFixed(2)}。`,"DETAIL");
-    else if(result.state===WaterInteractionEngine.STATE.WATER_WALK&&result.source==="EFFECT")ctx.pushLog(`${unit.character.name} ${reason}｜舟艇／水上裝備生效，不進入游泳與下沉判定。`,"DETAIL");
-    else if(result.state===WaterInteractionEngine.STATE.SWIMMING)ctx.pushLog(`${unit.character.name} ${reason}｜游泳疲勞 ${Number(result.fatigue).toFixed(1)}/${result.fatigueLimit}｜重量 ${result.weight}。`,"DETAIL");
-    else if(result.state===WaterInteractionEngine.STATE.SINKING)ctx.pushLog(`${unit.character.name} ${reason}｜游泳疲勞 ${Number(result.fatigue).toFixed(1)}/${result.fatigueLimit}｜體力耗盡，開始沉沒。`,"BATTLE");
-    else if(result.previousState===WaterInteractionEngine.STATE.SINKING)ctx.pushLog(`${unit.character.name} ${reason}｜脫離沉沒狀態。`,"DETAIL");
+    if(result.state===WaterInteractionEngine.STATE.ICE)ctx.pushLog(`${unit.character.name} 踏上結冰水面｜冰厚 ${Number(result.iceThickness||0).toFixed(2)}。`,"DETAIL",{units:[unit]});
+    else if(result.state===WaterInteractionEngine.STATE.WATER_WALK&&result.source==="EFFECT")ctx.pushLog(`${unit.character.name} ${reason}｜舟艇／水上裝備生效，不進入游泳與下沉判定。`,"DETAIL",{units:[unit]});
+    else if(result.state===WaterInteractionEngine.STATE.SWIMMING)ctx.pushLog(`${unit.character.name} ${reason}｜游泳疲勞 ${Number(result.fatigue).toFixed(1)}/${result.fatigueLimit}｜重量 ${result.weight}。`,"DETAIL",{units:[unit]});
+    else if(result.state===WaterInteractionEngine.STATE.SINKING)ctx.pushLog(`${unit.character.name} ${reason}｜游泳疲勞 ${Number(result.fatigue).toFixed(1)}/${result.fatigueLimit}｜體力耗盡，開始沉沒。`,"BATTLE",{units:[unit]});
+    else if(result.previousState===WaterInteractionEngine.STATE.SINKING)ctx.pushLog(`${unit.character.name} ${reason}｜脫離沉沒狀態。`,"DETAIL",{units:[unit]});
   }
   if(result.damage>0&&unit.alive){globalThis.EffectEngine?.applyDamage?.(unit,result.damage,{kind:"INTERNAL"});const label=trigger==="TICK"?"溺水／沉沒持續傷害":"沉沒衝擊傷害";ctx.pushLog(`${unit.character.name}｜${label} ${Math.round(result.damage)}｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0){unit.alive=false;ctx.pushLog(`${unit.character.name} 因沉沒／溺水戰敗。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"WATER_HAZARD",state:result.state,depth:result.depth,weight:result.weight,fatigue:result.fatigue,trigger});}}
   return result;
  }
  function applyElectricHazard(unit,effects,reason){
   const electric=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.ELECTRIFIED);if(!electric||!unit?.alive)return 0;const tile=tileFor(unit);if(!effectContacts(unit,tile,electric))return 0;const hitIds=Array.isArray(electric.damagedUnitIds)?electric.damagedUnitIds:(electric.damagedUnitIds=[]);if(hitIds.includes(String(unit.id)))return 0;hitIds.push(String(unit.id));const damage=Math.max(0,Number(electric.damage||EnvironmentEngine.HAZARD?.ELECTRIC_DAMAGE||0));if(damage<=0)return 0;
-  const protection=globalThis.ItemRuntimeEngine?.resolveTrigger?.(unit,"ELECTRIC_DAMAGE",{damage,reason,electric});if(protection?.preventDamage){ctx.pushLog(`${unit.character.name}｜${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 雷電傷害。`,"SYSTEM");return 0;}
+  const protection=globalThis.ItemRuntimeEngine?.resolveTrigger?.(unit,"ELECTRIC_DAMAGE",{damage,reason,electric});if(protection?.preventDamage){ctx.pushLog(`${unit.character.name}｜${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 雷電傷害。`,"SYSTEM",{units:[unit]});return 0;}
   const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"THUNDER"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜水體雷電傳導 ${dealt} 傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被水體雷電傳導擊倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"ELECTRIFIED",source:"ENVIRONMENT",origin:electric.origin||null});}return dealt;
  }
  function applyBoilingHazard(unit,effects,reason){if(!unit?.alive)return 0;const s=state(),tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!HydrologyEngine.isWater(tile))return 0;const boiling=effects.find(effect=>effect.type===EnvironmentEngine.EFFECT.BOILING);if(!boiling||!effectContacts(unit,tile,boiling))return 0;const damage=Math.max(0,Number(boiling.damage||EnvironmentEngine.HAZARD?.BOILING_DAMAGE||0));if(damage<=0)return 0;const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL"})?.hpLoss??damage;ctx.pushLog(`${unit.character.name} ${reason}｜沸騰水域 ${dealt} 火焰傷害｜HP ${unit.hp}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.pushLog(`${unit.character.name} 被沸騰水域煮倒。`,"BATTLE");ctx.handleDefeated(unit,null,{type:"BOILING",source:"ENVIRONMENT",heat:boiling.heat||1});}return dealt;}
@@ -347,7 +347,7 @@ function create(ctx){
  function applyCurrentToUnit(unit,{reason="水流"}={}){
   if(globalThis.VerticalMobilityEngine?.ignoresCurrent?.(unit))return false;
   const s=state();if(!unit?.alive||unit._currentResolving||!globalThis.ClimateEngine)return false;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.WATER_VOLUME||"WATER_VOLUME",{type:"CURRENT"}))return false;const current=ClimateEngine.currentForce(tile,s.environmentState);if(!current)return false;
-  unit._currentResolving=true;try{const source={x:unit.x-current.flowX,y:unit.y-current.flowY};ctx.pushLog(`${unit.character.name} 遭${reason}沖刷｜流速 ${current.speed.toFixed(2)}｜位移力 ${current.distance}。`,"BATTLE");applyForcedMovement(source,unit,current.distance,{name:"暴漲溪流",damage:Math.max(0,Math.round((current.speed-1)*8)),damageType:"WATER"});return true;}finally{delete unit._currentResolving;}
+  unit._currentResolving=true;try{const source={x:unit.x-current.flowX,y:unit.y-current.flowY};ctx.pushLog(`${unit.character.name} 遭${reason}沖刷｜流速 ${current.speed.toFixed(2)}｜位移力 ${current.distance}。`,"BATTLE",{units:[unit]});applyForcedMovement(source,unit,current.distance,{name:"暴漲溪流",damage:Math.max(0,Math.round((current.speed-1)*8)),damageType:"WATER"});return true;}finally{delete unit._currentResolving;}
  }
  function enterTile(unit){const s=state();if(!unit?.alive)return;
   const vortex=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y).find(effect=>
@@ -359,7 +359,7 @@ function create(ctx){
      sourceName={OBJECT:'環境物件',BEDROCK:'天然岩盤',CLIFF_FACE:'崖壁',RIVERBED:'河床',RIVERBANK:'河岸沉積'};
    for(const found of collectAlchemyOnStep({map:s.map,environmentState:s.environmentState,unit,x,y,kind,round:s.round})){
      const label=`${name[found.kind]||found.kind} +1${found.quality==='HIGH'?`、高品質${name[found.kind]||found.kind}・${ALCHEMY_AFFINITY_NAMES[found.affinity]||found.affinity} +1`:''}`;
-     ctx.pushLog(`${unit.character.name} 採集（${sourceName[found.sourceType]||'合法來源'}）｜${label}。`,'BATTLE');
+     ctx.pushLog(`${unit.character.name} 採集（${sourceName[found.sourceType]||'合法來源'}）｜${label}。`,'BATTLE',{units:[unit]});
      globalThis.UnitAnimationEngine?.emitPresentation?.(found.type,found);
      globalThis.UnitAnimationEngine?.emitPresentation?.('UNIT_FLOAT_TEXT',{
        unitId:unit.id,x:unit.x,y:unit.y,renderZ:Number(unit.z||0),
@@ -368,8 +368,8 @@ function create(ctx){
  }
  function traverseUnitPath(unit,path,{kind="UNIT"}={}){
   const s=state();
-  if((path||[]).length&&globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(unit)){ctx.pushLog(`${unit.character.name} 被堆積物困住，無法移動。`,"BATTLE");return{completed:false,reason:"BURIED"};}
-  if((path||[]).length&&globalThis.BurialEngine?.state?.(unit)){ctx.pushLog(`${unit.character.name} 從堆積物中掙脫並開始移動。`,"DETAIL");BurialEngine.clear(unit);}
+  if((path||[]).length&&globalThis.BurialEngine?.canMove&&!BurialEngine.canMove(unit)){ctx.pushLog(`${unit.character.name} 被堆積物困住，無法移動。`,"BATTLE",{units:[unit]});return{completed:false,reason:"BURIED"};}
+  if((path||[]).length&&globalThis.BurialEngine?.state?.(unit)){ctx.pushLog(`${unit.character.name} 從堆積物中掙脫並開始移動。`,"DETAIL",{units:[unit]});BurialEngine.clear(unit);}
   // Starting a legal movement can sample the starting tile and its legal
   // neighbors too. This is a committed movement event, never a map preview.
   if(kind==='UNIT'&&(path||[]).length)publishAlchemyHarvest(unit,unit.x,unit.y,kind);
@@ -381,12 +381,12 @@ function create(ctx){
     if(unit.x!==tile.x||unit.y!==tile.y)return{completed:false,reason:"CURRENT"};
     publishAlchemyHarvest(unit,tile.x,tile.y,kind);
     const interaction=EnvironmentEngine.pathInteraction({state:s.environmentState,x:tile.x,y:tile.y,kind}),forced=interaction.effects?.find(e=>e.type==="FORCED_MOVE");
-    if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE");applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
+    if(forced&&effectContacts(unit,tile,forced.effect)){const element=String(forced.element||forced.effect?.element||"AIR").toUpperCase(),name=forced.effect?.type===EnvironmentEngine.EFFECT.FIRE_TORNADO||element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風";if(Number(forced.debrisDamage||0)>0)ctx.pushLog(`${unit.character.name} 同時遭龍捲風內的樹幹撞擊｜額外 ${Number(forced.debrisDamage||0)} 傷害。`,"BATTLE",{units:[unit]});applyForcedMovement({x:tile.x,y:tile.y},unit,forced.distance,{name,lift:Number(forced.lift??forced.effect?.lift??0),damage:Number(forced.damage??forced.effect?.damage??0),damageType:forced.effect?.damageType||"PHYSICAL",resistAxes:forced.resistAxes||forced.effect?.resistAxes});return{completed:false,reason:"ENVIRONMENT_FORCE"};}
     const friction=Number(globalThis.EnvironmentResolver?.surfaceFriction?.(s.environmentState,tile)??1);
     const momentum=Math.max(0,1-friction);
     if(kind==="UNIT"&&momentum>=.5&&(incoming.dx||incoming.dy)&&!globalThis.VerticalMobilityEngine?.isAirborne?.(unit)&&!globalThis.VerticalMobilityEngine?.isBurrowed?.(unit)){
       const distance=Math.max(1,Math.min(2,Math.ceil(momentum*2))),source={x:unit.x-incoming.dx,y:unit.y-incoming.dy};
-      ctx.pushLog(`${unit.character.name} 在低摩擦地表失去制動｜摩擦 ${friction.toFixed(2)}｜慣性位移 ${distance}。`,"DETAIL");
+      ctx.pushLog(`${unit.character.name} 在低摩擦地表失去制動｜摩擦 ${friction.toFixed(2)}｜慣性位移 ${distance}。`,"DETAIL",{units:[unit]});
       applyForcedMovement(source,unit,distance,{name:"滑行",damage:0,damageType:"PHYSICAL"});
       return{completed:false,reason:"SURFACE_MOMENTUM"};
     }
@@ -426,7 +426,7 @@ function create(ctx){
   const element=String(event.element||"AIR").toUpperCase(),name=element==="FIRE"?"火龍捲":element==="WATER"?"水龍捲":"龍捲風",dx=Math.sign(Number(event.dx||0)),dy=Math.sign(Number(event.dy||0)),debrisDamage=Math.max(0,Number(event.debrisDamage||0));
   for(const unit of initial){
    if(!unit.alive)continue;const tile=TacticalEngine.tile(s.map,unit.x,unit.y);if(!profileContacts(unit,tile,globalThis.EnvironmentContactEngine?.PROFILE?.AIR_COLUMN||"AIR_COLUMN",event))continue;
-   if(debrisDamage>0)ctx.pushLog(`${unit.character.name} 被${name}內捲起的樹幹撞擊｜額外 ${debrisDamage} 傷害。`,"BATTLE");
+   if(debrisDamage>0)ctx.pushLog(`${unit.character.name} 被${name}內捲起的樹幹撞擊｜額外 ${debrisDamage} 傷害。`,"BATTLE",{units:[unit]});
    const source={x:unit.x-(dx||0),y:unit.y-(dy||0)};applyForcedMovement(source,unit,Number(event.pushDistance||2),{name,lift:Number(event.lift||0),damage:Number(event.damage||0)+debrisDamage,damageType:event.damageType||"PHYSICAL",resistAxes:{horizontal:false,vertical:true}});count++;
   }
   return count;
@@ -452,8 +452,8 @@ function create(ctx){
     if((unit.x!==before.x||unit.y!==before.y)&&depth>=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(unit)||2)){
       const result=globalThis.WaterInteractionEngine?.forceSubmerge?.(unit,destination,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
       if(result?.damage>0&&unit.alive)ctx.damageUnitFlat(unit,result.damage,"瘋狗浪捲入深水");
-      if(result?.applied)ctx.pushLog(`${unit.character.name} 被瘋狗浪推入深水｜水深 ${depth.toFixed(2)}｜進入沉沒狀態。`,"BATTLE");
-    }else ctx.pushLog(`${unit.character.name} 被瘋狗浪沖刷，但未被捲入深水。`,"DETAIL");
+      if(result?.applied)ctx.pushLog(`${unit.character.name} 被瘋狗浪推入深水｜水深 ${depth.toFixed(2)}｜進入沉沒狀態。`,"BATTLE",{units:[unit]});
+    }else ctx.pushLog(`${unit.character.name} 被瘋狗浪沖刷，但未被捲入深水。`,"DETAIL",{units:[unit]});
     count++;
   }
   return count;
@@ -483,7 +483,7 @@ function create(ctx){
             type:"SHIELD",id:"NEREIA_TSUNAMI_WATER_SHIELD",name:"水盾",classification:"POSITIVE",
             duration:2,amount
           }});
-          if(shield?.applied)ctx.pushLog(`${unit.character.name} 被海嘯浪潮掃過｜獲得水盾 ${amount} HP，持續 2 回合。`,"BATTLE");
+          if(shield?.applied)ctx.pushLog(`${unit.character.name} 被海嘯浪潮掃過｜獲得水盾 ${amount} HP，持續 2 回合。`,"BATTLE",{units:[unit]});
         }
       }else{
         const sourcePoint={x:unit.x-Number(event.dx||0),y:unit.y-Number(event.dy||0)};
@@ -516,8 +516,8 @@ function create(ctx){
     if((atCore||nearCore)&&profileContacts(unit,tile,profile,event)&&
        HydrologyEngine.waterDepth(tile)>=Number(globalThis.VerticalMobilityEngine?.bodyHeight?.(unit)||2)){
       const result=globalThis.WaterInteractionEngine?.forceSubmerge?.(unit,tile,{turns:Math.max(1,Number(event.submergeTurns||1)),impactDamage:0});
-      if(result?.applied)ctx.pushLog(`${unit.character.name} 被漩渦拖入水下｜進入沉沒狀態。`,"BATTLE");
-      else if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被捲入漩渦核心，但水生體質能維持水下姿態。`,"DETAIL");
+      if(result?.applied)ctx.pushLog(`${unit.character.name} 被漩渦拖入水下｜進入沉沒狀態。`,"BATTLE",{units:[unit]});
+      else if(result?.reason==="AQUATIC")ctx.pushLog(`${unit.character.name} 被捲入漩渦核心，但水生體質能維持水下姿態。`,"DETAIL",{units:[unit]});
     }
     // A pulse binds only units actually still in the vortex's water cells.
     const landed=EnvironmentEngine.effectAt(s.environmentState,unit.x,unit.y).find(effect=>
@@ -593,8 +593,8 @@ function create(ctx){
     globalThis.UnitAnimationEngine?.emitPresentation?.("LIGHTNING_STRIKE",{x:event.x,y:event.y,unitId:unit.id,damage:Number(event.damage||0)});
     const names=(event.riskReasons||[]).map(r=>r==="METAL"?"金屬裝備":r==="WATER"?"水域":"樹木／森林"),damage=Number(event.damage||0);
     const protection=globalThis.ItemRuntimeEngine?.resolveTrigger?.(unit,"LIGHTNING_DAMAGE",{damage,event});
-    if(protection?.preventDamage)ctx.pushLog(`⚡ ${unit.character.name} 的 ${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 落雷傷害。`,"SYSTEM");
-    else{const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"THUNDER"})?.hpLoss??damage;ctx.pushLog(`⚡ 落雷擊中 ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}${names.length?`｜高風險：${names.join("＋")}`:""}。`,"BATTLE");if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.handleDefeated(unit,null,{type:"LIGHTNING"});}}
+    if(protection?.preventDamage)ctx.pushLog(`⚡ ${unit.character.name} 的 ${protection.item?.name||"防雷道具"} 自動觸發，防止 ${damage} 落雷傷害。`,"SYSTEM",{units:[unit]});
+    else{const dealt=globalThis.EffectEngine?.applyDamage?.(unit,damage,{kind:"EXTERNAL",damageType:"THUNDER"})?.hpLoss??damage;ctx.pushLog(`⚡ 落雷擊中 ${unit.character.name}｜${dealt} 傷害｜HP ${unit.hp}${names.length?`｜高風險：${names.join("＋")}`:""}。`,"BATTLE",{units:[unit]});if(unit.hp<=0&&unit.alive){unit.alive=false;ctx.handleDefeated(unit,null,{type:"LIGHTNING"});}}
     if(EnvironmentEngine.isConductive(s.map,s.environmentState,event.x,event.y)){const conduction=[];EnvironmentEngine.conductThunder(s.map,s.environmentState,event.x,event.y,conduction,{damagedUnitIds:[unit.id]});conduction.forEach(logEnvironmentEvent);resolveEnvironmentEvents(conduction,{reason:"雷雨落雷引發水體傳導"});}
   }
  }
@@ -612,22 +612,22 @@ function create(ctx){
     map.alchemyElementEvents??={};
     map.alchemyElementEvents[`${event.x},${event.y}`]={affinity:kind,sequence:map.alchemyElementEventSequence};
   }
-  if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM");
-  else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM");
+  if(event.type==="IGNITE")ctx.pushLog(`(${event.x},${event.y}) 燃燒起來，成為火光來源。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="FIRE_EXTINGUISHED")ctx.pushLog(`(${event.x},${event.y}) 的火焰被水熄滅。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
   else if(event.type==="UNIT_BURN_WATER_EXCHANGE")ctx.pushLog(`角色燃燒與水接觸｜${event.unitId}｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量${event.extinguished?"｜燃燒已熄滅":""}。`,"DETAIL");
   else if(event.type==="FIRE_WATER_EXCHANGE")ctx.pushLog(`火水接觸 (${event.x},${event.y})｜蒸發 ${Number(event.evaporatedWater||0).toFixed(3)} 水量｜殘餘熱量 ${Number(event.thermalAfter||0).toFixed(3)}。`,"DETAIL");
-  else if(event.type==="FIRE_WEAKENED")ctx.pushLog(`(${event.x},${event.y}) 的重火降為普通火勢。`,"SYSTEM");
+  else if(event.type==="FIRE_WEAKENED")ctx.pushLog(`(${event.x},${event.y}) 的重火降為普通火勢。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
   else if(event.type==="STEAM_BLAST")ctx.pushLog(`♨ 蒸氣爆發 (${event.x},${event.y})｜高溫接觸格 ${event.cells?.length||0}｜瞬間傷害 ${event.damage}。`,"BATTLE");
-  else if(event.type==="RAIN_EXTINGUISHED_FIRE")ctx.pushLog(`豪雨熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
-  else if(event.type==="SNOW_EXTINGUISHED_FIRE")ctx.pushLog(`降雪熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM");
-  else if(event.type==="RAIN_SUPPRESSED_FIRE")ctx.pushLog(`豪雨壓制 (${event.x},${event.y}) 的小火，無法形成燃燒地形。`,"SYSTEM");
-  else if(event.type==="MUD_CREATED")ctx.pushLog(`${mudSourceLabel(event)}使 (${event.x},${event.y}) 的平地轉為泥濘。`,"DETAIL");
-  else if(event.type==="MUD_DRY")ctx.pushLog(`(${event.x},${event.y}) 的泥濘乾燥，恢復為平地。`,"DETAIL");
-  else if(event.type==="WATER_BOILING")ctx.pushLog(`♨ (${event.x},${event.y}) 水域開始沸騰｜水中單位會受到高熱傷害。`,"SYSTEM");
-  else if(event.type==="WATER_EVAPORATION")ctx.pushLog(`高熱持續作用於 (${event.x},${event.y})｜蒸發水量 ${Number(event.amount||0).toFixed(2)}。`,"SYSTEM");
-  else if(event.type==="WATER_BOILED_DRY")ctx.pushLog(`(${event.x},${event.y}) 的水已被持續高熱煮乾。`,"SYSTEM");
-  else if(event.type==="STEAM_CREATED")ctx.pushLog(`高熱與水分作用，(${event.x},${event.y}) 產生蒸氣迷霧。`,"SYSTEM");
-  else if(event.type==="STEAM_DISPERSED")ctx.pushLog(`風力吹散 (${event.x},${event.y}) 的蒸氣迷霧。`,"SYSTEM");
+  else if(event.type==="RAIN_EXTINGUISHED_FIRE")ctx.pushLog(`豪雨熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="SNOW_EXTINGUISHED_FIRE")ctx.pushLog(`降雪熄滅 (${event.x},${event.y}) 的普通火焰。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="RAIN_SUPPRESSED_FIRE")ctx.pushLog(`豪雨壓制 (${event.x},${event.y}) 的小火，無法形成燃燒地形。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="MUD_CREATED")ctx.pushLog(`${mudSourceLabel(event)}使 (${event.x},${event.y}) 的平地轉為泥濘。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="MUD_DRY")ctx.pushLog(`(${event.x},${event.y}) 的泥濘乾燥，恢復為平地。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="WATER_BOILING")ctx.pushLog(`♨ (${event.x},${event.y}) 水域開始沸騰｜水中單位會受到高熱傷害。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="WATER_EVAPORATION")ctx.pushLog(`高熱持續作用於 (${event.x},${event.y})｜蒸發水量 ${Number(event.amount||0).toFixed(2)}。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="WATER_BOILED_DRY")ctx.pushLog(`(${event.x},${event.y}) 的水已被持續高熱煮乾。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="STEAM_CREATED")ctx.pushLog(`高熱與水分作用，(${event.x},${event.y}) 產生蒸氣迷霧。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="STEAM_DISPERSED")ctx.pushLog(`風力吹散 (${event.x},${event.y}) 的蒸氣迷霧。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});
   else if(event.type==="HYDROLOGY_REBALANCED"&&event.changedTiles>0)ctx.pushLog(`水體重新分配｜${event.changedTiles} 格水位改變｜Water Volume ${Number(event.afterVolume||0).toFixed(2)}。`,"DETAIL");
   else if(event.type==="STONE_FRAGMENT")ctx.pushLog(`爆炸擊中石質物件，(${event.x},${event.y}) 產生破片${event.destroyed?"並炸開道路":""}。`,"SYSTEM");
   else if(event.type==="TORNADO_CREATED")ctx.pushLog(`(${event.x},${event.y}) 形成龍捲風場。`,"DETAIL");
@@ -643,23 +643,23 @@ function create(ctx){
   else if(event.type==="FIRE_TORNADO_STOKED")ctx.pushLog(`🔥 火龍捲使 (${event.x},${event.y}) 的火勢轉為猛烈燃燒。`,"DETAIL");
   else if(event.type==="TORNADO_DISSIPATED")ctx.pushLog(`龍捲風移出戰場並消散。`,"DETAIL");
   else if(event.type==="ELECTRIC_CONDUCTION")ctx.pushLog(`⚡ 雷元素由 (${event.x},${event.y}) 傳遍相連水體｜${event.regionSize||1} 格帶電。`,"SYSTEM");
-  else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="TYPHOON"?"颱風":event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM");
+  else if(event.type==="RIVER_SURGE")ctx.pushLog(`🌊 ${event.weather==="TYPHOON"?"颱風":event.weather==="THUNDERSTORM"?"雷雨":"豪雨"}使溪流暴漲｜最高流速 ${Number(event.maxSpeed||0).toFixed(2)}。`,"SYSTEM",{public:true});
   else if(event.type==="ROGUE_WAVE")ctx.pushLog(`🌊 颱風風場與水域條件形成瘋狗浪｜風力 ${Number(event.windStrength||0).toFixed(1)}｜迎風距離 ${Number(event.fetch||0).toFixed(1)}｜浪高 ${Number(event.waveHeight||0).toFixed(2)}｜會將接觸單位捲入水下。`,"SYSTEM");
   else if(event.type==="WHIRLPOOL_CREATED")ctx.pushLog(`🌀 水域形成漩渦｜半徑 ${Number(event.radius||0).toFixed(1)}｜強度 ${Number(event.strength||0).toFixed(1)}。`,"SYSTEM");
   else if(event.type==="WHIRLPOOL_PULSE")ctx.pushLog(`🌀 漩渦持續牽引周圍水域｜拉力 ${Number(event.pullDistance||0)}。`,"DETAIL");
   else if(event.type==="WHIRLPOOL_FAILED")ctx.pushLog(`漩渦無法形成：目標必須是實際水域。`,"SYSTEM");
-  else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL");
-  else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM");
-  else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL");
-  else if(event.type==="ICE_THAW")ctx.pushLog(`解凍｜${event.changedTiles||0} 格冰面變薄。`,"DETAIL");
-  else if(event.type==="MASS_FLOW_WARNING"){const label=event.material==="SNOW"?"雪崩":event.material==="SOIL"?"土石流":"山崩";ctx.pushLog(`⚠️ (${event.x},${event.y}) 坡面出現${label}失穩徵兆｜若條件持續，下一個環境回合可能崩落。`,"SYSTEM");}
-  else if(event.type==="SEDIMENT_SETTLED")ctx.pushLog(`(${event.x},${event.y}) 泥沙沉積｜河床抬升 ${Number(event.amount||0).toFixed(4)}。`,"DETAIL");
-  else if(event.type==="WATER_TURBIDITY_CHANGED")ctx.pushLog(`(${event.x},${event.y}) 水體受到${event.material==="SOIL"?"泥砂":"碎石"}混入，水色變混濁。`,"DETAIL");
+  else if(event.type==="SNOWFALL")ctx.pushLog(`❄️ ${event.weather==="BLIZZARD"?"暴風雪":"降雪"}累積｜${event.changedTiles||0} 格積雪增加｜最大雪深 ${Number(event.maxSnow||0).toFixed(2)}。`,"DETAIL",{public:true});
+  else if(event.type==="FREEZE_PULSE")ctx.pushLog(`🧊 低溫使 ${event.changedTiles||0} 格水面結冰／增厚｜最大冰厚 ${Number(event.maxIce||0).toFixed(2)}。`,"SYSTEM",{public:true});
+  else if(event.type==="SNOW_THAW")ctx.pushLog(`融雪｜${event.changedTiles||0} 格積雪減少｜回流水量 ${Number(event.meltVolume||0).toFixed(2)}。`,"DETAIL",{public:true});
+  else if(event.type==="ICE_THAW")ctx.pushLog(`解凍｜${event.changedTiles||0} 格冰面變薄。`,"DETAIL",{public:true});
+  else if(event.type==="MASS_FLOW_WARNING"){const label=event.material==="SNOW"?"雪崩":event.material==="SOIL"?"土石流":"山崩";ctx.pushLog(`⚠️ (${event.x},${event.y}) 坡面出現${label}失穩徵兆｜若條件持續，下一個環境回合可能崩落。`,"SYSTEM",{cells:[{x:event.x,y:event.y}]});}
+  else if(event.type==="SEDIMENT_SETTLED")ctx.pushLog(`(${event.x},${event.y}) 泥沙沉積｜河床抬升 ${Number(event.amount||0).toFixed(4)}。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="WATER_TURBIDITY_CHANGED")ctx.pushLog(`(${event.x},${event.y}) 水體受到${event.material==="SOIL"?"泥砂":"碎石"}混入，水色變混濁。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
   else if(event.type==="UNIT_BURIED"){const stage=event.fullyBuried?"完全滅頂":event.immobilized?"陷入堆積物":"部分掩埋";ctx.pushLog(`${event.name} 被${stage}｜埋深 ${Number(event.depth||0).toFixed(2)} / 身高 ${Number(event.bodyHeight||0).toFixed(2)}。`,event.immobilized?"BATTLE":"DETAIL");}
   else if(event.type==="MASS_FLOW_TERRAIN_CHANGED")ctx.pushLog(`地貌變化｜${event.material==="SOIL"?"土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"山崩／落石":"質量流"}影響 ${event.tiles||0} 格｜高程改變 ${event.elevationChanges||0} 格｜地形類型改變 ${event.terrainChanges||0} 格｜侵蝕 ${Number(event.totalErosion||0).toFixed(3)}｜堆積 ${Number(event.totalDeposit||0).toFixed(3)}｜懸浮 ${Number(event.totalSuspended||0).toFixed(3)}｜最大降幅 ${Math.max(0,...(event.cells||event.path||[]).map(p=>Number(p.elevationBefore||0)-Number(p.elevationAfter||0))).toFixed(3)}｜最大抬升 ${Math.max(0,...(event.cells||event.path||[]).map(p=>Number(p.elevationAfter||0)-Number(p.elevationBefore||0))).toFixed(3)}。`,"DETAIL");
   else if(event.type==="MASS_FLOW"){const label=event.material==="SOIL"?"⛰️ 土石流":(event.material==="ROCK"||event.material==="DEBRIS")?"🪨 山崩／落石":"❄️ 雪崩";const cells=event.cells||event.path||[],snow=event.material==="SNOW",lower=Math.max(0,...cells.map(p=>snow?Number(p.snowDepthBefore||0)-Number(p.snowDepthAfter||0):Number(p.elevationBefore||0)-Number(p.elevationAfter||0))),rise=Math.max(0,...cells.map(p=>snow?Number(p.snowDepthAfter||0)-Number(p.snowDepthBefore||0):Number(p.elevationAfter||0)-Number(p.elevationBefore||0)));ctx.pushLog(`${label}由 (${event.x},${event.y}) 發生｜路徑 ${event.path?.length||0} 格｜影響 ${cells.length} 格｜質量 ${Number(event.mass||0).toFixed(3)}｜最大${snow?"雪深減少":"高程下降"} ${lower.toFixed(3)}｜最大${snow?"雪深增加":"高程抬升"} ${rise.toFixed(3)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
-  else if(event.type==="SOIL_FROZEN")ctx.pushLog(`🧊 (${event.x},${event.y}) 含水土壤凍結｜形成凍土。`,"DETAIL");
-  else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL");
+  else if(event.type==="SOIL_FROZEN")ctx.pushLog(`🧊 (${event.x},${event.y}) 含水土壤凍結｜形成凍土。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
+  else if(event.type==="SOIL_THAWED")ctx.pushLog(`(${event.x},${event.y}) 凍土解凍｜原有土壤水分保留。`,"DETAIL",{cells:[{x:event.x,y:event.y}]});
   else if(event.type==="AVALANCHE"){const cells=event.cells||event.path||[],lower=Math.max(0,...cells.map(p=>Number(p.snowDepthBefore||0)-Number(p.snowDepthAfter||0))),rise=Math.max(0,...cells.map(p=>Number(p.snowDepthAfter||0)-Number(p.snowDepthBefore||0)));ctx.pushLog(`❄️ 雪崩由 (${event.x},${event.y}) 崩落｜路徑 ${event.path?.length||0} 格｜影響 ${cells.length} 格｜最大雪深減少 ${lower.toFixed(3)}｜最大雪深增加 ${rise.toFixed(3)}｜衝擊 ${event.damage||0}。`,"SYSTEM");}
  }
  return Object.freeze({resolveCollisionRuntime,applyForcedMovement,traverseUnitPath,applyWaterInteraction,applyEnvironmentHazardToUnit,applyEnvironmentHazards,resolveEnvironmentEvents,resolveWaterSkillHit,resolveRogueWave,resolveTsunamiWave,resolveWhirlpool,applyCurrentToUnit,enterTile,resolveWeatherEvents,logEnvironmentEvent});

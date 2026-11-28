@@ -199,8 +199,8 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return origins;
     }
 
-    function canTargetFromOrigin(map,environmentState,unit,target,skill,origin){
-      return TacticalEngine.canTarget(map,{...unit,x:origin.x,y:origin.y},target,skill,environmentState);
+    function canTargetFromOrigin(map,environmentState,unit,target,skill,origin,trace=null){
+      return TacticalEngine.canTarget(map,{...unit,x:origin.x,y:origin.y},target,skill,environmentState,trace);
     }
 
     function bloodShadowLanding(unit,target){
@@ -236,23 +236,25 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       return null;
     }
 
-    function targetableEntities(unit,skill){
+    function targetableEntities(unit,skill,audit=null){
       const {map,environmentState}=state();
       const fixedOrigin=!!skill?.approach;
       const origins=fixedOrigin?[{x:unit.x,y:unit.y,cost:0}]:attackOrigins(unit);
       return ctx.combatTargets(unit).filter(target=>{
-        // A future movement origin must not grant clairvoyance about a core or
-        // an enemy unit which no current friendly observer has revealed.
+        const entry=audit?.ids?.has(target.id)?{id:target.id,originCount:origins.length,checks:0,reasons:{},examples:[]}:null;
+        if(entry)audit.results.push(entry);
+        const trace=entry?((reason,details)=>{entry.reasons[reason]=(entry.reasons[reason]||0)+1;if(entry.examples.length<8&&!entry.examples.some(e=>e.reason===reason))entry.examples.push({reason,details});}):null;
+        const result=(ok,reason)=>{if(entry){entry.legal=!!ok;if(!ok&&reason)trace(reason);}return ok;};
+        // Preserve the original team sight call. The audit separately records full-world observation.
         if(target.team!==unit.team&&skill?.ignoreFogOfWar!==true&&
-           !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return false;
-        if(skill?.utilityAction&&target?.kind==="CORE")return false;
-        if(skill?.utilityAction?.type==="STEAL_LOOT"&&!globalThis.RewardEngine?.stealable?.(unit,target))return false;
-        if(skill?.utilityAction?.type==="SWAP_ALLIES")return TacticalEngine.canSwapAllies(map,state().units,unit,target);
-        if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return !!pickupPlan(unit,target,skill,origins);
-        
-        if(skill?.bloodShadow)return !!bloodShadowLanding(unit,target);
-        if(skill?.approach&&!planApproachForSkill(unit,target,skill))return false;
-        return origins.some(origin=>canTargetFromOrigin(map,environmentState,unit,target,skill,origin));
+           !TacticalEngine.teamCanSee(map,state().units,unit.team,target,environmentState))return result(false,"TEAM_NOT_OBSERVED");
+        if(skill?.utilityAction&&target?.kind==="CORE")return result(false,"UTILITY_CORE_FORBIDDEN");
+        if(skill?.utilityAction?.type==="STEAL_LOOT"&&!globalThis.RewardEngine?.stealable?.(unit,target))return result(false,"NOT_STEALABLE");
+        if(skill?.utilityAction?.type==="SWAP_ALLIES")return result(TacticalEngine.canSwapAllies(map,state().units,unit,target),"SWAP_ILLEGAL");
+        if(["CARRY_ALLY","CARRY_ENEMY"].includes(skill?.utilityAction?.type))return result(!!pickupPlan(unit,target,skill,origins),"PICKUP_ILLEGAL");
+        if(skill?.bloodShadow)return result(!!bloodShadowLanding(unit,target),"BLOOD_SHADOW_LANDING_ILLEGAL");
+        if(skill?.approach&&!planApproachForSkill(unit,target,skill))return result(false,"APPROACH_ILLEGAL");
+        return result(origins.some(origin=>{if(entry)entry.checks++;return canTargetFromOrigin(map,environmentState,unit,target,skill,origin,trace);}));
       });
     }
 
@@ -335,7 +337,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           UnitRuntimeEngine.syncForestSouls(map,state().units,state().round);
           globalThis.UnitAnimationEngine?.emitAction?.(unit,tile,cast,{targetKind:'MAP'});
           events.forEach(ctx.logEnvironmentEvent);
-          ctx.pushLog(`${unit.character.name} 以 ${skill.name} 砍倒 (${tile.x},${tile.y}) 的樹木。`,'BATTLE');
+          ctx.pushLog(`${unit.character.name} 以 ${skill.name} 砍倒 (${tile.x},${tile.y}) 的樹木。`,'BATTLE',{units:[unit]});
         }
         return finishActiveSkill(unit);
       }
@@ -371,7 +373,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const events=EnvironmentEngine.waterImpact(map,environmentState,tile.x,tile.y,{source:cast.id});
       events.forEach(ctx.logEnvironmentEvent);
       ctx.resolveEnvironmentEvents?.(events,{reason:`${cast.name} 水流接觸`});
-      ctx.pushLog(`${unit.character.name} 使用 ${cast.name} 澆向燃燒格 (${tile.x},${tile.y})。`,"BATTLE");
+      ctx.pushLog(`${unit.character.name} 使用 ${cast.name} 澆向燃燒格 (${tile.x},${tile.y})。`,"BATTLE",{units:[unit]});
       return finishActiveSkill(unit);
     }
 
@@ -399,7 +401,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const result=ctx.traverseUnitPath(unit,plan.path,{kind:"UNIT"});
       unit.moved=true;
       if(!result.completed){commitPendingMove(unit);return false;}
-      ctx.pushLog(`${unit.character.name} 自動移動至可使用「${skill.name}」的位置。`,"DETAIL");
+      ctx.pushLog(`${unit.character.name} 自動移動至可使用「${skill.name}」的位置。`,"DETAIL",{units:[unit]});
       const s=state();return TacticalEngine.canTarget(s.map,unit,target,skill,s.environmentState);
     }
 
@@ -445,7 +447,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           globalThis.UnitAnimationEngine?.emitPresentation?.('RESOURCE_GAINED',{
             unitId:unit.id,resource:'astralPower',amount:credited,x:unit.x,y:unit.y});
           const stored=UnitRuntimeEngine.resourceSnapshot(unit).astralPower;
-          ctx.pushLog(`${unit.character.name}｜${skill.name} 命中據點，星能 +${credited}｜${stored?.value??0}/${stored?.max??'?'}`, 'BATTLE');
+          ctx.pushLog(`${unit.character.name}｜${skill.name} 命中據點，星能 +${credited}｜${stored?.value??0}/${stored?.max??'?'}`, 'BATTLE',{units:[unit]});
         }
       }
       if(UnitRuntimeEngine.bloodUser(unit))UnitRuntimeEngine.changeBlood(unit,coreDamage);
@@ -506,7 +508,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const consumed=EffectEngine.consumeWeaponEnchantment(attacker,skill.weapon);
       resolveEnchantmentImpact({actor:attacker,skill:attack,enchantment:consumed,
         target:center,terrainImpact:true,result:{hit:true}});
-      ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}，以附魔武器擊向地格 (${center.x},${center.y})。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}，以附魔武器擊向地格 (${center.x},${center.y})。`,"BATTLE",{units:[attacker],cells:[center]});
       return finishActiveSkill(attacker);
     }
     function rangerCommandRadius(commander){
@@ -602,7 +604,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(!member.alive)continue;
           const travel=ctx.traverseUnitPath(member,path,{kind:"UNIT"});
           member.moved=true;
-          if(!travel?.completed)ctx.pushLog(`${member.character.name} 急行軍途中受到環境事件中斷。`,"BATTLE");
+          if(!travel?.completed)ctx.pushLog(`${member.character.name} 急行軍途中受到環境事件中斷。`,"BATTLE",{units:[member]});
         }
       }finally{
         for(const {member} of planned.plans)EffectEngine.removeEffectById(member,temporaryId);
@@ -651,7 +653,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(map,commander,target,skill))continue;
         const resolved=TacticalEngine.resolve(map,virtual,target,skill,{random:ctx.random,disableCrit:true});
         const physicalRoll=resolved.result;
-        if(!physicalRoll.hit){ctx.pushLog(`${commander.character.name} → ${target.character.name}｜集團齊射 MISS。`,"BATTLE");continue;}
+        if(!physicalRoll.hit){ctx.pushLog(`${commander.character.name} → ${target.character.name}｜集團齊射 MISS。`,"BATTLE",{units:[target,commander]});continue;}
         const enchantments=new Map();
         for(const {unit,slot,enchant} of contributors){
           const shot={...skill,weapon:slot,attackType:"SHOT"};
@@ -683,7 +685,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(thunder)thunderImpacts.push({actor:thunder.unit,
           skill:{weapon:thunder.slot,attackType:"SHOT"},enchantment:thunder.enchant,
           target,result:{hit:true}});
-        ctx.pushLog(`${commander.character.name}｜集團齊射 → ${target.character.name}｜物理 ${physicalLoss}＋魔法 ${magicalLoss}｜HP ${target.hp}。`,"BATTLE");
+        ctx.pushLog(`${commander.character.name}｜集團齊射 → ${target.character.name}｜物理 ${physicalLoss}＋魔法 ${magicalLoss}｜HP ${target.hp}。`,"BATTLE",{units:[target,commander]});
         // A zero-HP volley target must enter the shared death lifecycle even
         // if a damage hook already marked it nonliving. Finalization itself is
         // idempotent; only it emits DEATH and removes the battlefield unit.
@@ -859,7 +861,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:'MAP',
         alchemyTerrain:plan.type,
         alchemyFootprint:plan.tiles.map(tile=>({x:tile.x,y:tile.y}))});
-      ctx.pushLog(`${attacker.character.name} 施放 ${skill.name}｜${plan.type}｜地形狀態已更新。`,'BATTLE');
+      ctx.pushLog(`${attacker.character.name} 施放 ${skill.name}｜${plan.type}｜地形狀態已更新。`,'BATTLE',{units:[attacker]});
       return finishActiveSkill(attacker);
     }
 
@@ -983,7 +985,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const applied=EffectEngine.apply({source:attacker,target,effect});
       if(!applied?.applied)throw new Error("Weapon enchantment state could not be applied after skill resource commit.");
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT",enchantmentElement:effect.element,enchantmentSlot:weaponSlot});
-      ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${target.character.name}【${p.slots.find(w=>w.slot===weaponSlot).name}】 ${effect.element}｜下次攻擊生效。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${target.character.name}【${p.slots.find(w=>w.slot===weaponSlot).name}】 ${effect.element}｜下次攻擊生效。`,"BATTLE",{units:[attacker,target]});
       pendingEnchantment=null;
       if(attacker.id!==target.id)return finishActiveSkill(attacker);
       // This is the remaining attack portion of the caster's own action.
@@ -1109,7 +1111,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!runtime.shiftForm(attacker,action.form))
           throw new Error("FORM_VALIDATED_BUT_COMMIT_FAILED");
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
-        ctx.pushLog(`${attacker.character.name} 變身為「${runtime.formSpec(attacker)?.name||action.form}」。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 變身為「${runtime.formSpec(attacker)?.name||action.form}」。`,"BATTLE",{units:[attacker]});
         return finishFreeUtility(attacker);
       }
       if(action.type==="SHARE_VISION"){
@@ -1119,7 +1121,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
         attacker.sharedVisionAllyId=target.id;
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 建立高空視野共享。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 建立高空視野共享。`,"BATTLE",{units:[attacker,target]});
         return finishFreeUtility(attacker);
       }
       if(action.type==="DELIVER_CARGO"){
@@ -1132,7 +1134,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!transfer?.ok)return skillFailure(attacker,skill,transfer?.reason||"ITEM_TRANSFER_FAILED",target);
         if(!ctx.consumeSkill(attacker,skill))throw Error("CARGO_COMMITTED_WITHOUT_SKILL_RESOURCE");
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-        ctx.pushLog(`${attacker.character.name} 將道具交給 ${target.character.name}。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 將道具交給 ${target.character.name}。`,"BATTLE",{units:[attacker,target]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="SEAL_SUBMERGE_PRESS"){
@@ -1151,7 +1153,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
         const pressed=globalThis.WaterInteractionEngine.forceSubmerge(target,tile,{turns:1,impactDamage:0});
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-        ctx.pushLog(pressed.applied?`${attacker.character.name} 壓住 ${target.character.name}，溺水將依環境回合結算。`:`${skill.name}：${pressed.reason||"水域壓制失敗"}`,"BATTLE");
+        ctx.pushLog(pressed.applied?`${attacker.character.name} 壓住 ${target.character.name}，溺水將依環境回合結算。`:`${skill.name}：${pressed.reason||"水域壓制失敗"}`,"BATTLE",{units:[attacker,target]});
         return finishActiveSkill(attacker);
       }
 
@@ -1187,7 +1189,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         // environmental entry/capture callback used by normal movement.
         ctx.enterTile?.(attacker);
         ctx.enterTile?.(target);
-        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 交換位置。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 與 ${target.character.name} 交換位置。`,"BATTLE",{units:[attacker,target]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="SET_VERTICAL_MODE"){
@@ -1195,7 +1197,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!ctx.canUseSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
         const tile=TacticalEngine.tile(map,attacker.x,attacker.y),result=globalThis.VerticalMobilityEngine?.setMode?.(attacker,tile,action.mode,action.options||{});
         if(!result?.ok){ctx.pushLog(`${skill.name} 無法切換目前的垂直移動狀態。`,"SYSTEM");ctx.render();return false;}
-        ctx.consumeSkill(attacker,skill);ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${result.state.mode}。`,"SYSTEM");
+        ctx.consumeSkill(attacker,skill);ctx.pushLog(`${attacker.character.name}｜${skill.name} → ${result.state.mode}。`,"SYSTEM",{units:[attacker]});
         return action.consumeTurn===true?finishActiveSkill(attacker):finishFreeUtility(attacker);
       }
       if(action.type==="SUBMERGE_ENEMY"){
@@ -1247,14 +1249,14 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         // environmental clock owns subsequent drowning damage.
         const result=WaterInteractionEngine.forceSubmerge(target,tile,{turns:1,impactDamage:0});
         if(!result.applied){ctx.pushLog(`${skill.name}：目標未成功沉沒（${result.reason||"UNKNOWN"}）。`,"BATTLE");return finishActiveSkill(attacker);}
-        ctx.pushLog(`${attacker.character.name} 將 ${target.character.name} 拉入水下，後續由真實水深與呼吸規則判定。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 將 ${target.character.name} 拉入水下，後續由真實水深與呼吸規則判定。`,"BATTLE",{units:[attacker,target]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="ENTER_STEALTH"){
         ctx.consumeSkill(attacker,skill);globalThis.EffectEngine?.applyStealth?.(attacker,{detectionRange:1,source:attacker});
         globalThis.EffectEngine?.resolveProximityReveal?.(attacker,units);
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,attacker,skill,{targetKind:"SELF"});
-        ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，進入潛行。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 犧牲本回合行動，進入潛行。`,"BATTLE",{units:[attacker]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="STEAL_LOOT"){
@@ -1267,7 +1269,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
         const itemName=result.itemId?ItemDatabase.get(result.itemId)?.name||result.itemId:null;
         const detail=[result.gold?`${result.gold} 金幣`:null,itemName?`道具「${itemName}」`:null].filter(Boolean).join("及");
-        ctx.pushLog(`${attacker.character.name} 從 ${target.character.name} 偷得${detail}｜同一目標不可再次偷竊。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 從 ${target.character.name} 偷得${detail}｜同一目標不可再次偷竊。`,"BATTLE",{units:[attacker,target]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="SCHEDULE_TURN_SIMULATION"){
@@ -1279,7 +1281,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!ctx.consumeSkill(attacker,skill))return skillFailure(attacker,skill,"RESOURCE_OR_REQUIREMENT",target);
         TacticalEngine.faceToward(attacker,target);
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,target,skill,{targetKind:"UNIT"});
-        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜污染將在目標方下一個完整回合生效。`,"BATTLE",{units:[attacker]});
         return finishActiveSkill(attacker);
       }
       if(action.type==="CARRY_ALLY"||action.type==="CARRY_ENEMY"){
@@ -1293,7 +1295,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           carrierVertical:attacker.verticalState?JSON.parse(JSON.stringify(attacker.verticalState)):null,
           releasePlans:null,committed:false};
         ctx.setSelectedSkill(releaseSkill);ctx.setSelectedSkillVariant(null);ctx.setMode("map-target");
-        ctx.pushLog(`${attacker.character.name} 準備${action.type==="CARRY_ENEMY"?"抓起並摔落":"空運"} ${target.character.name}｜選定落點後才正式抓取與移動。`,"SYSTEM");ctx.render();return true;
+        ctx.pushLog(`${attacker.character.name} 準備${action.type==="CARRY_ENEMY"?"抓起並摔落":"空運"} ${target.character.name}｜選定落點後才正式抓取與移動。`,"SYSTEM",{units:[attacker,target]});ctx.render();return true;
       }
       return false;
     }
@@ -1310,7 +1312,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,destination,skill,{targetKind:"MAP"});
         attacker.x=destination.x;attacker.y=destination.y;attacker.z=Number(globalThis.VerticalMobilityEngine?.surfaceZ?.(destination)??TacticalEngine.elevation(destination)??0);
         globalThis.VerticalMobilityEngine?.syncUnit?.(attacker,destination);ctx.enterTile(attacker);
-        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜折疊空間至 (${destination.x},${destination.y})，中間地形與障礙不參與碰撞。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜折疊空間至 (${destination.x},${destination.y})，中間地形與障礙不參與碰撞。`,"BATTLE",{units:[attacker],cells:[destination]});
         return finishActiveSkill(attacker);
       }
       if(action.type!=="RELEASE_CARRIED"||!pendingTransport||pendingTransport.carrier?.id!==attacker?.id)return false;
@@ -1320,11 +1322,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(!plan){ctx.pushLog(`${skill.name}：落地位置或路線已失效，請重新選擇。`,"SYSTEM");ctx.render();return false;}
       if(plan.pickupPath.length){
         const moved=ctx.traverseUnitPath(attacker,plan.pickupPath,{kind:"UNIT"});attacker.moved=true;
-        if(!moved.completed){pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode(attacker.alive?"command":"inspect");ctx.pushLog(`${attacker.character.name} 接近隊友途中被環境阻斷，未消耗空運技能。`,"SYSTEM");ctx.render();return false;}
+        if(!moved.completed){pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode(attacker.alive?"command":"inspect");ctx.pushLog(`${attacker.character.name} 接近隊友途中被環境阻斷，未消耗空運技能。`,"SYSTEM",{units:[attacker]});ctx.render();return false;}
       }
       // Commit one skill action only after arrival beside a still-valid ally.
       if(!canPickupFrom(attacker,passenger,attacker,state().environmentState,pending.pickupSkill.utilityAction?.type==="CARRY_ENEMY"?"ENEMY":"ALLY")||!ctx.canUseSkill(attacker,pending.pickupSkill)){
-        pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("command");ctx.pushLog(`${attacker.character.name} 無法在目前位置抓起友軍。`,"SYSTEM");ctx.render();return false;
+        pendingTransport=null;ctx.setSelectedSkill(null);ctx.setSelectedSkillVariant(null);ctx.setMode("command");ctx.pushLog(`${attacker.character.name} 無法在目前位置抓起友軍。`,"SYSTEM",{units:[attacker]});ctx.render();return false;
       }
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       ctx.consumeSkill(attacker,pending.pickupSkill);pending.committed=true;
@@ -1332,12 +1334,12 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       passenger.transportHidden=true;passenger.x=-9999;passenger.y=-9999;passenger.z=attacker.z;
       if(plan.flightPath.length){
         const moved=ctx.traverseUnitPath(attacker,plan.flightPath,{kind:"UNIT"});
-        if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 空運途中受環境影響中斷，友軍返回出發位置。`,"SYSTEM");return finishActiveSkill(attacker);}
+        if(!moved.completed){restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 空運途中受環境影響中斷，友軍返回出發位置。`,"SYSTEM",{units:[attacker]});return finishActiveSkill(attacker);}
       }
       const destination=TacticalEngine.tile(map,center.x,center.y);
       if(!destination||ctx.unitAt(center.x,center.y)||!TacticalEngine.canOccupyTerrain(passenger,destination)||
         TacticalEngine.isBlockedByObject(map,center.x,center.y,passenger)){
-        restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運落點失效，友軍返回出發位置。`,"SYSTEM");return finishActiveSkill(attacker);
+        restorePendingTransport({silent:true});ctx.pushLog(`${attacker.character.name} 的空運落點失效，友軍返回出發位置。`,"SYSTEM",{units:[attacker]});return finishActiveSkill(attacker);
       }
       ctx.consumeSkill(attacker,skill);
       passenger.x=destination.x;passenger.y=destination.y;
@@ -1352,11 +1354,11 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         const fromZ=Math.max(Number(attacker.z||0),landingZ+minDrop,landingZ+FallEngine.FALL_THRESHOLD+1);
         const fall=FallEngine.resolveLanding({map,target:passenger,fromZ,
           applyDamage:(unit,damage)=>ctx.damageUnitFlat(unit,damage,pending.pickupSkill.name)});
-        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 空運摔落至 (${destination.x},${destination.y})｜墜落 ${fall.drop}｜傷害 ${fall.damage}。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 空運摔落至 (${destination.x},${destination.y})｜墜落 ${fall.drop}｜傷害 ${fall.damage}。`,"BATTLE",{units:[attacker,passenger]});
       }else{
         if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(passenger,destination);
         else passenger.z=Number(destination.elevation||0);
-        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 安全空運至 (${destination.x},${destination.y})｜無墜落傷害。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 將 ${passenger.character.name} 安全空運至 (${destination.x},${destination.y})｜無墜落傷害。`,"BATTLE",{units:[attacker,passenger]});
       }
       if(passenger.alive)ctx.enterTile(passenger);
       pendingTransport=null;
@@ -1381,7 +1383,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(Array.isArray(trigger.relations)&&!trigger.relations.includes(rel))continue;
           if(!trigger.effect)continue;
           const result=EffectEngine.apply({source:attacker,target,effect:trigger.effect});results.push({passive,trigger,result});
-          if(result?.applied)ctx.pushLog(`${passive.name} → ${target.character.name}｜獲得「${trigger.effect.name||trigger.effect.id||trigger.effect.type}」。`,"BATTLE");
+          if(result?.applied)ctx.pushLog(`${passive.name} → ${target.character.name}｜獲得「${trigger.effect.name||trigger.effect.id||trigger.effect.type}」。`,"BATTLE",{units:[attacker,target]});
         }
       }
       return results;
@@ -1396,13 +1398,13 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         for(const effect of effects){
           const result=EffectEngine.apply({source:attacker,target:occupant,effect});
           if(!result?.applied){
-            if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${occupant.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");
+            if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${occupant.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE",{units:[attacker,occupant]});
             continue;
           }
-          if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜回復 ${result.amount||0} HP｜HP ${occupant.hp}。`,"BATTLE");
-          else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
-          else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
-          else if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜${result.amount||0} 傷害｜HP ${occupant.hp}。`,"BATTLE");
+          if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜回復 ${result.amount||0} HP｜HP ${occupant.hp}。`,"BATTLE",{units:[attacker,occupant]});
+          else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE",{units:[attacker,occupant]});
+          else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜護盾 ${result.amount||0}。`,"BATTLE",{units:[attacker,occupant]});
+          else if(effect.type==="MAGIC_DAMAGE"||effect.type==="DAMAGE")ctx.pushLog(`${skill.name} → ${occupant.character.name}｜${result.amount||0} 傷害｜HP ${occupant.hp}。`,"BATTLE",{units:[attacker,occupant]});
         }
         applyPassiveSkillTriggers(attacker,occupant,skill);
       }
@@ -1451,7 +1453,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         purifiedSlash:true});
       duality.resetBlueAfterUltimate(attacker);
       // Do not leak fog-hidden enemy counts in a shared PVP battle log.
-      ctx.pushLog(`${attacker.character.name}｜${skill.name}｜光刃掃過地圖，留下空間扭曲區域。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name}｜${skill.name}｜光刃掃過地圖，留下空間扭曲區域。`,"BATTLE",{units:[attacker]});
       return finishActiveSkill(attacker);
     }
 
@@ -1487,7 +1489,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!result.ok)throw new Error("Validated holy wing wall disappeared during authoritative cast.");
         const recovered=EffectEngine.rewardDispel(attacker);
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP"});
-        ctx.pushLog(`${attacker.character.name}｜${skill.name}解除聖翼壁障${recovered?`｜回收 ${recovered} MP`:""}。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name}｜${skill.name}解除聖翼壁障${recovered?`｜回收 ${recovered} MP`:""}。`,"BATTLE",{units:[attacker]});
         return finishActiveSkill(attacker);
       }
       if(skill?.terrainTargeting)return executeEnchantedTerrainAttack(attacker,center,skill);
@@ -1576,7 +1578,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           previous,{x:attacker.x,y:attacker.y,z:attacker.z}],kind:'LEAP',arcHeight,duration:750});
         ctx.enterTile(attacker);
         if(!attacker.alive)return finishActiveSkill(attacker);
-        ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 躍至 (${attacker.x},${attacker.y})。`,'BATTLE');
+        ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 躍至 (${attacker.x},${attacker.y})。`,'BATTLE',{units:[attacker]});
       }
       const fanAffected=skill.fanShot?TacticalEngine.fanTiles(map,attacker,center,skill.fanShot):null;
       // Present the validated landing without changing the authored hit center.
@@ -1610,7 +1612,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         EnvironmentEngine.resolveStandingWaterFire(map,environmentState,floodEvents,{source:skill.id});
         floodEvents.forEach(ctx.logEnvironmentEvent);
         ctx.resolveEnvironmentEvents?.(floodEvents,{reason:`${skill.name} 浪後淹水`});
-        ctx.pushLog(`${attacker.character.name} 施放海嘯｜浪牆寬度 ${skill.tsunamiWave.width}、沿地形推進 ${tsunamiPlan.cells.length} 格。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 施放海嘯｜浪牆寬度 ${skill.tsunamiWave.width}、沿地形推進 ${tsunamiPlan.cells.length} 格。`,"BATTLE",{units:[attacker]});
         UnitRuntimeEngine.endBloodTransaction(attacker);
         return finishActiveSkill(attacker);
       }
@@ -1646,10 +1648,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       }
       if(skill.trapPlacement&&environmentState&&globalThis.EnvironmentEngine?.createTrap){
         const trap=EnvironmentEngine.createTrap(environmentState,center.x,center.y,{...skill.trapPlacement,sourceTeam:attacker.team,sourceUnitId:attacker.id});
-        ctx.pushLog(`${attacker.character.name} 在 (${center.x},${center.y}) 設置「${trap?.name||skill.name}」。`,"BATTLE");
+        ctx.pushLog(`${attacker.character.name} 在 (${center.x},${center.y}) 設置「${trap?.name||skill.name}」。`,"BATTLE",{units:[attacker],cells:[center]});
         UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
       }
-      if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
+      if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE",{units:[attacker]});
       // A LINE sword strike is one attack event regardless of how many units
       // are crossed. A committed strike spends exactly one weapon enchant.
       const enchantment=skill.shape==="LINE"?globalThis.EffectEngine?.consumeWeaponEnchantment?.(attacker,skill.weapon)||null:null;
@@ -1663,7 +1665,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           hitUnitIds.add(occupant.id);
           const distance=Math.abs(attacker.x-occupant.x)+Math.abs(attacker.y-occupant.y);
           const result=BattleEngine.calculate(attacker.character,occupant.character,skill,{distance,random:ctx.random});
-          if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");return;}
+          if(!result.hit){ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE",{units:[attacker,occupant]});return;}
           // LINE follows the same physical / elemental damage ownership as
           // BattleResolution. Different types cannot share one shield pass or
           // a critical roll merely because they originate from one strike.
@@ -1684,7 +1686,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
             components:{physical:physical.hpLoss,magic:magic.hpLoss},
             criticalComponents:{physical:result.type!=="MAGIC"&&result.crit===true,magic:result.type==="MAGIC"&&result.crit===true||magicalCrit},
             element:result.el||skill.element,componentElements:{physical:result.type==="MAGIC"?null:result.el||skill.element,magic:enchantment?.element||(result.type==="MAGIC"?result.el||skill.element:null)},skillId:skill.id});
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${hpLoss} 傷害${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${hpLoss} 傷害${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE",{units:[attacker,occupant]});
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
           else if(hpLoss>0)globalThis.UnitAnimationEngine?.emitHit?.(occupant,{sourceId:attacker.id,skillId:skill.id,damage:hpLoss});
         });
@@ -1718,7 +1720,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
                {...skill,target:"ENEMY",targetType:"SINGLE"},environmentState)){
             summary.blocked++;
             globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"BLOCK");
-            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 被障礙阻擋。`,"BATTLE");
+            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 被障礙阻擋。`,"BATTLE",{units:[attacker,occupant]});
             return;
           }
           const atCenter=tile.x===center.x&&tile.y===center.y;
@@ -1734,7 +1736,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(!result.hit){
             summary.miss++;
             globalThis.UnitAnimationEngine?.emitOutcome?.(occupant,"MISS");
-            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE");
+            ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} MISS。`,"BATTLE",{units:[attacker,occupant]});
             return;
           }
           summary.hit++;
@@ -1787,10 +1789,10 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
               if(chance<100&&(typeof ctx.random==="function"?ctx.random():Math.random())*100>=chance)continue;
               const {chance:ignoredChance,...effect}=status;
               const applied=EffectEngine.apply({source:attacker,target:occupant,effect});
-              if(applied?.applied)ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 附加 ${effect.name||effect.id} ${effect.duration||0} 回合。`,"BATTLE");
+              if(applied?.applied)ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} 附加 ${effect.name||effect.id} ${effect.duration||0} 回合。`,"BATTLE",{units:[attacker,occupant]});
             }
           }
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${hpLoss} HP 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name}${atCenter?"・中心":""} ${hpLoss} HP 傷害${shield.absorbed?`｜護盾吸收 ${shield.absorbed}`:""}｜HP ${occupant.hp}。`,"BATTLE",{units:[attacker,occupant]});
           if(occupant.hp<=0&&occupant.alive){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
           else if(hpLoss>0){
             globalThis.UnitAnimationEngine?.emitHit?.(occupant,
@@ -1829,7 +1831,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           const occupant=ctx.unitAt(tile.x,tile.y);if(!occupant?.alive||damagedUnitIds.has(occupant.id))return;
           damagedUnitIds.add(occupant.id);
           const dealt=EffectEngine.applyDamage(occupant,Math.round(Number(skill.aoeDamage)*bloodMult),{source:attacker}).hpLoss;
-          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${dealt} 傷害。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} → ${occupant.character.name}｜${skill.name} ${dealt} 傷害。`,"BATTLE",{units:[attacker,occupant]});
           if(occupant.hp<=0){occupant.alive=false;ctx.handleDefeated(occupant,attacker,skill);}
         });
       }
@@ -1899,7 +1901,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           ctx.applyEnvironmentHazardToUnit(occupant,{reason:"遭燃燒地形波及"});
         }
       });
-      ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜中心 (${center.x},${center.y})。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name} 使用 ${skill.name}｜中心 (${center.x},${center.y})。`,"BATTLE",{units:[attacker],cells:[center]});
       if(transit){
         // Flash across struck units without occupying their tiles even briefly.
         // Only the destination triggers an ENTER_TILE interaction.
@@ -1910,15 +1912,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           if(globalThis.VerticalMobilityEngine?.syncUnit)VerticalMobilityEngine.syncUnit(attacker,landing);
           else attacker.z=Number(TacticalEngine.elevation(landing)||0);
           ctx.enterTile(attacker);
-          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 穿越敵陣，瞬閃至 (${attacker.x},${attacker.y})。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 穿越敵陣，瞬閃至 (${attacker.x},${attacker.y})。`,"BATTLE",{units:[attacker]});
         }
       }else if(skill.moveToTarget&&!skill.jumpShockwave&&!ctx.unitAt(center.x,center.y)){
         if(skill.shape==="W_STEP"){
           attacker.x=center.x;attacker.y=center.y;attacker.z=Number(TacticalEngine.elevation(TacticalEngine.tile(map,center.x,center.y))||0);ctx.enterTile(attacker);
-          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 進行空間移動至 (${center.x},${center.y})。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} 進行空間移動至 (${center.x},${center.y})。`,"BATTLE",{units:[attacker],cells:[center]});
         }else{
           const moveResult=ctx.traverseUnitPath(attacker,ctx.lineTiles(attacker,center),{kind:"UNIT"});
-          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} ${moveResult.completed?`移動至 (${attacker.x},${attacker.y})`:"移動途中受到環境影響而中斷"}。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} 隨 ${skill.name} ${moveResult.completed?`移動至 (${attacker.x},${attacker.y})`:"移動途中受到環境影響而中斷"}。`,"BATTLE",{units:[attacker]});
         }
       }
       UnitRuntimeEngine.endBloodTransaction(attacker);
@@ -1934,7 +1936,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(!selected||pendingMove?.unitId!==selected.id||selected.acted)return false;
       if(!restorePendingMove(selected,pendingMove,{units:state().units,map:state().map}))return false;
       pendingMove=null;ctx.setCommandPanelCollapsed(false);ctx.setMode("command");
-      ctx.pushLog(`${selected.character.name} 取消移動，返回原位置。`,"SYSTEM");ctx.render();ctx.emitState();return true;
+      ctx.pushLog(`${selected.character.name} 取消移動，返回原位置。`,"SYSTEM",{units:[selected]});ctx.render();ctx.emitState();return true;
     }
 
     function backFromTargeting(){
@@ -1964,15 +1966,15 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(!ctx.maybeAutoEndPlayerTurn?.())ctx.render();return true;
     }
 
-    function logAppliedEffect(skill,target,effect,result){
-      if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE");return;}
-      if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜${result.critical?"治療暴擊｜":""}回復 ${result.amount||0} HP${result.shieldGranted?`｜獲得聖護 ${result.shieldGranted}`:""}｜HP ${target.hp}。`,"BATTLE");
-      else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE");
-      else if(effect.type==="DISPEL_POSITIVE")ctx.pushLog(`${skill.name} → ${target.character.name}｜解除「${result.removedName}」${result.refundedMana?`｜回收 ${result.refundedMana} MP`:""}。`,"BATTLE");
+    function logAppliedEffect(skill,target,effect,result,source){
+      if(!result?.applied){if(result?.reason==="NEGATIVE_EFFECT_GUARD")ctx.pushLog(`${target.character.name} 的恩寵抵消了「${effect.name||effect.id||effect.type}」。`,"BATTLE",{units:[source,target]});return;}
+      if(effect.type==="HEAL")ctx.pushLog(`${skill.name} → ${target.character.name}｜${result.critical?"治療暴擊｜":""}回復 ${result.amount||0} HP${result.shieldGranted?`｜獲得聖護 ${result.shieldGranted}`:""}｜HP ${target.hp}。`,"BATTLE",{units:[source,target]});
+      else if(effect.type==="RESTORE_MANA")ctx.pushLog(`${skill.name} → ${target.character.name}｜回復 ${result.amount||0} MP。`,"BATTLE",{units:[source,target]});
+      else if(effect.type==="DISPEL_POSITIVE")ctx.pushLog(`${skill.name} → ${target.character.name}｜解除「${result.removedName}」${result.refundedMana?`｜回收 ${result.refundedMana} MP`:""}。`,"BATTLE",{units:[source,target]});
       else if(effect.type==="DISPEL"&&result.restoredResource?.amount>0)
-        ctx.pushLog(`${skill.name} → ${target.character.name}｜解除 ${result.removed||0} 項負面異常，恢復 ${result.restoredResource.amount} Sanity。`,"BATTLE");
-      else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE");
-      else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE");
+        ctx.pushLog(`${skill.name} → ${target.character.name}｜解除 ${result.removed||0} 項負面異常，恢復 ${result.restoredResource.amount} Sanity。`,"BATTLE",{units:[source,target]});
+      else if(effect.type==="SHIELD")ctx.pushLog(`${skill.name} → ${target.character.name}｜護盾 ${result.amount||0}。`,"BATTLE",{units:[source,target]});
+      else if(effect.type==="HEAL_OVER_TIME")ctx.pushLog(`${skill.name} → ${target.character.name}｜獲得持續治癒 ${effect.duration||0} 回合。`,"BATTLE",{units:[source,target]});
     }
 
     function executeEffectSkill(attacker,target,skill,{buffId=null}={}){
@@ -2043,7 +2045,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
           rangerDistance(unit,attacker)<=radius)){
           for(const effect of skill.effects||[]){
             const r=EffectEngine.apply({source:attacker,target:member,effect});
-            results.push(r);logAppliedEffect(skill,member,effect,r);
+            results.push(r);logAppliedEffect(skill,member,effect,r,attacker);
           }
         }
       }else if(Array.isArray(skill.relationEffects)){
@@ -2056,21 +2058,21 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
             const hpBefore=Math.max(0,Number(target.hp||0));let dealt=0,absorbed=0;
             if(result.hit){const shield=EffectEngine.applyDamage(target,target.hallucination===true?hpBefore:Math.round(result.damage*bloodMult),{source:attacker,damageType:"MAGIC"});dealt=shield.damage;absorbed=shield.absorbed;if(target.hp===0)target.alive=false;}
             results.push({type:"MAGIC_DAMAGE",...result,damage:dealt,shieldAbsorbed:absorbed});if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitResolvedHit?.(target,{damage:Math.min(hpBefore,Number(dealt||0)),critical:result.crit===true,components:{physical:0}});
-            ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE");
+            ctx.pushLog(`${attacker.character.name} → ${target.character.name}｜${skill.name} ${result.hit?dealt+" 傷害":"MISS"}${absorbed?`｜護盾吸收 ${absorbed}`:""}｜HP ${target.hp}。`,"BATTLE",{units:[attacker,target]});
             if(!target.alive)ctx.handleDefeated(target,attacker,skill);
             else if(result.hit&&Number(dealt||0)>0)globalThis.UnitAnimationEngine?.emitHit?.(target,{sourceId:attacker.id,skillId:skill.id,damage:Number(dealt||0)});
           }else{
-            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,effect,r);
+            const r=EffectEngine.apply({source:attacker,target,effect});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,effect,r,attacker);
           }
         }
       }else if(Array.isArray(skill.effects)){
-        for(const effect of skill.effects){const selected=effect.type==="DISPEL_POSITIVE"?{...effect,buffId}:effect;const r=EffectEngine.apply({source:attacker,target,effect:selected});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,selected,r);}
+        for(const effect of skill.effects){const selected=effect.type==="DISPEL_POSITIVE"?{...effect,buffId}:effect;const r=EffectEngine.apply({source:attacker,target,effect:selected});results.push(r);if(r?.critical)healedCrit=true;logAppliedEffect(skill,target,selected,r,attacker);}
       }
       if(skill?.alchemyCast?.mode==='BASIC'&&skill.alchemySplashMana&&skill.id==='alchemy_mana_stone'){
         for(const ally of state().units.filter(u=>u.alive&&u.team===attacker.team&&u.id!==target.id&&
           Math.abs(u.x-target.x)+Math.abs(u.y-target.y)<=1&&Number(u.maxMana||0)>Number(u.mana||0))){
           const result=EffectEngine.apply({source:attacker,target:ally,effect:{type:'RESTORE_MANA',amount:skill.alchemySplashMana}});
-          logAppliedEffect(skill,ally,{type:'RESTORE_MANA'},result);
+          logAppliedEffect(skill,ally,{type:'RESTORE_MANA'},result,attacker);
         }
       }
       // Successful fresh HoT application on an injured ally only: future
@@ -2079,7 +2081,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         UnitRuntimeEngine.gainAstralPower(attacker,skill,state().environmentState);
       applyPassiveSkillTriggers(attacker,target,skill);
       const refunded=UnitRuntimeEngine.criticalManaRefund(attacker,skill,spent,healedCrit);
-      if(refunded>0)ctx.pushLog(`${attacker.character.name}｜${skill.name} 治療暴擊，聖痕返還 ${refunded} MP。`,"BATTLE");
+      if(refunded>0)ctx.pushLog(`${attacker.character.name}｜${skill.name} 治療暴擊，聖痕返還 ${refunded} MP。`,"BATTLE",{units:[attacker]});
       UnitRuntimeEngine.endBloodTransaction(attacker);return finishActiveSkill(attacker);
     }
 
@@ -2107,7 +2109,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       const result=ctx.traverseUnitPath(attacker,path,{kind:"UNIT"});
       if(!result.completed)return false;
       attacker.moved=true;
-      ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 衝至 ${defender.character.name} 身前。`,"BATTLE");
+      ctx.pushLog(`${attacker.character.name} 以 ${skill.name} 衝至 ${defender.character.name} 身前。`,"BATTLE",{units:[attacker,defender]});
       return true;
     }
 
@@ -2268,7 +2270,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(skill.channel){executeChannelSkill(attacker,skill);return;}
       if(skill.effects||skill.relationEffects||skill.bloodBurst){executeEffectSkill(attacker,defender,skill);return;}
       skill=ctx.effectiveSkill(attacker,skill);
-      if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE");
+      if(skill.ambushActive)ctx.pushLog(`${attacker.character.name}｜伏擊發動：弓擊威力與速度提升。`,"BATTLE",{units:[attacker]});
       if(ctx.targetType(skill)!=="SINGLE"){executeEngagement(attacker,defender,skill,[]);return;}
       // Support reach is calculated at the projected charge destination. The
       // authoritative actor stays at the original tile until confirmation.
@@ -2339,7 +2341,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(drained>0){
           const healed=EffectEngine.heal(attacker,drained);
           const mana=UnitRuntimeEngine.restoreMana(attacker,Math.round(drained*.5));
-          ctx.pushLog(`${attacker.character.name} 吸血 ${drained}｜回復 ${healed} HP、${mana} MP。`,"BATTLE");
+          ctx.pushLog(`${attacker.character.name} 吸血 ${drained}｜回復 ${healed} HP、${mana} MP。`,"BATTLE",{units:[attacker]});
           const options=EffectEngine.copyableSkills(defender,attacker);
           if(options.length){
             if(attacker.team===ctx.TEAM.PLAYER){

@@ -18,11 +18,17 @@ export class GridPicker{
     const pick=this.scene.pick(x,y,mesh=>
       mesh?.metadata?.kind==="tile-hit"||mesh?.metadata?.kind==="unit-hit");
     const meta=pick?.pickedMesh?.metadata;
+    if(globalThis.CardTacticsDiagnostics?.isEnabled?.()){
+      this.lastDiagnosticPick={at:Date.now(),revision:this.diagnosticRevision,hit:!!pick?.hit,kind:meta?.kind??null,unitId:meta?.unitId??null,x:meta?.x??null,y:meta?.y??null,pointerX:x,pointerY:y};
+      // Queries can also be inspection/hold; explicitly identify the event as a ray query.
+      if(!pick?.hit&&this.diagnosticMode==="attack")globalThis.CardTacticsDiagnostics.recordTargeting?.({kind:"PICK_QUERY_MISS",pick:this.lastDiagnosticPick});
+    }
     return pick?.hit&&(meta?.kind==="tile-hit"||meta?.kind==="unit-hit")
       ?{x:meta.x,y:meta.y}:null;
   }
 
   sync(state){
+    this.diagnosticRevision=state?.revision??null;this.diagnosticMode=state?.mode??null;
     const alive=new Set();
     for(const tile of state?.map?.tiles||[]){
       const key=keyOf(tile);alive.add(key);

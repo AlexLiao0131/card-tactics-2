@@ -18,6 +18,56 @@ const roundHistory=[],perfPeaks=Object.create(null),spikeNotifiedAt=Object.creat
 let lastEvidence=null,lastWaterSeamWarningKey="",lastWaterSeamCaptureAt=0;
 const tileAnnotations=[];
 const hydrologyBalanceHistory=[];
+// Separate bounded rings survive noisy climate and ordinary event history.
+const targetingHistory=[],perceptionHistory=[],battleHistory=[];
+const BATTLE_MAX=360,PRESENTATION_MAX=160;
+const battlePresentationHistory=[];
+let lastOnlineBattleLog=[];
+function recordOnlineBattleLog(entries,context){
+  if(!enabled||!Array.isArray(entries))return;
+  const current=entries.map(e=>({type:shorten(e.type,20),text:shorten(e.text,500)}));
+  let overlap=Math.min(lastOnlineBattleLog.length,current.length);
+  while(overlap&&!lastOnlineBattleLog.slice(-overlap).every((e,i)=>e.type===current[i].type&&e.text===current[i].text))overlap--;
+  for(const e of current.slice(overlap))recordBattleRecord({kind:"PVP_AUTHORIZED_LOG",...context,...e});
+  lastOnlineBattleLog=current;
+}
+function recordBattlePresentation(records,context){
+  if(!enabled||!Array.isArray(records))return;
+  for(const e of records){
+    if(!e||!e.unitId||!["UNIT_ANIMATION","UNIT_FLOAT_TEXT"].includes(e.type))continue;
+    const p={at:now(),...context,type:e.type,sequence:e.sequence,state:e.state,kind:e.kind,unitId:e.unitId,targetId:e.targetId,skillId:e.skillId,x:e.x,y:e.y,z:e.z,renderZ:e.renderZ,targetX:e.targetX,targetY:e.targetY,value:e.value,damage:e.damage};
+    if(Array.isArray(e.path)&&e.path.length)p.path={count:e.path.length,from:e.path[0],to:e.path.at(-1)};
+    battlePresentationHistory.push(p);
+    if(battlePresentationHistory.length>PRESENTATION_MAX)battlePresentationHistory.shift();
+  }
+  store();
+}
+function recordBattleRecord(record){
+  if(!enabled||!record)return;
+  battleHistory.push({at:now(),...record});
+  if(battleHistory.length>BATTLE_MAX)battleHistory.shift();
+  store();
+}
+function recordBattleLog(record){
+  if(!enabled||!record)return;
+  const compact={...record,text:shorten(record.text,500)};
+  // Do not let repeated water/terrain log lines evict combat evidence.
+  if(record.type==="BATTLE"||record.scope!=="UNCLASSIFIED"||classifyLog(record.type,record.text)==="GAME_FAILURE"||classifyLog(record.type,record.text)==="GAME_DETAIL"||classifyLog(record.type,record.text)==="GAME_FLOW")recordBattleRecord({kind:"LOG",...compact});
+  gameLog(record);
+}
+const TARGETING_MAX=24,PERCEPTION_MAX=12;
+function recordTargeting(record){
+  if(!enabled||!record)return;
+  targetingHistory.push({at:now(),...record});
+  if(targetingHistory.length>TARGETING_MAX)targetingHistory.shift();
+  store();
+}
+function recordPerception(record){
+  if(!enabled||!record)return;
+  perceptionHistory.push({at:now(),...record});
+  if(perceptionHistory.length>PERCEPTION_MAX)perceptionHistory.shift();
+  store();
+}
 // Session totals are independent of the existing 120-sample rolling averages.
 // No extra render loop, GPU readback, mesh enumeration or physics simulation.
 const workloadHistory=[];
@@ -90,7 +140,7 @@ function store(force=false){
   lastStoredAt=ms;
   const record={schema:2,sessionId,startedAt:new Date(Date.now()-(performance.now()-started)).toISOString(),
     updatedAt:now(),lifecycle,checkpoint:lastCheckpoint,events:events.slice(-SAVED_MAX),
-    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,workload:workloadSnapshot(),workloadHistory,gpu:gpuSnapshot()};
+    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,targetingHistory,perceptionHistory,battleHistory,battlePresentationHistory,workload:workloadSnapshot(),workloadHistory,gpu:gpuSnapshot()};
   return writeStorage(STORE_KEY,JSON.stringify(record));
 }
 function recordPerf(name,elapsed){
@@ -309,6 +359,7 @@ function gameAction(type,data={}){
     const value=data?.[key];if(value==null)continue;
     if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")safe[key]=typeof value==="string"?shorten(value,140):value;
   }
+  recordBattleRecord({kind:type,...safe});
   push(type,safe);
 }
 
@@ -319,7 +370,8 @@ document.addEventListener("webglcontextrestored",e=>{
   gpuProbe?.dispose();gpuProbe=null;gpuSetupFailure=null;
   push("WEBGL_CONTEXT_RESTORED",{canvas:e.target?.id||null});
 },true);
-window.addEventListener("cardtactics:log",e=>gameLog(e.detail));
+// Local gameplay records are captured directly before public disclosure.
+// Public UI events never carry private diagnostic text.
 window.addEventListener("cardtactics:state",()=>checkPhase());
 window.addEventListener("cardtactics:battle-render",()=>checkPhase());
 
@@ -541,7 +593,7 @@ function report(){
   const data={generatedAt:now(),userAgent:navigator.userAgent,enabled,sessionId,
     uptimeSeconds:Math.round((performance.now()-started)/1000),fps,
     runtime:runtime(),renderer:renderer(),memory:memory(),gpu:gpuSnapshot(),performance:perfSnapshot(),checkpoint:lastCheckpoint,
-    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,workload:workloadSnapshot(),workloadHistory,
+    roundHistory,perfPeaks,lastEvidence,tileAnnotations,hydrologyBalanceHistory,targetingHistory,perceptionHistory,battleHistory,battlePresentationHistory,workload:workloadSnapshot(),workloadHistory,
     battleLog:{count:window.CardTacticsRuntime?.getBattleLog?.()?.entries?.length??null,max:window.BattleLog?.MAX_ENTRIES??null},
     presentation:audit(),storageWarning:storageWarning||null,
     previousSession:previousSession?{status:previousStatus,...previousSession}:null,
@@ -554,7 +606,7 @@ async function copy(){
   try{await navigator.clipboard.writeText(value);return true;}
   catch(_){const ta=document.createElement("textarea");ta.value=value;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();const ok=document.execCommand("copy");ta.remove();return ok;}
 }
-function clear(){resetWorkload();events.length=0;roundHistory.length=0;tileAnnotations.length=0;hydrologyBalanceHistory.length=0;
+function clear(){resetWorkload();targetingHistory.length=0;perceptionHistory.length=0;battleHistory.length=0;battlePresentationHistory.length=0;lastOnlineBattleLog=[];events.length=0;roundHistory.length=0;tileAnnotations.length=0;hydrologyBalanceHistory.length=0;
   for(const key of Object.keys(perfCounters))delete perfCounters[key];
   for(const key of Object.keys(perfPeaks))delete perfPeaks[key];
   for(const key of Object.keys(spikeNotifiedAt))delete spikeNotifiedAt[key];
@@ -568,7 +620,7 @@ function mount(){
   const box=document.createElement("section");box.id="diagnosticsPanel";box.className="diagnostics-panel";
   box.innerHTML=`<h3>開發者診斷</h3>
     <label><span>啟用診斷與異常中斷紀錄</span><input id="diagnosticsToggle" type="checkbox"></label>
-    <p class="diagnostics-note">記錄戰鬥、技能失敗、天氣、水文、光照資源、累計渲染負載及錯誤。手機閃退時無法當場寫入；下次開啟可查看最後儲存的檢查點。僅儲存在本機，不會自動上傳。</p>
+    <p class="diagnostics-note">記錄戰鬥、技能失敗、單體鎖定拒絕原因、點擊碰撞體、角色座標、認知污染切換、天氣、水文、光照資源、累計渲染負載及錯誤。遇到無法鎖定時，請保持技能選取並再次點擊目標，再複製診斷報告。手機閃退時無法當場寫入；下次開啟可查看最後儲存的檢查點。僅儲存在本機，不會自動上傳。</p>
     <pre id="diagnosticsSummary"></pre>
     <details><summary>查看最近事件與上次紀錄</summary><pre id="diagnosticsTimeline" style="max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
     <div class="diagnostics-actions"><button id="diagnosticsCapture" type="button">擷取當下渲染現場（不截圖）</button><button id="diagnosticsCopy" type="button">複製診斷報告（含上次紀錄）</button><button id="diagnosticsClear" type="button">清除紀錄</button></div>`;
@@ -601,6 +653,7 @@ function mount(){
       `GPU 計時 ${gpuSnapshot().status}｜${gpuSnapshot().lastMs??"—"} ms（每 2 秒採樣；不可讀取使用率／溫度／功率）`,
       `已保留 ${roundHistory.length} 回合摘要｜最高尖峰 ${Object.keys(perfPeaks).length} 類｜問題格取證 ${tileAnnotations.length} 組`,
       c?.waterSeams?`水面連通區 ${c.waterSeams.surfaceRegions}｜重用 ${c.waterSeams.update?.reused??0}／重建 ${c.waterSeams.update?.built??0}｜疑似缺水邊 ${c.waterSeams.internalBoundaries?.internalMissingSurfaceEdges??"-"}｜幾何警訊 ${c.waterSeams.warningCount}`:"",
+      `鎖定取證 ${targetingHistory.length}/${TARGETING_MAX}｜認知污染 ${perceptionHistory.length}/${PERCEPTION_MAX}｜戰鬥紀錄 ${battleHistory.length}/${BATTLE_MAX}` ,
       lastEvidence?`視覺現場：${lastEvidence.at}（${lastEvidence.label}）`:"尚未手動擷取視覺現場",
       v?`Babylon｜Tiles ${v.tiles??"-"}｜Units ${v.units??"-"}｜Zoom ${v.zoom??"-"}`:"",
       m?`JS Heap ${m.usedMB}/${m.totalMB} MB`:"iOS 無法提供 JS Heap 數值",
@@ -618,6 +671,6 @@ function mount(){
   refresh();
 }
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",mount);else mount();
-window.CardTacticsDiagnostics={push,gameAction,recordPerf,recordFrameWindow,recordGeometryCommit,recordHydrologyWork,recordHydrologyBalance,recordTileAnnotation,report,copy,capture,clear,isEnabled:()=>enabled};
+window.CardTacticsDiagnostics={push,gameAction,recordTargeting,recordPerception,recordBattleLog,recordBattleRecord,recordOnlineBattleLog,recordBattlePresentation,recordPerf,recordFrameWindow,recordGeometryCommit,recordHydrologyWork,recordHydrologyBalance,recordTileAnnotation,report,copy,capture,clear,isEnabled:()=>enabled};
 if(enabled){push("SESSION_START",{previousStatus:previousStatus||null});sample();store(true);}
 })();

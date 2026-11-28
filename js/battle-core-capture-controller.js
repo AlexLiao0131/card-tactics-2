@@ -29,7 +29,7 @@ function create(ctx){
    const point=capturePointForUnit(unit);if(!point||!DeploymentEngine.canCapture({stage:s.stage,units:s.units,unit,point}))return false;
    const owner=ownerForTeam(unit.team);if(!owner)return false;
    const previousOwner=point.owner;if(!DeploymentEngine.capture(s.stage,point.id,owner))return false;
-   ctx.pushLog(`${unit.character.name} 佔領「${point.name}」｜${previousOwner} → ${owner}。`,"SYSTEM");
+   ctx.pushLog(`${unit.character.name} 佔領「${point.name}」｜${previousOwner} → ${owner}。`,"SYSTEM",{units:[unit]});
    const damage=Number(s.stage.captureDamage||0),targetOwner=enemyOwner(owner);
    if(damage>0&&targetOwner)damageCore(targetOwner,damage,`${point.name} Core 砲擊`);
    ctx.stageEvent?.({type:"DEPLOYMENT_POINT_CAPTURED",pointId:point.id,owner,previousOwner,unitId:unit.id,characterId:unit.character.id,x:unit.x,y:unit.y});

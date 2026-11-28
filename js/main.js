@@ -159,6 +159,7 @@ try{
       // Explicit gameplay/animation events preserve their order. The snapshot
       // records the final drawable state; it never consumes animation history.
       const events=globalThis.UnitAnimationEngine?.drain?.()||[];
+      if(events.length&&globalThis.CardTacticsDiagnostics?.isEnabled?.())try{globalThis.CardTacticsDiagnostics.recordBattlePresentation?.(events,{round:snap.round,phase:snap.phase,revision:snap.revision,perception:runtime.isHallucinated?.()===true});}catch(_){}
       lastObservedSnapshot=snap;
       const animationMs=performance.now()-animationStart;
       presentationStats.lastAnimationMs=Math.round(animationMs*100)/100;

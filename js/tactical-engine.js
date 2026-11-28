@@ -500,24 +500,28 @@ export const TacticalEngine=(()=>{
     // observers above the water line cannot directly lock a diver.
     return String(observer?.verticalState?.mode||"")==="DIVING";
   }
-  function canSee(m,observer,target,environmentState=null){
-    if(!m||!observer||!target||!underwaterTargetVisibleTo(observer,target))return false;
+  // Optional observer only: rejection codes originate at the actual rule, never a second targeting engine.
+  const reject=(trace,reason,details)=>{if(trace)trace(reason,details);return false;};
+  function canSee(m,observer,target,environmentState=null,trace=null){
+    if(!m||!observer||!target)return reject(trace,"INVALID_VISION_CONTEXT");
+    if(!underwaterTargetVisibleTo(observer,target))return reject(trace,"DIVER_HIDDEN");
     if(target?.character&&observer?.team!==target?.team&&globalThis.EffectEngine?.isStealthed?.(target)){
       const proximityVisible=globalThis.EffectEngine?.directTargetAllowed?.(observer,target)===true;
       const networkVisible=observationNetworkCanObserve(m,observer,target,{revealStealth:true});
-      if(!proximityVisible&&!networkVisible)return false;
+      if(!proximityVisible&&!networkVisible)return reject(trace,"STEALTH_NOT_REVEALED");
     }
     if(observer.x===target.x&&observer.y===target.y)return true;
     if(observationNetworkCanObserve(m,observer,target))return true;
     const distance=D(observer,target);if(distance<=LOCAL_AWARENESS_RANGE)return true;
     const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
     if(senseRange>0&&distance<=senseRange)return true;
-    const personalLimit=effectiveVisionRange(observer,environmentState),environmentLimit=environmentVisionLimit(environmentState,target,observer),limit=Math.min(personalLimit,environmentLimit);if(Number.isFinite(limit)&&distance>limit)return false;
-    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return false;
+    const personalLimit=effectiveVisionRange(observer,environmentState),environmentLimit=environmentVisionLimit(environmentState,target,observer),limit=Math.min(personalLimit,environmentLimit);if(Number.isFinite(limit)&&distance>limit)return reject(trace,"VISION_DISTANCE",trace?{distance,personalLimit,environmentLimit}:undefined);
+    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return reject(trace,"OPTICAL_ENDPOINT_BLOCKED",trace?{source:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,observer.x,observer.y),target:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,target.x,target.y)}:undefined);
     const start=elevation(tile(m,observer.x,observer.y))+1,end=elevation(tile(m,target.x,target.y))+1;
     return lineCells(observer,target).every(p=>{
       const ground=tile(m,p.x,p.y);
-      return ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
+      const clear=ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
+      return clear||reject(trace,"VISION_LINE_BLOCKED",trace?{x:p.x,y:p.y,terrain:ground?.terrain,groundZ:ground?elevation(ground):null,rayZ:start+(end-start)*p.t,optical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,p.x,p.y)}:undefined);
     });
   }
   // Core and defended capture points share the same canSee() LOS as units;
@@ -621,23 +625,23 @@ export const TacticalEngine=(()=>{
     if(targeting.companionId&&hasCompanionVision(m,u,target,s,environmentState))return"COMPANION";
     return null;
   }
-  function hasLineOfSight(m,u,target,s,environmentState=null){
-    if(!m||!u||!target)return false;
-    if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(m,u,target,s))return false;
+  function hasLineOfSight(m,u,target,s,environmentState=null,trace=null){
+    if(!m||!u||!target)return reject(trace,"INVALID_LINE_CONTEXT");
+    if(globalThis.AngelWingBarrierEngine?.blocksIncoming?.(m,u,target,s))return reject(trace,"WING_BARRIER");
     // W-axis spatial cuts do not travel through intervening terrain.
     // Encounter discovery remains with the team visibility/stealth systems.
     if(s?.affixes?.includes("SPACE_RIFT"))return true;
-    if(s?.targeting?.mode==="INDIRECT_OBSERVED")return !!indirectObservationSource(m,u,target,s,environmentState);
+    if(s?.targeting?.mode==="INDIRECT_OBSERVED")return !!indirectObservationSource(m,u,target,s,environmentState)||reject(trace,"INDIRECT_OBSERVATION_MISSING");
     const companionVision=hasCompanionVision(m,u,target,s,environmentState);
-    if(s?.requiresCompanionVision&&!companionVision)return false;
-    if(!companionVision&&s?.ignoreVision!==true&&!canSee(m,u,target,environmentState))return false;
+    if(s?.requiresCompanionVision&&!companionVision)return reject(trace,"COMPANION_VISION_MISSING");
+    if(!companionVision&&s?.ignoreVision!==true&&!canSee(m,u,target,environmentState,trace))return false;
     if(companionVision&&s?.trajectory==="ARC")return true;
     const ranged=attackDelivery(u,s)==="RANGED";
     if(!ranged||s?.trajectory==="ARC")return true;
-    const from=tile(m,u.x,u.y),to=tile(m,target.x,target.y);if(!from||!to)return false;
+    const from=tile(m,u.x,u.y),to=tile(m,target.x,target.y);if(!from||!to)return reject(trace,"ATTACK_ENDPOINT_MISSING");
     const fromEye=globalThis.VerticalMobilityEngine?.eyeZ?VerticalMobilityEngine.eyeZ(u,from):elevation(from)+.5;
     const toEye=target?.character&&globalThis.VerticalMobilityEngine?.eyeZ?VerticalMobilityEngine.eyeZ(target,to):elevation(to)+.5;
-    return lineCells(u,target).every(p=>{const middle=tile(m,p.x,p.y);if(!middle)return false;const rayHeight=fromEye+(toEye-fromEye)*p.t;return elevation(middle)<rayHeight;});
+    return lineCells(u,target).every(p=>{const middle=tile(m,p.x,p.y);if(!middle)return reject(trace,"ATTACK_LINE_TILE_MISSING");const rayHeight=fromEye+(toEye-fromEye)*p.t;return elevation(middle)<rayHeight||reject(trace,"ATTACK_LINE_BLOCKED",trace?{x:p.x,y:p.y,groundZ:elevation(middle),rayZ:rayHeight,fromEye,toEye}:undefined);});
   }
   function targetNearNaturalObject(m,target,rule){
     if(!rule)return true;
@@ -651,19 +655,31 @@ export const TacticalEngine=(()=>{
       return rule.diagonals===true?Math.max(dx,dy)<=radius:dx+dy<=radius;
     });
   }
-  function canTargetSingle(m,u,target,s,environmentState=null){if(!u?.alive||!target?.alive)return false;if(!underwaterTargetVisibleTo(u,target)&&(s?.targetType||"SINGLE")==="SINGLE")return false;if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return false;const r=range(s)||{min:0,max:0},d=D(u,target);if(d<r.min||d>r.max)return false;if(s.target==="SELF")return target.id===u.id;if(s.target==="ALLY"&&target.team!==u.team)return false;if(s.target==="ENEMY"&&target.team===u.team)return false;
-    // The same authoritative targeting restriction applies to human PVP control.
-    const pursuit=globalThis.EffectEngine?.state?.(u)?.find(e=>
-      e.classification==='NEGATIVE'&&e.control?.type==='PURSUIT_SOURCE');
-    if(pursuit&&s.target==="ENEMY"&&target.id!==pursuit.sourceUnitId)return false;if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return false;const requiredNetwork=s?.targeting?.requiresObservationNetwork;if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return false;if(!verticalTargetAllowed(m,u,target,s))return false;if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return false;return hasLineOfSight(m,u,target,s,environmentState);}
-  function canTarget(m,u,target,s,environmentState=null){
-    if(!u?.alive||!target?.alive)return false;
+  function canTargetSingle(m,u,target,s,environmentState=null,trace=null){
+    if(!u?.alive||!target?.alive)return reject(trace,"ACTOR_OR_TARGET_DEAD");
+    if(!underwaterTargetVisibleTo(u,target)&&(s?.targetType||"SINGLE")==="SINGLE")return reject(trace,"DIVER_HIDDEN");
+    if(globalThis.BurialEngine?.canAct&&!BurialEngine.canAct(u))return reject(trace,"ACTOR_BURIED");
+    const r=range(s)||{min:0,max:0},d=D(u,target);
+    if(d<r.min||d>r.max)return reject(trace,"OUT_OF_RANGE",trace?{distance:d,min:r.min,max:r.max}:undefined);
+    if(s.target==="SELF")return target.id===u.id||reject(trace,"SELF_ONLY");
+    if(s.target==="ALLY"&&target.team!==u.team)return reject(trace,"ALLY_ONLY");
+    if(s.target==="ENEMY"&&target.team===u.team)return reject(trace,"ENEMY_ONLY");
+    const pursuit=globalThis.EffectEngine?.state?.(u)?.find(e=>e.classification==='NEGATIVE'&&e.control?.type==='PURSUIT_SOURCE');
+    if(pursuit&&s.target==="ENEMY"&&target.id!==pursuit.sourceUnitId)return reject(trace,"PURSUIT_RESTRICTED");
+    if(!targetNearNaturalObject(m,target,s?.targeting?.treeProximity))return reject(trace,"NATURAL_OBJECT_REQUIRED");
+    const requiredNetwork=s?.targeting?.requiresObservationNetwork;
+    if(requiredNetwork&&!observationNetworkCanObserve(m,u,target,{tag:requiredNetwork}))return reject(trace,"OBSERVATION_NETWORK_REQUIRED");
+    if(!verticalTargetAllowed(m,u,target,s))return reject(trace,"VERTICAL_REACH",trace?{reach:attackVerticalReach(u,s),actorSpan:globalThis.VerticalMobilityEngine?.verticalSpan?.(u,tile(m,u.x,u.y)),targetSpan:globalThis.VerticalMobilityEngine?.verticalSpan?.(target,tile(m,target.x,target.y))}:undefined);
+    if((s?.targetType||"SINGLE")==="SINGLE"&&target?.character&&globalThis.EffectEngine?.directTargetAllowed&&!EffectEngine.directTargetAllowed(u,target)&&!observationNetworkCanObserve(m,u,target,{revealStealth:true}))return reject(trace,"STEALTH_NOT_REVEALED");
+    return hasLineOfSight(m,u,target,s,environmentState,trace);
+  }
+  function canTarget(m,u,target,s,environmentState=null,trace=null){
+    if(!u?.alive||!target?.alive)return reject(trace,"ACTOR_OR_TARGET_DEAD");
     const sources=occupiedCells(u),destinations=occupiedCells(target);
-    // Evaluate both footprint perimeters using the unmodified single-tile rules.
     return sources.some(source=>destinations.some(destination=>
       canTargetSingle(m,source.x===u.x&&source.y===u.y?u:{...u,...source},
         destination.x===target.x&&destination.y===target.y?target:{...target,...destination},
-        s,environmentState)));
+        s,environmentState,trace?((reason,details)=>trace(reason,{...details,source,destination})):null)));
   }
   function contactPair(map,actor,target,skill,environmentState=null){
     const pairs=[];for(const source of occupiedCells(actor))for(const destination of occupiedCells(target)){
