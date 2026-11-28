@@ -444,9 +444,10 @@ export const TacticalEngine=(()=>{
     while(queue.length){const node=queue.shift();out.push(node);for(const[dx,dy]of dirs){const key=K(node.x+dx,node.y+dy),next=byKey.get(key);if(next&&!visited.has(key)){visited.add(key);queue.push(next);}}}
     return{nodes:out,nodeVisionRange:Math.max(0,Number(rule.nodeVisionRange||0)+modifier.nodeVisionRangeBonus)};
   }
-  function observationNetworkCanObserve(m,observer,target,{revealStealth=false,tag=null}={}){
+  function observationNetworkCanObserve(m,observer,target,{revealStealth=false,tag=null}={},query=null){
     if(!m||!observer||!target)return false;
-    for(const rule of observationRules(observer)){if(tag&&String(rule?.tag||"")!==String(tag))continue;if(revealStealth&&rule.revealStealth!==true)continue;const network=connectedObservationNodes(m,observer,rule);if(network.nodes.some(node=>(rule.nodeDistance==="CHEBYSHEV"?Math.max(Math.abs(node.x-target.x),Math.abs(node.y-target.y)):D(node,target))<=network.nodeVisionRange))return true;}
+    const rules=query?query.profile(observer).rules:observationRules(observer);
+    for(const rule of rules){if(tag&&String(rule?.tag||"")!==String(tag))continue;if(revealStealth&&rule.revealStealth!==true)continue;const network=query?query.network(observer,rule):connectedObservationNodes(m,observer,rule);if(network.nodes.some(node=>(rule.nodeDistance==="CHEBYSHEV"?Math.max(Math.abs(node.x-target.x),Math.abs(node.y-target.y)):D(node,target))<=network.nodeVisionRange))return true;}
     return false;
   }
   // Night sight is a data-driven passive property, never a character-name check.
@@ -462,12 +463,15 @@ export const TacticalEngine=(()=>{
     const nightBonus=environmentState?.timeOfDay==="NIGHT"?nightVisionProfile(observer).rangeBonus:0;
     return Math.max(LOCAL_AWARENESS_RANGE,base+altitude*perAltitude+bonus+equipmentBonus+nightBonus);
   }
-  function environmentVisionLimit(environmentState,target=null,observer=null){
+  function rawEnvironmentVisionRange(environmentState,observer){
     if(!environmentState||!globalThis.EnvironmentEngine?.visionRange)return Infinity;
     const maxRange=environmentState?.timeOfDay==="NIGHT"?nightVisionProfile(observer).maxRange:0;
-    const raw=Number(EnvironmentEngine.visionRange(environmentState,{nightVisionRange:maxRange}));
+    return Number(EnvironmentEngine.visionRange(environmentState,{nightVisionRange:maxRange}));
+  }
+  function environmentVisionLimit(environmentState,target=null,observer=null,query=null){
+    const raw=query?query.profile(observer).environment:rawEnvironmentVisionRange(environmentState,observer);
     if(!Number.isFinite(raw))return Infinity;
-    const lightBonus=target?Number(EnvironmentEngine.illuminationBonus?.(environmentState,target.x,target.y)||0):0;
+    const lightBonus=target?(query?query.illumination(target):Number(EnvironmentEngine.illuminationBonus?.(environmentState,target.x,target.y)||0)):0;
     return Math.max(LOCAL_AWARENESS_RANGE,raw+lightBonus);
   }
   // The EnvironmentEngine is the sole source for climate/night sight caps.
@@ -525,27 +529,55 @@ export const TacticalEngine=(()=>{
     // observers above the water line cannot directly lock a diver.
     return String(observer?.verticalState?.mode||"")==="DIVING";
   }
+  function environmentIgnoringSenseRange(observer){
+    const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean);
+    return senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
+  }
+  // Only a synchronous, read-only battlefield projection may use this query.
+  // It has no lifetime across gameplay mutations or snapshots. All results
+  // come from the SAME existing rules, not an approximate second FOV engine.
+  function createSightQuery(m,environmentState){
+    const profiles=new Map(),blockers=new Map(),illumination=new Map();
+    const profile=observer=>{
+      if(!profiles.has(observer))profiles.set(observer,{
+        personal:effectiveVisionRange(observer,environmentState),environment:rawEnvironmentVisionRange(environmentState,observer),
+        sense:environmentIgnoringSenseRange(observer),rules:observationRules(observer),networks:new Map()});
+      return profiles.get(observer);
+    };
+    return {profile,network:(observer,rule)=>{
+      const networks=profile(observer).networks;
+      if(!networks.has(rule))networks.set(rule,connectedObservationNodes(m,observer,rule));
+      return networks.get(rule);
+    },blocked:(x,y)=>{
+      const key=K(x,y);if(!blockers.has(key))blockers.set(key,visionBlocked(environmentState,x,y));return blockers.get(key);
+    },illumination:target=>{
+      const key=K(target.x,target.y);
+      if(!illumination.has(key))illumination.set(key,Number(globalThis.EnvironmentEngine?.illuminationBonus?.(environmentState,target.x,target.y)||0));
+      return illumination.get(key);
+    }};
+  }
   // Optional observer only: rejection codes originate at the actual rule, never a second targeting engine.
   const reject=(trace,reason,details)=>{if(trace)trace(reason,details);return false;};
-  function canSee(m,observer,target,environmentState=null,trace=null){
+  function canSee(m,observer,target,environmentState=null,trace=null,query=null){
     if(!m||!observer||!target)return reject(trace,"INVALID_VISION_CONTEXT");
     if(!underwaterTargetVisibleTo(observer,target))return reject(trace,"DIVER_HIDDEN");
     if(target?.character&&observer?.team!==target?.team&&globalThis.EffectEngine?.isStealthed?.(target)){
       const proximityVisible=globalThis.EffectEngine?.directTargetAllowed?.(observer,target)===true;
-      const networkVisible=observationNetworkCanObserve(m,observer,target,{revealStealth:true});
+      const networkVisible=observationNetworkCanObserve(m,observer,target,{revealStealth:true},query);
       if(!proximityVisible&&!networkVisible)return reject(trace,"STEALTH_NOT_REVEALED");
     }
     if(observer.x===target.x&&observer.y===target.y)return true;
-    if(observationNetworkCanObserve(m,observer,target))return true;
+    if(observationNetworkCanObserve(m,observer,target,{},query))return true;
     const distance=D(observer,target);if(distance<=LOCAL_AWARENESS_RANGE)return true;
-    const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
+    const senseRange=query?query.profile(observer).sense:environmentIgnoringSenseRange(observer);
     if(senseRange>0&&distance<=senseRange)return true;
-    const personalLimit=effectiveVisionRange(observer,environmentState),environmentLimit=environmentVisionLimit(environmentState,target,observer),limit=Math.min(personalLimit,environmentLimit);if(Number.isFinite(limit)&&distance>limit)return reject(trace,"VISION_DISTANCE",trace?{distance,personalLimit,environmentLimit}:undefined);
-    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return reject(trace,"OPTICAL_ENDPOINT_BLOCKED",trace?{sourceOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,observer.x,observer.y),targetOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,target.x,target.y)}:undefined);
+    const personalLimit=query?query.profile(observer).personal:effectiveVisionRange(observer,environmentState),environmentLimit=environmentVisionLimit(environmentState,target,observer,query),limit=Math.min(personalLimit,environmentLimit);if(Number.isFinite(limit)&&distance>limit)return reject(trace,"VISION_DISTANCE",trace?{distance,personalLimit,environmentLimit}:undefined);
+    const blocked=query?query.blocked:(x,y)=>visionBlocked(environmentState,x,y);
+    if(blocked(observer.x,observer.y)||blocked(target.x,target.y))return reject(trace,"OPTICAL_ENDPOINT_BLOCKED",trace?{sourceOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,observer.x,observer.y),targetOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,target.x,target.y)}:undefined);
     const start=elevation(tile(m,observer.x,observer.y))+1,end=elevation(tile(m,target.x,target.y))+1;
     return lineCells(observer,target).every(p=>{
       const ground=tile(m,p.x,p.y);
-      const clear=ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!visionBlocked(environmentState,p.x,p.y);
+      const clear=ground&&ground.terrain!=="WALL"&&elevation(ground)<start+(end-start)*p.t&&!blocked(p.x,p.y);
       return clear||reject(trace,"VISION_LINE_BLOCKED",trace?{x:p.x,y:p.y,terrain:ground?.terrain,groundZ:ground?elevation(ground):null,rayZ:start+(end-start)*p.t,optical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,p.x,p.y)}:undefined);
     });
   }
@@ -568,15 +600,27 @@ export const TacticalEngine=(()=>{
     }
     return sources;
   }
-  // Team visibility is checked only against current positions. No LAST_SEEN data.
-  function teamCanSee(m,units,team,target,environmentState=null,world=null){
-    if(!m||!target)return false;
-    const observers=[...(units||[]).filter(unit=>unit?.alive&&unit.team===team),...teamVisionSources(world,team)];
+  function teamObservers(units,team,world){
+    return [...(units||[]).filter(unit=>unit?.alive&&unit.team===team),...teamVisionSources(world,team)];
+  }
+  function observersCanSee(m,observers,target,environmentState,query=null){
     return observers.some(observer=>{
       // Buildings never grant passive stealth revelation.
       if(String(observer.id||"").startsWith("VISION:")&&target?.character&&globalThis.EffectEngine?.isStealthed?.(target))return false;
-      return canSee(m,observer,target,environmentState);
+      return canSee(m,observer,target,environmentState,null,query);
     });
+  }
+  // Team visibility is checked only against current positions. No LAST_SEEN data.
+  function teamCanSee(m,units,team,target,environmentState=null,world=null){
+    if(!m||!target)return false;
+    return observersCanSee(m,teamObservers(units,team,world),target,environmentState);
+  }
+  // Build the FOV field once from the actual team and all its formal sources.
+  function teamVisibleCells(world,team,environmentState=world?.environmentState){
+    const map=world?.map,visible=new Set();if(!map)return visible;
+    const observers=teamObservers(world.units,team,world),query=createSightQuery(map,environmentState);
+    for(const target of map.tiles||[])if(observersCanSee(map,observers,target,environmentState,query))visible.add(K(target.x,target.y));
+    return visible;
   }
   // A viewer's battlefield-intel mode and physical LOS are different rules.
   // This is the only enemy-identity visibility decision used by presentation:
@@ -713,6 +757,6 @@ export const TacticalEngine=(()=>{
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function combatTerrain(m,a,d,s,environmentState=null){const contact=contactPair(m,a,d,s,environmentState),contactActor=contact?.a||a,contactDefender=contact?.b||d;const at=tile(m,contactActor.x,contactActor.y),dt=tile(m,contactDefender.x,contactDefender.y),type=attackType(a,s),acc=at&&dt&&(type==="SHOT"||type==="MAGIC")&&elevation(at)>elevation(dt)?HIGH_GROUND_RANGED_ACCURACY:0,eva=TERRAINS[dt?.terrain]?.evasion||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(contactActor,contactDefender);return {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance};}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);const {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance}=combatTerrain(m,a,d,s,opt.environmentState||null),arc=relativeArc(contactDefender,contactActor);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,strategicDestination,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,hasLocalOpticalOccluders,aimOpticallyHiddenIds,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,strategicDestination,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,hasLocalOpticalOccluders,aimOpticallyHiddenIds,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamVisibleCells,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

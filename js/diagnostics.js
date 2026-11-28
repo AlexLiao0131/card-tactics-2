@@ -113,7 +113,7 @@ try{
   if(old&&Array.isArray(old.events)&&old.sessionId!==sessionId){
     previousSession=old;
     if(Array.isArray(old.tileAnnotations))tileAnnotations.push(...old.tileAnnotations.slice(-ANNOTATION_MAX));
-    if(Array.isArray(old.hydrologyBalanceHistory))hydrologyBalanceHistory.push(...old.hydrologyBalanceHistory.slice(-ROUND_MAX));
+    if(Array.isArray(old.hydrologyBalanceHistory))hydrologyBalanceHistory.push(...old.hydrologyBalanceHistory.slice(-ROUND_MAX).map(balance=>({...balance,sessionId:balance.sessionId??null,restoredHistory:true})));
     previousStatus=old.lifecycle==="ACTIVE"
       ?"疑似異常中斷（也可能是系統回收或無預警重新載入；不能確定是閃退）"
       :old.lifecycle==="BACKGROUND"
@@ -309,9 +309,10 @@ function push(type,data={}){
 // seam audits and visual captures remain separate to avoid redundant storage.
 function recordHydrologyBalance(balance){
   if(!enabled||!balance)return;
-  hydrologyBalanceHistory.push(balance);
+  hydrologyBalanceHistory.push({...balance,sessionId,restoredHistory:false});
   while(hydrologyBalanceHistory.length>ROUND_MAX)hydrologyBalanceHistory.shift();
-  push("HYDROLOGY_CYCLE_BALANCE",{environmentTurn:balance.environmentTurn,
+  push("HYDROLOGY_CYCLE_BALANCE",{sessionId,mapId:balance.mapId,environmentTurn:balance.environmentTurn,
+    tornadoWaterDelta:numeric(balance.tornadoWaterDelta),legacyOverflowInflow:numeric(balance.legacyOverflowInflow),
     inventoryDelta:numeric(balance.inventoryDelta),explainedDelta:numeric(balance.explainedDelta),
     unattributedDelta:numeric(balance.unattributedDelta),offMapDrain:numeric(balance.offMapDrain),
     precipitation:numeric(balance.precipitation),sourceInflow:numeric(balance.sourceInflow),

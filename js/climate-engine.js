@@ -33,10 +33,10 @@ export const ClimateEngine=(()=>{
     const before=snowDepth(tile),stored=snowWaterEquivalent(tile);
     const removed=Math.min(before,Math.max(0,Number(removedDepth||0)));
     if(removed<=0)return{depth:0,water:0};
-    const remaining=volumeRound(stored*(before-removed)/before);
+    const remaining=stored*(before-removed)/before;
     tile.snowDepth=clean(before-removed);
     tile.snowWaterEquivalent=tile.snowDepth>0?remaining:0;
-    return{depth:removed,water:volumeRound(stored-tile.snowWaterEquivalent)};
+    return{depth:removed,water:stored-tile.snowWaterEquivalent};
   }
   // The climate's HEAT channel describes a sustained hot-weather condition,
   // not a lamp that remains above the battlefield after sunset. Radiation is
@@ -171,7 +171,7 @@ export const ClimateEngine=(()=>{
           // authored snowRate controls visual accumulation only; its ratio
           // to ordinary snowfall carries storm and altitude intensification.
           const water=volumeRound(Number(HydrologyEngine.RAIN_FILL_PER_EVENT)*(added/CFG.SNOW.snowRate));
-          tile.snowWaterEquivalent=volumeRound(snowWaterEquivalent(tile)+water);
+          tile.snowWaterEquivalent=snowWaterEquivalent(tile)+water;
           snowfallWater+=water;
         }
       }else if(temp>0){
@@ -194,7 +194,7 @@ export const ClimateEngine=(()=>{
       if(Math.abs(iceThickness(tile)-beforeIce)>.0001)iceChanged++;
       maxSnow=Math.max(maxSnow,snowDepth(tile));maxIce=Math.max(maxIce,iceThickness(tile));syncTileVisuals(state,tile);
     }
-    if(snowfallWater>0)events.push({type:"SNOW_PRECIPITATION_WATER_INPUT",volume:volumeRound(snowfallWater),source:"SNOW",weather:legacyWeather(state)});
+    if(snowfallWater>0)events.push({type:"SNOW_PRECIPITATION_WATER_INPUT",volume:snowfallWater,source:"SNOW",weather:legacyWeather(state)});
     if(changedWater){HydrologyEngine.redistribute(map,{source:"SNOW_MELT",events:hydroEvents});events.push(...hydroEvents);events.push({type:"CLIMATE_WATER_CHANGED",source:"SNOW_MELT",meltVolume:clean(totalMelt),changedTiles:snowChanged});}
 
     if(precipitationType(state)==="NONE"&&globalThis.HydrologyEngine?.evaporateUnfedWater){

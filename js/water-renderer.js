@@ -64,24 +64,51 @@ function mixColor(a,b,t){
 // renderer-side invalidation contract, not another water/flow model.
 const WATER_NON_VISUAL_ANNOTATIONS=new Set([
   "reachable","targetRange","attackable","deployable","inspected",
-  "atmosphericVisible","visionBlocked","deploymentAreaOwner","capturePoint","core"
+  "atmosphericVisible","visionBlocked","deploymentAreaOwner","capturePoint","core",
+  "aimPreview","aimCenter","aimLegal","plantObserved","activeFields","manaWell","spatialDistortion"
 ]);
-function waterVisualInputSignature(state,resolver){
-  const tiles=tilesOf(state).map(tile=>{
-    const visual={};
-    for(const key of Object.keys(tile||{}))
-      if(!WATER_NON_VISUAL_ANNOTATIONS.has(key))visual[key]=tile[key];
-    return visual;
-  });
-  // Both revisions come from the one terrain surface registry, not from
-  // independent water heights or an approximate dirty-region heuristic.
-  return JSON.stringify([
-    state?.map?.id??null,state?.map?.width??null,state?.map?.height??null,
-    resolver?.renderedSurfaceGeometryRevision??null,
-    resolver?.renderedCliffGeometryRevision??null,
-    tiles,state?.map?.objects||[],
-    state?.presentation?.environment?.wind??state?.environment?.wind??state?.wind??null
-  ]);
+// Keep the full, exact JSON-compatible physical/visual input contract. Compare
+// without constructing a giant string or copying every tile on an unchanged
+// publication. The retained baseline is a detached copy; callers may mutate
+// their own snapshots or reconstruct them in a different object order.
+function equalWaterValue(a,b,ignore=null){
+  if(a===b)return true;
+  if(typeof a==="number"&&typeof b==="number"&&Number.isNaN(a)&&Number.isNaN(b))return true;
+  if(!a||!b||typeof a!=="object"||typeof b!=="object"||Array.isArray(a)!==Array.isArray(b))return false;
+  if(Array.isArray(a)){
+    if(a.length!==b.length)return false;
+    for(let i=0;i<a.length;i++)if(!equalWaterValue(a[i],b[i]))return false;
+    return true;
+  }
+  let count=0;
+  for(const key of Object.keys(a)){
+    if(ignore?.has(key))continue;
+    count++;
+    if(!Object.hasOwn(b,key)||!equalWaterValue(a[key],b[key]))return false;
+  }
+  let other=0;for(const key of Object.keys(b))if(!ignore?.has(key))other++;
+  return count===other;
+}
+function copyWaterValue(value,ignore=null){
+  if(!value||typeof value!=="object")return value;
+  if(Array.isArray(value))return value.map(item=>copyWaterValue(item));
+  return Object.fromEntries(Object.keys(value).filter(key=>!ignore?.has(key)).map(key=>[key,copyWaterValue(value[key])]));
+}
+export function waterVisualInput(state,resolver){
+  return {header:[state?.map?.id??null,state?.map?.width??null,state?.map?.height??null,
+      resolver?.renderedSurfaceGeometryRevision??null,resolver?.renderedCliffGeometryRevision??null],
+    tiles:tilesOf(state),objects:state?.map?.objects||[],
+    wind:state?.presentation?.environment?.wind??state?.environment?.wind??state?.wind??null};
+}
+export function sameWaterVisualInput(a,b){
+  if(!a||!b||!equalWaterValue(a.header,b.header)||!equalWaterValue(a.wind,b.wind)||
+    a.tiles.length!==b.tiles.length||!equalWaterValue(a.objects,b.objects))return false;
+  for(let i=0;i<a.tiles.length;i++)if(!equalWaterValue(a.tiles[i],b.tiles[i],WATER_NON_VISUAL_ANNOTATIONS))return false;
+  return true;
+}
+export function captureWaterVisualInput(input){
+  return {header:copyWaterValue(input.header),tiles:input.tiles.map(tile=>copyWaterValue(tile,WATER_NON_VISUAL_ANNOTATIONS)),
+    objects:copyWaterValue(input.objects),wind:copyWaterValue(input.wind)};
 }
 
 export class WaterRenderer{
@@ -1307,6 +1334,59 @@ export class WaterRenderer{
     return index;
   }
 
+  closeSurfaceVertexContacts(out,cache,polygons,allMap){
+    const n=out.positions.length/3;
+    const parent=Array.from({length:n},(_,i)=>i);
+    const find=i=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i];}return i;};
+    const join=(a,b)=>{a=find(a);b=find(b);if(a!==b)parent[Math.max(a,b)]=Math.min(a,b);};
+    // Earlier addVertex() picked the FIRST contact record. When a third tile
+    // connected two existing records, the aliases remained separate forever.
+    // Resolve the entire contact graph at each position before publishing ANY
+    // triangle, normals, or wave attributes. Only local authorised contacts
+    // or identical float32 XYZ can be welded; distinct cliff levels survive.
+    for(const records of cache.values()){
+      for(let a=0;a<records.length;a++)for(let b=a+1;b<records.length;b++){
+        const left=records[a],right=records[b],i=left.index,j=right.index;
+        const exact=[0,1,2].every(k=>Math.fround(out.positions[i*3+k])===Math.fround(out.positions[j*3+k]));
+        if(exact||left.tiles.some(t=>right.tiles.some(u=>this.surfaceEdgeContinuous(t,u))))join(i,j);
+      }
+    }
+    const exactPoints=new Map();
+    for(let i=0;i<n;i++){
+      const key=out.positions.slice(i*3,i*3+3).map(Math.fround).join(":");
+      if(exactPoints.has(key))join(i,exactPoints.get(key));else exactPoints.set(key,i);
+    }
+    const groups=new Map();for(let i=0;i<n;i++){const r=find(i),list=groups.get(r)||[];list.push(i);groups.set(r,list);}
+    if(groups.size===n)return 0;
+    const next=this.createSurfaceVertexAccumulator(),remap=new Array(n);
+    for(const list of groups.values()){
+      const index=next.positions.length/3;
+      const stored=list.filter(i=>out.storedVertexAuthority[i]);
+      const authority=stored[0]??list[0],owners=[...new Set(list.flatMap(i=>out.vertexContactTiles[i]))];
+      const x=out.positions[authority*3],z=out.positions[authority*3+2];
+      let y=out.positions[authority*3+1];
+      // If genuinely continuous stored contacts have different heights, use
+      // the already-established hydrology interpolation, not a new mean level.
+      if(stored.some(i=>Math.fround(out.positions[i*3+1])!==Math.fround(y))){
+        const tile=out.vertexContactTiles[authority].find(hasAnyWater);
+        if(tile)y=this.waterLevelAtWorld(tile,x,z,allMap)*ELEVATION_HEIGHT+SURFACE_OFFSET;
+      }
+      next.positions.push(x,y,z);next.uvs.push(...out.uvs.slice(authority*2,authority*2+2));
+      next.colors.push(...out.colors.slice(authority*4,authority*4+4));
+      next.vertexContactTiles.push(owners);next.storedVertexAuthority.push(stored.length>0);
+      // A real cliff pin applies to the shared vertex on both sides.
+      const wave=Math.min(...list.map(i=>out.waveWeights[i]));
+      next.waveWeights.push(wave);
+      next.sourceWeights.push(wave===0?0:out.sourceWeights[authority]);
+      next.sourcePhases.push(wave===0?0:out.sourcePhases[authority]);
+      for(const field of ["flowXSum","flowZSum","flowSpeedSum","flowSampleCount"])
+        next[field].push(list.reduce((sum,i)=>sum+out[field][i],0));
+      for(const i of list)remap[i]=index;
+    }
+    for(const poly of polygons||[])for(let i=0;i<poly.length;i++)poly[i]=remap[poly[i]];
+    Object.assign(out,next);return n-groups.size;
+  }
+
   pushTriangle(out,a,b,c){
     if(a===b||b===c||c===a)return;
     // The rendering buffer stores float32 positions. Test whether the actual
@@ -1417,6 +1497,7 @@ export class WaterRenderer{
     // Keep exact float32 X/Z (no rounding) and refuse ambiguous X/Z aliases;
     // different-height layers must use the full 3D conforming builder.
     const footprintKeys=renderPoints.map(p=>`${p.x}:${p.z}`);
+    const ownerKeys=renderPoints.map((_,i)=>(out.vertexContactTiles?.[i]||[]).map(t=>keyOf(t.x,t.y)).sort().join("|"));
     const indexByFootprint=new Map();
     for(let i=0;i<footprintKeys.length;i++){
       const key=footprintKeys[i];
@@ -1425,7 +1506,7 @@ export class WaterRenderer{
     }
     const cellSignatures=new Map();
     for(const [id,ids] of buckets)
-      cellSignatures.set(id,JSON.stringify(ids.map(i=>footprintKeys[i]).sort()));
+      cellSignatures.set(id,JSON.stringify(ids.map(i=>[footprintKeys[i],ownerKeys[i]]).sort((a,b)=>a.join("/").localeCompare(b.join("/")))));
     const nextFaces=new Map(),ownerOrdinals=new Map();
     let reusedFaces=0,recomputedFaces=0,topologyVerifiedFacesReused=0;
     const triangulationStart=performance.now();
@@ -1468,6 +1549,7 @@ export class WaterRenderer{
           // Geometry in a transitive region can still straddle a real cliff
           // with two independent surface layers. Join only local tile pairs
           // authorised by the SAME direct D/Q connection used for regions.
+          candidates.push(footprintKeys[index]);
           const owners=out.vertexContactTiles;
           if(owners){
             const belongs=(endpoint)=>owners[index]?.some(source=>
@@ -1476,7 +1558,6 @@ export class WaterRenderer{
           }
           // All X/Z candidates are saved, not just those currently coplanar.
           // A future change in water height can create or remove a T-junction.
-          candidates.push(footprintKeys[index]);
           // This component has already passed the authored no-cascade /
           // submerged-cliff continuity check. A different height on a
           // projected edge is precisely the cracked D/Q join: split the
@@ -1488,8 +1569,7 @@ export class WaterRenderer{
         // Unchanged exact X/Z surroundings have the same possible edge joins.
         // Recheck the CURRENT projected edge before reusing those candidates.
         // If any horizontal key is ambiguous, fall through to the full solver.
-        const validPrior=Array.isArray(priorCandidates)&&
-          priorCandidates.every(key=>indexByFootprint.get(key)!=null);
+        const validPrior=Array.isArray(priorCandidates)&&priorCandidates.every(key=>indexByFootprint.get(key)!=null);
         if(validPrior){
           for(const key of priorCandidates)qualifies(indexByFootprint.get(key));
         }else{
@@ -1573,30 +1653,32 @@ export class WaterRenderer{
             if(boundary.at(-1)!==chain[j])boundary.push(chain[j]);
           }
         }
+        // Remove repeated endpoints caused by a canonical contact merge.
+        for(let i=boundary.length-1;i>=0;i--){if(boundary[i]===boundary[(i+1)%boundary.length])boundary.splice(i,1);}
         if(boundary.length>2){
-          // Fan triangulation can discard a collinear sub-edge attached to its
-          // pivot. Ear clipping the convex published polygon instead preserves
-          // EVERY split boundary segment without adding synthetic centroids.
-          while(boundary.length>3){
+          const cross=(a,b,c)=>(b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x);
+          const signedArea=ids=>{const a=renderPoints[ids[0]];let sum=0;for(let i=1;i+1<ids.length;i++)sum+=cross(a,renderPoints[ids[i]],renderPoints[ids[i+1]]);return sum;};
+          const winding=Math.sign(signedArea(boundary));
+          // The previous ear accepted any non-collinear corner, including a
+          // reflex corner after clipped/split edges. That can emit overlapping
+          // triangles with >2 faces on one edge. An ear must be convex, have
+          // no other boundary vertex inside/on it and leave a valid remainder.
+          while(winding&&boundary.length>3){
             let ear=-1;
             for(let i=0;i<boundary.length;i++){
-              const a=renderPoints[boundary[(i+boundary.length-1)%boundary.length]];
-              const b=renderPoints[boundary[i]];
-              const c=renderPoints[boundary[(i+1)%boundary.length]];
-              if((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x)===0)continue;
-              // A legal ear must leave a NON-degenerate polygon. Otherwise a
-              // long unsplit edge would swallow the split points at the end.
+              const prev=(i+boundary.length-1)%boundary.length,next=(i+1)%boundary.length;
+              const a=renderPoints[boundary[prev]],b=renderPoints[boundary[i]],c=renderPoints[boundary[next]];
+              if(winding*cross(a,b,c)<=0)continue;
+              const blocked=boundary.some((id,j)=>{
+                if(j===prev||j===i||j===next)return false;
+                const p=renderPoints[id];return winding*cross(a,b,p)>=0&&winding*cross(b,c,p)>=0&&winding*cross(c,a,p)>=0;
+              });
+              if(blocked)continue;
               const rest=boundary.filter((_,j)=>j!==i);
-              let restArea=0;
-              for(let k=0;k<rest.length;k++){
-                const p=renderPoints[rest[k]],q=renderPoints[rest[(k+1)%rest.length]];
-                restArea+=p.x*q.z-p.z*q.x;
-              }
-              if(restArea!==0){ear=i;break;}
+              if(winding*signedArea(rest)>0){ear=i;break;}
             }
             if(ear<0)break;
-            this.pushTriangle(out,boundary[(ear+boundary.length-1)%boundary.length],
-              boundary[ear],boundary[(ear+1)%boundary.length]);
+            this.pushTriangle(out,boundary[(ear+boundary.length-1)%boundary.length],boundary[ear],boundary[(ear+1)%boundary.length]);
             boundary.splice(ear,1);
           }
           if(boundary.length===3)this.pushTriangle(out,boundary[0],boundary[1],boundary[2]);
@@ -1664,6 +1746,81 @@ export class WaterRenderer{
     return points;
   }
 
+  // Published D/Q and rugged cliff shoulders can overlap in XZ within ONE
+  // continuous surface. A shared edge is not enough when two polygons cover
+  // the same area. Partition their union into disjoint convex faces before
+  // vertex assembly. Stored D owns overlaps before Q, then authored tile order.
+  // No new wet area, height, surface layer or independent water renderer.
+  partitionSurfacePolygons(resolved){
+    if(resolved.ownershipPartitioned)return resolved;
+    const bins=new Map(),tileSize=TILE_SIZE,owned=new Map();
+    let overlapCuts=0,overlapRemoved=0;
+    const bounds=poly=>({minX:Math.min(...poly.map(p=>p.x)),maxX:Math.max(...poly.map(p=>p.x)),minZ:Math.min(...poly.map(p=>p.z)),maxZ:Math.max(...poly.map(p=>p.z))});
+    const area=poly=>{if(poly.length<3)return 0;const a=poly[0];let v=0;for(let i=1;i+1<poly.length;i++)v+=(poly[i].x-a.x)*(poly[i+1].z-a.z)-(poly[i].z-a.z)*(poly[i+1].x-a.x);return v/2;};
+    // Numeric roundoff only, scaled to local polygon edge products. This is
+    // not the gameplay epsilon or a guessed water depth / shoreline margin.
+    const positive=poly=>{if(poly.length<3)return false;const b=bounds(poly),scale=Math.max(b.maxX-b.minX,b.maxZ-b.minZ);return Math.abs(area(poly))>Number.EPSILON*scale*scale*poly.length*8;};
+    const cells=b=>{const keys=[];for(let x=Math.floor(b.minX/tileSize);x<=Math.floor(b.maxX/tileSize);x++)for(let z=Math.floor(b.minZ/tileSize);z<=Math.floor(b.maxZ/tileSize);z++)keys.push(`${x},${z}`);return keys;};
+    const intersects=(a,b)=>a.minX<b.maxX&&b.minX<a.maxX&&a.minZ<b.maxZ&&b.minZ<a.maxZ;
+    const clip=(poly,a,b,sign)=>{
+      const dx=b.x-a.x,dz=b.z-a.z;
+      const distance=p=>sign*(dx*(p.z-a.z)-dz*(p.x-a.x));
+      const out=[];
+      const add=p=>{const q=out.at(-1);if(!q||p.x!==q.x||p.z!==q.z)out.push(p);};
+      for(let i=0;i<poly.length;i++){
+        const p=poly[i],q=poly[(i+1)%poly.length],dp=distance(p),dq=distance(q);
+        if(dp>=0)add(p);
+        if((dp>0&&dq<0)||(dp<0&&dq>0)){
+          const t=dp/(dp-dq),r={...p};
+          for(const k of Object.keys(p))if(typeof p[k]==="number"&&typeof q[k]==="number")r[k]=p[k]+(q[k]-p[k])*t;
+          r.clipped=!!(p.clipped&&q.clipped);add(r);
+        }
+      }
+      if(out.length>1&&out[0].x===out.at(-1).x&&out[0].z===out.at(-1).z)out.pop();
+      out.triangleIndex=poly.triangleIndex;return out;
+    };
+    const subtract=(poly,cover)=>{
+      const sign=Math.sign(area(cover));if(!sign)return[poly];
+      let inside=poly;
+      for(let i=0;i<cover.length&&inside.length>=3;i++)inside=clip(inside,cover[i],cover[(i+1)%cover.length],sign);
+      // Mere shared edges / points are not overlap; preserve original polygons
+      // and their object identity for the existing exact cache.
+      if(!positive(inside))return[poly];
+      const pieces=[];inside=poly;
+      for(let i=0;i<cover.length&&inside.length>=3;i++){
+        const a=cover[i],b=cover[(i+1)%cover.length],outside=clip(inside,a,b,-sign);
+        if(positive(outside))pieces.push(outside);
+        inside=clip(inside,a,b,sign);
+      }
+      overlapCuts++;if(!pieces.length)overlapRemoved++;
+      return pieces;
+    };
+    const ordered=[...resolved.tiles].sort((a,b)=>Number(hasAnyWater(b.tile))-Number(hasAnyWater(a.tile))||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+    for(const item of ordered){
+      const polys=[];
+      for(const source of item.polygons){
+        let polygon=source;
+        const clean=source.filter((p,i)=>{const q=source[(i+source.length-1)%source.length];return p.x!==q.x||p.z!==q.z;});
+        if(clean.length!==source.length){clean.triangleIndex=source.triangleIndex;polygon=clean;}
+        if(!positive(polygon))continue;
+        const box=bounds(polygon),nearby=new Set(cells(box).flatMap(key=>bins.get(key)||[]));
+        let pieces=[polygon];
+        for(const candidate of nearby){
+          if(!intersects(box,candidate.bounds)||!this.surfaceEdgeContinuous(item.tile,candidate.tile))continue;
+          pieces=pieces.flatMap(poly=>intersects(bounds(poly),candidate.bounds)?subtract(poly,candidate.polygon):[poly]);
+          if(!pieces.length)break;
+        }
+        for(const poly of pieces){
+          polys.push(poly);const b=bounds(poly),record={tile:item.tile,polygon:poly,bounds:b};
+          for(const key of cells(b)){const entries=bins.get(key)||[];entries.push(record);bins.set(key,entries);}
+        }
+      }
+      owned.set(item,polys.length===item.polygons.length&&polys.every((p,i)=>p===item.polygons[i])?item.polygons:polys);
+    }
+    return{...resolved,ownershipPartitioned:true,overlapCuts,overlapRemoved,
+      tiles:resolved.tiles.map(item=>({...item,polygons:owned.get(item)}))};
+  }
+
   // Resolve ownership with the EXISTING submerged-cliff/continuous-water
   // contract. No separate water-body test, water level, or render overlay.
   // Other cliffs (exposed rock, dry banks, waterfalls) are left untouched.
@@ -1708,7 +1865,7 @@ export class WaterRenderer{
       // Motion always comes from this snapshot's one Q network owner.
       return{tile,key,polygons:owned,motion:this.tileMotion(tile)};
     });
-    return{tiles,excludedSubmergedShoulders,clippedSubmergedShoulders};
+    return this.partitionSurfacePolygons({tiles,excludedSubmergedShoulders,clippedSubmergedShoulders});
   }
 
   // GPU wave pinning reads actual local cliff lips and adjacent uphill feet.
@@ -1835,6 +1992,7 @@ export class WaterRenderer{
   // caller must use the complete conforming geometry path instead.
   refreshSurfaceAttributes(component,resolved,state,mesh,entry,allMap,vertexReuse=null){
     if(!mesh||!entry)return false;
+    resolved=this.partitionSurfacePolygons(resolved);
     const out=this.createSurfaceVertexAccumulator();
     const cache=new Map(),cliffSeams=new Map();
     const sources=component.sources??this.activeHydrologySources(state);
@@ -1848,6 +2006,7 @@ export class WaterRenderer{
         this.addVertex(out,cache,polygons[pi][vi],allMap,tile,sources,motion,
           cliffSeams,samples?.[pi]?.[vi]);
     }
+    this.closeSurfaceVertexContacts(out,cache,null,allMap);
     this.applyLocalWaterTurbidity(out,resolved);
     const rest=entry.basePositions;
     if(out.positions.length!==rest.length)return false;
@@ -1890,7 +2049,7 @@ export class WaterRenderer{
       sources=component.sources??this.activeHydrologySources(state),componentTurbidity=average((component.tiles.some(hasAnyWater)
       ?component.tiles.filter(hasAnyWater):component.tiles).map(tile=>this.turbidity(tile)));
     let clippedPoints=0,terrainTriangles=0,waterPolygons=0;
-    const resolved=resolvedSurface||this.componentSurfacePolygons(component,presentation);
+    const resolved=this.partitionSurfacePolygons(resolvedSurface||this.componentSurfacePolygons(component,presentation));
     const exclusiveSubmergedShoulders=resolved.excludedSubmergedShoulders;
     const clippedSubmergedShoulders=resolved.clippedSubmergedShoulders;
     const wetPolygons=[],polygonOwners=[];
@@ -1908,6 +2067,7 @@ export class WaterRenderer{
         polygonOwners.push(keyOf(tile.x,tile.y));
       }
     }
+    const weldedAliases=this.closeSurfaceVertexContacts(out,cache,wetPolygons,tileMap);
     this.applyLocalWaterTurbidity(out,resolved);
     const exactLayout=this.surfaceTopologyLayout(component,out,wetPolygons,polygonOwners);
     const cachedLayout=this.surfaceTopologyLayouts.get(component.id);
@@ -1990,7 +2150,7 @@ export class WaterRenderer{
     mesh.metadata={kind:"water-surface",tileCount:component.tiles.length,
       unifiedDQ:true,storedTiles:component.tiles.filter(hasAnyWater).length,
       qOnlyTiles:component.tiles.filter(tile=>!hasAnyWater(tile)).length,sharedWetEdges:true,hydrologySurface:true,quantizedLevels:false,clippedShorePoints:clippedPoints,exactTerrainIntersection:true,renderedTerrainTriangles:true,terrainTriangles,waterPolygons,syntheticShoreline:false,visualSurfaceResolver:true,stylizedWater:true,depthGradient:true,vertexAlpha:true,alphaIndex:SURFACE_RENDER_ORDER.STORED_WATER,componentTurbidity,turbidityOwner:"LOCAL_WATER_VERTEX",vertexCount:out.positions.length/3,triangleCount:out.indices.length/3,conformingTriangulation:triangulation,
-      exclusiveSubmergedShoulders,clippedSubmergedShoulders};
+      exclusiveSubmergedShoulders,clippedSubmergedShoulders,ownershipOverlapCuts:resolved.overlapCuts,ownershipOverlapRemoved:resolved.overlapRemoved,weldedAliases};
     const flow=this.componentFlow(component);
     const {vertexFlowX,vertexFlowZ,vertexFlowSpeeds,waterAnim,waterBaseXZ,waterSource}=
       this.surfaceMotionAttributes(out);
@@ -3160,10 +3320,11 @@ export class WaterRenderer{
 
   sync(state,presentationEvents=[]){
     const signatureStart=performance.now();
-    const input=waterVisualInputSignature(state,this.surfaceResolver);
+    const input=waterVisualInput(state,this.surfaceResolver);
+    const unchanged=sameWaterVisualInput(input,this.lastWaterVisualInput);
     const signatureElapsed=performance.now()-signatureStart;
     this.visualInputAudit.keyBuildMs=Math.round(signatureElapsed*100)/100;
-    this.visualInputAudit.keyLength=input.length;
+    this.visualInputAudit.comparison="EXACT_PHYSICAL_INPUT";
     // The only presentation event consumed by WaterRenderer.sync() is
     // ROGUE_WAVE; all other events are owned by other presentation systems.
     const waveEvent=(presentationEvents||[]).some(event=>
@@ -3175,7 +3336,7 @@ export class WaterRenderer{
     // canonical component IDs and X/Z positions happen to match prior play.
     if(reset){this.surfaceTopologyLayouts.clear();this.surfaceRebuildHistory.length=0;}
     this.lastWaterVisualRevision=currentRevision;
-    if(!reset&&!waveEvent&&input===this.lastWaterVisualInput){
+    if(!reset&&!waveEvent&&unchanged){
       this.visualInputAudit.identicalInputsSkipped++;
       return;
     }
@@ -3573,7 +3734,8 @@ export class WaterRenderer{
     }
     this.levelSamples=null;
     // Commit only after the entire official sync has completed successfully.
-    this.lastWaterVisualInput=input;
+    this.lastWaterVisualInput=captureWaterVisualInput(input);
+    this.visualInputAudit.keyLength=JSON.stringify(this.lastWaterVisualInput).length;
   }
 
   // Diagnostic-only audit of the PRESENTED water mesh, not a second water
@@ -3808,7 +3970,7 @@ export class WaterRenderer{
       sharedCrossMeshEdges:0,
       coincidentCrossMeshVertices:0,crossMeshVertexMotionMismatch:0,
       coincidentSameMeshVertices:0,sameMeshWaveInputMismatch:0,
-      conformingSplitEdges:0,conformingInsertedEdgeVertices:0,
+      conformingSplitEdges:0,conformingInsertedEdgeVertices:0,ownershipOverlapCuts:0,ownershipOverlapRemoved:0,weldedAliases:0,
       excludedSubmergedShoulderPolygons:0,clippedSubmergedShoulderPolygons:0,
       sameMeshColorMismatch:0,sameMeshNormalMismatch:0,
       crossMeshColorMismatch:0,crossMeshNormalMismatch:0,
@@ -3842,6 +4004,8 @@ export class WaterRenderer{
         clippedSubmergedShoulderPolygons:mesh?.metadata?.clippedSubmergedShoulders??0,
         invalidTriangles:0,degenerateTriangles:0,openBoundaryEdges:0};
       regions.push(region);counters.vertices+=vertexCount;
+      for(const field of ["ownershipOverlapCuts","ownershipOverlapRemoved","weldedAliases"])
+        counters[field]+=Number(mesh?.metadata?.[field]||0);
       counters.conformingSplitEdges+=region.conformingSplitEdges;
       counters.conformingInsertedEdgeVertices+=region.conformingInsertedEdgeVertices;
       counters.excludedSubmergedShoulderPolygons+=region.excludedSubmergedShoulderPolygons;

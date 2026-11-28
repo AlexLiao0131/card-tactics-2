@@ -123,6 +123,9 @@ export class VisualSurfaceResolver{
     // The registered terrain triangles remain the single height authority.
     this.publishedSurfaceSamples=new WeakMap();
     this.publishedSurfaceSampleStats={hits:0,misses:0};
+    // Directed routes over unchanged immutable terrain triangles remain valid
+    // across D/Q solves. Cliff seams can depend on stored water, so bypass.
+    this.transportRouteCache=new WeakMap();this.transportRouteStats={hits:0,misses:0,cliffBypasses:0};
   }
 
   beginPublishedSurfaceSampling(){
@@ -773,8 +776,19 @@ export class VisualSurfaceResolver{
     if(!from||!to)return [];
     const dx=Number(to.x)-Number(from.x),dz=Number(to.y)-Number(from.y);
     if(Math.abs(dx)+Math.abs(dz)!==1)return [];
-    const terrains=[from,to].map(tile=>this.getRenderedSurfaceGeometry(tile)?.triangles||[]);
-    if(terrains.some(tris=>!tris.length))return [];
+    const fromGeometry=this.getRenderedSurfaceGeometry(from),toGeometry=this.getRenderedSurfaceGeometry(to);
+    if(!fromGeometry?.triangles?.length||!toGeometry?.triangles?.length)return [];
+    const cliff=this.getRenderedCliffGeometry(from,{dx,dy:dz})||this.getRenderedCliffGeometry(to,{dx:-dx,dy:-dz});
+    if(cliff){this.transportRouteStats.cliffBypasses++;return this.solveTransportSurfacePath(from,to,dx,dz);}
+    let routes=this.transportRouteCache.get(fromGeometry);
+    if(!routes){routes=new WeakMap();this.transportRouteCache.set(fromGeometry,routes);}
+    const prior=routes.get(toGeometry);
+    if(prior){this.transportRouteStats.hits++;return prior.map(point=>({...point}));}
+    this.transportRouteStats.misses++;
+    const path=this.solveTransportSurfacePath(from,to,dx,dz);
+    routes.set(toGeometry,path.map(point=>({...point})));return path;
+  }
+  solveTransportSurfacePath(from,to,dx,dz){
     const sampleY=(point,tile)=>this.publishedSurfacePoint(tile,point.x,point.z)?.y??null;
     const nodes=new Map(),links=new Map();
     const put=(id,x,z,tile)=>{
@@ -1557,7 +1571,7 @@ export class VisualSurfaceResolver{
       gameplayGridSubdivision:false,
       renderedSurfaceGeometryRegistry:true,
       waterConsumesExactTerrainTriangles:true,
-      renderedCliffGeometryRegistry:true,
+      renderedCliffGeometryRegistry:true,transportRoutes:{...this.transportRouteStats},
       waterConsumesExactCliffVertices:true,
       waterConsumesExactCliffFaces:true
     };

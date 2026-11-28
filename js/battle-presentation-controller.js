@@ -39,30 +39,24 @@ function create(ctx){
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
   function singleAim(s){return s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE";}
-  function visibilityModel(legalTargets=null){
-    const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));
-    const intelMode=s.stage?.intelMode||(s.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
-    // The tactical intel mask and the atmospheric sight field are different
-    // presentation needs, but BOTH come from TacticalEngine's authoritative LOS.
-    // A fully revealed campaign still has finite *physical* sight in fog/snow.
-    const intelActive=intelMode==="DYNAMIC_INTEL";
-    // Physical smoke and steam already belong to EnvironmentEngine.effects.
-    // Request LOS for visual clarity whenever one of these local occluders exists;
-    // do not mistake this field for tactical FoW or add a separate sight engine.
+  // Unit inspection needs identity/aim visibility, not a 704-cell terrain FOV.
+  // A full snapshot owns the latter; both use the same contact filter.
+  function unitVisibilityContext(s,legalTargets=null){
     const localSightLimited=TacticalEngine.hasLocalOpticalOccluders(s.environmentState);
     const aimHidden=new Set(localSightLimited&&singleAim(s)?TacticalEngine.aimOpticallyHiddenIds(
       s.map,s.selected,s.units,legalTargets??ctx.targetableEntities(s.selected,s.selectedSkill),s.environmentState):[]);
-    // The optical mask is a UNION of friendly LOS under the exact same
-    // EnvironmentEngine night/weather cap used for enemy identification.
-    // This does not create another sight state or change tactical intel.
+    return {localSightLimited,aimHidden,unitVisibility:new Map(),world:s};
+  }
+  function visibilityModel(legalTargets=null){
+    const s=ctx.state(),contacts=unitVisibilityContext(s,legalTargets),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));
+    const intelMode=s.stage?.intelMode||(s.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
+    const intelActive=intelMode==="DYNAMIC_INTEL";
     const atmosphericSightLimited=TacticalEngine.environmentSightLimited(s.environmentState);
-    if(!intelActive&&!atmosphericSightLimited&&!localSightLimited)
-      return{active:false,visible:allVisible,weatherSight:allVisible,observerless:false,aimHidden};
+    if(!intelActive&&!atmosphericSightLimited&&!contacts.localSightLimited)
+      return{...contacts,active:false,visible:allVisible,weatherSight:allVisible,observerless:false};
     const observers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
-    const weatherSight=new Set();
-    for(const tile of s.map?.tiles||[])
-      if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s))weatherSight.add(`${tile.x},${tile.y}`);
-    return{active:intelActive,visible:intelActive?weatherSight:allVisible,weatherSight,observerless:!observers.length,aimHidden};
+    const weatherSight=TacticalEngine.teamVisibleCells(s,viewerTeam);
+    return{...contacts,active:intelActive,visible:intelActive?weatherSight:allVisible,weatherSight,observerless:!observers.length};
   }
   // Plant observation is tactical sight, not emitted physical light. Derive
   // the visual readability cells from TacticalEngine's existing, living
@@ -90,7 +84,10 @@ function create(ctx){
   function unitVisibleToPlayer(unit,visibility){
     // One public snapshot owns meshes, picker, HUD, inspection and lights.
     if(visibility?.aimHidden?.has(unit.id))return false;
-    return TacticalEngine.teamCanIdentifyUnit(ctx.state(),viewerTeam,unit);
+    const cache=visibility?.unitVisibility;
+    if(cache?.has(unit))return cache.get(unit);
+    const visible=TacticalEngine.teamCanIdentifyUnit(visibility?.world||ctx.state(),viewerTeam,unit);
+    cache?.set(unit,visible);return visible;
   }
   function tileInteractions(tile,effects){const s=ctx.state(),environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),notes=[];if(environment==="GRASS"){if(EnvironmentEngine.isRain(s.environmentState))notes.push("草木受雨勢影響，小火無法形成持續燃燒。");else notes.push("草木可被 FIRE／HEAVY_FIRE 點燃。");}if(environment==="WATER"){notes.push("小火會被熄滅；HEAVY_FIRE 先融冰，再使液態水沸騰並逐步蒸發。");notes.push("降雨先使平地飽和成泥濘；土壤飽和或湖水溢流後才形成地表積水。");notes.push("水域可傳導雷元素；河道在豪雨／雷雨／颱風時會形成急流。 ");}if(environment==="STONE")notes.push("EXPLOSION 可產生岩石破片；高山厚雪可被爆炸／衝擊觸發雪崩。");if(tile.terrain==="MUD")notes.push("泥濘提高一般移動成本；雨勢結束後逐步乾燥。");for(const effect of effects||[]){const note=TILE_EFFECT_INFO[effect.type]?.interaction;if(note&&!notes.includes(note))notes.push(note);}return notes;}
   function tileAnnotation(tile){if(!tile)return"";const s=ctx.state(),terrain=TERRAINS[tile.terrain]||{},environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),effects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],object=(s.map.objects||[]).find(o=>!o.destroyed&&o.x===tile.x&&o.y===tile.y),depth=HydrologyEngine.waterDepth(tile),surface=HydrologyEngine.waterSurfaceZ(tile),lines=[`地圖格 (${tile.x},${tile.y})｜${terrain.name||tile.terrain}｜H${Number(tile.elevation||0)}`,`移動成本：${terrain.passable===false?"不可通行":terrain.moveCost??"-"}｜迴避修正：${Number(terrain.evasion||0)>=0?"+":""}${Number(terrain.evasion||0)}`,`環境材質：${TILE_ENVIRONMENT_NAME[environment]||environment}｜天候：${WEATHER_NAME[s.environmentState?.weather]||s.environmentState?.weather||"晴朗"}｜風況：${globalThis.EnvironmentEngine?.windLabel?.(EnvironmentEngine.windAt?.(s.environmentState)||{})||"無風"}`];if(depth>0)lines.push(`水文：地面 H${Number(tile.elevation||0)}｜水深 ${Number(depth).toFixed(2)}｜水面 H${Number(surface).toFixed(2)}`);if(Number(tile.snowDepth||0)>0)lines.push(`積雪：${Number(tile.snowDepth).toFixed(2)}`);if(Number(tile.iceThickness||0)>0)lines.push(`冰厚：${Number(tile.iceThickness).toFixed(2)}`);if(tile.river)lines.push(`河流：流速 ${Number(tile.flowSpeed||0).toFixed(2)}${tile.ford?"｜淺灘／渡口":""}`);if(object)lines.push(`地圖物件：${object.name||object.id}${object.destructible?"｜可破壞":""}`);if(effects.length)lines.push("目前效果："+effects.map(effect=>{const info=TILE_EFFECT_INFO[effect.type],duration=effect.duration==null?"":`（剩 ${effect.duration} 回合）`,damage=effect.damage?`／傷害 ${effect.damage}`:"";return`${info?.name||effect.type}${duration}${damage}`;}).join("、"));else lines.push("目前效果：無");const interactions=tileInteractions(tile,effects);lines.push(`環境互動：${interactions.length?interactions.join(" "):"目前沒有特殊互動。"}`);return lines.join("\n");}
@@ -111,8 +108,8 @@ function create(ctx){
   }
   function unitPresentation(unit){
     const s=ctx.state();if(!unit?.alive)return null;
-    const visibility=visibilityModel(),tile=TacticalEngine.tile(s.map,unit.x,unit.y),team=teamPresentation(unit.team);
-    if(unit.team!==viewerTeam&&!unitVisibleToPlayer(unit,visibility))return null;
+    const tile=TacticalEngine.tile(s.map,unit.x,unit.y),team=teamPresentation(unit.team);
+    if(unit.team!==viewerTeam&&!unitVisibleToPlayer(unit,unitVisibilityContext(s)))return null;
     const maxHp=Number(unit.character.combat.hp||unit.hp||1),combat=unit.character.combat||{},baseHit=Math.max(BATTLE_RULES.combatParams.minHit,Math.min(BATTLE_RULES.combatParams.maxHit,BATTLE_RULES.combatParams.baseHit+BattleEngine.accuracy(unit.character,{}))),actionState=team==="ENEMY"?"敵方單位":team==="NEUTRAL"?"中立／野怪":unit.acted?(unit.waited?"已待機":"已完成主動行動 / 可支援"):unit.moved?"已移動 / 可攻擊":"可移動 / 可行動",preview=s.selected&&s.selected!==unit&&s.selectedSkill&&s.mode==="attack"?combatPreview(s.selected,unit,s.selectedSkill):null;UnitRuntimeEngine.syncMana(unit);UnitRuntimeEngine.syncResources(unit);
     const vertical=globalThis.VerticalMobilityEngine?.describe?.(unit,tile)||null;
     const shownHp=unit.hallucination?Math.max(1,Number(unit.perceivedHp||maxHp)):unit.hp,shownMaxHp=unit.hallucination?Math.max(1,Number(unit.perceivedMaxHp||maxHp)):maxHp;

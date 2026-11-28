@@ -169,7 +169,7 @@ export class BabylonRenderer{
     this.shadowPassStart=0;
     this.shadowPassCpuMs=0;
     this.shadowCache={dirty:true,lastRefreshAt:-Infinity,lastView:null,hasUnitCasters:false,hasWindCasters:false,
-      scheduled:0,reused:0,actualPasses:0,fullRate:0,staticReuses:0};
+      scheduled:0,reused:0,actualPasses:0,fullRate:0,staticReuses:0,refreshReasons:{dirty:0,view:0,active:0,settled:0,idleCadence:0}};
     this.engine.onContextRestoredObservable?.add(()=>{this.shadowCache.dirty=true;});
     const shadowTarget=this.shadowGenerator.getShadowMap();
     shadowTarget?.onBeforeBindObservable?.add(()=>{this.shadowPassStart=performance.now();this.shadowCache.actualPasses++;});
@@ -564,20 +564,30 @@ export class BabylonRenderer{
     const vec=v=>v?[v.x,v.y,v.z]:null;
     const view=JSON.stringify([vec(cam?.position),vec(cam?.target),cam?.alpha,cam?.beta,cam?.radius,
       cam?.orthoLeft,cam?.orthoRight,cam?.orthoTop,cam?.orthoBottom,cam?.minZ,cam?.maxZ,
-      vec(light?.position),vec(light?.direction),target.getSize?.().width,target.getSize?.().height]);
+      vec(light?.position),vec(light?.direction),target.getSize?.().width,target.getSize?.().height,
+      light?.shadowFrustumSize,light?.shadowOrthoScale,light?.autoUpdateExtends,light?.autoCalcShadowZBounds,
+      light?.autoCalcShadowZBounds===true?null:light?.shadowMinZ,
+      light?.autoCalcShadowZBounds===true?null:light?.shadowMaxZ]);
     const wind=this.mapObjects?.vegetationWind,windActive=cache.hasWindCasters&&Number(wind?.strength||0)>0;
     const active=Boolean(this.units?.activeAnimations?.size||this.units?.animationQueues?.size||this.units?.formMorphs?.size||this.camera?.focusMotion);
     const moving=cache.hasUnitCasters||windActive;
     // Actual combat uses the original full-rate map. Idle poses and foliage
     // share the existing 30 Hz vegetation cadence; no map update in true calm
     // with only static casters. Camera/light changes and snapshots invalidate.
-    const forced=cache.dirty||cache.lastView!==view||light?.needProjectionMatrixCompute?.()===true||cache.wasActive===true&&!active;
+    // Babylon ShadowLight.needProjectionMatrixCompute() requests a projection
+    // calculation WITHIN its next render; it can remain true indefinitely.
+    // It is not a dirty edge and must not defeat RenderTargetTexture caching.
+    // Actual camera/light configuration, snapshot invalidation and the existing
+    // animation cadence own shadow-map scheduling. Never touch Babylon internals.
+    const reason=cache.dirty?"dirty":cache.lastView!==view?"view":active?"active":
+      cache.wasActive===true&&!active?"settled":moving&&now-cache.lastRefreshAt>=1000/30?"idleCadence":null;
     cache.wasActive=active;
-    const due=forced||active||(moving&&now-cache.lastRefreshAt>=1000/30);
+    const due=reason!==null;
     // Keep a single shadow target and the existing light/filter settings.
     // RenderTargetTexture's documented render-once mode retains its depth.
     if(target.refreshRate!==0)target.refreshRate=0;
-    if(due){target.resetRefreshCounter();cache.lastRefreshAt=now;cache.lastView=view;cache.dirty=false;cache.scheduled++;if(active)cache.fullRate++;}
+    if(due){target.resetRefreshCounter();cache.lastRefreshAt=now;cache.lastView=view;cache.dirty=false;cache.scheduled++;if(active)cache.fullRate++;
+      const reasons=cache.refreshReasons??(cache.refreshReasons={});reasons[reason]=(reasons[reason]||0)+1;}
     else{cache.reused++;if(!moving)cache.staticReuses++;}
   }
 

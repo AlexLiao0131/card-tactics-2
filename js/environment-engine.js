@@ -555,8 +555,13 @@ export const EnvironmentEngine=(()=>{
     if(!map||!state?.effects)return[];
     const cells=[];
     for(const[k,list]of state.effects.entries()){
-      const effect=list.find(item=>item.type===EFFECT.FIRE_TORNADO)||list.find(item=>item.type===EFFECT.TORNADO);
-      if(!effect)continue;const[x,y]=k.split(",").map(Number);if(tileAt(map,x,y))cells.push({x,y,effect:{...effect}});
+      const vortices=list.filter(item=>item.type===EFFECT.TORNADO||item.type===EFFECT.FIRE_TORNADO);
+      if(!vortices.length)continue;
+      const effect=vortices.find(item=>item.type===EFFECT.FIRE_TORNADO)||vortices[0];
+      // Both legacy effects can occupy one tile; the movement path removes
+      // both. Preserve their actual water cargo exactly once in that cell.
+      const entrainedWaterVolume=vortices.reduce((sum,item)=>sum+Math.max(0,Number(item.entrainedWaterVolume)||0),0);
+      const[x,y]=k.split(",").map(Number);if(tileAt(map,x,y))cells.push({x,y,effect:{...effect,entrainedWaterVolume}});
     }
     const byKey=new Map(cells.map(cell=>[key(cell.x,cell.y),cell])),seen=new Set(),groups=[];
     for(const cell of cells){
@@ -671,7 +676,7 @@ export const EnvironmentEngine=(()=>{
     for(const tile of connected){
       const wanted=HydrologyEngine.liquidDepth(tile)*fraction;
       const removed=HydrologyEngine.removeWater(tile,wanted,events);
-      if(removed>HydrologyEngine.EPSILON){
+      if(removed>0){
         entrained+=removed;
         events.push({type:"TORNADO_WATER_ENTRAINED",x:tile.x,y:tile.y,volume:removed});
       }
@@ -680,7 +685,7 @@ export const EnvironmentEngine=(()=>{
   }
   function depositTornadoWater(map,point,volume,events,source){
     const tile=point&&tileAt(map,point.x,point.y);
-    if(!tile||volume<=HydrologyEngine.EPSILON)return false;
+    if(!tile||volume<=0)return false;
     HydrologyEngine.setWaterDepth(tile,waterDepth(tile)+volume,events,source);
     events.push({type:"TORNADO_WATER_DEPOSITED",x:tile.x,y:tile.y,volume,source});
     return true;
@@ -734,7 +739,7 @@ export const EnvironmentEngine=(()=>{
       if(entrainedWaterVolume<=HydrologyEngine.EPSILON){
         // Air vortex crossing water acquires one existing column of genuine
         // Hydrology water. Do not mint water from an animation or wind strength.
-        entrainedWaterVolume=entrainTornadoWater(map,sweep,events);
+        entrainedWaterVolume+=entrainTornadoWater(map,sweep,events);
       }
       if(entrainedWaterVolume>HydrologyEngine.EPSILON){
         entrainedWaterVolume=contactWaterTornadoFire(map,state,sweep,entrainedWaterVolume,events);
@@ -755,7 +760,7 @@ export const EnvironmentEngine=(()=>{
       const stats=tornadoClusterStats(destination.map(entry=>({x:entry.x,y:entry.y,effect:entry.effect})),carriedLogIds),duration=Math.max(1,...group.map(entry=>Number(entry.effect.duration||1))),resolvedDamage=element==="FIRE"?stats.fireDamage:stats.damage;
       // On the final active turn, all remaining fluid returns to the actual
       // destination tile. The tornado effect keeps no duplicated cargo.
-      if(duration<=1&&entrainedWaterVolume>HydrologyEngine.EPSILON){
+      if(duration<=1&&entrainedWaterVolume>0){
         if(depositTornadoWater(map,destination[0],entrainedWaterVolume,events,"TORNADO_EXPIRED"))waterRelocated=true;
         entrainedWaterVolume=0;
       }
@@ -772,8 +777,10 @@ export const EnvironmentEngine=(()=>{
         // on this tick. Merge its existing cargo instead of overwriting it.
         const previous=effectAt(state,entry.x,entry.y).find(item=>item.type===type);
         const carried=entrainedWaterVolume/destination.length+Math.max(0,Number(previous?.entrainedWaterVolume||0));
+        // Keep tiny real shares too; the existing threshold still controls
+        // whether the vortex is visibly/operationally classified as water.
+        effect.entrainedWaterVolume=carried;
         if(carried>HydrologyEngine.EPSILON){
-          effect.entrainedWaterVolume=carried;
           effect.element="WATER";
           effect.damageType="WATER";
         }
@@ -791,7 +798,7 @@ export const EnvironmentEngine=(()=>{
   }
   function advanceEnvironmentTurn(map,state){
     if(!map||!state)return[];const events=[];ensureClimate(state);
-    const waterBefore=HydrologyEngine.waterInventory(map);
+    const waterBefore=HydrologyEngine.waterInventory(map,state);
     const wasReceding=HydrologyEngine.sourceRecessionActive(map);
     // Only this existing environment-clock entry point advances actual D/Q
     // transport. All intermediate weather effects modify their canonical
@@ -826,11 +833,14 @@ export const EnvironmentEngine=(()=>{
       // One accounting record at the END of the physical environment step.
       // The actual inventory is authoritative; event sums are diagnostic inputs,
       // and any unexplained difference is exposed, never 'balanced' artificially.
-      const after=HydrologyEngine.waterInventory(map),sum=(kind,field)=>events
+      const after=HydrologyEngine.waterInventory(map,state),sum=(kind,field)=>events
         .filter(event=>event?.type===kind).reduce((total,event)=>total+Number(event?.[field]||0),0);
       const precipitation=sum("RAIN_PRECIPITATION_WATER_INPUT","volume")+
         sum("SNOW_PRECIPITATION_WATER_INPUT","volume");
       const sourceInflow=sum("HYDROLOGY_SOURCES_ADVANCED","injectedVolume");
+      // Older authored rivers retain a separately injected channel-overload
+      // pulse. Generated D/Q watersheds never take that branch.
+      const legacyOverflowInflow=sum("RIVER_CHANNEL_OVERLOAD","retainedVolume");
       const offMapDrain=sum("RIVER_FLOOD_WATER_DRAINED","amount")+
         sum("RIVER_THROUGHFLOW_DRAINED","amount")+sum("WATER_DRAINED_OFF_MAP","amount");
       const evaporation=sum("SURFACE_WATER_EVAPORATED","amount")+
@@ -840,15 +850,16 @@ export const EnvironmentEngine=(()=>{
       const soilDrying=events.filter(event=>event?.type==="SOIL_MOISTURE_CHANGED"&&Number(event?.from)>Number(event?.to))
         .reduce((total,event)=>total+Number(event.from)-Number(event.to),0);
       const inventoryDelta=after.total-waterBefore.total;
-      const explainedDelta=precipitation+sourceInflow-offMapDrain-evaporation-soilDrying;
-      const balance={type:"HYDROLOGY_CYCLE_BALANCE",environmentTurn,weather:legacyWeatherRaw(state),
-        before:waterBefore,after,precipitation,sourceInflow,offMapDrain,evaporation,soilDrying,
+      const explainedDelta=precipitation+sourceInflow+legacyOverflowInflow-offMapDrain-evaporation-soilDrying;
+      const balance={type:"HYDROLOGY_CYCLE_BALANCE",mapId:map.id??null,environmentTurn,weather:legacyWeatherRaw(state),
+        before:waterBefore,after,precipitation,sourceInflow,legacyOverflowInflow,offMapDrain,evaporation,soilDrying,
+        tornadoWaterDelta:after.tornadoWater-waterBefore.tornadoWater,
         inventoryDelta,explainedDelta,unattributedDelta:inventoryDelta-explainedDelta,
         transportSteps:physicalStep.transportSteps,
         deferredRedistributions:physicalStep.deferredRedistributions,
         requestedTransportSources:physicalStep.requestedSources,
         outletConnectivity:map.hydrologyDrainageAudit||null,
-        accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL"};
+        accounting:"SNOW_SWE_PLUS_SURFACE_INCLUDING_ICE_PLUS_SOIL_PLUS_TORNADO_CARGO"};
       events.push(balance);
       globalThis.CardTacticsDiagnostics?.recordHydrologyBalance?.(balance);
       return events;

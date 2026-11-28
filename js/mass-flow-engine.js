@@ -141,11 +141,17 @@ const tileAt=(map,x,y)=>globalThis.TacticalEngine?.tile?globalThis.TacticalEngin
       else if(!TerrainMaterial.hasSoil(tile))globalThis.HydrologyEngine.setGroundMaterial(tile,"SOIL",events,source);
     }
     if(!TerrainMaterial.hasSoil(tile))return;
+    const stored=globalThis.HydrologyEngine.soilMoisture(tile);
     // Preserve the existing pore water store: moving dry-equivalent solid
     // volume is not a second source/sink of water.
     if(tile.terrain==="WATER"&&deposition>=.14)tile.dryTerrain="MUD";
     else if(tile.terrain==="PLAIN"||tile.terrain==="FOREST"){tile.terrain="MUD";if(before==="FOREST")tile.vegetation=0;}
     else if(tile.terrain==="SAND"&&deposition>=.18)tile.terrain="MUD";
+    // A legacy PLAIN tile may not yet have an explicit moisture value.
+    // Changing its label to MUD must not activate MUD's implicit full store.
+    const retained=globalThis.HydrologyEngine.hasSoil(tile)?Math.min(stored,globalThis.HydrologyEngine.soilCapacity(tile)):0;
+    tile.soilMoisture=retained;
+    if(stored>retained)globalThis.HydrologyEngine.setWaterDepth(tile,globalThis.HydrologyEngine.waterDepth(tile)+stored-retained,events,source);
     tile.massFlowResidue=clean(Number(tile.massFlowResidue||0)+impact);
     markTerrainChange(tile,before,events,source,MATERIAL.SOIL);
   }

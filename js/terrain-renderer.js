@@ -127,7 +127,7 @@ export class TerrainRenderer{
     this.textureBounds=null;
     this.surfaceMaterial=this.makeSurfaceMaterial();
     this.cliffMaterial=this.makeCliffMaterial();
-    this.grassSignature="";this.grassMesh=null;this.grassBlades=[];
+    this.grassSignature="";this.grassInputKey=null;this.grassMesh=null;this.grassBlades=[];
     this.grassInvalidation={checks:0,skipped:0,rebuilds:0,selectedClumps:0,dependencyTiles:0};
     this.grassTime=0;this.grassFrameTime=0;this.grassWasCalm=true;
     this.grassGpuWind=typeof BABYLON.CustomMaterial==="function";
@@ -202,16 +202,30 @@ export class TerrainRenderer{
   // deterministic; only the selected grass tiles and the two-cell neighbourhood
   // sampled by the existing slope/shore/material resolver may change their
   // geometry, eligibility or tint. No thresholds or source geometry change.
+  grassClumpCount(tile){
+    const terrain=this.surfaceResolver.baseTerrainOf(tile);
+    if(!["PLAIN","FOREST"].includes(terrain)||tile.core||tile.capturePoint||
+      Number(tile.waterDepth||0)>.001||Number(tile.iceThickness||0)>.01||
+      Number(tile.snowDepth||0)>.03||Number(tile.debrisMass||0)>.02||
+      (tile.effects||[]).some(e=>e==="BURNING"||e==="FIRE_TORNADO"))return 0;
+    return terrain==="FOREST"?5:3;
+  }
+  grassTileDependencies(tile){
+    return [tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,TerrainMaterial.bedSignature(tile),
+      tile.elevation,tile.waterDepth,tile.waterSurfaceZ,tile.snowDepth,tile.iceThickness,tile.soilMoisture,
+      tile.debrisMass,tile.river,tile.flowX,tile.flowY,tile.flowSpeed];
+  }
+  grassBroadInputKey(tiles){
+    // This broad gate is conservative: the existing precise selected clump
+    // signature still decides rebuilds if ANY eligible cell/dependency changes.
+    return JSON.stringify([this.surfaceResolver.renderedSurfaceGeometryRevision,
+      tiles.map(tile=>[this.grassClumpCount(tile),...this.grassTileDependencies(tile)])]);
+  }
   grassInputs(tiles){
     const byKey=new Map(tiles.map(t=>[keyOf(t.x,t.y),t]));
     const candidates=[];
     for(const tile of tiles){
-      const terrain=this.surfaceResolver.baseTerrainOf(tile);
-      if(!["PLAIN","FOREST"].includes(terrain)||tile.core||tile.capturePoint||
-        Number(tile.waterDepth||0)>.001||Number(tile.iceThickness||0)>.01||
-        Number(tile.snowDepth||0)>.03||Number(tile.debrisMass||0)>.02||
-        (tile.effects||[]).some(e=>e==="BURNING"||e==="FIRE_TORNADO"))continue;
-      const clumps=terrain==="FOREST"?5:3;
+      const clumps=this.grassClumpCount(tile);
       for(let i=0;i<clumps;i++)candidates.push({tile,i,rank:textureNoise(tile.x*7+i,tile.y*7,8192,701)});
     }
     candidates.sort((a,b)=>a.rank-b.rank);
@@ -224,10 +238,7 @@ export class TerrainRenderer{
     const inputs=[];
     for(const tile of tiles){
       if(!dependencies.has(keyOf(tile.x,tile.y)))continue;
-      inputs.push([tile.x,tile.y,tile.terrain,tile.dryTerrain,tile.material,TerrainMaterial.bedSignature(tile),
-        tile.elevation,tile.waterDepth,tile.waterSurfaceZ,tile.snowDepth,
-        tile.iceThickness,tile.soilMoisture,tile.debrisMass,tile.river,
-        tile.flowX,tile.flowY,tile.flowSpeed]);
+      inputs.push(this.grassTileDependencies(tile));
     }
     // The published terrain geometry registry remains the sole root-height
     // authority. A new geometry publication always invalidates grass roots.
@@ -237,16 +248,19 @@ export class TerrainRenderer{
 
   syncGrass(state,tiles){
     this.grassWind=state?.presentation?.environment?.wind||{x:0,y:0,strength:0};
-    const {signature,selected,byKey,dependencyTiles}=this.grassInputs(tiles);
     this.grassInvalidation.checks++;
+    const broadKey=this.grassBroadInputKey(tiles);
+    if(this.grassInputKey===broadKey&&this.grassSignature){
+      this.grassInvalidation.skipped++;this.grassInvalidation.fastSkips=(this.grassInvalidation.fastSkips||0)+1;return;
+    }
+    const {signature,selected,byKey,dependencyTiles}=this.grassInputs(tiles);
     this.grassInvalidation.selectedClumps=selected.length;
     this.grassInvalidation.dependencyTiles=dependencyTiles;
-    if(signature===this.grassSignature){this.grassInvalidation.skipped++;return;}
+    if(signature===this.grassSignature){this.grassInputKey=broadKey;this.grassInvalidation.skipped++;return;}
     this.grassInvalidation.rebuilds++;
-    this.grassSignature=signature;
     this.grassBlades=[];
     if(!selected.length){
-      this.grassMesh?.setEnabled(false);
+      this.grassMesh?.setEnabled(false);this.grassInputKey=broadKey;this.grassSignature=signature;
       return;
     }
     const positions=[],colors=[],indices=[];
@@ -298,7 +312,7 @@ export class TerrainRenderer{
       }
     }
     if(!positions.length){
-      this.grassMesh?.setEnabled(false);
+      this.grassMesh?.setEnabled(false);this.grassInputKey=broadKey;this.grassSignature=signature;
       return;
     }
     // One mesh owns the grass buffers for its entire lifetime. Seasonal and
@@ -332,6 +346,7 @@ export class TerrainRenderer{
     mesh.setBoundingInfo(new BABYLON.BoundingInfo(bounds.minimum.subtract(new BABYLON.Vector3(.5,0,.5)),bounds.maximum.add(new BABYLON.Vector3(.5,0,.5))));
     this.grassMesh=mesh;this.grassRest=new Float32Array(positions);this.grassPositions=new Float32Array(positions);
     this.animateGrass(0,true);
+    this.grassInputKey=broadKey;this.grassSignature=signature;
   }
 
   animateGrass(dt,force=false){
@@ -480,7 +495,7 @@ export class TerrainRenderer{
   }
 
   disposeMeshes(){
-    this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];this.grassSignature="";
+    this.grassMesh?.dispose();this.grassMesh=null;this.grassBlades=[];this.grassSignature="";this.grassInputKey=null;
     this.surfaceResolver.clearRenderedSurfaceGeometry();
     this.surfaceResolver.clearRenderedCliffGeometry();
     this.landformFragments.surface.clear();this.landformFragments.cliffs.clear();
