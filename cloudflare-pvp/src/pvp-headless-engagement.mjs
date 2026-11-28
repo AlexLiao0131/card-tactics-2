@@ -208,11 +208,12 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
     onDefeated:callbacks.handleDefeated,
     onAction:entry=>{
       if(entry.role==='GANFAN_PARRY')
-        callbacks.pushLog(`${entry.target.character.name} 雁反招架成功，取消 ${entry.actor.character.name} 的反擊，立即追加返斬。`,'BATTLE');
+        callbacks.pushLog(`${entry.target.character.name} 雁反招架成功，取消 ${entry.actor.character.name} 的反擊，立即追加返斬。`,'BATTLE',{units:[entry.actor,entry.target],combat:true});
+      else callbacks.pushLog(`${entry.actor.character.name} → ${entry.target.character.name}｜${entry.skill.name}｜${entry.result.damage||0} HP 損失`,'BATTLE',{units:[entry.actor,entry.target],combat:true});
       results.push({role:entry.role,actorId:entry.actor.id,targetId:entry.target.id,
         skillId:entry.skill.id,damage:entry.result.damage,hit:entry.result.hit,
         crit:entry.result.crit,evadeOutcome:entry.result.evadeOutcome??null});
-      globalThis.BattleResolution?.logStatusResults?.(entry,callbacks.pushLog);
+      globalThis.BattleResolution?.logStatusResults?.(entry,(message,type)=>callbacks.pushLog(message,type,{units:[entry.actor,entry.target],combat:true}));
       environment.resolveWaterSkillHit(entry);
       // Weapon enchantments have their own official environmental impact
       // controller: fire-arrow blast, terrain ignition and thunder conduction.
@@ -238,7 +239,6 @@ function settleCanonicalAttack(game,p,attacker,defender,skill,engine,callbacks,c
   game.pendingAttack=null;
   game.phase=PHASE[p.attackingSeat];
   game.activeSeat=p.attackingSeat;
-  callbacks.pushLog(`${attacker.character.name} → ${defender.character.name}｜${skill.name}｜${results.map(e=>e.damage).join('/')} HP 損失`,'BATTLE');
   checkMatchEnd?.();
   return {accepted:true,state:game,engagement:results,verdict};
 }

@@ -1,3 +1,4 @@
+import {BattleLog} from "../../js/battle-log.js";
 import {ColinShieldMobilityEngine} from "../../js/colin-shield-mobility-engine.js";
 import {UnitTraitEngine} from '../../js/unit-trait-engine.js';
 import {BattlefieldFieldEngine} from '../../js/battlefield-field-engine.js';
@@ -99,8 +100,15 @@ function snapshotUnit(u){return {
 };}
 function serverCallbacks(game,engine){
   const logs=game.events??=([]);
-  const pushLog=(message,type='SYSTEM')=>{
-    logs.push({type,text:String(message),seat:game.activeSeat});
+  const pushLog=(message,type='SYSTEM',scope=null)=>{
+    const seats=scope?.combat===true?[0,1]:[game.activeSeat];
+    const stage=game.stage||StageDatabase.get(game.stageId);
+    const world={map:game.battlefield?.map,units:game.units,cores:game.battlefield?.cores,stage:{...stage,deploymentPoints:game.battlefield?.deploymentPoints},environmentState:game.environmentState};
+    for(const seat of seats){
+      const team=UNIT_TEAM[seat],session=game.perceptionState?.session;
+      if(!team||(session?.active&&session.team!==team)||!BattleLog.mayPublish(world,team,scope,TacticalEngine))continue;
+      logs.push({type,text:String(message),seat,visibilityAuthorized:true});
+    }
     if(logs.length>160)logs.splice(0,logs.length-160);
   };
   const stageEvent=event=>{
@@ -698,14 +706,10 @@ export function tacticalDebugProjection(game,seat){
     const visible=game.units.filter(u=>u.team===UNIT_TEAM[seat]||
       TacticalEngine.teamCanIdentifyUnit(world,UNIT_TEAM[seat],u,game.environmentState));
     // A private command log is never the global authority event stream.
-    // Limit entries to actions from this player's seat and omit any mention of
-    // an opponent the OFFICIAL LOS engine says is currently hidden.
-    const hidden=game.units.filter(u=>u.alive&&u.team!==UNIT_TEAM[seat]&&
-      !TacticalEngine.teamCanIdentifyUnit(world,UNIT_TEAM[seat],u));
-    const hiddenNames=hidden.map(u=>u.character?.name).filter(Boolean);
-    const battleLog=(game.events||[]).filter(e=>e?.seat===seat&&
-      ['BATTLE','SYSTEM','DETAIL'].includes(e.type)&&typeof e.text==='string'&&
-      !hiddenNames.some(name=>e.text.includes(name)))
+    // Only event-time authorized records can cross the authenticated seat boundary.
+    // Legacy records are not retrospectively disclosed, even after a unit dies.
+    const battleLog=(game.events||[]).filter(e=>e?.seat===seat&&e.visibilityAuthorized===true&&
+      ['BATTLE','SYSTEM','DETAIL'].includes(e.type)&&typeof e.text==='string')
       .slice(-160).map(e=>({type:e.type,text:e.text}));
     // Authenticated MATCH_STATE contract marker: lets mobile clients detect
     // that a deployed Worker is older than the canonical tactical projection.
