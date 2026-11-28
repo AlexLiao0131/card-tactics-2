@@ -39,7 +39,22 @@
       };
       const afterStep=(fn,ms=550)=>{
         if(stepTimer)clearTimeout(stepTimer);
-        stepTimer=setTimeout(()=>{stepTimer=null;fn?.();},ms);
+        const marker=generation,actor=activeActor;
+        stepTimer=setTimeout(()=>{
+          stepTimer=null;if(marker!==generation)return;
+          const failed=error=>{
+            if(marker!==generation)return;
+            const message=String(error?.message||error);
+            globalThis.CardTacticsDiagnostics?.push?.("ENEMY_STEP_FAILED",{round:ctx.state().round,unitId:actor?.id||null,message,stack:String(error?.stack||"").slice(0,1800)});
+            ctx.pushLog(`敵方行動異常：${actor?.character?.name||"回合流程"}｜${message}`,"SYSTEM");
+            // Only the current actor's action chain may be forfeited. Never
+            // replay a partial transaction, skip a live reaction or advance a stale match.
+            if(!actor||activeActor!==actor||stepTimer||ctx.state().phase!==ctx.PHASE.ENEMY||ctx.state().matchResult||ctx.pendingEnemyAttack()||ctx.getPendingEngagement?.()||ctx.getPendingCopySkill?.())return;
+            if(actor.alive){actor.moved=true;actor.acted=true;actor.waited=true;}
+            afterStep(continuePhase,0);
+          };
+          try{const result=fn?.();if(result&&typeof result.then==="function")result.catch(failed);}catch(error){failed(error);}
+        },ms);
       };
       const showStep=(kind,message,extra={})=>{
         ctx.setEnemyView({active:true,kind,message,...extra});
@@ -47,7 +62,7 @@
         measured("enemyAI.showStepStateEvent",()=>ctx.emitState());
       };
       const isNeutral=unit=>unit?.team===NEUTRAL;
-      let generation=0,teamPlan=null,geminiTacticalUsed=false;
+      let generation=0,teamPlan=null,geminiTacticalUsed=false,activeActor=null;
       const assignments=new Map(),usedFree=new Map();
       const perceivedHP=u=>Number(u?.hallucination?u.perceivedHp??u.hp:u?.hp)||0;
       const maxHP=u=>Math.max(1,Number(u?.character?.combat?.hp||u?.maxHp||u?.hp||1));
@@ -90,7 +105,8 @@
           const core=ctx.coreForOwner("PLAYER");return core?.hp>0?{kind:"ASSAULT",goals:[core]}:null;
         }return a||null;}
       const activeSkills=actor=>ctx.skillList(actor).flatMap(s=>s.variants?.length&&globalThis.SkillDatabase?.resolveVariant?
-        s.variants.map(v=>globalThis.SkillDatabase.resolveVariant(s,v.id)).filter(Boolean):[s]).filter(s=>ctx.canUseSkill(actor,s));
+        s.variants.map(v=>globalThis.SkillDatabase.resolveVariant(s,v.id)).filter(Boolean):[s])
+        .map(s=>globalThis.UnitRuntimeEngine?.skillForUnit?.(actor,s)||s).filter(s=>ctx.canUseSkill(actor,s));
       function healthValue(actor,target,skill){
         const hp=maxHP(target),missing=Math.max(0,hp-perceivedHP(target)),effects=target.effects||[];
         const relation=target.id===actor.id?"SELF":target.team===actor.team?"ALLY":"ENEMY";
@@ -209,7 +225,12 @@
           if(skill.utilityAction||skill.effects||skill.relationEffects||skill.target!=="ENEMY"||ctx.targetType(skill)!=="SINGLE")continue;
           for(const target of targetsForSkill(actor,skill)){
             if(skill.approach&&(target.kind==="CORE"||!ctx.aiApproachPlan?.(actor,target,skill)))continue;
-            out.push({attacker:actor,defender:target,skill,score:damageValue(actor,target,skill)});
+            try{out.push({attacker:actor,defender:target,skill,score:damageValue(actor,target,skill)});}
+            catch(error){
+              const message=String(error?.message||error);
+              globalThis.CardTacticsDiagnostics?.push?.("ENEMY_FORECAST_REJECTED",{round:ctx.state().round,unitId:actor.id,targetId:target.id,skillId:skill.id,message,stack:String(error?.stack||"").slice(0,1600)});
+              ctx.pushLog(`AI 無法預測 ${actor.character.name} 的 ${skill.name}：${message}，略過此候選。`,"SYSTEM");
+            }
           }
         }
         return out.filter(a=>a.score>0).sort((a,b)=>b.score-a.score||Number(a.skill.manaCost||0)-Number(b.skill.manaCost||0)||String(a.skill.id).localeCompare(String(b.skill.id)));
@@ -413,16 +434,16 @@
       const animateMove=(actor,path,done)=>{
         const steps=[...(path||[])];
         const next=()=>{
-          if(!steps.length||!actor.alive){actor.moved=true;done?.();return;}
+          if(!steps.length||!actor.alive){actor.moved=true;return done?.();}
           const tile=steps.shift();
-          if(!habitatAllows(actor,tile)){actor.moved=true;done?.();return;}
+          if(!habitatAllows(actor,tile)){actor.moved=true;return done?.();}
           const result=measured("enemyAI.traverseUnitStep",()=>ctx.traverseUnitPath(actor,[tile],{kind:"UNIT"}));
           ctx.pushLog(`${actor.character.name} 移動至 (${actor.x},${actor.y})。`,"DETAIL");
           showStep("MOVE",`${actor.character.name} 移動 → (${actor.x},${actor.y})`,{unitId:actor.id});
-          if(!result?.completed||!actor.alive){actor.moved=true;done?.();return;}
+          if(!result?.completed||!actor.alive){actor.moved=true;return done?.();}
           afterStep(next,260);
         };
-        next();
+        return next();
       };
 
       const resolveAutonomousAttack=attack=>{
@@ -536,7 +557,7 @@
       const continuePhase=()=>{
         const state=ctx.state();
         if(state.phase!==ctx.PHASE.ENEMY||state.matchResult||ctx.pendingEnemyAttack())return;
-        const actor=queue.shift();
+        const actor=queue.shift();activeActor=actor||null;
         if(!actor){finishPhase();return;}
         if(!actor.alive||actor.acted){afterStep(continuePhase,0);return;}
         const marker=generation;
@@ -727,7 +748,7 @@
       };
 
       const runPhase=()=>{
-        const state=ctx.state(),marker=generation;
+        const state=ctx.state(),marker=generation;activeActor=null;
         ctx.setPhase(ctx.PHASE.ENEMY);ctx.clearSelection();ctx.clearEnemyReaction();ctx.pushLog(`Round ${state.round}｜敵方回合開始。`);
         const proceed=()=>runCardPhase(()=>{
           if(marker!==generation)return;
@@ -762,7 +783,7 @@
         }else proceed();
       };
 
-      const reset=()=>{generation++;teamPlan=null;assignments.clear();usedFree.clear();queue=[];if(stepTimer){clearTimeout(stepTimer);stepTimer=null;}};
+      const reset=()=>{generation++;activeActor=null;teamPlan=null;assignments.clear();usedFree.clear();queue=[];if(stepTimer){clearTimeout(stepTimer);stepTimer=null;}};
       return{runPhase,continuePhase,reset};
     }
   };

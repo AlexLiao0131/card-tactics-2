@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 import {WeaponMaterialEngine} from "./weapon-material-engine.js";
 import {chooseAutonomousBattleReaction} from "./battle-reaction-decision-engine.js";
@@ -107,7 +108,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   // Duel eligibility is a read-only predicate on the SAME authoritative roster
   // for browser and Worker. Neither mode assigns a synthetic speed value.
   function duelRules(actor,skill){
-    const weapon=actor?.character?.weapons?.[skill?.weapon];
+    const weapon=attackWeaponFor(actor,skill);
     if(!weapon)return null;
     return SkillDatabase.passiveList(actor.character?.passives||[]).map(p=>p.duelRules)
       .find(rule=>rule&&rule.weaponKind===weapon.weaponKind&&
@@ -149,13 +150,13 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     // official skill power; stable loadout order breaks an exact tie.
     const scored=legal.map((skill,index)=>({skill,index,
       match:BattleEngine.physicalMatch(skill.attackType==="INHERIT"?
-        defender.character.weapons?.[skill.weapon]?.attackType:skill.attackType,attacker.character),
+        attackWeaponFor(defender,skill)?.attackType:skill.attackType,attacker.character),
       power:Number(skill.power||0)}));
     scored.sort((a,b)=>b.match-a.match||b.power-a.power||a.index-b.index);
     return scored[0]?.skill||null;
   }
-  function attackType(a,s){const w=a?.character?.weapons?.[s?.weapon];return s?.attackType==="INHERIT"?w?.attackType:s?.attackType}
-  const attackWeapon=(a,s)=>a?.character?.weapons?.[s?.weapon]||null,hasAffix=(i,id)=>i?.affixes?.includes(id)===true;
+  function attackType(a,s){const w=attackWeaponFor(a,s);return s?.attackType==="INHERIT"?w?.attackType:s?.attackType}
+  const attackWeapon=(a,s)=>attackWeaponFor(a,s)||null,hasAffix=(i,id)=>i?.affixes?.includes(id)===true;
   function defenseProfileById(d,id){return id?defenseMethods(d).find(p=>p.id===id)||null:null}
   function isPrimaryIncomingAction(c,a){return a.role==="INITIATOR"&&a.actor?.id===c.initiator?.id&&a.target?.id===c.target?.id}
   function resolveEvade(map,a,t,s){const z=resolveWithRandom(map,a,t,s,{forceHit:true}),b=z.result,o=b.hc,f=Math.max(0,o-ACTIVE_EVADE_PENALTY),roll=random()*100;let outcome="MISS",m=0;if(roll<f){outcome="HIT";m=1}else if(roll<o){outcome="GRAZE";m=GRAZE_DAMAGE_MULTIPLIER}return{...z,result:{...b,hit:outcome!=="MISS",graze:outcome==="GRAZE",evadeOutcome:outcome,evadeRoll:roll,originalHitChance:o,activeHitChance:f,damage:Math.round(b.damage*m)}}}
@@ -266,7 +267,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
   // A weapon attack has one contact roll but independent critical results for physical and magical components.
   function enchantmentMagicDamage(actor,target,enchant,critical,skill){
     if(!enchant||!target?.character||!actor?.character||!skill)return 0;
-    const weapon=actor.character.weapons?.[skill.weapon];
+    const weapon=attackWeaponFor(actor,skill);
     const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
     const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
     return BattleEngine.elementalEnchantmentDamage({matk:enchant.matkSnapshot,
@@ -302,10 +303,10 @@ export function createBattleResolution({random=()=>Math.random()}={}){
     if(skill?.inherentMagic)return skill.inherentMagic;
     const soulPower=globalThis.UnitRuntimeEngine?.forestSoulMagicPower?.(actor,skill)||0;
     if(soulPower>0)return{element:"NATURE",power:soulPower};
-    return actor?.character?.weapons?.[skill?.weapon]?.inherentMagic||null;
+    return attackWeaponFor(actor,skill)?.inherentMagic||null;
   }
   function inherentMagicDamage(actor,target,skill,critical,inherent=inherentMagicSource(actor,skill)){
-    const weapon=actor?.character?.weapons?.[skill?.weapon];
+    const weapon=attackWeaponFor(actor,skill);
     if(!inherent||!target?.character)return 0;
     const type=skill.attackType==="INHERIT"?weapon?.attackType:skill.attackType;
     const sourceClass=BattleEngine.attackClass(weapon,skill,type,{distance:distance(actor,target)});
@@ -578,7 +579,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(hymn.length){
           const offered=hymn.map(effect=>effect.nextDanceInherentMagic||effect.nextAttackInherentMagic)
             .sort((x,y)=>Number(y.power||0)-Number(x.power||0))[0];
-          const weapon=a.actor.character?.weapons?.[skill.weapon];
+          const weapon=attackWeaponFor(a.actor,skill);
           if(offered&&!skill.inherentMagic&&!weapon?.inherentMagic)
             skill={...skill,inherentMagic:offered};
           for(const effect of hymn)
@@ -748,7 +749,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         const components=attackDamageComponents(original,original.hit?bloodDamageMultiplier*bleedingBonus*sealMultiplier*berserkMultiplier:0);
         const visualEvent=hitIndex===0?globalThis.UnitAnimationEngine?.emitAction?.(action.actor,action.target,skill,{role:action.role,
           danceStep:a.danceStep??(skill.danceSequence?1:null),deathDanceStep:skill.deathDanceStep??null,
-          misfire:action.misfire,projectileKind:action.actor.character?.weapons?.[skill.weapon]?.weaponKind||null,
+          misfire:action.misfire,projectileKind:attackWeaponFor(action.actor,skill)?.weaponKind||null,
           enchantmentElement:enchantment?.element||null,visualOrigin:skill.visualOrigin||null,
           duelActive:hasDuel(c,action.actor,action.target,skill),hitCount:hitCount,blinkCombo:blinkCombo,
           backstepLanding:plannedBackstep?{x:plannedBackstep.x,y:plannedBackstep.y,
@@ -767,7 +768,7 @@ export function createBattleResolution({random=()=>Math.random()}={}){
         if(original.hit){
           // One attack event: each damage type passes through the official shield/immunity engine.
           const physical=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?hpBefore:components.physical,{source:action.actor,damageType:"PHYSICAL"})||{hpLoss:0,absorbed:0};
-          const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC",unresistable:skill.pureHoly===true||skill.inherentMagic?.unresistable===true||action.actor.character?.weapons?.[skill.weapon]?.inherentMagic?.unresistable===true})||{hpLoss:0,absorbed:0};
+          const magic=globalThis.EffectEngine?.applyDamage?.(action.target,hallucinationHit?0:components.magic,{source:action.actor,damageType:"MAGIC",unresistable:skill.pureHoly===true||skill.inherentMagic?.unresistable===true||attackWeaponFor(action.actor,skill)?.inherentMagic?.unresistable===true})||{hpLoss:0,absorbed:0};
           absorbed=Number(physical.absorbed||0)+Number(magic.absorbed||0);
           physLoss=Number(physical.hpLoss||0);magicLoss=Number(magic.hpLoss||0);
         }

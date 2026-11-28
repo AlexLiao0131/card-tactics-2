@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 import {HIGH_GROUND_RANGED_ACCURACY} from "./terrain-database.js";
 import {ColinShieldMobilityEngine} from "./colin-shield-mobility-engine.js";
 export const TacticalEngine=(()=>{
@@ -369,7 +370,7 @@ export const TacticalEngine=(()=>{
     return aoeTiles(map,center,s.radius||0);
   }
   function range(s){return s.range}
-  function attackType(u,s){const w=u?.character?.weapons?.[s?.weapon];return s?.attackType==="INHERIT"?w?.attackType:s?.attackType;}
+  function attackType(u,s){const w=attackWeaponFor(u,s);return s?.attackType==="INHERIT"?w?.attackType:s?.attackType;}
   function attackDelivery(u,s){
     const type=String(attackType(u,s)||"").toUpperCase();
     if(String(s?.attackClass||"").toUpperCase()==="RANGED")return"RANGED";
@@ -377,7 +378,7 @@ export const TacticalEngine=(()=>{
     return"MELEE";
   }
   function attackVerticalReach(u,s){
-    const weapon=u?.character?.weapons?.[s?.weapon],explicit=Number(s?.verticalReach??weapon?.verticalReach);
+    const weapon=attackWeaponFor(u,s),explicit=Number(s?.verticalReach??weapon?.verticalReach);
     if(Number.isFinite(explicit))return Math.max(0,explicit);
     if(attackDelivery(u,s)==="RANGED")return Infinity;
     const horizontal=Math.max(1,Number(s?.range?.max||1));

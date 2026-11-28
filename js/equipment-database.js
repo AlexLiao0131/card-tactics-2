@@ -183,6 +183,14 @@ export const WEAPON_DEFENSE_BASELINES=Object.freeze({
     }
   }
 });
+// Attack-only weapon projection for a copied skill. Never enumerate it as
+// equipment: defense, passive grants, weapon slots and light sources are real gear.
+export function attackWeaponFor(actor,skill){
+  const character=actor?.character||actor;
+  if(skill?._bloodMemory===true&&skill._bloodMemoryWeapon?.slot===skill.weapon)
+    return skill._bloodMemoryWeapon;
+  return character?.weapons?.[skill?.weapon]||null;
+}
 export const EquipmentDatabase=(()=>{
   // The equipped weapon and its physical delivery are authoritative: no hard-coded sword/bow list.
   function canEnchantWeapon(weapon,rules={}){

@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 import {AreaSpellMechanics} from "./area-spell-mechanics.js";
 (()=>{
   "use strict";
@@ -408,7 +409,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       // Core uses its existing single defense field (it has no armor element,
       // MDEF, parry or shield). Do not route it through a fake unit battle.
       const bonus=enchantment?Math.max(1,Math.round(enchantment.matkSnapshot*enchantment.bonusPower-Number(target.core.defense||30))):0;
-      const inherent=skill.skipInherentMagic?null:unit.character.weapons?.[skill.weapon]?.inherentMagic;
+      const inherent=skill.skipInherentMagic?null:attackWeaponFor(unit,skill)?.inherentMagic;
       const inherentBonus=inherent?Math.max(1,Math.round(Number(unit.character.combat.matk||0)*Number(inherent.powerFromSkill?skill.power:inherent.power||0)-(inherent.unresistable?0:Number(target.core.defense||30)))):0;
       return raw+bonus+inherentBonus;
     }
@@ -428,7 +429,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       if(!ctx.consumeSkill(unit,skill)){UnitRuntimeEngine.endBloodTransaction(unit);return false;}
       const bloodMult=UnitRuntimeEngine.attackEnhancement(unit,skill);
       TacticalEngine.faceToward(unit,target);
-      globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE",projectileKind:unit.character?.weapons?.[skill.weapon]?.weaponKind||null});
+      globalThis.UnitAnimationEngine?.emitAction?.(unit,target,skill,{targetKind:"CORE",projectileKind:attackWeaponFor(unit,skill)?.weaponKind||null});
       const enchantment=globalThis.EffectEngine?.consumeWeaponEnchantment?.(unit,skill.weapon)||null;
       const damage=coreAttackDamage(unit,target,skill,enchantment);
       const coreHpBefore=Math.max(0,Number(target.core?.hp||0));
@@ -501,7 +502,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       globalThis.EffectEngine?.breakStealth?.(attacker,"ACTION");
       EffectEngine.interruptChannel(attacker,"TERRAIN_ATTACK");
       TacticalEngine.faceToward(attacker,center);
-      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP",projectileKind:attacker.character?.weapons?.[attack.weapon]?.weaponKind||null});
+      globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,attack,{targetKind:"MAP",projectileKind:attackWeaponFor(attacker,attack)?.weaponKind||null});
       const consumed=EffectEngine.consumeWeaponEnchantment(attacker,skill.weapon);
       resolveEnchantmentImpact({actor:attacker,skill:attack,enchantment:consumed,
         target:center,terrainImpact:true,result:{hit:true}});
@@ -631,7 +632,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       EffectEngine.breakStealth(commander,"ACTION");EffectEngine.interruptChannel(commander,"ACTION");
       TacticalEngine.faceToward(commander,center);
       globalThis.UnitAnimationEngine?.emitAction?.(commander,center,skill,{
-        targetKind:"MAP",projectileKind:commander.character?.weapons?.[skill.weapon]?.weaponKind||null,
+        targetKind:"MAP",projectileKind:attackWeaponFor(commander,skill)?.weaponKind||null,
         projectileSources:archers.map(item=>item.unit.id)});
       // All participants spend exactly one arrow attack and one enchantment.
       const contributors=archers.map(({unit,slot,weapon})=>({unit,slot,weapon,
@@ -1014,7 +1015,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         if(!enchant||!entry.result?.hit||!target||target.hallucination===true)continue;
         const origin=TacticalEngine.tile(map,target.x,target.y);
         if(!origin)continue;
-        const weapon=entry.actor?.character?.weapons?.[entry.skill?.weapon];
+        const weapon=attackWeaponFor(entry.actor,entry.skill);
         // Original FIRE_ARROW_AOE data: impact-radius, flat splash and
         // FIRE+EXPLOSION forces are owned by SkillDatabase, not guessed here.
         const explosion=enchant.element==="FIRE"&&weapon?.weaponKind==="BOW"?enchant.bowImpact:null;
@@ -1501,7 +1502,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
         EffectEngine.breakStealth(attacker,"ACTION");EffectEngine.interruptChannel(attacker,"ACTION");
         TacticalEngine.faceToward(attacker,center);
         globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",
-          projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
+          projectileKind:attackWeaponFor(attacker,skill)?.weaponKind||null,
           sanctuaryMode:mode});
         ctx.activateSanctuary(attacker,center,skill,mode);
         if(mode==="HEALING")UnitRuntimeEngine.changeFaith(attacker,max/2-UnitRuntimeEngine.faithValue(attacker));
@@ -1581,7 +1582,7 @@ import {AreaSpellMechanics} from "./area-spell-mechanics.js";
       // Present the validated landing without changing the authored hit center.
       // Browser and headless PVP use the SAME canonical LINE transit plan.
       globalThis.UnitAnimationEngine?.emitAction?.(attacker,center,skill,{targetKind:"MAP",
-        projectileKind:attacker.character?.weapons?.[skill.weapon]?.weaponKind||null,
+        projectileKind:attackWeaponFor(attacker,skill)?.weaponKind||null,
         landingX:transit?.landing?.x??null,landingY:transit?.landing?.y??null,
         fanTargetCells:fanAffected?.map(t=>({x:t.x,y:t.y}))||null,
         enchantmentElement:fanEnchantment?.element||null,

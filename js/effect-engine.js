@@ -418,7 +418,16 @@ export function createEffectEngine({random=()=>Math.random(),sanctuaryProtects=n
   }
   function rememberBloodSkill(unit,skillId,source){
     if(!unit||!SkillDatabase.get(skillId)||(unit.grantedSkills||[]).some(g=>g.bloodMemory&&g.skillId===skillId))return null;
-    const grant={skillId,sourceUnitId:source?.id||null,remaining:null,bloodMemory:true};
+    const skill=SkillDatabase.get(skillId),weaponMemory={};
+    // Remember the actual delivery, not a slot name masquerading as weaponKind.
+    // Variants may use a different slot; capture all source slots used by this skill.
+    for(const form of [skill,...(skill.variants||[]).map(v=>({...skill,...v}))]){
+      const slot=form.weapon,weapon=source?.character?.weapons?.[slot];
+      if(slot&&weapon)weaponMemory[slot]={sourceWeaponId:weapon.id||null,
+        weaponKind:weapon.weaponKind||null,attackType:weapon.attackType||null,
+        ...(Number.isFinite(weapon.verticalReach)?{verticalReach:weapon.verticalReach}:{})};
+    }
+    const grant={skillId,sourceUnitId:source?.id||null,remaining:null,bloodMemory:true,weaponMemory};
     (unit.grantedSkills||(unit.grantedSkills=[])).push(grant);return grant;
   }
   function commandStatusResistance(target,effect){

@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 /**
  * The original tactical-game.js engagementForecast presentation model,
  * using TacticalEngine/BattleResolution exact official formulas.
@@ -18,7 +19,7 @@ export function officialEngagementForecast({map,attacker,defender,skill,
   let effective=unitRuntime?.applyResourceScaling?.(attacker,skill)||skill;
   const passives=SkillDatabase.passiveList(attacker.character?.passives);
   const tile=TacticalEngine.tile(map,attacker.x,attacker.y);
-  const weapon=attacker.character.weapons?.[skill.weapon];
+  const weapon=attackWeaponFor(attacker,effective);
   const ambush=passives.find(p=>p.id==='AMBUSH');
   if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){
     effective={...effective,power:Number(effective.power||0)*Number(ambush.powerMultiplier||1),
@@ -50,7 +51,7 @@ export function officialEngagementForecast({map,attacker,defender,skill,
     const rule=method.vs?.[type];
     if(!rule)return{id:method.id,label:method.name,valid:false};
     const blocked=method.method==='GUARD'&&effective?.weapon&&
-      attacker.character.weapons?.[effective.weapon]?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&
+      attackWeaponFor(attacker,effective)?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&
       method.artifact!==true;
     if(blocked)return{id:method.id,label:method.name,valid:false,bypassed:true};
     const material=WeaponMaterialEngine.defenseMatchup({attacker,defender,skill:effective,method,attackType:type});
@@ -59,7 +60,7 @@ export function officialEngagementForecast({map,attacker,defender,skill,
       Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1;
     const guardMultiplier=method.method==='GUARD'?
       Number(defender.character.modifiers?.guardMultiplier??1):1;
-    const holyInherent=attacker.character.weapons?.[effective.weapon]?.inherentMagic?.unblockable===true;
+    const holyInherent=attackWeaponFor(attacker,effective)?.inherentMagic?.unblockable===true;
     const unblockedExtra=holyInherent?resolution.previewInherentBonus(attacker,defender,effective):0;
     const reducedBase=baseDamage-unblockedExtra;
     // Material-based STRIKE deflection redirects physical force only; it does

@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 import {officialEngagementForecast} from './battle-engagement-forecast.js';
 import {BattleRoundRuleEngine} from './battle-round-rule-engine.js';
 import {BattlefieldFieldEngine} from './battlefield-field-engine.js';
@@ -701,7 +702,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   function chooseGuardian(guardian){selectedGuardian=guardian;selectedGuardInterception=null;pendingReactionType=null;mode="enemy-guard-reaction";render();}
   function chooseEnemyReaction(type){if(!pendingEnemyAttack)return;
     if(type==="EVADE"&&!globalThis.CombatContactRules?.canActiveEvade?.(pendingEnemyAttack.attacker,pendingEnemyAttack.skill))return;pendingReactionType=type;if(type==="EVADE"){executeEnemyAttack(BattleResolution.createReaction("EVADE"));return;}mode=type==="COUNTER"?"enemy-counter-select":"enemy-defense-select";render();}
-  function resolvedSkill(skill,variant){return SkillDatabase.resolveVariant(skill,variant?.id);}
+  function resolvedSkill(skill,variant){const result=SkillDatabase.resolveVariant(skill,variant?.id);return result?UnitRuntimeEngine.skillForUnit(selected,result):result;}
   // Weapon enchantment changes the valid contact surfaces, not the attack's
   // underlying damage skill. The same aim mode owns both enemy and terrain hits.
   function attackWithEnchantmentTargets(unit,skill){
@@ -711,7 +712,7 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
   }
   function skillVariants(skill){return Array.isArray(skill?.variants)?skill.variants:[];}
   function executeSelfUtilityVariant(unit,parent,variant){const skill=resolvedSkill(parent,variant);if(skill.target!=="SELF"||!skill.utilityAction)return false;selectedSkillVariant=variant;selectedSkill=skill;commitPendingMove(unit);prepareAttack(unit,unit,skill);return true;}
-  function effectiveSkill(attacker,skill){let out=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(attacker,skill,environmentState)||skill;const passives=SkillDatabase.passiveList(attacker?.character?.passives);const tile=TacticalEngine.tile(map,attacker.x,attacker.y);const weapon=attacker?.character?.weapons?.[skill?.weapon];const ambush=passives.find(p=>p.id==="AMBUSH");if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){out={...out,power:Number(out.power||0)*Number(ambush.powerMultiplier||1),speed:Number(out.speed||0)+Number(ambush.speedBonus||0),modifiers:{...(out.modifiers||{})}};out.ambushActive=true;}return out;}
+  function effectiveSkill(attacker,skill){let out=globalThis.UnitRuntimeEngine?.applyResourceScaling?.(attacker,skill,environmentState)||skill;const passives=SkillDatabase.passiveList(attacker?.character?.passives);const tile=TacticalEngine.tile(map,attacker.x,attacker.y);const weapon=attackWeaponFor(attacker,out);const ambush=passives.find(p=>p.id==="AMBUSH");if(ambush&&tile?.terrain===ambush.terrain&&weapon?.weaponKind===ambush.weaponKind){out={...out,power:Number(out.power||0)*Number(ambush.powerMultiplier||1),speed:Number(out.speed||0)+Number(ambush.speedBonus||0),modifiers:{...(out.modifiers||{})}};out.ambushActive=true;}return out;}
   function lineTiles(attacker,end){return TacticalEngine.lineTiles(map,attacker,end);}
   function canTraverseMoveLine(attacker,end){return TacticalEngine.canTraverseMoveLine(map,attacker,end);}
   function aoeTiles(center,radius){return TacticalEngine.aoeTiles(map,center,radius);}
@@ -1071,12 +1072,12 @@ import {createBattlePerceptionEngine,createBattlePerceptionState} from "./battle
     const methodOptions=BattleResolution.defenseMethods(defender).map(method=>{
       const rule=method.vs?.[type];
       if(!rule)return{id:method.id,label:method.name,valid:false};
-      const blocked=method.method==='GUARD'&&effective?.weapon&&attacker.character.weapons?.[effective.weapon]?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&method.artifact!==true;
+      const blocked=method.method==='GUARD'&&effective?.weapon&&attackWeaponFor(attacker,effective)?.affixes?.includes('PHYSICAL_DEFENSE_IGNORE')&&method.artifact!==true;
       if(blocked)return{id:method.id,label:method.name,valid:false,bypassed:true};
       const successRate=Number.isFinite(Number(rule.chance))?pct(Number(rule.chance)):100;
       const reduction=method.method==='PARRY'?0:Number.isFinite(Number(rule.damageMultiplier))?Number(rule.damageMultiplier):1;
       const guardMultiplier=method.method==='GUARD'?Number(defender.character.modifiers?.guardMultiplier??1):1;
-      const holyInherent=attacker.character.weapons?.[effective.weapon]?.inherentMagic?.unblockable===true;
+      const holyInherent=attackWeaponFor(attacker,effective)?.inherentMagic?.unblockable===true;
       const unblockedExtra=holyInherent?BattleResolution.previewInherentBonus(attacker,defender,effective):0;
       const reducedBase=baseDamage-unblockedExtra;
       const damageIfBlocked=Math.max(0,Math.round(reducedBase*(effective?.pureHoly?1:reduction*guardMultiplier)+unblockedExtra));

@@ -492,6 +492,28 @@ export class UnitRenderer{
     return{root,meshes:[pointer]};
   }
 
+  syncEnemyRing(entry,unit){
+    // View-relative, not absolute team colour (seat 1 in PVP is ENEMY).
+    // Snapshot is already filtered by perception / visibility. No fog reveal.
+    const hostile=unit?.friendlyToViewer===false&&["PLAYER","ENEMY","P","E"].includes(unit.team)&&unit.alive!==false;
+    if(hostile&&!entry.enemyRing){
+      if(!this.enemyRingMaterial){
+        const material=this.mat("unit-enemy-identification",new BABYLON.Color3(.95,.12,.12));
+        material.disableLighting=true;material.emissiveColor=new BABYLON.Color3(.95,.12,.12);
+        material.specularColor=BABYLON.Color3.Black();
+        this.enemyRingMaterial=material;
+      }
+      const mesh=BABYLON.MeshBuilder.CreateTorus(`unit-enemy-identification-${unit.id}`,{
+        diameter:TILE_SIZE*.60,thickness:TILE_SIZE*.026,tessellation:16
+      },this.scene);
+      mesh.parent=entry.facingMarker.root;mesh.position.y=.045;
+      mesh.material=this.enemyRingMaterial;mesh.isPickable=false;
+      mesh.metadata={kind:"unit-enemy-identification",unitId:unit.id,castShadow:false};
+      entry.enemyRing=mesh;
+    }
+    if(entry.enemyRing){entry.enemyRing.setEnabled(hostile);entry.enemyRing.scaling.setAll(unit?.selected?1.13:1);}
+  }
+
   createAnimationBadge(unit){
     const root=new BABYLON.TransformNode(`unit-animation-badge-${unit.id}`,this.scene);
     const plane=BABYLON.MeshBuilder.CreatePlane(
@@ -3660,6 +3682,7 @@ export class UnitRenderer{
       if(unit.friendlyToViewer&&unit.stealthed)
         for(const marker of entry.facingMarker?.meshes||[])marker.visibility=Math.max(.85,verticalOpacity);
       this.updateVerticalCue(entry,unit);
+      this.syncEnemyRing(entry,unit);
 
       entry.basePosition.copyFrom(this.positionFor(entry,unit));
       entry.baseMarkerPosition.copyFrom(this.markerPositionFor(unit,entry));
@@ -3670,7 +3693,10 @@ export class UnitRenderer{
     }
 
     for(const id of [...this.entries.keys()]){
-      if(visible.has(String(id))||this.hasDeathPending(id))continue;
+      if(visible.has(String(id)))continue;
+      // A previously visible death may still animate, but its locator must
+      // disappear as soon as the authoritative snapshot removes the unit.
+      if(this.hasDeathPending(id)){this.entries.get(id)?.enemyRing?.setEnabled(false);continue;}
       this.disposeEntry(id);
     }
     // The gameplay transition is already committed. Draw only one bounded

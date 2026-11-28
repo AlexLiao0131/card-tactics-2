@@ -1,3 +1,4 @@
+import {attackWeaponFor} from './equipment-database.js';
 /**
  * Shared, deterministic choice policy for an autonomous SINGLE-target defender.
  *
@@ -27,7 +28,7 @@ export function chooseAutonomousBattleReaction({map,units,attacker,defender,skil
     return {reaction:null,interception:null,kind:'HALLUCINATION_CONTACT'};
 
   const attackType=skill.attackType==='INHERIT'?
-    attacker.character?.weapons?.[skill.weapon]?.attackType:skill.attackType;
+    attackWeaponFor(attacker,skill)?.attackType:skill.attackType;
   const options=resolution.prepareSingleTargetReaction({defender,attacker,attackSkill:skill,canUseSkill});
   const counters=options.counterSkills.filter(counter=>
     eligibleCounterSkill(counter) &&

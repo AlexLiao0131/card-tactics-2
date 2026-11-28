@@ -1,4 +1,4 @@
-import {EquipmentDatabase, WEAPON_DEFENSE_BASELINES} from './equipment-database.js';
+import {EquipmentDatabase, WEAPON_DEFENSE_BASELINES, attackWeaponFor} from './equipment-database.js';
 
 // Battle-authoritative, read-only weapon material confrontation rules.
 // Only explicitly tagged contact materials participate: missing materialId is UNKNOWN,
@@ -18,12 +18,12 @@ export const WeaponMaterialEngine=Object.freeze({
   // Caller retains responsibility for validating the defense method and target.
   defenseMatchup({attacker,defender,skill,method,attackType}={}){
     const incomingType=attackType==='INHERIT'?
-      attacker?.character?.weapons?.[skill?.weapon]?.attackType:attackType;
+      attackWeaponFor(attacker,skill)?.attackType:attackType;
     const rule=method?.vs?.[incomingType];
     const basicChance=rule?.chance;
     if(!rule||!Number.isFinite(Number(basicChance)))
       return{chance:basicChance??null,pressure:0,materialAdvantage:false};
-    const weapon=attacker?.character?.weapons?.[skill?.weapon];
+    const weapon=attackWeaponFor(attacker,skill);
     if(weapon?.materialId!=='STAR_IRON'||skill?.pureHoly||skill?.attackClass==='RANGED'||
        !PHYSICAL_MELEE_TYPES.has(incomingType)||!CONTACT_DEFENSE_METHODS.has(method.method)||
        method?.artifact===true||distance(attacker,defender)!==1)

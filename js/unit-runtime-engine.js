@@ -354,14 +354,30 @@ export function createUnitRuntimeEngine(){
     if(reactionCounter&&source?.id==="ophi_forest_wrath")
       return {...skill,target:"ENEMY",targetType:"SINGLE",radius:undefined,
         areaDamage:undefined,relationEffects:undefined,_reactionCounter:true};
-    if(!skill||skill._bloodMemory||!isBloodMemory(unit,skill))return skill;
-    if(skill.weapon&&!unit.character.weapons?.[skill.weapon]){
-      const reference=unit.character.weapons?.rapier||{};
-      unit.character.weapons??={};
-      unit.character.weapons[skill.weapon]={...reference,affixes:[],inherentMagic:null,attackType:skill.attackType||reference.attackType,weaponKind:skill.weapon.toUpperCase()};
-    }
-    return {...skill,manaCost:0,resourceCosts:{blood:bloodMemoryCost(skill)},_bloodMemory:true,
-      description:`【血術重現】原技能消耗合計 ${bloodMemoryCost(skill)} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
+    if(!skill||!isBloodMemory(unit,skill))return skill;
+    const grant=(unit.grantedSkills||[]).find(g=>g.bloodMemory&&g.skillId===skill.id);
+    const slot=skill.weapon,real=unit.character.weapons?.[slot];
+    // Old in-flight grants can recover from the same authoritative live source;
+    // new grants retain delivery metadata even after that source disappears.
+    const sourceWeapon=grant?.weaponMemory?.[slot]||getLiveUnit(grant?.sourceUnitId)?.character?.weapons?.[slot];
+    const reference=unit.character.weapons?.rapier;
+    const { _bloodMemoryWeapon:oldWeapon,_bloodMemoryUnavailable:oldUnavailable,...base }=skill;
+    // Keep the previous blood weapon's element and absence of item bonuses.
+    // The original attack delivery comes from the remembered actual weapon.
+    const projected=slot&&!real&&sourceWeapon?{
+      slot,id:`blood-memory:${skill.id}:${slot}`,kind:"WEAPON",weaponKind:sourceWeapon.weaponKind||null,
+      attackType:sourceWeapon.attackType||null,element:reference?.element,
+      affixes:[],...(Number.isFinite(sourceWeapon.verticalReach)?{verticalReach:sourceWeapon.verticalReach}:{})
+    }:null;
+    const unavailable=!!slot&&!real&&!projected&&(skill.attackType==="INHERIT"||skill.element==="INHERIT");
+    // Variant resolution can change the original costs after a parent skill
+    // has been projected. Re-read that exact authored variant, not a copied
+    // parent's already-converted blood cost.
+    const authoredVariant=skill._bloodMemory&&skill.variantId?SkillDatabase.resolveVariant(skill.id,skill.variantId):null;
+    const cost=authoredVariant?bloodMemoryCost(authoredVariant):skill._bloodMemory?Number(skill.resourceCosts?.blood||0):bloodMemoryCost(skill);
+    return {...base,manaCost:0,resourceCosts:{blood:cost},_bloodMemory:true,
+      ...(projected?{_bloodMemoryWeapon:projected}:{}),...(unavailable?{_bloodMemoryUnavailable:true}:{}),
+      description:skill._bloodMemory?skill.description:`【血術重現】原技能消耗合計 ${cost} 點，改由血能支付。\n${skill.description||"依照原技能的合法目標、範圍與效果重現。"}`};
   }
   function changeHolyPower(unit,delta){
     if(!unit?.character?.resourceRules?.holyPower)return 0;
@@ -585,6 +601,7 @@ export function createUnitRuntimeEngine(){
        (!feralityUser(unit)||feralityValue(unit)<Number(feralityProfile(unit).max||100)||
         unit?.controlOverride?.behavior==='PREDATOR'))return false;
     skill=skillForUnit(unit,skill);
+    if(skill?._bloodMemoryUnavailable)return false;
     if(skill?.areaDamage?.requiredEffectTag&&!knownUnits().some(target=>target.alive&&target.team!==unit.team&&
       Math.abs(target.x-unit.x)+Math.abs(target.y-unit.y)<=Number(skill.radius||0)&&
       target.effects?.some(e=>e.tags?.includes(skill.areaDamage.requiredEffectTag))))return false;
