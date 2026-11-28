@@ -395,6 +395,31 @@ export const TacticalEngine=(()=>{
   }
   function lineCells(from,to){const cells=[],dx=to.x-from.x,dy=to.y-from.y,steps=Math.max(Math.abs(dx),Math.abs(dy));if(steps<=1)return cells;const seen=new Set();for(let i=1;i<steps;i++){const x=Math.round(from.x+dx*i/steps),y=Math.round(from.y+dy*i/steps),k=K(x,y);if(k!==K(from.x,from.y)&&k!==K(to.x,to.y)&&!seen.has(k)){seen.add(k);cells.push({x,y,t:i/steps})}}return cells;}
   function visionBlocked(environmentState,x,y){return !!(environmentState&&globalThis.EnvironmentEngine?.visionModifier?.(environmentState,x,y)?.blocked)}
+  function hasLocalOpticalOccluders(environmentState){
+    const effects=environmentState?.effects;
+    return !!effects?.values&&[...effects.values()].some(list=>(list||[]).some(e=>e?.type==="SMOKE"||e?.type==="STEAM"));
+  }
+  // The physical optical ray is shared with FULL_VISIBILITY identification.
+  // It uses the existing EnvironmentEngine threshold and near-contact rule.
+  function opticalRayBlocked(environmentState,from,to){
+    if(D(from,to)<=LOCAL_AWARENESS_RANGE)return false;
+    return visionBlocked(environmentState,from.x,from.y)||visionBlocked(environmentState,to.x,to.y)||
+      lineCells(from,to).some(p=>visionBlocked(environmentState,p.x,p.y));
+  }
+  // An aiming view is narrower than shared battlefield intelligence. Only
+  // conceal contacts whose actual optical ray is obstructed and which have
+  // no certified attack plan (including movement and indirect observation).
+  // This projection cannot authorize an attack or reveal an unseen target.
+  function aimOpticallyHiddenIds(map,actor,candidates,legalTargets,environmentState){
+    if(!actor?.alive||!hasLocalOpticalOccluders(environmentState))return [];
+    const legal=new Set((legalTargets||[]).map(t=>typeof t==="string"?t:t.id));
+    const sources=occupiedCells(actor);
+    return (candidates||[]).filter(target=>target?.alive&&target.team!==actor.team&&!legal.has(target.id)&&
+      sources.every(source=>occupiedCells(target).every(destination=>{
+        const a={...actor,...source},b={...target,...destination};
+        return opticalRayBlocked(environmentState,a,b)&&!canSee(map,a,b,environmentState);
+      }))).map(t=>t.id);
+  }
   function observationRules(observer){return SkillDatabase.passiveList(observer?.character?.passives||[]).flatMap(passive=>passive?.observationNetworks||[])}
   function observationModifier(observer,tag){
     const out={anchorRangeBonus:0,nodeVisionRangeBonus:0};
@@ -516,7 +541,7 @@ export const TacticalEngine=(()=>{
     const senseRules=(globalThis.EffectEngine?.state?.(observer)||[]).map(effect=>effect?.visionRules).filter(Boolean),senseRange=senseRules.reduce((max,rule)=>rule.ignoreEnvironmentBlockers?Math.max(max,Number(rule.maxRange||0)):max,0);
     if(senseRange>0&&distance<=senseRange)return true;
     const personalLimit=effectiveVisionRange(observer,environmentState),environmentLimit=environmentVisionLimit(environmentState,target,observer),limit=Math.min(personalLimit,environmentLimit);if(Number.isFinite(limit)&&distance>limit)return reject(trace,"VISION_DISTANCE",trace?{distance,personalLimit,environmentLimit}:undefined);
-    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return reject(trace,"OPTICAL_ENDPOINT_BLOCKED",trace?{source:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,observer.x,observer.y),target:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,target.x,target.y)}:undefined);
+    if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return reject(trace,"OPTICAL_ENDPOINT_BLOCKED",trace?{sourceOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,observer.x,observer.y),targetOptical:globalThis.EnvironmentEngine?.visionModifier?.(environmentState,target.x,target.y)}:undefined);
     const start=elevation(tile(m,observer.x,observer.y))+1,end=elevation(tile(m,target.x,target.y))+1;
     return lineCells(observer,target).every(p=>{
       const ground=tile(m,p.x,p.y);
@@ -573,12 +598,7 @@ export const TacticalEngine=(()=>{
     const observers=[...(world.units||[]).filter(unit=>unit?.alive&&unit.team===team),...teamVisionSources(world,team)];
     // Tactical terrain blocking is not a permanent fog-of-war in a fully
     // revealed stage. Only actual atmospheric blockers conceal a contact.
-    const opticallyBlocked=observer=>{
-      if(D(observer,target)<=LOCAL_AWARENESS_RANGE)return false;
-      if(visionBlocked(environmentState,observer.x,observer.y)||visionBlocked(environmentState,target.x,target.y))return true;
-      return lineCells(observer,target).some(p=>visionBlocked(environmentState,p.x,p.y));
-    };
-    return !observers.length||observers.some(observer=>!opticallyBlocked(observer));
+    return !observers.length||observers.some(observer=>!opticalRayBlocked(environmentState,observer,target));
   }
   // AI perception is actor-scoped for STEALTH. An ally spotting a thief does
   // not make every other unit able to pursue the thief. Non-stealth units keep
@@ -693,6 +713,6 @@ export const TacticalEngine=(()=>{
   function targets(m,us,u,s,environmentState=null){if(s.target==="SELF")return[u];return us.filter(v=>canTarget(m,u,v,s,environmentState));}
   function combatTerrain(m,a,d,s,environmentState=null){const contact=contactPair(m,a,d,s,environmentState),contactActor=contact?.a||a,contactDefender=contact?.b||d;const at=tile(m,contactActor.x,contactActor.y),dt=tile(m,contactDefender.x,contactDefender.y),type=attackType(a,s),acc=at&&dt&&(type==="SHOT"||type==="MAGIC")&&elevation(at)>elevation(dt)?HIGH_GROUND_RANGED_ACCURACY:0,eva=TERRAINS[dt?.terrain]?.evasion||0;const am=terrainPassiveModifiers(a.character,at),dm=terrainPassiveModifiers(d.character,dt),apply=(character,mods,extra={})=>({...character,modifiers:{...(character.modifiers||{}),accuracy:Number(character.modifiers?.accuracy||0)+Number(mods.accuracy||0)+Number(extra.accuracy||0),evasion:Number(character.modifiers?.evasion||0)+Number(mods.evasion||0)+Number(extra.evasion||0),crit:Number(character.modifiers?.crit||0)+Number(mods.crit||0),speed:Number(character.modifiers?.speed||0)+Number(mods.speed||0)}}),ac=apply(a.character,am,{accuracy:acc}),dc=apply(d.character,dm,{evasion:eva}),distance=D(contactActor,contactDefender);return {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance};}
   function resolve(m,a,d,s,opt={}){ensureFacing(a);ensureFacing(d);const {contactActor,contactDefender,at,dt,acc,eva,am,dm,ac,dc,distance}=combatTerrain(m,a,d,s,opt.environmentState||null),arc=relativeArc(contactDefender,contactActor);let result=BattleEngine.calculate(ac,dc,s,{...opt,distance,forceCrit:opt.forceCrit===true||arc==="BACK"&&Number(s?.backstabMultiplier||0)>0});if(result.hit&&arc==="BACK"&&Number(s?.backstabMultiplier||0)>0){const mult=Number(s.backstabMultiplier),damage=Math.round(result.damage*mult);result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),backstab:true,backstabMultiplier:mult};}if(result.hit&&Number(s?.onHitBonusDamage?.amount||0)>0){const bonus=Math.max(0,Math.round(Number(s.onHitBonusDamage.amount||0))),damage=result.damage+bonus;result={...result,damage,hpAfter:Math.max(0,d.character.combat.hp-damage),onHitBonusDamage:{...s.onHitBonusDamage,amount:bonus}};}return{result,terrain:{acc,eva,at,dt,attackerPassive:am,defenderPassive:dm},facing:{attacker:a.facing,defender:d.facing,arc}}}
-  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,strategicDestination,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
+  return{BASE_VISION_RANGE,LOCAL_AWARENESS_RANGE,tile,objectAt,isBlockedByObject,footprintOf,occupiedCells,occupiesCell,occupantAt,distanceBetween,targetContactCells,canOccupyFootprint,elevation,elevationDelta,frontThreeTiles,fanTiles,isAreaAimSkill,defaultAreaAim,isFixedAreaSkill,areaImpactTiles,isAquatic,canOccupyTerrain,canTraverseElevation,canActiveMove,canSwapAllies,reachable,pathTo,strategicDestination,lineTiles,canTraverseMoveLine,range,aoeTiles,attackType,attackDelivery,attackVerticalReach,verticalTargetAllowed,terrainTraits,terrainPassiveModifiers,effectMovementRules,effectVisionBonus,nightVisionProfile,visionBlocked,hasLocalOpticalOccluders,aimOpticallyHiddenIds,observationRules,observationNodes,connectedObservationNodes,observationNetworkCanObserve,effectiveVisionRange,environmentSightLimited,lightTransmission,canObserveFireSource,canSeeLight,canSee,teamVisionSources,teamCanSee,teamCanIdentifyUnit,actorCanTrackTarget,teamCanCastSpell,companionVisionSource,hasCompanionVision,indirectObservationSource,hasLineOfSight,canTarget,targets,combatTerrain,resolve,ensureFacing,setFacing,rotateFacing,facingToward,faceToward,relativeArc}
 })();
 globalThis.TacticalEngine=TacticalEngine;

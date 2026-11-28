@@ -281,7 +281,12 @@ export class PvpTacticalUI {
         // selectable (some cells are blocked, occupied or enemy-owned).
         deployable:deployable.has(key)};
     });
-    const view={...source,presentation:{...source.presentation,areaAimActive,aimCenter:areaAimActive?this.areaAim:null},map:{...source.map,tiles},units:source.units.map(u=>({
+    const hidden=new Set(aim?.opticallyHiddenUnitIds||[]),environment=source.presentation?.environment;
+    const presentation={...source.presentation,areaAimActive,aimCenter:areaAimActive?this.areaAim:null};
+    if(hidden.size&&environment?.lightSources)presentation.environment={...environment,
+      lightSources:environment.lightSources.filter(light=>!hidden.has(light.unitId)&&
+        !(light.source==="UNIT_TILE_LIGHT"&&hidden.has(light.sourceId)))};
+    const view={...source,presentation,map:{...source.map,tiles},units:source.units.filter(u=>!hidden.has(u.id)).map(u=>({
       ...u,selected:!!(unit&&u.id===unit.id)
     }))};
     // No terrain/water redraw for a local selection. Reuse the exact native
@@ -853,9 +858,10 @@ export class PvpTacticalUI {
     const v=this.match?.view;
     if(seat!==this.seat||!Number.isSafeInteger(x)||!Number.isSafeInteger(y)||
        !this.myTurn()||!this.isConnected())return false;
-    const unit=v.units?.find(candidate=>candidate.x===x&&candidate.y===y&&candidate.alive!==false);
     const type=this.mode,choice=this.target;
     const mapAim=this.selectedUnit()?.aimOptions?.find(a=>a.type===type&&a.skillId===choice?.skillId);
+    const hidden=new Set(mapAim?.opticallyHiddenUnitIds||[]);
+    const unit=v.units?.find(candidate=>candidate.x===x&&candidate.y===y&&candidate.alive!==false&&!hidden.has(candidate.id));
     const draggable=type==='CAST_MAP_SKILL'&&(!!mapAim?.areaFootprints||TacticalEngine.isAreaAimSkill(knownSkill(choice?.skillId)));
     if(aimOnly&&!draggable)return false;
     if(choice?.skillId&&(mapAim?.fixedArea||TacticalEngine.isFixedAreaSkill(knownSkill(choice.skillId))))return false;

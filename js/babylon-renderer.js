@@ -716,6 +716,17 @@ export class BabylonRenderer{
   syncInteractionPresentation(state){
     this.pendingAreaAim=null;
     if(!state?.map?.tiles||!Array.isArray(state.units))return false;
+    // The Worker-certified aiming mask can change the public display roster
+    // without a new world revision. Use the existing full publication owner
+    // so meshes, pickers, lights, shadows, VFX and HUD leave/return together.
+    const previous=this.lastState?.units;
+    if(Array.isArray(previous)){
+      const ids=new Set(previous.map(unit=>unit.id));
+      if(previous.length!==state.units.length||state.units.some(unit=>!ids.has(unit.id))){
+        this.sync(state,[]);
+        return this.presentationCommitHistory?.at(-1)?.complete===true;
+      }
+    }
     const stages=[
       ['highlights',()=>this.highlights.sync(state)],
       ['unitHud',()=>this.unitHud.sync(state)],

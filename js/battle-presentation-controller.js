@@ -38,7 +38,8 @@ function create(ctx){
   }
   const viewerTeam=ctx.viewerTeam??ctx.TEAM?.PLAYER??"P";
   function viewerObservers(s){return(s.units||[]).filter(unit=>unit.alive&&unit.team===viewerTeam)}
-  function visibilityModel(){
+  function singleAim(s){return s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE";}
+  function visibilityModel(legalTargets=null){
     const s=ctx.state(),allVisible=new Set((s.map?.tiles||[]).map(tile=>`${tile.x},${tile.y}`));
     const intelMode=s.stage?.intelMode||(s.stage?.mode==="VERSUS"?"DYNAMIC_INTEL":"FULL_VISIBILITY");
     // The tactical intel mask and the atmospheric sight field are different
@@ -48,20 +49,20 @@ function create(ctx){
     // Physical smoke and steam already belong to EnvironmentEngine.effects.
     // Request LOS for visual clarity whenever one of these local occluders exists;
     // do not mistake this field for tactical FoW or add a separate sight engine.
-    const opticalEffects=s.environmentState?.effects;
-    const localSightLimited=!!opticalEffects?.values&&[...opticalEffects.values()].some(list=>
-      (list||[]).some(effect=>effect?.type==="SMOKE"||effect?.type==="STEAM"));
+    const localSightLimited=TacticalEngine.hasLocalOpticalOccluders(s.environmentState);
+    const aimHidden=new Set(localSightLimited&&singleAim(s)?TacticalEngine.aimOpticallyHiddenIds(
+      s.map,s.selected,s.units,legalTargets??ctx.targetableEntities(s.selected,s.selectedSkill),s.environmentState):[]);
     // The optical mask is a UNION of friendly LOS under the exact same
     // EnvironmentEngine night/weather cap used for enemy identification.
     // This does not create another sight state or change tactical intel.
     const atmosphericSightLimited=TacticalEngine.environmentSightLimited(s.environmentState);
     if(!intelActive&&!atmosphericSightLimited&&!localSightLimited)
-      return{active:false,visible:allVisible,weatherSight:allVisible,observerless:false};
+      return{active:false,visible:allVisible,weatherSight:allVisible,observerless:false,aimHidden};
     const observers=[...viewerObservers(s),...TacticalEngine.teamVisionSources(s,viewerTeam)];
     const weatherSight=new Set();
     for(const tile of s.map?.tiles||[])
       if(TacticalEngine.teamCanSee(s.map,s.units,viewerTeam,tile,s.environmentState,s))weatherSight.add(`${tile.x},${tile.y}`);
-    return{active:intelActive,visible:intelActive?weatherSight:allVisible,weatherSight,observerless:!observers.length};
+    return{active:intelActive,visible:intelActive?weatherSight:allVisible,weatherSight,observerless:!observers.length,aimHidden};
   }
   // Plant observation is tactical sight, not emitted physical light. Derive
   // the visual readability cells from TacticalEngine's existing, living
@@ -86,8 +87,9 @@ function create(ctx){
     return cells;
   }
   function tileVisible(tile,visibility=visibilityModel()){return !!tile&&visibility.visible.has(`${tile.x},${tile.y}`)}
-  function unitVisibleToPlayer(unit){
-    // TacticalEngine owns visibility; Renderer/Presentation may only read it.
+  function unitVisibleToPlayer(unit,visibility){
+    // One public snapshot owns meshes, picker, HUD, inspection and lights.
+    if(visibility?.aimHidden?.has(unit.id))return false;
     return TacticalEngine.teamCanIdentifyUnit(ctx.state(),viewerTeam,unit);
   }
   function tileInteractions(tile,effects){const s=ctx.state(),environment=EnvironmentEngine.environmentAt(s.map,tile.x,tile.y),notes=[];if(environment==="GRASS"){if(EnvironmentEngine.isRain(s.environmentState))notes.push("草木受雨勢影響，小火無法形成持續燃燒。");else notes.push("草木可被 FIRE／HEAVY_FIRE 點燃。");}if(environment==="WATER"){notes.push("小火會被熄滅；HEAVY_FIRE 先融冰，再使液態水沸騰並逐步蒸發。");notes.push("降雨先使平地飽和成泥濘；土壤飽和或湖水溢流後才形成地表積水。");notes.push("水域可傳導雷元素；河道在豪雨／雷雨／颱風時會形成急流。 ");}if(environment==="STONE")notes.push("EXPLOSION 可產生岩石破片；高山厚雪可被爆炸／衝擊觸發雪崩。");if(tile.terrain==="MUD")notes.push("泥濘提高一般移動成本；雨勢結束後逐步乾燥。");for(const effect of effects||[]){const note=TILE_EFFECT_INFO[effect.type]?.interaction;if(note&&!notes.includes(note))notes.push(note);}return notes;}
@@ -186,11 +188,12 @@ function create(ctx){
   function battleSnapshot(){
     const world=ctx.state();
     globalThis.AngelWingBarrierEngine?.reconcile?.(world.map,world.units);
-    const fieldVisibility=visibilityModel();
+    const targets=singleAim(world)?ctx.targetableEntities(world.selected,world.selectedSkill):[];
+    const fieldVisibility=visibilityModel(targets);
     const fields=globalThis.BattleAreaFieldProjection?.({map:world.map,units:world.units,fieldState:world.fieldState,environmentState:world.environmentState,round:world.round,viewerTeam,
       canSeeCell:k=>fieldVisibility.weatherSight.has(k),canSeeUnit:u=>unitVisibleToPlayer(u,fieldVisibility)})||new Map();
     const aimKeys=new Set((world.aimPreview||[]).map(t=>`${t.x},${t.y}`));
-    const s=world,visibility=fieldVisibility,plantSight=plantObservationCells(s),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetableEntities(s.selected,s.selectedSkill):[],targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&(s.mode==="map-target"||(s.mode==="attack"&&s.selectedSkill?.terrainTargeting===true))&&s.selectedSkill?(s.aimLegalTiles??ctx.mapTargetTiles(s.selected,s.selectedSkill)):[],environmentTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill?.environmentTarget==="BURNING"?ctx.environmentTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),smokeCells=new Set((s.smokeFields||[]).flatMap(field=>[...field.cells])),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y)||s.units.find(u=>globalThis.TacticalEngine?.occupiesCell?.(u,tile.x,tile.y)),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,environmentEffects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],effects=smokeCells.has(`${tile.x},${tile.y}`)&&!environmentEffects.some(e=>e.type==="SMOKE")?[...environmentEffects,{type:"SMOKE",source:"SKILL_SMOKE"}]:environmentEffects,deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&TacticalEngine.teamCanCastSpell(s.map,s.units,viewerTeam,tile,s.environmentState,s,s.pendingCard)&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&unitVisibleToPlayer(unit,visibility)&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile)||environmentTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),
+    const s=world,visibility=fieldVisibility,plantSight=plantObservationCells(s),reachable=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&!s.selected.moved&&(s.mode==="command"||s.mode==="move")?TacticalEngine.reachable(s.map,s.units,s.selected):new Map(),targetRange=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill&&ctx.targetType(s.selectedSkill)==="SINGLE"?ctx.targetRangeTiles(s.selected,s.selectedSkill):[],mapTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&(s.mode==="map-target"||(s.mode==="attack"&&s.selectedSkill?.terrainTargeting===true))&&s.selectedSkill?(s.aimLegalTiles??ctx.mapTargetTiles(s.selected,s.selectedSkill)):[],environmentTargets=s.selected&&s.phase===ctx.PHASE.PLAYER&&!s.selected.acted&&s.mode==="attack"&&s.selectedSkill?.environmentTarget==="BURNING"?ctx.environmentTargetTiles(s.selected,s.selectedSkill):[],points=DeploymentEngine.points(s.stage),smokeCells=new Set((s.smokeFields||[]).flatMap(field=>[...field.cells])),tiles=s.map.tiles.map(tile=>{const unit=ctx.unitAt(tile.x,tile.y)||s.units.find(u=>globalThis.TacticalEngine?.occupiesCell?.(u,tile.x,tile.y)),core=ctx.coreAt(tile.x,tile.y),capturePoint=points.find(point=>(point.captureTiles||[]).some(t=>t.x===tile.x&&t.y===tile.y))||null,environmentEffects=s.environmentState?EnvironmentEngine.effectAt(s.environmentState,tile.x,tile.y):[],effects=smokeCells.has(`${tile.x},${tile.y}`)&&!environmentEffects.some(e=>e.type==="SMOKE")?[...environmentEffects,{type:"SMOKE",source:"SKILL_SMOKE"}]:environmentEffects,deployable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isCharacter(s.pendingCard)&&DeploymentEngine.canDeploy({stage:s.stage,map:s.map,units:s.units,owner:"PLAYER",x:tile.x,y:tile.y})),spellTargetable=!!(s.pendingCard&&s.phase===ctx.PHASE.CARD&&CardDatabase.isSpell(s.pendingCard)&&TacticalEngine.teamCanCastSpell(s.map,s.units,viewerTeam,tile,s.environmentState,s,s.pendingCard)&&(!s.pendingCard.effect?.targetEnvironment||String(s.pendingCard.effect.targetEnvironment).toUpperCase()!=="WATER"||HydrologyEngine.isWater(tile))),attackable=!!(spellTargetable||(unit&&unitVisibleToPlayer(unit,visibility)&&targets.includes(unit))||(core&&targets.some(target=>target.kind==="CORE"&&target.core===core))||mapTargets.includes(tile)||environmentTargets.includes(tile));return{x:tile.x,y:tile.y,terrain:tile.terrain,elevation:Number(tile.elevation||0),...tileHydrology(tile),
       ...(fields.has(`${tile.x},${tile.y}`)?{activeFields:fields.get(`${tile.x},${tile.y}`)}:{}),aimPreview:aimKeys.has(`${tile.x},${tile.y}`),aimCenter:world.areaAimActive===true&&world.aimCenter?.x===tile.x&&world.aimCenter?.y===tile.y,aimLegal:world.areaAimActive===true&&mapTargets.includes(tile),
       manaWell:(s.map.manaWells||[]).some(w=>w.x===tile.x&&w.y===tile.y&&w.team===viewerTeam),
       spatialDistortion:(s.map.spatialDistortions||[]).some(d=>Number(d.expireRound)>Number(s.round||0)&&d.cells.some(c=>c.x===tile.x&&c.y===tile.y)),reachable:reachable.has(tile.x+","+tile.y),targetRange:targetRange.includes(tile),attackable,deployable,inspected:!!(s.inspectedTile&&s.inspectedTile.x===tile.x&&s.inspectedTile.y===tile.y),effects:effects.map(effect=>effect.type),effectDetails:effects.map(effect=>({
